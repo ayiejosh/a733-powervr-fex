@@ -62,6 +62,8 @@ x86_64-linux-gnu-gcc -O2 -static uatomic.c -o uatomic_x86      # cross-compile t
 FEXInterpreter ./uatomic_x86 30000000 0    # aligned   (baseline)
 FEXInterpreter ./uatomic_x86 30000000 2    # unaligned (<16B)
 FEXInterpreter ./uatomic_x86 30000000 14   # split-lock (crosses 16B)
-# On this A733 / current FEX: aligned ~154 Mops, unaligned ~61 (2.5x), split-lock ~57 (2.7x).
-# Config-invariant (TSOEnabled / KernelUnalignedAtomicBackpatching / etc. change nothing).
+# STOCK upstream FEX on A733: aligned ~154 Mops, unaligned ~0.70 (≈190x slower, ≈1430 ns/op)
+#   — it SIGBUS-traps per op (no FEAT_LSE2/uscat). Config knobs do NOT change this.
+# A local FEX codegen patch (Arm64.cpp backpatch fix) cuts unaligned to ~61 Mops (~2.5x).
+# So your number depends on which FEX you run — report stock vs patched.
 ```

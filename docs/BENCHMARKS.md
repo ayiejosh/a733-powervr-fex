@@ -22,21 +22,21 @@ Per-instruction-class slowdown of x86-under-FEX vs the equivalent native ARM
 | atomics | **1.08×** |
 | x87 floating point | **1.44×** |
 | branchy / unpredictable | **2.17×** |
-| **unaligned atomics** | **~2.5×** (re-measured 2026-06-13; split-lock crossing 16B ~2.7×) — see note ‡ |
+| **unaligned atomics** | **~190×** on stock FEX (≈1430 ns/op) → **~2.5×** with a local FEX backpatch patch (≈16 ns/op) — see note ‡ |
 
 **Practical note:** real-app slowness under FEX (e.g. Chrome) is dominated by
 **JIT *compile* time on cold start**, not steady-state translation — an AOT/code
 cache is the lever, not per-instruction overhead. No full-application fps figure
 was measured; treat the table as instruction-class characterization.
 
-**‡ CORRECTION (2026-06-13):** an earlier note claimed unaligned atomics were **187×**.
-Re-measuring on this box with the installed FEX (`bench/uatomic.c`, a `lock xadd` loop)
-shows only **~2.5×** vs the aligned equivalent (split-lock ~2.7×), and it's
-**config-invariant** (toggling `TSOEnabled` / `KernelUnalignedAtomicBackpatching` /
-`HalfBarrierTSOEnabled` / `StrictInProcessSplitLocks` changes nothing) — current FEX
-emits unaligned-safe code at JIT time rather than SIGBUS-trapping per op. The 187×
-figure was **not reproducible** (likely an older FEX or a no-backpatch measurement).
-Reproduce: `x86_64-linux-gnu-gcc -O2 -static bench/uatomic.c -o u && FEXInterpreter ./u 30000000 0|2|14`.
+**‡ (re-verified 2026-06-13, stock vs patched):** on **stock upstream FEX** an unaligned
+`lock` atomic costs **~190×** the aligned equivalent (≈1430 ns/op, 0.70 Mops/s) — it
+SIGBUS-traps per op because the A733 lacks `FEAT_LSE2` (`uscat`). A **local FEX codegen
+patch** (an `Arm64.cpp` change that makes the unaligned-atomic *backpatch* engage, so the
+site stops faulting) cuts it to **~2.5×** (≈16 ns/op, 61 Mops/s) — an ~88× win. That patch
+is **local, not in upstream FEX**, so a stock-FEX user reproducing this will see ~190×
+unless they apply it. Reproduce: `x86_64-linux-gnu-gcc -O2 -static bench/uatomic.c -o u`,
+then run under stock vs patched FEX: `FEXInterpreter ./u 30000000 0|2|14`.
 
 ## GPU (PowerVR BXM-4-64, GLES 3.2, DDK 24.2@6603887)
 Offscreen FBO, ALU-loop fragment shader, 1280×720, Mpix/s. GPU vs the CPU doing the
