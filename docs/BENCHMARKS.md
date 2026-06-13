@@ -1,6 +1,6 @@
 # Benchmarks — Allwinner A733 / Radxa Cubie A7A
 
-Measured on a Cubie A7A, Debian 11 BSP, kernel `5.15.147-21-a733`, ambient ~27 °C.
+Measured on a Cubie A7A, Debian 11 (bullseye), kernel `5.15.147-21-a733` (not Trixie/6.6), ambient ~27 °C.
 Numbers are indicative (single board, methodology noted per section) — not a
 controlled suite. Use for orders-of-magnitude, not precise comparison.
 

@@ -10,6 +10,26 @@ documents what genuinely works, the recipes to reproduce it, and — just as
 importantly — the walls that are **not** crossable on the shipped vendor stack and
 why.
 
+## Tested environment (read this before reproducing)
+
+All findings/benchmarks here are on the **stock Radxa BSP — Debian 11 + kernel 5.15**,
+**not** Trixie and **not** the 6.6 BSP. Other A733 efforts use those; results can
+differ. Exact baseline:
+
+| | |
+|---|---|
+| Board / SoC | Radxa **Cubie A7A** · Allwinner **A733** (`sun60iw2`), 2×A76 @2.0 + 6×A55 @1.79, ~6 GB LPDDR5, UFS storage |
+| OS | **Debian 11 (bullseye)** — *not* Trixie |
+| Kernel | **`5.15.147-21-a733`** (Radxa BSP) — *not* mainline, *not* 6.6 |
+| GPU | PowerVR **BXM-4-64 MC1**, DDK **`24.2@6603887`**, firmware BVNC `36.56.104.183` |
+| Toolchain | glibc **2.31**, gcc **10**, Python **3.9.2** |
+| Userspace GL | stock Debian **Mesa 20.3.5** (+ vendor PVR blobs); the Zink-GL recipe uses a *separately-built* **Mesa 25.3** |
+| x86 layer | FEX-Emu (built from upstream) · box64 **v0.4.3** |
+| Vendor pkgs | `img-bxm-dkms`, `xserver-xorg-img-bxm` from **`radxa-repo.github.io/a733-bullseye`** |
+
+> Bullseye + Python 3.9 are why some things are pinned/built-from-source (e.g. the
+> Zink Mesa). Bullseye LTS EOL is ~2026-08-31.
+
 ## Install
 
 ```sh

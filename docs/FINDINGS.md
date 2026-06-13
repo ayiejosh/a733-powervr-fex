@@ -1,8 +1,8 @@
 # A733 / PowerVR BXM-4-64 — capability matrix & walls
 
 Hardware: Allwinner A733 (`sun60iw2`), GPU **Imagination PowerVR B-Series
-BXM-4-64 MC1** (BVNC `36.56.104.183`), Radxa Debian 11 BSP, kernel
-`5.15.147-21-a733`, Imagination DDK `24.2@6603887` (kernel `pvrsrvkm` +
+BXM-4-64 MC1** (BVNC `36.56.104.183`), Radxa BSP **Debian 11 (bullseye)**, kernel
+`5.15.147-21-a733` (NOT Trixie / NOT 6.6 BSP), Imagination DDK `24.2@6603887` (kernel `pvrsrvkm` +
 `img-bxm-dkms`). Vulkan ICD `libVK_IMG`.
 
 The short version: **the GPU works great per-workload; it cannot be the system
