@@ -17,6 +17,12 @@ findings back so the next person starts further ahead.
 - **Fix bugs** in the scripts/patch, or port the kernel patch to a new BSP/kernel.
 - **Extend**: new device-tree overlays, other A733 boards (A7S/A7Z), mainline tracking.
 
+## Benchmark discipline (required for perf changes)
+Any change that could affect performance **must carry a before→after `bench/run.sh`
+diff in its commit message**, and `bench/baseline.txt` is updated only for verified,
+intended improvements. Compare the `ratio.*` + `gpu.*` lines (reliable); raw absolutes
+are ±~20% load-noise on an always-on box. See [`bench/WORKFLOW.md`](bench/WORKFLOW.md).
+
 ## How to submit
 1. Fork → branch → PR. Keep PRs focused; describe what you tested and on what
    (board, kernel `uname -r`, DDK `strings /usr/lib/libVK_IMG.so* | grep -m1 24.`).
