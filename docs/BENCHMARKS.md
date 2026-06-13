@@ -3,26 +3,29 @@
 Measured on a Cubie A7A, Debian 11 (bullseye), kernel `5.15.147-21-a733` (not Trixie/6.6), ambient ~27 °C.
 Numbers are indicative (single board, methodology noted per section) — not a
 controlled suite. Use for orders-of-magnitude, not precise comparison.
+**All numbers re-validated 2026-06-13** (sysbench/fio/the `bench/` harnesses); load-sensitive
+ones (CPU-all-core, RAM) vary ±15% with background activity.
 
 ## CPU (native ARM64)
 SoC: **2× Cortex-A76 @ 2.0 GHz + 6× Cortex-A55 @ 1.79 GHz** (A76 = cpu6,7).
 
 | Test (sysbench, prime ≤ 20000) | Result |
 |---|---|
-| single-core (A76 @ 2.0 GHz) | **875 events/s** |
-| all 8 cores | **3204 events/s** (≈3.66× scaling, heterogeneous) |
+| single-core (A76 @ 2.0 GHz) | **876 events/s** |
+| all 8 cores | **3654 events/s** (≈4.2× scaling, heterogeneous; load-sensitive) |
 
 ## FEX — x86→ARM translation overhead (native ARM = 1.0× baseline)
-Per-instruction-class slowdown of x86-under-FEX vs the equivalent native ARM
-(microbenchmarks, 2026-06-09). **Most real code lands in the 1.1–2.2× band.**
+Per-instruction-class slowdown of x86-under-FEX vs the equivalent native ARM.
+**Most real code lands in the ~1.0–1.5× band** (a real branchy interpreter is harsher).
+These micro-numbers are **bench-dependent** — treat as characterization, not precise.
 
-| Workload class | FEX overhead vs native |
-|---|---|
-| flag-heavy arithmetic | **1.26×** |
-| atomics | **1.08×** |
-| x87 floating point | **1.44×** |
-| branchy / unpredictable | **2.17×** |
-| **unaligned atomics** | **~190×** on stock FEX (≈1430 ns/op) → **~2.5×** with a local FEX backpatch patch (≈16 ns/op) — see note ‡ |
+| Workload class | FEX overhead vs native | note |
+|---|---|---|
+| aligned atomics | **~1.0×** | FEX ≈ native (measured FEX 154 vs native 143 Mops — FEX marginally faster) |
+| flag-heavy arithmetic | **~1.4×** | re-measured 2026-06-13 (1.43×) |
+| branchy / unpredictable | **~1.4–2.2×** | synthetic ~1.45×; a real **Python interpreter** ~2.17× |
+| x87 (80-bit long double) | **~1.4×** | bench-dependent; see the x87 section below |
+| **unaligned atomics** | **~190×** stock → **~2.5×** with local FEX patch | see note ‡ |
 
 **Practical note:** real-app slowness under FEX (e.g. Chrome) is dominated by
 **JIT *compile* time on cold start**, not steady-state translation — an AOT/code
@@ -76,17 +79,17 @@ sysbench memory, 1M blocks (optimistic vs STREAM):
 | | read | write |
 |---|---|---|
 | 1 thread | 10.3 GB/s | 8.5 GB/s |
-| 8 threads | 15.5 GB/s | 10.0 GB/s |
+| 8 threads | ~17 GB/s | ~10 GB/s |
 
 ## Storage (UFS — *not* eMMC)
 fio, `direct=1`, on the root device:
 
 | | value |
 |---|---|
-| sequential read | 1.64 GB/s |
-| sequential write | 255 MB/s |
-| random 4K read | 115k IOPS |
-| random 4K write | 44.8k IOPS |
+| sequential read | ~1.7 GB/s (QD≥8); ~0.9 GB/s (QD1) |
+| sequential write | 265 MB/s |
+| random 4K read | 112k IOPS |
+| random 4K write | 52.5k IOPS |
 
 ## Thermal (context)
 Passive (fan off): idle ~50 °C; sustained all-core load climbs past 78 °C and keeps

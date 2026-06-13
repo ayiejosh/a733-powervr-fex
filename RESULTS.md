@@ -12,17 +12,17 @@ optimizations and regressions are visible. Please include kernel + DDK version.
 ## CPU — sysbench events/s (`cpu-max-prime=20000`)
 | Board | Kernel | 1-thread | all-cores | Notes |
 |---|---|---|---|---|
-| Radxa Cubie A7A | 5.15.147-21-a733 | 875 | 3204 | 2×A76@2.0 + 6×A55@1.79 |
+| Radxa Cubie A7A | 5.15.147-21-a733 | 876 | 3654 | 2×A76@2.0 + 6×A55@1.79 (load-sensitive) |
 
 ## FEX x86→ARM overhead (native ARM = 1.0×)
 | Board | FEX ver | flags | atomics | x87 | branchy | unaligned-atomics | Notes |
 |---|---|---|---|---|---|---|---|
-| Radxa Cubie A7A | (record yours) | 1.26× | 1.08× | 1.44× | 2.17× | 187× | microbench; cold-start dominated by JIT compile |
+| Radxa Cubie A7A | stock/patched | ~1.4× | ~1.0× | ~1.4× | 1.4–2.2× | **~190× stock → ~2.5× patched** | re-validated 2026-06-13; micro-numbers bench-dependent |
 
 ## Memory / storage
 | Board | RAM 8-thr read | RAM write | UFS/eMMC seq read | seq write | Notes |
 |---|---|---|---|---|---|
-| Radxa Cubie A7A | 15.5 GB/s | 10.0 GB/s | 1.64 GB/s (UFS) | 255 MB/s | LPDDR5 4800 MT/s |
+| Radxa Cubie A7A | ~17 GB/s | ~10 GB/s | ~1.7 GB/s (UFS, QD8) | 265 MB/s | LPDDR5 4800 MT/s |
 
 > Add your board as a new row. Different SoC revision, kernel, DDK, cooling, or
 > governor all move these — that's exactly the data we want to collect.
