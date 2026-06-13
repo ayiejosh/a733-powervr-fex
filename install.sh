@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# a733-powervr-bringup installer — applies the automatable parts on a Radxa A733
+# a733-powervr-fex installer — applies the automatable parts on a Radxa A733
 # (Cubie A7A/A7S, Debian 11 BSP). Safe: confirms each section, dry-runs the patch,
 # never enables services without asking. Vendor blobs + the Mesa build are manual
 # (see README / gpu/README.md) — this can't ship those.
@@ -52,7 +52,7 @@ install_sway(){
   fi
 }
 
-say "a733-powervr-bringup installer"
+say "a733-powervr-fex installer"
 warn "Prerequisite NOT handled here: the proprietary PowerVR userspace blobs + firmware"
 warn "(libGLESv2_PVR_MESA, libVK_IMG, rgx.fw.*) from radxa/allwinner-target, and the"
 warn "Zink Mesa build (gpu/README.md). See README.md."

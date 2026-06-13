@@ -1,4 +1,4 @@
-# a733-powervr-bringup
+# a733-powervr-fex
 
 Patches, recipes, and hard-won findings for getting the **PowerVR BXM-4-64 GPU**
 and **x86 emulation** working on the **Allwinner A733** (`sun60iw2`) — as shipped on
