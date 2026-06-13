@@ -67,3 +67,12 @@ FEXInterpreter ./uatomic_x86 30000000 14   # split-lock (crosses 16B)
 # A local FEX codegen patch (Arm64.cpp backpatch fix) cuts unaligned to ~61 Mops (~2.5x).
 # So your number depends on which FEX you run — report stock vs patched.
 ```
+
+## x87 ReducedPrecision win (pattern-dependent)
+```sh
+x86_64-linux-gnu-gcc -O2 -static x87l.c -o x87l_x86     # fldl/faddl (64-bit on x87 stack)
+# toggle via config file (env FEX_ vars are overridden by ~/.fex-emu/Config.json):
+for r in 0 1; do printf '{"Config":{"X87ReducedPrecision":"%s"}}' $r > ~/.fex-emu/Config.json
+  FEXInterpreter ./x87l_x86 20000000; done
+# X87RP=0 ~75 ns/iter  ->  X87RP=1 ~4 ns/iter  = ~18x  (only for 64-bit-on-x87; not true 80-bit long double)
+```

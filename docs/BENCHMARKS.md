@@ -55,6 +55,21 @@ software (softpipe) fallback** the desktop otherwise uses. `GL_RENDERER =
 PowerVR B-Series BXM-4-64`. (Offscreen FBO throughput, not full-app fps; the CPU
 baseline is generous — no raster overhead — so the real-world gain is ≥150×.)
 
+## x87 — X87ReducedPrecision (config, default off)
+Validated 2026-06-13 (`bench/x87l.c`, A76-pinned). The win is **pattern-dependent**:
+
+| x87 pattern | X87RP=0 (full 80-bit) | X87RP=1 (64-bit) | |
+|---|---|---|---|
+| `fldl`/`faddl` (64-bit doubles on x87 stack) | 75.7 ns/iter | **4.1 ns/iter** | **~18× faster** |
+| `fldt`/`faddp` (true 80-bit `long double`) | ~78 ns/iter | ~81 ns/iter | no change (80-bit transfers dominate) |
+
+So `X87ReducedPrecision=1` swaps FEX's software 80-bit emulation for hardware 64-bit —
+**~18× for x87 code that's really only doing double-precision** (legacy / `-mfpmath=387`),
+but it can't help (and reduces accuracy of) genuine 80-bit `long double`. Default is
+`false`; FEX's own Steam template sets it `true`. Toggle confirmed applied (low digits of
+the result change). x87 is rare in 64-bit x86 apps (they use SSE), so this matters mainly
+for legacy x87-heavy code.
+
 ## Memory (LPDDR5, 2400 MHz / ~4800 MT/s)
 sysbench memory, 1M blocks (optimistic vs STREAM):
 
