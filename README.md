@@ -69,6 +69,25 @@ closed vendor stack and is only liftable by mainline (`drm/imagination` + Mesa
 `pvr`), which for A733 is still at the bare-DTS upstreaming stage. See
 [`docs/FINDINGS.md`](docs/FINDINGS.md) for the full matrix.
 
+## Contributing — this is meant to be a living baseline
+
+The point of publishing is so others can **reproduce, test, optimize, and extend** —
+and push their findings back so the project grows. Concretely:
+
+- **Reproduce the numbers:** the harnesses are in [`bench/`](bench/); add your
+  board's results to [`RESULTS.md`](RESULTS.md). Cross-board data makes regressions
+  and wins visible.
+- **Challenge a finding:** [`docs/FINDINGS.md`](docs/FINDINGS.md) is dated
+  observations, not gospel — if a "wall" falls for you (newer DDK, mainline, a flag),
+  that's a great PR.
+- **Open problems / help wanted** (the live walls): Wayland GPU *clients* (zink
+  kopper crash), transparent EGL→GPU, FEX AOT/code-cache cold-start, Steam-CEF under
+  FEX, mainline `drm/imagination` tracking, HEVC HW encode. See
+  [`CONTRIBUTING.md`](CONTRIBUTING.md).
+
+Issue templates (benchmark result / bug / board test) and a PR checklist are set up.
+**Rule:** no proprietary blobs, rootfs, app binaries, or secrets in commits.
+
 ## License
 
 Original code/patches/scripts here are MIT (see `LICENSE`). They are intended to be
