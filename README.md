@@ -13,11 +13,12 @@ why.
 ## Install
 
 ```sh
-./install.sh          # guided: kernel patch + GPU sway desktop (prompts each step)
+./install.sh          # guided: vendor fetch -> kernel patch -> GPU sway desktop (prompts each step)
+./install.sh vendor   # fetch the proprietary PowerVR stack from the vendor (not bundled — see below)
 ./install.sh kernel   # just the pvrsrvkm PRIME patch (dry-runs first)
-./install.sh sway      # just the GPU sway+wayvnc desktop
+./install.sh sway     # just the GPU sway+wayvnc desktop
 ```
-(Vendor blobs + the Zink Mesa build are manual — see below.)
+(The Zink Mesa build + FEX rootfs stay manual — see `gpu/README.md`, `fex/README.md`.)
 
 ## What's here
 
@@ -28,21 +29,36 @@ why.
 | [`fex/`](fex/) | **Custom FEX Vulkan thunk** (x86 Vulkan → native PowerVR GPU) + FEX setup/launcher scripts + Chrome-on-FEX recipe. |
 | [`box64/`](box64/) | Usage notes for box64 on A733 (links upstream; nothing forked). |
 | [`docs/FINDINGS.md`](docs/FINDINGS.md) | **The capability matrix** — every proven-working path and every confirmed wall, with the *why*. Read this first if you're deciding what's worth attempting. |
+| [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) | Measured numbers — CPU, FEX x86→ARM overhead, GPU vs CPU, RAM, UFS, thermal. |
 
-## ⚠️ What you must supply yourself (not in this repo)
+## Benchmarks (highlights)
 
-This repo contains **only** open / original work and patches. It deliberately does
-**not** include, and cannot legally redistribute:
+Full tables in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md). Headlines:
 
-- **The proprietary PowerVR userspace blobs** — `libGLESv2_PVR_MESA`, `libVK_IMG`,
-  `libEGL`, and the `rgx.fw.*` firmware. Get them from the vendor channel
-  (`radxa/allwinner-target`, branch `target-a733-v1.4.x`) and the `img-bxm-dkms`
-  package in the Radxa apt repo.
-- **The `img-bxm-dkms` kernel source** — install it from the Radxa apt repo
-  (`a733-bullseye`); the kernel patch here applies on top of it.
-- **Any FEX x86 rootfs** or **proprietary apps** (Steam/Proton/etc.). The FEX
-  scripts build/use a rootfs you create; no rootfs or third-party binaries are
-  bundled.
+- **CPU (native ARM):** 875 ev/s single-core (A76 @ 2.0 GHz), 3204 ev/s all-8 (sysbench).
+- **FEX x86→ARM overhead** (native ARM = 1.0×): most code **1.1–2.2×** — atomics 1.08×, flags 1.26×, x87 1.44×, branchy 2.17×; unaligned-atomics a pathological **187×**. Real-app cost is dominated by **JIT compile on cold start**, not steady-state.
+- **GPU vs CPU** (PowerVR BXM, offscreen GLES shader): **~150–175×** the CPU's best case, **~600×** vs the software (softpipe) fallback. Fill-rate ceiling ~4.2 Gpix/s.
+- **RAM (LPDDR5 4800 MT/s):** ~15.5 GB/s read (8-thread). **UFS:** 1.64 GB/s read / 255 MB/s write / 115k IOPS 4K-read.
+
+## ⚠️ What can't be redistributed here — and the workaround
+
+This repo is **only** open / original work (patches, scripts, docs). It cannot
+legally include the proprietary pieces — **but every one of them is fetchable from
+its official source**, so the workaround is *"install script pulls from the vendor;
+this repo layers the patches on top."* Nothing is bundled here.
+
+| Can't ship here | Where it actually comes from | How the workaround gets it |
+|---|---|---|
+| **Entire PowerVR userspace + firmware** — `libGLESv2_PVR_MESA`, `libVK_IMG`, `libsrv_um`, `libEGL`, `rgx.fw.*` (all in one package: **`xserver-xorg-img-bxm`**) | Radxa / Imagination vendor channel — the Radxa Cubie A7A image, the Radxa apt repo, or `radxa/allwinner-target` (branch `target-a733-v1.4.x`) | `install.sh vendor` installs the vendor `.deb` from your configured source (it does **not** download it from us) |
+| **`img-bxm-dkms`** kernel module source | Radxa apt repo (`a733-bullseye`) | `apt-get install img-bxm-dkms`, then **our patch** (`kernel/`) applies on top |
+| **FEX x86 rootfs** (3.8 GB) | you build it | `fex/complete-fex-env.sh` rebuilds it from a base image |
+| **Steam / Proton / Chrome** etc. | their own vendors | install them into your rootfs yourself |
+
+So the model is **patch + recipe + fetch-from-vendor**, the same pattern DKMS /
+proprietary-driver installers use: we never host the closed bits, we point the
+installer at the vendor's own distribution and apply the open work over it.
+Run `./install.sh vendor` to do the fetch step (it tells you exactly where to point
+it if the package isn't already in your apt sources).
 
 ## Honest summary
 

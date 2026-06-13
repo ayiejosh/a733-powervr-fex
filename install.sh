@@ -52,14 +52,40 @@ install_sway(){
   fi
 }
 
+install_vendor(){
+  say "Vendor PowerVR stack (fetched from the vendor — NOT bundled here)"
+  echo "The proprietary GPU userspace + firmware all live in ONE package:"
+  echo "  xserver-xorg-img-bxm  (libGLESv2_PVR_MESA, libVK_IMG, libsrv_um, libEGL, rgx.fw.*)"
+  echo "plus the kernel module: img-bxm-dkms"
+  # kernel module — usually in the Radxa apt repo
+  if apt-cache policy img-bxm-dkms 2>/dev/null | grep -q 'Candidate: [0-9]'; then
+    ask "apt-get install img-bxm-dkms (kernel module)?" && sudo apt-get install -y img-bxm-dkms
+  else
+    warn "img-bxm-dkms not in your apt sources — add the Radxa a733-bullseye repo first:"
+    warn "  https://radxa-repo.github.io/a733-bullseye  (see Radxa docs), then re-run."
+  fi
+  # GPU userspace + firmware — apt if present, else the vendor .deb
+  if apt-cache policy xserver-xorg-img-bxm 2>/dev/null | grep -q 'Candidate: [0-9]'; then
+    ask "apt-get install xserver-xorg-img-bxm (GPU userspace + firmware)?" && sudo apt-get install -y xserver-xorg-img-bxm
+  else
+    warn "xserver-xorg-img-bxm not in apt. Get the vendor .deb from one of:"
+    warn "  - the Radxa Cubie A7A Debian image, or"
+    warn "  - radxa/allwinner-target (branch target-a733-v1.4.x), or the Radxa apt repo,"
+    warn "then install it:   sudo dpkg -i xserver-xorg-img-bxm*.deb"
+    read -r -p "  Path to the .deb (blank to skip): " deb
+    [ -n "$deb" ] && [ -f "$deb" ] && sudo dpkg -i "$deb"
+  fi
+  echo "After this, libVK_IMG / libGLESv2_PVR_MESA / rgx.fw.* are in place; then run 'kernel'."
+}
+
 say "a733-powervr-fex installer"
-warn "Prerequisite NOT handled here: the proprietary PowerVR userspace blobs + firmware"
-warn "(libGLESv2_PVR_MESA, libVK_IMG, rgx.fw.*) from radxa/allwinner-target, and the"
-warn "Zink Mesa build (gpu/README.md). See README.md."
+echo "Sections: vendor (fetch proprietary stack) -> kernel (PRIME patch) -> sway (GPU desktop)."
+echo "Zink-GL build + FEX Vulkan thunk stay manual — see gpu/README.md and fex/README.md."
 case "${1:-all}" in
+  vendor) install_vendor ;;
   kernel) install_kernel ;;
   sway)   install_sway ;;
-  all)    install_kernel; install_sway
+  all)    install_vendor; install_kernel; install_sway
           say "Done. For Zink-GL and the FEX Vulkan thunk, follow gpu/README.md and fex/README.md." ;;
-  *) echo "usage: $0 [kernel|sway|all]"; exit 1 ;;
+  *) echo "usage: $0 [vendor|kernel|sway|all]"; exit 1 ;;
 esac
