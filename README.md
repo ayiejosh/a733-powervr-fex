@@ -10,6 +10,15 @@ documents what genuinely works, the recipes to reproduce it, and — just as
 importantly — the walls that are **not** crossable on the shipped vendor stack and
 why.
 
+## Install
+
+```sh
+./install.sh          # guided: kernel patch + GPU sway desktop (prompts each step)
+./install.sh kernel   # just the pvrsrvkm PRIME patch (dry-runs first)
+./install.sh sway      # just the GPU sway+wayvnc desktop
+```
+(Vendor blobs + the Zink Mesa build are manual — see below.)
+
 ## What's here
 
 | Dir | Contents |
