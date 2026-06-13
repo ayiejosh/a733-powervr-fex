@@ -88,6 +88,12 @@ and push their findings back so the project grows. Concretely:
 Issue templates (benchmark result / bug / board test) and a PR checklist are set up.
 **Rule:** no proprietary blobs, rootfs, app binaries, or secrets in commits.
 
+## Acknowledgments
+Built on the Linux kernel DRM subsystem, the Imagination PowerVR DDK, the Radxa /
+Allwinner BSP, FEX-Emu, box64, Mesa/Zink, and sway/wlroots/wayvnc — plus the wider
+A733 community (NickAlilovic, OctaneOS, crescenzo77, Orange Pi, dok2d). Full list +
+links in [`ACKNOWLEDGMENTS.md`](ACKNOWLEDGMENTS.md).
+
 ## License
 
 Original code/patches/scripts here are MIT (see `LICENSE`). They are intended to be
