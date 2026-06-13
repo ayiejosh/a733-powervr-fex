@@ -1,0 +1,16 @@
+# never commit proprietary blobs, rootfs, binaries, or build dirs
+*.ko
+*.so
+*.so.*
+*.deb
+*.tar.*
+*.img
+*.img.gz
+crd-rootfs/
+rootfs/
+build/
+*.log
+libGLESv2_PVR_MESA*
+libVK_IMG*
+rgx.fw.*
+rgx.sh.*

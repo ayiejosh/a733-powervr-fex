@@ -1,0 +1,18 @@
+[Unit]
+Description=wayvnc - VNC server for the sway headless desktop
+After=sway-headless.service
+Requires=sway-headless.service
+
+[Service]
+Type=simple
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=WAYLAND_DISPLAY=wayland-0
+Environment=LD_LIBRARY_PATH=/usr/local/lib
+# Wait for the wayland-0 socket before starting
+ExecStartPre=/bin/sh -c 'for i in $(seq 1 30); do [ -S /run/user/1000/wayland-0 ] && exit 0; sleep 0.5; done; exit 1'
+ExecStart=/usr/local/bin/wayvnc 127.0.0.1 5901
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

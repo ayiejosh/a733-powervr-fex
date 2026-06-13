@@ -1,0 +1,69 @@
+#!/bin/bash
+# steam-fex : Launch the amd64/i386 Steam client under FEX x86 translation and
+# render it ON the HDMI KDE desktop (:0).
+#
+# WHY THIS WRAPPER EXISTS
+# -----------------------
+# Steam's VGUI uses DESKTOP OpenGL via GLX. The HDMI X server on :0 is the
+# PowerVR (Imagination BXM-4-64) Xorg, which is GLES/EGL/Vulkan only and does
+# NOT advertise the GLX X extension at all (verified: `DISPLAY=:0 xdpyinfo`
+# lists DRI2/DRI3 but no GLX; glxinfo => "couldn't find RGB GLX visual").
+# So Steam crashed instantly with:
+#     OpenGL GLX extension not supported by display
+#     glXChooseVisual failed ... Fatal assert; application exiting
+#
+# Forcing software GL on Steam's side does NOT help, because GLX is a *server*
+# extension and :0's server simply has none.
+#
+# FIX: run a nested Xephyr server as a WINDOW on :0. Xephyr provides its own
+# software (llvmpipe) GLX, so Steam gets a valid GLX visual, and its window
+# appears inside the HDMI desktop. Steam's i386 Mesa renders via software GL.
+#
+# STATUS: the GLX crash is SOLVED. The Steam *client* (vgui2/GLX) now starts and
+# its window renders in the Xephyr frame on :0. Extra i386 libs were added to the
+# rootfs so the legacy client loads (libgtk2.0-0t64, libpulse0, libpipewire-0.3-0,
+# libxcb-res0 + audio deps).
+#
+# KNOWN REMAINING BLOCKER: the modern Steam UI is rendered by the CEF
+# "steamwebhelper", which Valve launches inside a pressure-vessel / bubblewrap
+# (bwrap) sandbox. Under FEX+distrobox(podman) bwrap fails with
+#   "bwrap: Can't mkdir /home/radxa: Permission denied"
+# in a restart loop, so the library/store panels show "Steamwebhelper is not
+# responding" / stay blank. This is the same CEF-under-FEX class of problem as
+# Chrome. STEAM_RUNTIME=0 avoids bwrap but then the legacy vgui2 module won't
+# load. Needs a working webhelper sandbox under FEX (open item).
+set -u
+
+HOSTDISP=":0"                 # the HDMI KDE desktop (where the user looks)
+NESTED=":77"                  # nested Xephyr display Steam renders into
+XAUTH=/home/radxa/.Xauthority
+GEOM="${STEAM_FEX_GEOM:-1280x720}"   # override with STEAM_FEX_GEOM=1920x1080 etc.
+
+export XAUTHORITY="$XAUTH"
+
+# --- 1. Ensure the nested GLX-capable Xephyr is running on :0 ----------------
+nested_up() { DISPLAY="$NESTED" xdpyinfo >/dev/null 2>&1; }
+if ! nested_up; then
+  rm -f "/tmp/.X11-unix/X${NESTED#:}" "/tmp/.X${NESTED#:}-lock" 2>/dev/null || true
+  DISPLAY="$HOSTDISP" Xephyr "$NESTED" \
+      -screen "$GEOM" -ac -resizeable \
+      +extension GLX +extension RANDR +extension MIT-SHM \
+      -title "Steam (FEX) - PowerVR/llvmpipe GLX" \
+      >/tmp/steam-fex-xephyr.log 2>&1 &
+  for _ in $(seq 1 20); do nested_up && break; sleep 0.5; done
+fi
+if ! nested_up; then
+  echo "steam-fex: ERROR - could not start nested Xephyr on $NESTED (see /tmp/steam-fex-xephyr.log)" >&2
+  exit 1
+fi
+
+# --- 2. Launch Steam under FEX into the nested display ----------------------
+exec /home/radxa/.local/bin/distrobox enter fexbox -- bash -lc "
+  export XDG_RUNTIME_DIR=/tmp/fexrun
+  mkdir -p \$XDG_RUNTIME_DIR; chmod 700 \$XDG_RUNTIME_DIR
+  export DISPLAY='$NESTED' XAUTHORITY='$XAUTH'
+  export LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe LIBGL_ALWAYS_INDIRECT=0
+  export STEAM_RUNTIME=1
+  pgrep FEXServer >/dev/null || { FEXServer 2>/dev/null & disown; sleep 2; }
+  exec FEXInterpreter /usr/bin/steam -no-cef-sandbox \"\$@\"
+" bash "$@"

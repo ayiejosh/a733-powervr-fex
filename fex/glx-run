@@ -1,0 +1,22 @@
+#!/bin/bash
+# glx-run <x86 app...> : run a desktop-OpenGL (GLX) x86 app on the :0 HDMI desktop.
+# The :0 PowerVR Xorg advertises NO GLX extension (it's a GLES/EGL/Vulkan part), so
+# desktop-GL apps (Steam vgui2, older SDL/GTK games) crash on glXChooseVisual. This
+# launches a nested Xephyr (which ships its own llvmpipe software GLX) as a window on
+# :0, and runs the app into it via FEX. FEX does NOT thunk GL (only Vulkan+drm), so the
+# app uses the rootfs's own Mesa swrast/llvmpipe. Vulkan x86_64 apps do NOT need this.
+set -u
+HOSTDISP=":0"; NESTED=":78"; XAUTH=/home/radxa/.Xauthority
+GEOM="${GLX_RUN_GEOM:-1280x720}"; export XAUTHORITY="$XAUTH"
+up(){ DISPLAY="$NESTED" xdpyinfo >/dev/null 2>&1; }
+if ! up; then
+  rm -f "/tmp/.X11-unix/X${NESTED#:}" "/tmp/.X${NESTED#:}-lock" 2>/dev/null || true
+  DISPLAY="$HOSTDISP" Xephyr "$NESTED" -screen "$GEOM" -ac -resizeable \
+    +extension GLX +extension RANDR +extension MIT-SHM \
+    -title "FEX GLX (llvmpipe)" >/tmp/glx-run-xephyr.log 2>&1 &
+  for _ in $(seq 1 20); do up && break; sleep 0.5; done
+fi
+up || { echo "glx-run: nested Xephyr failed to start (see /tmp/glx-run-xephyr.log)" >&2; exit 1; }
+export DISPLAY="$NESTED"
+export LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe LIBGL_ALWAYS_INDIRECT=0
+exec /usr/local/bin/fexrun "$@"

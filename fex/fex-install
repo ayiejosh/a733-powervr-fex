@@ -1,0 +1,123 @@
+#!/bin/bash
+# fex-install <file.deb | package-name> : install an app and add normal-looking
+# desktop + menu launchers. amd64/i386 packages run through the FEX x86 rootfs
+# (/home/radxa/crd-rootfs); native arm64/all packages install with plain apt.
+# Launchers appear like any other app (no "FEX" branding, real menu category).
+#   fex-install ~/Downloads/foo_amd64.deb
+#   fex-install gimp
+set -u
+ROOT=/home/radxa/crd-rootfs
+ARG="${1:-}"
+[ -n "$ARG" ] || { echo "usage: fex-install <file.deb | package-name>"; exit 1; }
+REALUSER="${SUDO_USER:-radxa}"
+
+# re-exec as root for the install (keep the original arg + real user)
+if [ "$(id -u)" -ne 0 ]; then exec sudo -E "$0" "$ARG"; fi
+
+# A NATIVE arm64 (or arch-independent) .deb needs no translation — install it with
+# apt directly. Only amd64/i386 packages go through the FEX x86 rootfs below.
+if [ -f "$ARG" ]; then
+  DEBARCH=$(dpkg-deb -f "$ARG" Architecture 2>/dev/null)
+  case "$DEBARCH" in
+    arm64|all)
+      echo ">>> native '$DEBARCH' package — installing with apt (no translation needed)..."
+      apt-get install -y "$ARG" 2>&1 | tail -8 || { dpkg -i "$ARG" 2>&1 | tail -4; apt-get -f install -y 2>&1 | tail -4; }
+      echo ">>> done — '$(dpkg-deb -f "$ARG" Package 2>/dev/null)' installed natively (registers its own launcher)."
+      exit 0 ;;
+  esac
+fi
+
+echo ">>> fex-install: preparing x86 environment..."
+rm -f "$ROOT/etc/resolv.conf"; printf 'nameserver 8.8.8.8\nnameserver 1.1.1.1\n' > "$ROOT/etc/resolv.conf"
+for m in proc sys dev dev/pts; do
+  mkdir -p "$ROOT/$m"
+  mountpoint -q "$ROOT/$m" || mount --rbind "/$m" "$ROOT/$m" 2>/dev/null || true
+  mount --make-rslave "$ROOT/$m" 2>/dev/null || true   # CRITICAL: don't propagate unmounts to host
+done
+mkdir -p "$ROOT/run"; mountpoint -q "$ROOT/run" || mount -t tmpfs tmpfs "$ROOT/run" 2>/dev/null || true
+
+# --- FEXInterpreter aarch64 runtime inside the chroot (idempotent) ---------------
+FEX_BIN=/opt/fex/bin/FEXInterpreter
+if [ -x "$FEX_BIN" ] && [ ! -e "$ROOT/usr/lib/ld-linux-aarch64.so.1" ]; then
+  echo ">>> staging aarch64 runtime for FEXInterpreter into rootfs..."
+  mkdir -p "$ROOT/usr/lib/aarch64-linux-gnu"
+  for f in $(ldd "$FEX_BIN" 2>/dev/null | awk '{print $3}' | grep -E '^/') \
+           "$(readlink -f /lib/ld-linux-aarch64.so.1)"; do
+    [ -e "$f" ] || continue
+    real=$(readlink -f "$f"); base=$(basename "$f"); realbase=$(basename "$real")
+    cp -a "$real" "$ROOT/usr/lib/aarch64-linux-gnu/$realbase" 2>/dev/null
+    [ "$base" != "$realbase" ] && ln -sf "$realbase" "$ROOT/usr/lib/aarch64-linux-gnu/$base"
+  done
+  ln -sf "aarch64-linux-gnu/$(basename "$(readlink -f /lib/ld-linux-aarch64.so.1)")" \
+         "$ROOT/usr/lib/ld-linux-aarch64.so.1"
+fi
+# --------------------------------------------------------------------------------
+
+# figure out package name + stage a .deb if a file was given
+if [ -f "$ARG" ]; then
+  cp -f "$ARG" "$ROOT/tmp/fexpkg.deb"
+  PKG=$(dpkg-deb -f "$ROOT/tmp/fexpkg.deb" Package 2>/dev/null)
+  INSTALL_TARGET="/tmp/fexpkg.deb"
+else
+  PKG="$ARG"; INSTALL_TARGET="$ARG"
+fi
+echo ">>> installing '$PKG' (x86 apt, resolving dependencies)..."
+
+chroot "$ROOT" /bin/bash --login -c "
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update -qq 2>/dev/null || true
+  apt-get install -y --no-install-recommends '$INSTALL_TARGET' 2>&1 | tail -6
+" || { echo '!!! install failed'; exit 1; }
+
+echo ">>> creating launcher(s)..."
+APPDIR="/home/$REALUSER/.local/share/applications"
+ICONDIR="/home/$REALUSER/.local/share/icons"
+DESKTOPDIR="/home/$REALUSER/Desktop"
+mkdir -p "$APPDIR" "$ICONDIR" "$DESKTOPDIR"
+made=0
+# for each .desktop the package installed, make a host launcher that runs via FEX
+while IFS= read -r d; do
+  [ -f "$ROOT$d" ] || continue
+  base=$(basename "$d" .desktop)
+  name=$(grep -m1 '^Name=' "$ROOT$d" | cut -d= -f2-)
+  gname=$(grep -m1 '^GenericName=' "$ROOT$d" | cut -d= -f2-)
+  icon=$(grep -m1 '^Icon=' "$ROOT$d" | cut -d= -f2-)
+  cats=$(grep -m1 '^Categories=' "$ROOT$d" | cut -d= -f2-); [ -n "$cats" ] || cats="Utility;"
+  exec_line=$(grep -m1 '^Exec=' "$ROOT$d" | cut -d= -f2- | sed -E 's/%[a-zA-Z]//g; s/ +$//')
+  [ -n "$exec_line" ] || continue
+  # copy the best-size icon so menu + desktop show crisp art
+  hicon="$icon"; icondone=""
+  for sz in 256x256 128x128 64x64 48x48; do
+    s="$ROOT/usr/share/icons/hicolor/$sz/apps/$icon.png"
+    [ -f "$s" ] && { cp -f "$s" "$ICONDIR/$icon.png" 2>/dev/null; icondone=1; break; }
+  done
+  [ -z "$icondone" ] && [ -f "$ROOT/usr/share/icons/hicolor/scalable/apps/$icon.svg" ] && { cp -f "$ROOT/usr/share/icons/hicolor/scalable/apps/$icon.svg" "$ICONDIR/$icon.svg" 2>/dev/null; icondone=1; }
+  [ -z "$icondone" ] && [ -f "$ROOT/usr/share/pixmaps/$icon.png" ] && { cp -f "$ROOT/usr/share/pixmaps/$icon.png" "$ICONDIR/$icon.png" 2>/dev/null; icondone=1; }
+  [ -z "$icondone" ] && hicon="application-x-executable"
+  # the launcher — looks like a normal app (no FEX name, real category)
+  cat > "$APPDIR/${base}-fex.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=${name:-$base}
+GenericName=${gname}
+Exec=/usr/local/bin/fexrun $exec_line
+Icon=$hicon
+Terminal=false
+Categories=$cats
+EOF
+  # desktop shortcut too (chmod +x => KDE treats it as a trusted launcher)
+  cp -f "$APPDIR/${base}-fex.desktop" "$DESKTOPDIR/${base}-fex.desktop"
+  chmod +x "$DESKTOPDIR/${base}-fex.desktop" 2>/dev/null || true
+  echo "    + ${name:-$base}"
+  made=$((made+1))
+done < <(chroot "$ROOT" dpkg -L "$PKG" 2>/dev/null | grep -E '/applications/.*\.desktop$')
+
+chown -R "$REALUSER:$REALUSER" "$APPDIR" "$ICONDIR" "$DESKTOPDIR" 2>/dev/null || true
+sudo -u "$REALUSER" update-desktop-database "$APPDIR" 2>/dev/null || true
+sudo -u "$REALUSER" DISPLAY=:0 kbuildsycoca5 >/dev/null 2>&1 || true
+
+if [ "$made" -gt 0 ]; then
+  echo ">>> done. '$name' is now in your app menu and on the desktop."
+else
+  echo ">>> installed '$PKG' (no GUI launcher found; run it with:  fexrun '<command>')"
+fi

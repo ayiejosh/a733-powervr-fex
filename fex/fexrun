@@ -1,0 +1,17 @@
+#!/bin/bash
+# fexrun <binary> [args] : run an amd64 program from the FEX rootfs (crd-rootfs) under FEX,
+# on the current X display. <binary> may be a bare name, /usr/bin path, or full crd-rootfs path.
+ROOT=/home/radxa/crd-rootfs
+BIN="$1"; shift || true
+case "$BIN" in
+  "$ROOT"/*) FULL="$BIN" ;;
+  /*) FULL="$ROOT$BIN" ;;
+  *) FULL="$ROOT/usr/bin/$BIN" ;;
+esac
+D="${DISPLAY:-:1}"
+exec /home/radxa/.local/bin/distrobox enter fexbox -- bash -lc "
+  export XDG_RUNTIME_DIR=/tmp/fexrun DISPLAY='$D' XAUTHORITY=/home/radxa/.Xauthority
+  mkdir -p \$XDG_RUNTIME_DIR; chmod 700 \$XDG_RUNTIME_DIR
+  pgrep FEXServer >/dev/null || { FEXServer 2>/dev/null & disown; sleep 2; }
+  exec FEXInterpreter '$FULL' $*
+"

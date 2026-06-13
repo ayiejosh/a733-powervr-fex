@@ -1,0 +1,200 @@
+# pvrsrvkm: implement standard DRM PRIME import (foreign dma-buf)
+# Adds .gem_prime_import + .prime_fd_to_handle to the proprietary Imagination
+# img-bxm DDK 24.2 kernel module so zink/wlroots can share buffers.
+# Apply against the img-bxm-dkms source (radxa apt: img-bxm-dkms 0.1.0-3),
+# path: img-bxm/linux/rogue_km/services/server/env/linux/
+# ---------------------------------------------------------------------------
+--- a/physmem_dmabuf.c
++++ b/physmem_dmabuf.c
+@@ -2201,3 +2201,133 @@
+ 	PVR_ASSERT(eError != PVRSRV_OK);
+ 	return eError;
+ }
++
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 9, 0))
++/*
++ * PhysmemGEMPrimeImport
++ *
++ * Implements the DRM PRIME import direction (drm_gem_prime_fd_to_handle ->
++ * dev->driver->gem_prime_import) which the vendor left unimplemented. It wraps
++ * an external dma-buf in a PMR-backed GEM object using exactly the same
++ * EXTERNAL-heap PMR machinery that the services PhysmemImportDmaBuf bridge uses
++ * (proven GPU-renderable), so zink/wlroots and other standard DRM clients can
++ * turn a dma-buf fd into a GEM handle on this device.
++ *
++ * Refcount/lifetime contract (verified against drm_prime.c / drm_gem.c v5.15):
++ *   - Returns the object with a single reference; drm_gem_prime_fd_to_handle()
++ *     consumes it via drm_gem_object_put() after creating the handle.
++ *   - We do NOT set obj->dma_buf: the core sets it and takes its own ref, which
++ *     it drops in drm_gem_object_exported_dma_buf_free() on last-handle-close.
++ *   - We do NOT set obj->import_attach: the fresh PMR owns the dma-buf
++ *     attachment (PhysmemCreateNewDmaBufBackedPMR maps it; PhysmemDestroyDmaBuf
++ *     detaches + dma_buf_put on PMR teardown). Our own get_dma_buf() balances
++ *     that final put.
++ *   - The PMR is created with refcount 1, owned solely by the GEM object;
++ *     PhysmemGEMObjectFree()'s PMRUnrefPMR() balances PMRCreatePMR().
++ */
++struct drm_gem_object *
++PhysmemGEMPrimeImport(struct drm_device *psDRMDev,
++                      PVRSRV_DEVICE_NODE *psDevNode,
++                      struct dma_buf *psDmaBuf)
++{
++	PMR_DMA_BUF_GEM_OBJ *psGEMObj;
++	PMR_DMA_BUF_WRAPPER *psPMRWrapper;
++	struct dma_buf_attachment *psAttachment;
++	PMR *psPMR = NULL;
++	PVRSRV_ERROR eError;
++	IMG_UINT32 ui32MappingTable = 0;
++	int iErr;
++	/* GPU read/write, uncached: safe coherency for buffers shared with the
++	 * CPU / other devices via dma-buf. */
++	const PVRSRV_MEMALLOCFLAGS_T uiFlags =
++		PVRSRV_MEMALLOCFLAG_GPU_READABLE |
++		PVRSRV_MEMALLOCFLAG_GPU_WRITEABLE |
++		PVRSRV_MEMALLOCFLAG_GPU_UNCACHED;
++
++	if (psDevNode == NULL)
++	{
++		return ERR_PTR(-ENODEV);
++	}
++
++	/*
++	 * Self-import: a buffer we exported via GEM, re-imported on the same
++	 * device. Return the original GEM object (mirrors drm_gem_prime_import_dev).
++	 */
++	if (psDmaBuf->ops == &sPVRDmaBufOpsGEM)
++	{
++		struct drm_gem_object *psExisting = psDmaBuf->priv;
++
++		if (psExisting != NULL && psExisting->dev == psDRMDev)
++		{
++			drm_gem_object_get(psExisting);
++			return psExisting;
++		}
++	}
++
++	/*
++	 * General path: attach and create a fresh EXTERNAL-heap PMR from the
++	 * dma-buf. The PMR owns the attachment lifetime, so take a dma-buf
++	 * reference for it to consume.
++	 */
++	get_dma_buf(psDmaBuf);
++
++	psAttachment = dma_buf_attach(psDmaBuf, psDevNode->psDevConfig->pvOSDevice);
++	if (IS_ERR_OR_NULL(psAttachment))
++	{
++		iErr = psAttachment ? PTR_ERR(psAttachment) : -ENOMEM;
++		PVR_DPF((PVR_DBG_ERROR, "%s: dma_buf_attach failed (%d)", __func__, iErr));
++		dma_buf_put(psDmaBuf);
++		return ERR_PTR(iErr);
++	}
++
++	PMRFactoryLock();
++	eError = PhysmemCreateNewDmaBufBackedPMR(
++	             psDevNode->apsPhysHeap[PVRSRV_PHYS_HEAP_EXTERNAL],
++	             psAttachment,
++	             PhysmemDestroyDmaBuf,
++	             uiFlags,
++	             psDmaBuf->size,   /* uiChunkSize (non-sparse) */
++	             1,                /* ui32NumPhysChunks */
++	             1,                /* ui32NumVirtChunks */
++	             &ui32MappingTable,
++	             sizeof("gemprimeimport"),
++	             "gemprimeimport",
++	             &psPMR);
++	if (eError == PVRSRV_OK)
++	{
++		PMR_SetLayoutFixed(psPMR, IMG_TRUE);
++	}
++	PMRFactoryUnlock();
++
++	if (eError != PVRSRV_OK)
++	{
++		PVR_DPF((PVR_DBG_ERROR, "%s: PhysmemCreateNewDmaBufBackedPMR failed (%s)",
++		         __func__, PVRSRVGetErrorString(eError)));
++		dma_buf_detach(psDmaBuf, psAttachment);
++		dma_buf_put(psDmaBuf);
++		return ERR_PTR(-EINVAL);
++	}
++
++	eError = PhysmemGetOrCreatePMRWrapper(psPMR, &psPMRWrapper);
++	if (eError != PVRSRV_OK)
++	{
++		PMRUnrefPMR(psPMR);   /* triggers PhysmemDestroyDmaBuf (detach + put) */
++		return ERR_PTR(-ENOMEM);
++	}
++
++	psGEMObj = OSAllocZMem(sizeof(*psGEMObj));
++	if (psGEMObj == NULL)
++	{
++		PMRUnrefPMR(psPMR);
++		return ERR_PTR(-ENOMEM);
++	}
++
++	psGEMObj->sBase.funcs = &sPhysmemGEMObjFuncs;
++	psGEMObj->psPMRWrapper = psPMRWrapper;
++	/* PMR already has the single reference from creation; the GEM object owns
++	 * it. No extra PMRRefPMR (unlike the export path). */
++	drm_gem_private_object_init(psDRMDev, &psGEMObj->sBase, PMR_LogicalSize(psPMR));
++
++	return &psGEMObj->sBase;
++}
++#endif /* LINUX_VERSION_CODE >= KERNEL_VERSION(5, 9, 0) */
+--- a/physmem_dmabuf_internal.h
++++ b/physmem_dmabuf_internal.h
+@@ -50,6 +50,19 @@
+ struct dma_buf;
+ struct drm_device;
+ struct drm_gem_object;
++struct _PVRSRV_DEVICE_NODE_;
++
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 9, 0))
++/*
++ * Wrap an imported dma-buf as a PMR-backed GEM object so that the standard
++ * DRM PRIME import path (drm_gem_prime_fd_to_handle) works. Returns a
++ * referenced drm_gem_object, or an ERR_PTR on failure.
++ */
++struct drm_gem_object *
++PhysmemGEMPrimeImport(struct drm_device *psDRMDev,
++                      struct _PVRSRV_DEVICE_NODE_ *psDevNode,
++                      struct dma_buf *psDmaBuf);
++#endif
+ 
+ struct dma_buf *
+ PhysmemGEMPrimeExport(
+--- a/pvr_drm.c
++++ b/pvr_drm.c
+@@ -520,6 +520,21 @@
+ #endif /* SUPPORT_LINUX_FDINFO */
+ };
+ 
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 9, 0))
++/*
++ * DRM PRIME import: resolve the PVRSRV device node from the drm_device and
++ * delegate to the physmem dma-buf factory, which wraps the imported buffer in a
++ * PMR-backed GEM object.
++ */
++static struct drm_gem_object *
++pvr_gem_prime_import(struct drm_device *ddev, struct dma_buf *dma_buf)
++{
++	struct pvr_drm_private *priv = ddev->dev_private;
++
++	return PhysmemGEMPrimeImport(ddev, priv->dev_node, dma_buf);
++}
++#endif
++
+ const struct drm_driver pvr_drm_generic_driver = {
+ 	.driver_features	= DRIVER_MODESET | DRIVER_RENDER |
+ 				  DRIVER_GEM | PVR_DRM_DRIVER_PRIME,
+@@ -531,9 +546,10 @@
+ 
+ #if (LINUX_VERSION_CODE < KERNEL_VERSION(6, 6, 0))
+ 	.prime_handle_to_fd	= drm_gem_prime_handle_to_fd,
+-	/* prime_fd_to_handle is not supported */
++	.prime_fd_to_handle	= drm_gem_prime_fd_to_handle,
+ #endif
+ 
++	.gem_prime_import	= pvr_gem_prime_import,
+ #if (LINUX_VERSION_CODE < KERNEL_VERSION(5, 9, 0))
+ 	.gem_prime_export	= PhysmemGEMPrimeExport,
+ 	.gem_free_object	= PhysmemGEMObjectFree,

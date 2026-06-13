@@ -1,0 +1,17 @@
+[Unit]
+Description=sway headless GPU compositor (PowerVR GLES)
+Documentation=man:sway(5)
+
+[Service]
+Type=simple
+Environment=WLR_BACKENDS=headless
+Environment=WLR_RENDERER=gles2
+Environment=LD_LIBRARY_PATH=/usr/local/lib
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=WAYLAND_DISPLAY=wayland-0
+ExecStart=/usr/bin/sway
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target
