@@ -1,0 +1,331 @@
+diff --git a/Source/Tools/LinuxEmulation/LinuxSyscalls/FileManagement.cpp b/Source/Tools/LinuxEmulation/LinuxSyscalls/FileManagement.cpp
+index 41e5d30..8855171 100644
+--- a/Source/Tools/LinuxEmulation/LinuxSyscalls/FileManagement.cpp
++++ b/Source/Tools/LinuxEmulation/LinuxSyscalls/FileManagement.cpp
+@@ -34,6 +34,7 @@ $end_info$
+ #include <filesystem>
+ #include <optional>
+ #include <stdio.h>
++#include <sys/mman.h>
+ #include <sys/stat.h>
+ #include <sys/statfs.h>
+ #include <sys/xattr.h>
+@@ -342,6 +343,13 @@ FileManager::FileManager(FEXCore::Context::Context* ctx)
+     LogMan::Msg::EFmt("Couldn't open `/proc`. Is ProcFS mounted? FEX won't be able to track FD conflicts");
+   }
+ 
++  DbgFD = ::open("/tmp/fexchroot.log", O_WRONLY | O_APPEND | O_CREAT, 0666);
++  if (DbgFD >= 0) {
++    char buf[100];
++    int n = snprintf(buf, sizeof buf, "[FEXCHROOT] FileManager ctor DbgFD=%d pid=%d ppid=%d\n", DbgFD, (int)::getpid(), (int)::getppid());
++    [[maybe_unused]] auto r = ::write(DbgFD, buf, n);
++  }
++
+   UpdatePID(::getpid());
+ }
+ 
+@@ -496,6 +504,31 @@ FileManager::GetEmulatedFDPath(int dirfd, const char* pathname, bool FollowSymli
+     return NoEntry;
+   }
+ 
++  // LOCAL PATCH (2026-06-11): once the guest has chroot'd (e.g. Chrome's namespace sandbox),
++  // stop redirecting absolute paths through the persistent RootFSFD so the guest's restricted
++  // filesystem view is honored. See FileManagement.h for the full rationale.
++  if (DbgFD >= 0) {
++    char buf[300];
++    int n = snprintf(buf, sizeof buf, "[FEXCHROOT] GetEmuPath dirfd=%d path='%s' latched=%d pid=%d\n", dirfd, pathname, (int)GuestHasChrootedFlag, (int)::getpid());
++    ::write(DbgFD, buf, n);
++  }
++  if (!GuestHasChrootedFlag && pathname[1] == 'p' && strcmp(pathname, "/proc") == 0) {
++    struct stat RealProc;
++    int lr = ::lstat("/proc", &RealProc);
++    int le = errno;
++    if (DbgFD >= 0) {
++      char buf[160];
++      int n = snprintf(buf, sizeof buf, "[FEXCHROOT] lazy-detect /proc lstat=%d errno=%d pid=%d\n", lr, le, (int)::getpid());
++      ::write(DbgFD, buf, n);
++    }
++    if (lr != 0 && le == ENOENT) {
++      GuestHasChrootedFlag = true;
++    }
++  }
++  if (GuestHasChrootedFlag) {
++    return NoEntry;
++  }
++
+   auto thunkOverlay = ThunkOverlays.find(pathname);
+   if (thunkOverlay != ThunkOverlays.end()) {
+     return EmulatedFDPathResult {AT_FDCWD, thunkOverlay->second.c_str()};
+diff --git a/Source/Tools/LinuxEmulation/LinuxSyscalls/FileManagement.h b/Source/Tools/LinuxEmulation/LinuxSyscalls/FileManagement.h
+index b11f096..c322652 100644
+--- a/Source/Tools/LinuxEmulation/LinuxSyscalls/FileManagement.h
++++ b/Source/Tools/LinuxEmulation/LinuxSyscalls/FileManagement.h
+@@ -17,6 +17,7 @@ $end_info$
+ #include <array>
+ #include <cstddef>
+ #include <cstdint>
++#include <cstdio>
+ #include <fcntl.h>
+ #include <functional>
+ #include <mutex>
+@@ -94,6 +95,16 @@ public:
+   uint64_t Statfs(const char* path, void* buf);
+ 
+   void UpdatePID(uint32_t PID);
++  // LOCAL PATCH (2026-06-11): called from the chroot syscall handler so RootFS path
++  // redirection is disabled afterwards (Chrome namespace-sandbox support).
++  void NotifyGuestChroot() {
++    if (DbgFD >= 0) {
++      char buf[80];
++      int n = snprintf(buf, sizeof buf, "[FEXCHROOT] NotifyGuestChroot pid=%d\n", (int)::getpid());
++      [[maybe_unused]] auto r = ::write(DbgFD, buf, n);
++    }
++    GuestHasChrootedFlag = true;
++  }
+   // Helper to detect FEX-internal files from their inode and parent directory FD.
+   // This is useful to deal with Chromium/CEF, which closes any FDs reported in /proc/self/fd/.
+   bool IsProtectedFile(int ParentDirFD, uint64_t inode) const;
+@@ -187,6 +198,42 @@ private:
+   FEX_CONFIG_OPT(AppConfigName, APP_CONFIG_NAME);
+   FEX_CONFIG_OPT(Is64BitMode, IS64BIT_MODE);
+   uint32_t CurrentPID {};
++
++  // LOCAL PATCH (2026-06-11): Chrome namespace-sandbox chroot support.
++  //
++  // FEX normally redirects guest absolute paths into the RootFS via a persistent
++  // RootFSFD (opened once at startup with fstatat(RootFSFD, relpath, ...)). That fd is
++  // immune to a later guest chroot(), so the guest's view of the filesystem doesn't
++  // actually shrink when it chroots. Chrome's NamespaceSandbox engages by chrooting to
++  // an empty dir (Credentials::ChrootToSafeEmptyDir) and then asserting
++  // CHECK(!HasFileSystemAccess()), where HasFileSystemAccess() == DirectoryExists("/proc").
++  // Because RootFSFD-relative resolution still finds <rootfs>/proc, the guest sees /proc
++  // as present, the CHECK fails, and the zygote dies silently before sending its HELLO
++  // message (browser then aborts at zygote_host_impl_linux.cc:221).
++  //
++  // Once the guest deliberately chroots, honor it: stop RootFS-redirecting absolute paths
++  // so they resolve against the guest's real (chrooted) root. A sandboxed Chrome process
++  // does not open new RootFS files after engaging the sandbox, so this is safe.
++  //
++  // Detecting the chroot reliably across FEX's process model is subtle. Chrome's
++  // ChrootToSafeEmptyDir clones a CLONE_FS|CLONE_VM|CLONE_VFORK helper that performs the
++  // actual chroot() and exits. FEX runs that helper as a separate process (it strips
++  // CLONE_VM), so a chroot performed by the helper sets state only in the helper, not in
++  // the parent zygote that subsequently runs CHECK(!HasFileSystemAccess()). Because the
++  // helper shares the fs_struct (CLONE_FS), the chroot DOES change the parent's real root
++  // too — only FEX's RootFSFD-relative redirection hides that from the guest.
++  //
++  // So this latch is detected from two directions:
++  //  1. A chroot() in THIS process sets it directly (NotifyGuestChroot).
++  //  2. Lazily, when resolving the exact path "/proc": if the real (non-redirected) "/proc"
++  //     has vanished, a CLONE_FS-shared helper must have chroot'd us, so latch it. This
++  //     covers the parent-zygote case where the chroot happened in the helper process.
++  mutable bool GuestHasChrootedFlag {false};
++  bool GuestHasChrooted() const {
++    return GuestHasChrootedFlag;
++  }
++
++  mutable int DbgFD {-1};
+   int RootFSFD {AT_FDCWD};
+   int ProcFD {0};
+   int64_t RootFSFDInode = 0;
+diff --git a/Source/Tools/LinuxEmulation/LinuxSyscalls/Syscalls.cpp b/Source/Tools/LinuxEmulation/LinuxSyscalls/Syscalls.cpp
+index 1674f89..035135a 100644
+--- a/Source/Tools/LinuxEmulation/LinuxSyscalls/Syscalls.cpp
++++ b/Source/Tools/LinuxEmulation/LinuxSyscalls/Syscalls.cpp
+@@ -245,7 +245,29 @@ uint64_t ExecveHandler(FEXCore::Core::CpuStateFrame* Frame, const char* pathname
+       // then we need to redirect this path to the true application path.
+       // This is because this path is a symlink to the executing application, which is always `FEX`.
+       // ex: JRE and shapez.io do this self-execution.
+-      Filename = SyscallHandler->Filename();
++      //
++      // LOCAL PATCH (2026-06-11): `/proc/self/exe` self-re-exec ENOEXEC fix.
++      //
++      // SyscallHandler->Filename() (APP_FILENAME) is the GUEST-visible application path
++      // with the RootFS prefix already stripped (e.g. "/tmp/foo_x86" when launched as
++      // "<rootfs>/tmp/foo_x86"). The old code assigned that guest path directly to
++      // `Filename`, but the very next line calls GetELFType(Filename) which opens the
++      // path on the HOST filesystem. Under a RootFS, the guest path does not exist on the
++      // host, so GetELFType returned TYPE_NONE and the handler bailed out with -ENOEXEC
++      // *before* reaching either execveat. This broke EVERY path-based execve of
++      // /proc/self/exe (plain fork+execv as well as Chrome's NamespaceSandbox zygote
++      // re-exec), manifesting as the guest seeing "Exec format error".
++      //
++      // Fix: resolve APP_FILENAME to its real host path through the RootFS (GetEmulatedPath),
++      // matching what the normal absolute-path branch above already does. The resolved host
++      // path is what GetELFType / Exists / the binfmt_misc execveat all need.
++      fextl::string GuestAppPath = SyscallHandler->Filename();
++      auto HostAppPath = SyscallHandler->FM.GetEmulatedPath(GuestAppPath.c_str(), true);
++      if (!HostAppPath.empty() && FHU::Filesystem::Exists(HostAppPath)) {
++        Filename = std::move(HostAppPath);
++      } else {
++        Filename = std::move(GuestAppPath);
++      }
+     }
+ 
+     Type = ELFLoader::ELFContainer::GetELFType(Filename);
+@@ -416,24 +438,69 @@ uint64_t ExecveHandler(FEXCore::Core::CpuStateFrame* Frame, const char* pathname
+   const char NullString[] = "";
+   fextl::vector<const char*> ExecveArgs = SyscallHandler->GetCodeLoader()->GetExecveArguments();
+ 
+-  if (argv) {
+-    // Overwrite the filename with the new one we are redirecting to
+-    ExecveArgs.emplace_back(Filename.c_str());
++  // LOCAL PATCH (2026-06-11): FD-exec argv corruption fix.
++  //
++  // The loader expects the munged argument layout to be:
++  //   argv[0] = FEX
++  //   argv[1] = <Path to binary>            (the "pathname slot")
++  //   argv[2] = <original user argv[0]>
++  //   argv[3] = <original user argv[1]>
++  //   ...
++  // ELFCodeLoader erases the "pathname slot" (argv[1]) when loaded with an FD or when
++  // AT_FLAGS_PRESERVE_ARGV0 is set, leaving the user's argv[0..] intact as the guest argv.
++  //
++  // For a path-based execve, `Filename` holds the resolved binary path and the user's
++  // argv[0] is conventionally a duplicate of that path, so the old code skipped the
++  // user's argv[0] (the "pathname slot" stands in for it). That works for path exec.
++  //
++  // For an FD-based execve (execveat with AT_EMPTY_PATH / fexecve), `Filename` was left
++  // EMPTY, so the old code emplaced "" as the pathname slot AND still skipped the user's
++  // real argv[0]. After ELFCodeLoader erases the (empty) pathname slot, the guest's argv[0]
++  // was silently dropped, shifting every argument by one. Symptoms: re-exec'd guest sees
++  // argv shifted (e.g. Chrome's zygote `--type=zygote` argv mangled -> launch fails), and
++  // /proc/self/exe resolution in the child breaks. This blocked Chrome's sandbox/zygote.
++  //
++  // Fix: for the FD-exec case, give the pathname slot a meaningful /dev/fd/<fd> value and
++  // preserve the user's FULL argv (do NOT skip argv[0]). The loader will erase the
++  // pathname slot (LoadedWithFD path) and the guest receives an intact argv.
++  fextl::string FDExecPathSlot;
++  if (IsFDExec) {
++    FDExecPathSlot = fextl::fmt::format("/dev/fd/{}", Args.dirfd);
++  }
+ 
++  if (argv) {
+     auto OldArgv = argv;
+ 
+-    // It is valid to provide nullptr first argument.
+-    if (*OldArgv) {
+-      // Skip filename argument
+-      ++OldArgv;
+-      while (*OldArgv) {
+-        // Append the arguments together
+-        ExecveArgs.emplace_back(*OldArgv);
+-        ++OldArgv;
++    if (IsFDExec) {
++      // Pathname slot (erased by the loader), then the user's complete argv including argv[0].
++      ExecveArgs.emplace_back(FDExecPathSlot.c_str());
++
++      if (*OldArgv) {
++        while (*OldArgv) {
++          ExecveArgs.emplace_back(*OldArgv);
++          ++OldArgv;
++        }
++      } else {
++        // Linux kernel will stick an empty argument in to the argv list if none are provided.
++        ExecveArgs.emplace_back(NullString);
+       }
+     } else {
+-      // Linux kernel will stick an empty argument in to the argv list if none are provided.
+-      ExecveArgs.emplace_back(NullString);
++      // Path-based exec: overwrite the filename with the new one we are redirecting to.
++      ExecveArgs.emplace_back(Filename.c_str());
++
++      // It is valid to provide nullptr first argument.
++      if (*OldArgv) {
++        // Skip filename argument
++        ++OldArgv;
++        while (*OldArgv) {
++          // Append the arguments together
++          ExecveArgs.emplace_back(*OldArgv);
++          ++OldArgv;
++        }
++      } else {
++        // Linux kernel will stick an empty argument in to the argv list if none are provided.
++        ExecveArgs.emplace_back(NullString);
++      }
+     }
+ 
+     // Emplace nullptr at the end to stop
+diff --git a/Source/Tools/LinuxEmulation/LinuxSyscalls/Syscalls/Passthrough.cpp b/Source/Tools/LinuxEmulation/LinuxSyscalls/Syscalls/Passthrough.cpp
+index 4623dbd..d85cd03 100644
+--- a/Source/Tools/LinuxEmulation/LinuxSyscalls/Syscalls/Passthrough.cpp
++++ b/Source/Tools/LinuxEmulation/LinuxSyscalls/Syscalls/Passthrough.cpp
+@@ -11,9 +11,14 @@ $end_info$
+ #include "LinuxSyscalls/x32/Syscalls.h"
+ 
+ #include <FEXCore/IR/IR.h>
++#include <FEXCore/Utils/LogManager.h>
+ 
+ #include <stdint.h>
++#include <stdio.h>
++#include <fcntl.h>
++#include <unistd.h>
+ #include <sys/epoll.h>
++#include <sys/resource.h>
+ 
+ namespace FEX::HLE {
+ #ifdef ARCHITECTURE_arm64
+@@ -283,7 +288,22 @@ void RegisterCommon(FEX::HLE::SyscallHandler* Handler) {
+   REGISTER_SYSCALL_IMPL(mlock, SyscallPassthrough2<SYSCALL_DEF(mlock)>);
+   REGISTER_SYSCALL_IMPL(munlock, SyscallPassthrough2<SYSCALL_DEF(munlock)>);
+   REGISTER_SYSCALL_IMPL(pivot_root, SyscallPassthrough2<SYSCALL_DEF(pivot_root)>);
+-  REGISTER_SYSCALL_IMPL(chroot, SyscallPassthrough1<SYSCALL_DEF(chroot)>);
++  // LOCAL PATCH (2026-06-11): on a successful guest chroot, disable RootFS path redirection
++  // so the guest's restricted filesystem view is honored (Chrome namespace-sandbox support).
++  REGISTER_SYSCALL_IMPL(chroot, [](FEXCore::Core::CpuStateFrame* Frame, const char* path) -> uint64_t {
++    int lg = ::open("/tmp/fexchroot.log", O_WRONLY | O_APPEND | O_CREAT, 0666);
++    uint64_t Result = ::syscall(SYSCALL_DEF(chroot), path);
++    if (lg >= 0) {
++      char b[200];
++      int n = snprintf(b, sizeof b, "[FEXCHROOT] chroot('%s') res=%lu pid=%d\n", path ? path : "(null)", (unsigned long)Result, (int)::getpid());
++      ::write(lg, b, n);
++      ::close(lg);
++    }
++    if (Result == 0) {
++      FEX::HLE::_SyscallHandler->FM.NotifyGuestChroot();
++    }
++    SYSCALL_ERRNO();
++  });
+   REGISTER_SYSCALL_IMPL(sync, SyscallPassthrough0<SYSCALL_DEF(sync)>);
+   REGISTER_SYSCALL_IMPL(acct, SyscallPassthrough1<SYSCALL_DEF(acct)>);
+   REGISTER_SYSCALL_IMPL(mount, SyscallPassthrough5<SYSCALL_DEF(mount)>);
+@@ -337,7 +357,22 @@ void RegisterCommon(FEX::HLE::SyscallHandler* Handler) {
+   REGISTER_SYSCALL_IMPL(inotify_init1, SyscallPassthrough1<SYSCALL_DEF(inotify_init1)>);
+   REGISTER_SYSCALL_IMPL(fanotify_init, SyscallPassthrough2<SYSCALL_DEF(fanotify_init)>);
+   REGISTER_SYSCALL_IMPL(fanotify_mark, SyscallPassthrough5<SYSCALL_DEF(fanotify_mark)>);
+-  REGISTER_SYSCALL_IMPL(prlimit_64, SyscallPassthrough4<SYSCALL_DEF(prlimit_64)>);
++  // LOCAL PATCH (never upstream): ignore guest attempts to lower RLIMIT_DATA.
++  // Chrome's Linux sandbox caps child data segments at a few GiB, sized for
++  // native processes. Under FEX the host-side JIT buffers and guest heap share
++  // the same VmData accounting and exceed that cap during startup, so honoring
++  // the lowered limit makes every renderer/utility die on mmap (ENOMEM crash
++  // loop). Report success without applying; still report old limits faithfully.
++  REGISTER_SYSCALL_IMPL(prlimit_64,
++                        [](FEXCore::Core::CpuStateFrame* Frame, pid_t pid, int resource, const struct rlimit* new_limit,
++                           struct rlimit* old_limit) -> uint64_t {
++                          if (resource == RLIMIT_DATA && new_limit) {
++                            uint64_t Result = ::syscall(SYSCALL_DEF(prlimit_64), pid, resource, nullptr, old_limit);
++                            SYSCALL_ERRNO();
++                          }
++                          uint64_t Result = ::syscall(SYSCALL_DEF(prlimit_64), pid, resource, new_limit, old_limit);
++                          SYSCALL_ERRNO();
++                        });
+   REGISTER_SYSCALL_IMPL(name_to_handle_at, SyscallPassthrough5<SYSCALL_DEF(name_to_handle_at)>);
+   REGISTER_SYSCALL_IMPL(open_by_handle_at, SyscallPassthrough3<SYSCALL_DEF(open_by_handle_at)>);
+   REGISTER_SYSCALL_IMPL(syncfs, SyscallPassthrough1<SYSCALL_DEF(syncfs)>);
+@@ -448,7 +483,14 @@ namespace x64 {
+     REGISTER_SYSCALL_IMPL_X64(mlockall, SyscallPassthrough1<SYSCALL_DEF(mlockall)>);
+     REGISTER_SYSCALL_IMPL_X64(munlockall, SyscallPassthrough0<SYSCALL_DEF(munlockall)>);
+     REGISTER_SYSCALL_IMPL_X64(adjtimex, SyscallPassthrough1<SYSCALL_DEF(adjtimex)>);
+-    REGISTER_SYSCALL_IMPL_X64(setrlimit, SyscallPassthrough2<SYSCALL_DEF(setrlimit)>);
++    // LOCAL PATCH (never upstream): see prlimit_64 above — ignore RLIMIT_DATA lowering.
++    REGISTER_SYSCALL_IMPL_X64(setrlimit, [](FEXCore::Core::CpuStateFrame* Frame, int resource, const struct rlimit* rlim) -> uint64_t {
++      if (resource == RLIMIT_DATA && rlim) {
++        return 0;
++      }
++      uint64_t Result = ::syscall(SYSCALL_DEF(setrlimit), resource, rlim);
++      SYSCALL_ERRNO();
++    });
+     REGISTER_SYSCALL_IMPL_X64(settimeofday, SyscallPassthrough2<SYSCALL_DEF(settimeofday)>);
+     REGISTER_SYSCALL_IMPL_X64(readahead, SyscallPassthrough3<SYSCALL_DEF(readahead)>);
+     REGISTER_SYSCALL_IMPL_X64(futex, SyscallPassthrough6<SYSCALL_DEF(futex)>);

@@ -1,0 +1,402 @@
+diff --git a/FEXCore/Source/Interface/Context/Context.h b/FEXCore/Source/Interface/Context/Context.h
+index 35a4212..d20b824 100644
+--- a/FEXCore/Source/Interface/Context/Context.h
++++ b/FEXCore/Source/Interface/Context/Context.h
+@@ -28,6 +28,7 @@
+ namespace FEXCore {
+ class SignalDelegator;
+ class ThunkHandler;
++class LookupCache;
+ struct LookupCacheWriteLockToken;
+ 
+ namespace Core {
+@@ -367,6 +368,7 @@ public:
+   SignalDelegator* SignalDelegation {};
+ 
+   ContextImpl(const FEXCore::HostFeatures& Features);
++  ~ContextImpl() override;
+ 
+   static void ThreadRemoveCodeEntryFromJit(FEXCore::Core::CpuStateFrame* Frame, uint64_t GuestRIP);
+ 
+@@ -486,5 +488,15 @@ private:
+ 
+   std::mutex CodeBufferListLock;
+   fextl::vector<std::weak_ptr<CPU::CodeBuffer>> CodeBufferList;
++
++  // Per-thread JIT LookupCache reuse pool (on-demand context reuse). Per-Context so a
++  // pooled cache is never handed to a different Context (config/Shared lineage mismatch).
++  // Invariant: caches in the pool are CLEARED (no stale guest->host mappings), so reuse
++  // is safe across code-invalidation events that occurred while pooled.
++  std::mutex LookupCachePoolLock;
++  fextl::vector<FEXCore::LookupCache*> LookupCachePool;
++  FEXCore::LookupCache* AcquirePooledLookupCache();
++  void ReleaseLookupCacheToPool(FEXCore::LookupCache* Cache);
++  void DrainLookupCachePool();
+ };
+ } // namespace FEXCore::Context
+diff --git a/FEXCore/Source/Interface/Core/CPUBackend.cpp b/FEXCore/Source/Interface/Core/CPUBackend.cpp
+index 1b1fc10..a6bb12d 100644
+--- a/FEXCore/Source/Interface/Core/CPUBackend.cpp
++++ b/FEXCore/Source/Interface/Core/CPUBackend.cpp
+@@ -18,7 +18,7 @@
+ namespace FEXCore {
+ namespace CPU {
+ 
+-  static constexpr size_t INITIAL_CODE_SIZE = 1024 * 1024 * 16;
++  static constexpr size_t INITIAL_CODE_SIZE = 1024 * 1024 * 1;
+   // We don't want to move above 128MB atm because that means we will have to encode longer jumps
+   static constexpr size_t MAX_CODE_SIZE = 1024 * 1024 * 128;
+ 
+diff --git a/FEXCore/Source/Interface/Core/Core.cpp b/FEXCore/Source/Interface/Core/Core.cpp
+index 036a0e8..7e4677f 100644
+--- a/FEXCore/Source/Interface/Core/Core.cpp
++++ b/FEXCore/Source/Interface/Core/Core.cpp
+@@ -105,6 +105,11 @@ ContextImpl::ContextImpl(const FEXCore::HostFeatures& Features)
+   UpdateAtomicTSOEmulationConfig();
+ }
+ 
++ContextImpl::~ContextImpl() {
++  // Free any LookupCache objects retained in the per-Context reuse pool.
++  DrainLookupCachePool();
++}
++
+ struct GetFrameBlockInfoResult {
+   const CPU::CPUBackend::JITCodeHeader* InlineHeader;
+   const CPU::CPUBackend::JITCodeTail* InlineTail;
+@@ -385,10 +390,41 @@ void ContextImpl::ExecuteThread(FEXCore::Core::InternalThreadState* Thread) {
+   // TODO: This doesn't make sense when the parent thread doesn't outlive its children
+ }
+ 
++// On-demand JIT-context reuse: hand out a cleared LookupCache from the pool if one is
++// available, else allocate fresh. Pooled caches are always cleared (empty) on release, so
++// reuse carries no stale mappings; the per-thread Shared pointer + L1/L2 CPUState pointers
++// are (re)wired by the normal thread-init path below, identically to a fresh cache.
++FEXCore::LookupCache* ContextImpl::AcquirePooledLookupCache() {
++  std::scoped_lock lk {LookupCachePoolLock};
++  if (!LookupCachePool.empty()) {
++    FEXCore::LookupCache* Cache = LookupCachePool.back();
++    LookupCachePool.pop_back();
++    return Cache;
++  }
++  return nullptr;
++}
++
++void ContextImpl::ReleaseLookupCacheToPool(FEXCore::LookupCache* Cache) {
++  std::scoped_lock lk {LookupCachePoolLock};
++  LookupCachePool.emplace_back(Cache);
++}
++
++void ContextImpl::DrainLookupCachePool() {
++  std::scoped_lock lk {LookupCachePoolLock};
++  for (FEXCore::LookupCache* Cache : LookupCachePool) {
++    fextl::default_delete<FEXCore::LookupCache> {}(Cache);
++  }
++  LookupCachePool.clear();
++}
++
+ void ContextImpl::InitializeCompiler(FEXCore::Core::InternalThreadState* Thread) {
+   Thread->OpDispatcher = fextl::make_unique<FEXCore::IR::OpDispatchBuilder>(this, Thread);
+   Thread->OpDispatcher->SetMultiblock(Config.Multiblock);
+-  Thread->LookupCache = fextl::make_unique<FEXCore::LookupCache>(this);
++  if (FEXCore::LookupCache* Reused = AcquirePooledLookupCache()) {
++    Thread->LookupCache = fextl::unique_ptr<FEXCore::LookupCache>(Reused);
++  } else {
++    Thread->LookupCache = fextl::make_unique<FEXCore::LookupCache>(this);
++  }
+   Thread->FrontendDecoder = fextl::make_unique<FEXCore::Frontend::Decoder>(Thread);
+   Thread->PassManager = fextl::make_unique<FEXCore::IR::PassManager>();
+ 
+@@ -444,6 +480,14 @@ ContextImpl::CreateThread(uint64_t InitialRIP, uint64_t StackPointer, const FEXC
+ void ContextImpl::DestroyThread(FEXCore::Core::InternalThreadState* Thread) {
+   FEXCore::Allocator::VirtualProtect(&Thread->InterruptFaultPage, sizeof(Thread->InterruptFaultPage),
+                                      Allocator::ProtectOptions::Read | Allocator::ProtectOptions::Write);
++  // On-demand reuse: clear this thread's local L1/L2 (Shared is still wired here) and return
++  // the LookupCache to the per-Context pool instead of unmapping it. Detaching via assignment
++  // of an empty unique_ptr does NOT delete the object (NonMovableUniquePtr semantics).
++  if (Thread->LookupCache) {
++    Thread->LookupCache->ClearThreadLocalForPooling();
++    ReleaseLookupCacheToPool(Thread->LookupCache.get());
++    Thread->LookupCache = fextl::unique_ptr<FEXCore::LookupCache> {};
++  }
+   delete Thread;
+ }
+ 
+diff --git a/FEXCore/Source/Interface/Core/LookupCache.h b/FEXCore/Source/Interface/Core/LookupCache.h
+index bf958d8..0763f2c 100644
+--- a/FEXCore/Source/Interface/Core/LookupCache.h
++++ b/FEXCore/Source/Interface/Core/LookupCache.h
+@@ -379,6 +379,58 @@ public:
+     return Shared->AcquireWriteLock();
+   }
+ 
++  // Clear ONLY this thread's local L1/L2 (never the shared map) so the cache carries no
++  // stale guest->host mappings. Used when returning a cache to the per-Context reuse pool.
++  // No lock is taken: this runs from ThreadManager::DestroyThread AFTER the thread has been
++  // removed from the Threads registry (under ThreadCreationMutex) and its execution joined, so
++  // no other thread can reach this cache (all cross-thread cache ops iterate Threads under that
++  // mutex). The clear only touches this instance's own private L1/L2/PagePointer memory.
++  void ClearThreadLocalForPooling() {
++    // Precise clear: zero exactly the L2 page-pointer entries this thread set (tracked in
++    // TouchedL2Indices), then DONTNEED only the block-backing actually allocated and the live
++    // L1 slots. Cost scales with the thread's working set, not with VirtualMemSize.
++    // Correctness: TouchedL2Indices lists every page-pointer entry that was set (the sole set
++    // site is the new-backing allocation below); zeroing them + zeroing the block region +
++    // zeroing L1 makes every subsequent lookup miss and re-resolve from the shared map, so no
++    // stale guest->host mapping can survive into the next thread that reuses this cache.
++    // madvise(DONTNEED) requires page alignment, so sizes are rounded up (block region and L1
++    // both start page-aligned; over-clearing already-zero pages is safe).
++    constexpr size_t PageSize = FEXCore::Utils::FEX_PAGE_SIZE;
++    if (!TouchedL2Indices.empty()) {
++      uintptr_t* Pointers = reinterpret_cast<uintptr_t*>(PagePointer);
++      for (uint32_t Idx : TouchedL2Indices) {
++        Pointers[Idx] = 0;
++      }
++      TouchedL2Indices.clear();
++    }
++    // Note: we do NOT zero the block-backing region or reset AllocateOffset. Once the L2 entries
++    // above are zeroed, the old block pages are unreferenced; the next thread allocates FRESH
++    // (already-zero) pages beyond the current high-water mark, so no stale block data is ever
++    // read. AllocateOffset keeps climbing across reuses until the existing overflow path
++    // (AllocateBackingForPage -> ClearL2Cache) resets it. This avoids an O(working-set) madvise
++    // over the block region on every thread exit, which dominated the release cost.
++    // Decommit the currently-active L1 region, then reset dynamic L1 sizing back to MIN. Without
++    // this reset, CurrentL1Entries carries over on reuse and ratchets up to MAX (16MB) across many
++    // pooled reuses, making every release clear a 16MB region. Resetting keeps it small so the
++    // clear stays cheap; a reused thread re-grows L1 on demand if it actually needs it.
++    // Reset dynamic L1 sizing to MIN first (breaks the ratchet-to-MAX across reuses). If this
++    // thread had grown L1 beyond MIN, decommit the now-unreachable upper region to reclaim it;
++    // for the common case (never grew) this madvise is skipped entirely.
++    const size_t OldL1Bytes = CurrentL1Entries * sizeof(LookupCacheEntry);
++    if (DynamicL1Cache()) {
++      CurrentL1Entries = MIN_L1_ENTRIES;
++      L1PointerMask = MIN_L1_ENTRIES - 1;
++    }
++    const size_t ActiveL1Bytes = CurrentL1Entries * sizeof(LookupCacheEntry);
++    if (OldL1Bytes > ActiveL1Bytes) {
++      FEXCore::Allocator::VirtualDontNeed(reinterpret_cast<void*>(L1Pointer + ActiveL1Bytes),
++                                          FEXCore::AlignUp(OldL1Bytes - ActiveL1Bytes, PageSize), false);
++    }
++    // Clear the (small) active L1 region with memset: no syscall, stays resident for reuse.
++    memset(reinterpret_cast<void*>(L1Pointer), 0, ActiveL1Bytes);
++    CachedCodePages.clear();
++  }
++
+ private:
+   void CacheBlockMapping(uint64_t Address, const GuestToHostMap::BlockEntry& Entry, bool L1Only, const LookupCacheBaseLockToken& lk) {
+     for (const auto& CodePage : Entry.CodePages) {
+@@ -412,6 +464,9 @@ private:
+         }
+         Pointers[Address] = NewPageBacking;
+         LocalPagePointer = NewPageBacking;
++        // Record the newly-set L2 index for precise clear-on-release (pooling). This is the
++        // only site that sets a page-pointer entry, so this list covers every live L2 entry.
++        TouchedL2Indices.push_back(static_cast<uint32_t>(Address));
+       }
+ 
+       // Add the new pointer to the page block
+@@ -458,6 +513,10 @@ private:
+ 
+   size_t AllocateOffset {};
+ 
++  // Exact list of L2 page-pointer indices set since the last clear, so clear-on-release (pooling)
++  // zeroes only those entries instead of walking the whole VirtualMemSize-sized table.
++  fextl::vector<uint32_t> TouchedL2Indices;
++
+   FEXCore::Context::ContextImpl* ctx;
+   uint64_t VirtualMemSize {};
+ 
+diff --git a/Source/Tools/LinuxEmulation/LinuxSyscalls/SignalDelegator.cpp b/Source/Tools/LinuxEmulation/LinuxSyscalls/SignalDelegator.cpp
+index 9ba706c..209cdaa 100644
+--- a/Source/Tools/LinuxEmulation/LinuxSyscalls/SignalDelegator.cpp
++++ b/Source/Tools/LinuxEmulation/LinuxSyscalls/SignalDelegator.cpp
+@@ -1004,6 +1004,39 @@ SignalDelegator::~SignalDelegator() {
+     ::syscall(SYS_rt_sigaction, i, &HostHandlers[i].OldAction, nullptr, 8);
+     HostHandlers[i].Installed = false;
+   }
++  DrainAltStackPool();
++}
++
++// Acquire a per-thread signal alt-stack (SIGSTKSZ*16): reuse one from the pool or mmap fresh.
++// Returns a region whose FIRST page is writable (the caller writes the thread ptr there, then
++// re-protects it read-only). A pooled region's first page was left read-only, so re-open it.
++void* SignalDelegator::AcquireAltStack() {
++  {
++    std::scoped_lock lk {AltStackPoolLock};
++    if (!AltStackPool.empty()) {
++      void* Ptr = AltStackPool.back();
++      AltStackPool.pop_back();
++      ::mprotect(Ptr, FEXCore::Utils::FEX_PAGE_SIZE, PROT_READ | PROT_WRITE);
++      return Ptr;
++    }
++  }
++  void* Ptr = FEXCore::Allocator::mmap(nullptr, SIGSTKSZ * 16, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++  FEXCore::Allocator::VirtualName("FEXMem_Misc", Ptr, SIGSTKSZ * 16);
++  return Ptr;
++}
++
++void SignalDelegator::ReleaseAltStack(void* Ptr) {
++  // No clear: the alt-stack is only used during signal handling, which resets its SP each entry.
++  std::scoped_lock lk {AltStackPoolLock};
++  AltStackPool.emplace_back(Ptr);
++}
++
++void SignalDelegator::DrainAltStackPool() {
++  std::scoped_lock lk {AltStackPoolLock};
++  for (void* Ptr : AltStackPool) {
++    FEXCore::Allocator::munmap(Ptr, SIGSTKSZ * 16);
++  }
++  AltStackPool.clear();
+ }
+ 
+ void SignalDelegator::RegisterTLSState(FEX::HLE::ThreadStateObject* Thread) {
+@@ -1012,9 +1045,8 @@ void SignalDelegator::RegisterTLSState(FEX::HLE::ThreadStateObject* Thread) {
+   Thread->SignalInfo.Delegator = this;
+ 
+   // Set up our signal alternative stack
+-  // This is per thread rather than per signal
+-  Thread->SignalInfo.AltStackPtr = FEXCore::Allocator::mmap(nullptr, SIGSTKSZ * 16, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+-  FEXCore::Allocator::VirtualName("FEXMem_Misc", reinterpret_cast<void*>(Thread->SignalInfo.AltStackPtr), SIGSTKSZ * 16);
++  // This is per thread rather than per signal (reused from a pool to avoid per-thread mmap).
++  Thread->SignalInfo.AltStackPtr = AcquireAltStack();
+   stack_t altstack {};
+   altstack.ss_sp = reinterpret_cast<void*>(reinterpret_cast<uint64_t>(Thread->SignalInfo.AltStackPtr) + 8);
+   altstack.ss_size = SIGSTKSZ * 16 - 8;
+@@ -1044,7 +1076,8 @@ void SignalDelegator::RegisterTLSState(FEX::HLE::ThreadStateObject* Thread) {
+ }
+ 
+ void SignalDelegator::UninstallTLSState(FEX::HLE::ThreadStateObject* Thread) {
+-  FEXCore::Allocator::munmap(Thread->SignalInfo.AltStackPtr, SIGSTKSZ * 16);
++  // Return the alt-stack to the reuse pool instead of unmapping it.
++  ReleaseAltStack(Thread->SignalInfo.AltStackPtr);
+ 
+   Thread->SignalInfo.AltStackPtr = nullptr;
+ 
+diff --git a/Source/Tools/LinuxEmulation/LinuxSyscalls/SignalDelegator.h b/Source/Tools/LinuxEmulation/LinuxSyscalls/SignalDelegator.h
+index bfaa372..3a0afa9 100644
+--- a/Source/Tools/LinuxEmulation/LinuxSyscalls/SignalDelegator.h
++++ b/Source/Tools/LinuxEmulation/LinuxSyscalls/SignalDelegator.h
+@@ -290,6 +290,15 @@ private:
+   std::mutex HostDelegatorMutex;
+   std::mutex GuestDelegatorMutex;
+   bool SupportsAVX;
++
++  // Reuse pool for per-thread signal alt-stacks (SIGSTKSZ*16 = 256KB each). Same idea as the
++  // call-ret stack pool: reuse avoids the mmap + munmap per thread. A reused alt-stack has its
++  // guard page already protected; the thread-ptr in the first page is rewritten per reuse.
++  std::mutex AltStackPoolLock;
++  fextl::vector<void*> AltStackPool;
++  void* AcquireAltStack();         // returns a 256KB region with a WRITABLE first page
++  void ReleaseAltStack(void* Ptr);
++  void DrainAltStackPool();
+ };
+ 
+ fextl::unique_ptr<FEX::HLE::SignalDelegator>
+diff --git a/Source/Tools/LinuxEmulation/LinuxSyscalls/ThreadManager.cpp b/Source/Tools/LinuxEmulation/LinuxSyscalls/ThreadManager.cpp
+index 3e50b2f..342257c 100644
+--- a/Source/Tools/LinuxEmulation/LinuxSyscalls/ThreadManager.cpp
++++ b/Source/Tools/LinuxEmulation/LinuxSyscalls/ThreadManager.cpp
+@@ -171,6 +171,41 @@ void ThreadManager::SetThreadName(const char* name) {
+ 
+ constexpr size_t CALLRET_STACK_ALLOC_SIZE = FEXCore::Core::InternalThreadState::CALLRET_STACK_SIZE + 2 * FEXCore::Utils::FEX_PAGE_SIZE;
+ 
++// Acquire a call-ret shadow-stack allocation: reuse one from the pool (already mmap'd with
++// guard pages and an RW inner region) or allocate fresh. Returns the guard-padded base.
++void* ThreadManager::AcquireCallRetStack() {
++  {
++    std::scoped_lock lk {CallRetStackPoolLock};
++    if (!CallRetStackPool.empty()) {
++      void* Base = CallRetStackPool.back();
++      CallRetStackPool.pop_back();
++      return Base; // inner region already RW, guard pages already PROT_NONE; SP resets to base
++    }
++  }
++  auto AllocBase = FEXCore::Allocator::mmap(nullptr, CALLRET_STACK_ALLOC_SIZE, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++  FEXCore::Allocator::VirtualName("FEXMem_CallRetStacks", AllocBase, CALLRET_STACK_ALLOC_SIZE);
++  // Disable HUGEPAGE on callret stacks.
++  FEXCore::Allocator::VirtualTHPControl(AllocBase, CALLRET_STACK_ALLOC_SIZE, FEXCore::Allocator::THPControl::Disable);
++  // Make the inner region (past the leading guard page) read-write.
++  ::mprotect(reinterpret_cast<void*>(reinterpret_cast<uint64_t>(AllocBase) + FEXCore::Utils::FEX_PAGE_SIZE),
++             FEXCore::Core::InternalThreadState::CALLRET_STACK_SIZE, PROT_READ | PROT_WRITE);
++  return AllocBase;
++}
++
++void ThreadManager::ReleaseCallRetStack(void* AllocBase) {
++  // No clear needed: a reused shadow stack resets its SP to base and only reads what it pushes.
++  std::scoped_lock lk {CallRetStackPoolLock};
++  CallRetStackPool.emplace_back(AllocBase);
++}
++
++void ThreadManager::DrainCallRetStackPool() {
++  std::scoped_lock lk {CallRetStackPoolLock};
++  for (void* Base : CallRetStackPool) {
++    FEXCore::Allocator::munmap(Base, CALLRET_STACK_ALLOC_SIZE);
++  }
++  CallRetStackPool.clear();
++}
++
+ FEX::HLE::ThreadStateObject* ThreadManager::CreateThread(uint64_t InitialRIP, uint64_t StackPointer, const FEXCore::Core::CPUState* NewThreadState,
+                                                          uint64_t ParentTID, FEX::HLE::ThreadStateObject* InheritThread) {
+   auto ThreadStateObject = new FEX::HLE::ThreadStateObject;
+@@ -183,18 +218,12 @@ FEX::HLE::ThreadStateObject* ThreadManager::CreateThread(uint64_t InitialRIP, ui
+   ThreadStateObject->Thread = CTX->CreateThread(InitialRIP, StackPointer, NewThreadState);
+   auto Frame = ThreadStateObject->Thread->CurrentFrame;
+ 
+-  // Allocate the call-ret stack with guard pages on both sides
+-  auto AllocBase =
+-    reinterpret_cast<uint64_t>(FEXCore::Allocator::mmap(nullptr, CALLRET_STACK_ALLOC_SIZE, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
+-
+-  FEXCore::Allocator::VirtualName("FEXMem_CallRetStacks", reinterpret_cast<void*>(AllocBase), CALLRET_STACK_ALLOC_SIZE);
+-
+-  // Disable HUGEPAGE on callret stacks.
+-  FEXCore::Allocator::VirtualTHPControl(reinterpret_cast<void*>(AllocBase), CALLRET_STACK_ALLOC_SIZE, FEXCore::Allocator::THPControl::Disable);
++  // Allocate (or reuse from the pool) the call-ret stack with guard pages on both sides.
++  // A pooled allocation already has its inner region RW and guard pages PROT_NONE.
++  auto AllocBase = reinterpret_cast<uint64_t>(AcquireCallRetStack());
+ 
+   // Set the base used for invalidation to the start past the guard pages
+   ThreadStateObject->Thread->CallRetStackBase = reinterpret_cast<void*>(AllocBase + FEXCore::Utils::FEX_PAGE_SIZE);
+-  ::mprotect(ThreadStateObject->Thread->CallRetStackBase, FEXCore::Core::InternalThreadState::CALLRET_STACK_SIZE, PROT_READ | PROT_WRITE);
+   Frame->State.callret_sp = ThreadStateObject->GetCallRetStackInfo().DefaultLocation;
+ 
+   ThreadStateObject->Thread->FrontendPtr = ThreadStateObject;
+@@ -294,8 +323,8 @@ void ThreadManager::HandleThreadDeletion(FEX::HLE::ThreadStateObject* Thread, bo
+     FEXCore::Allocator::UninstallTLSData(Thread->Thread);
+   }
+ 
+-  // Free the call-ret stack
+-  FEXCore::Allocator::munmap(reinterpret_cast<void*>(Thread->GetCallRetStackInfo().AllocationBase), CALLRET_STACK_ALLOC_SIZE);
++  // Return the call-ret stack to the reuse pool instead of unmapping it.
++  ReleaseCallRetStack(reinterpret_cast<void*>(Thread->GetCallRetStackInfo().AllocationBase));
+ 
+   // If the LDT segment exists then deallocate it.
+   if (Thread->ldt_entry_count) {
+@@ -513,5 +542,8 @@ ThreadManager::~ThreadManager() {
+     HandleThreadDeletion(Thread);
+   }
+   Threads.clear();
++
++  // Free the pooled call-ret stacks (HandleThreadDeletion above returned them to the pool).
++  DrainCallRetStackPool();
+ }
+ } // namespace FEX::HLE
+diff --git a/Source/Tools/LinuxEmulation/LinuxSyscalls/ThreadManager.h b/Source/Tools/LinuxEmulation/LinuxSyscalls/ThreadManager.h
+index 6371b8f..af12405 100644
+--- a/Source/Tools/LinuxEmulation/LinuxSyscalls/ThreadManager.h
++++ b/Source/Tools/LinuxEmulation/LinuxSyscalls/ThreadManager.h
+@@ -257,6 +257,16 @@ private:
+   FEXCore::ForkableUniqueMutex ThreadCreationMutex;
+   fextl::vector<FEX::HLE::ThreadStateObject*> Threads;
+ 
++  // Reuse pool for per-thread call-ret shadow stacks (4MB each). These are plain stack buffers
++  // with no shared state: a reused stack just resets its SP to base, so no clear is needed and
++  // reuse skips the mmap + mprotect + THP-disable on create and the munmap on destroy. The
++  // outer guard pages stay PROT_NONE and the inner region stays RW across reuses.
++  std::mutex CallRetStackPoolLock;
++  fextl::vector<void*> CallRetStackPool;
++  void* AcquireCallRetStack();             // returns AllocBase (guard-padded), mmaps if pool empty
++  void ReleaseCallRetStack(void* AllocBase);
++  void DrainCallRetStackPool();
++
+   // Thread idling support.
+   bool Running {};
+   std::mutex IdleWaitMutex;

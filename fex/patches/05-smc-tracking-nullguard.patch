@@ -1,0 +1,17 @@
+diff --git a/Source/Tools/LinuxEmulation/LinuxSyscalls/SyscallsSMCTracking.cpp b/Source/Tools/LinuxEmulation/LinuxSyscalls/SyscallsSMCTracking.cpp
+index 12ad907..4f2ff7a 100644
+--- a/Source/Tools/LinuxEmulation/LinuxSyscalls/SyscallsSMCTracking.cpp
++++ b/Source/Tools/LinuxEmulation/LinuxSyscalls/SyscallsSMCTracking.cpp
+@@ -421,6 +421,12 @@ void SyscallHandler::TriggerGuestLibWrapperCodeCacheLoad(FEXCore::Core::Internal
+   auto lk = FEXCore::GuardSignalDeferringSection<std::shared_lock>(VMATracking.Mutex, &Thread);
+   auto VMAEntry = VMATracking.FindVMAEntry(reinterpret_cast<uint64_t>(AnyAddr));
+ 
++  // LOCAL PATCH: guard against end() (untracked address), null Resource (anonymous mapping),
++  // and null MappedFile (shared anonymous mapping or resource with no ELF file)
++  if (VMAEntry == VMATracking.VMAs.end() || !VMAEntry->second.Resource || !VMAEntry->second.Resource->MappedFile) {
++    return;
++  }
++
+   for (auto* VMA = VMAEntry->second.Resource->FirstVMA; VMA; VMA = VMA->ResourceNextVMA) {
+     if (!VMA->Prot.Executable) {
+       continue;

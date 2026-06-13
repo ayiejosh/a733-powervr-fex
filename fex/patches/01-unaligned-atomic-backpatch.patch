@@ -1,0 +1,230 @@
+diff --git a/FEXCore/Source/Utils/ArchHelpers/Arm64.cpp b/FEXCore/Source/Utils/ArchHelpers/Arm64.cpp
+index 2c8a826..b31acc2 100644
+--- a/FEXCore/Source/Utils/ArchHelpers/Arm64.cpp
++++ b/FEXCore/Source/Utils/ArchHelpers/Arm64.cpp
+@@ -12,6 +12,7 @@
+ 
+ #include <atomic>
+ #include <cstdint>
++#include <sys/mman.h>
+ 
+ namespace FEXCore::ArchHelpers::Arm64 {
+ constexpr uint32_t CASPAL_MASK = 0xBF'E0'FC'00;
+@@ -1920,6 +1921,206 @@ static uint64_t HandleAtomicLoadstoreExclusive(uintptr_t ProgramCounter, uint64_
+   return NumInstructionsToSkip * 4;
+ }
+ 
++// LOCAL PATCH: per-site trampoline backpatch for ATOMIC_MEM_INST (LDADDAL/LDSETL etc.)
++// on unaligned addresses. ARM64 without USCAT faults on every such op (SIGBUS ~1500 ns/op).
++// After first fault, we patch the site with BL to a generated trampoline that uses
++// a global spinlock + plain unaligned LDR/STR (~20 ns/op, no faults).
++//
++// WHY: Chrome fires ~7500 unaligned atomics per 50s session. Backpatch eliminates
++// ~11ms of signal overhead and makes future executions fault-free.
++
++// Global spinlock used by all generated trampolines (uint32_t, ALIGNED, SWPAL-safe)
++static uint32_t UASpinLock = 0;
++
++// LOCAL PATCH: trampoline pool allocated dynamically on first SIGBUS fault.
++// We need the pool within BL ±128MB of the JIT code buffer. The BSS lives ~3GB from
++// JIT code (different mmap regions), so instead we mprotect a slice of FEX's large
++// PROT_NONE VA-reservation region that sits just above the JIT allocations (~32-64MB
++// away). This region has no data — it's just a guard VA range — so mprotect to RWX
++// is safe and doesn't corrupt any FEX state.
++static constexpr size_t UATBufMax = 128u * 1024u; // 128 KB ≈ 1600 trampolines @ 80 B each
++static uint8_t* UATDynPool = nullptr;    // set once on first SIGBUS
++static std::atomic<size_t> UATBufUsed {0};
++static std::atomic_flag UATAllocLock = ATOMIC_FLAG_INIT;
++
++// Try to mprotect a 128KB region at `candidate` to RWX. Returns candidate on success,
++// nullptr on failure. Candidate must be 4KB-aligned. Async-signal-safe.
++static uint8_t* TryMprotectPool(uint8_t* Candidate) {
++    if (reinterpret_cast<uintptr_t>(Candidate) & 0xFFF) return nullptr; // must be page-aligned
++    int Ret = ::mprotect(Candidate, UATBufMax, PROT_READ | PROT_WRITE | PROT_EXEC);
++    return (Ret == 0) ? Candidate : nullptr;
++}
++
++static uint32_t* AllocateUATrampoline(uintptr_t NearPC) {
++    while (UATAllocLock.test_and_set(std::memory_order_acquire)) {}
++
++    // On first call, find a pool region within BL ±128MB of NearPC.
++    // Strategy: scan at +32MB, +48MB, +64MB, +80MB, +96MB from NearPC — these land
++    // in FEX's PROT_NONE VA-reservation area that follows the JIT code allocations.
++    // We call mprotect (which works on existing PROT_NONE VMAs) to make the slice RWX.
++    if (UATDynPool == nullptr) {
++        static const int64_t kOffsets[] = {
++            32LL<<20, 48LL<<20, 64LL<<20, 80LL<<20, 96LL<<20, 112LL<<20,
++            -32LL<<20, -48LL<<20,
++        };
++        for (int64_t Off : kOffsets) {
++            uintptr_t Cand = (NearPC + static_cast<uintptr_t>(Off)) & ~(uintptr_t)0xFFF;
++            if (uint8_t* P = TryMprotectPool(reinterpret_cast<uint8_t*>(Cand))) {
++                // Verify BL reach from NearPC to this pool
++                intptr_t D = static_cast<intptr_t>(Cand) - static_cast<intptr_t>(NearPC);
++                if (D >= -(1<<27) && D < (1<<27)) {
++                    UATDynPool = P;
++                    break;
++                }
++                // Out of BL range; undo mprotect (best-effort) and try next
++                ::mprotect(P, UATBufMax, PROT_NONE);
++            }
++        }
++    }
++
++    if (UATDynPool == nullptr) {
++        UATAllocLock.clear(std::memory_order_release);
++        return nullptr; // no usable pool found
++    }
++
++    // Check BL range from NearPC to pool
++    intptr_t Dist = static_cast<intptr_t>(reinterpret_cast<uintptr_t>(UATDynPool))
++                  - static_cast<intptr_t>(NearPC);
++    if (Dist < -(1<<27) || Dist >= (1<<27)) {
++        UATAllocLock.clear(std::memory_order_release);
++        return nullptr; // pool too far from this PC (different JIT buffer?)
++    }
++
++    size_t off = UATBufUsed.load(std::memory_order_relaxed);
++    constexpr size_t Stride = 80; // bytes per trampoline (≤ 17 instructions × 4 = 68 B)
++    if (off + Stride > UATBufMax) {
++        UATAllocLock.clear(std::memory_order_release);
++        return nullptr;
++    }
++    UATBufUsed.store(off + Stride, std::memory_order_relaxed);
++    UATAllocLock.clear(std::memory_order_release);
++    return reinterpret_cast<uint32_t*>(UATDynPool + off);
++}
++
++// Emit ARM64 instructions into Trampoline[] for the given LDADD/LDCLR/etc. operation.
++// Returns true and patches PC[0] with BL on success; returns false if anything fails.
++static bool TryBackpatchUnalignedAtomicOp(uintptr_t ProgramCounter, uint32_t Instr) {
++    uint32_t* PC = reinterpret_cast<uint32_t*>(ProgramCounter);
++
++    // Decode: size bits[31:30], Xs bits[20:16], Xn bits[9:5], Xd bits[4:0]
++    uint32_t SizeBits = Instr >> 30;          // 1=2B 2=4B 3=8B (0=1B not used by lock-prefix ops)
++    uint32_t Xd       = Instr & 0x1F;         // result reg (31=XZR → discard)
++    uint32_t Xs       = (Instr >> 16) & 0x1F; // source reg
++    uint32_t Xn       = (Instr >> 5) & 0x1F;  // address reg
++    uint32_t Op       = (Instr >> 12) & 0xF;  // ATOMIC_{ADD,CLR,EOR,SET,SWAP}_OP
++
++    // x30 is the link register: BL sets x30=return_addr, clobbering any live x86 value.
++    // Xs==30 or Xn==30 means the trampoline would read LR as the source or address — wrong.
++    // Xd==30 is handled: we use B <PC+4> instead of RET so x30 can hold the result.
++    if (Xs == 30u || Xn == 30u) return false;
++
++    // Pick two scratch regs T1 (spinlock addr) and T2 (loaded value) not in {Xs,Xn,Xd}
++    uint32_t T1 = 31, T2 = 31;
++    for (uint32_t c : {16u, 17u, 15u, 14u, 13u, 12u}) {
++        if (c == Xs || c == Xn || c == Xd) continue;
++        if (T1 == 31)      { T1 = c; }
++        else if (T2 == 31) { T2 = c; break; }
++    }
++    if (T1 == 31 || T2 == 31) return false;
++
++    uint32_t* Trampoline = AllocateUATrampoline(ProgramCounter);
++    if (!Trampoline) return false;
++
++    // Verify BL reach: ±128MB = ±2^27 bytes
++    intptr_t Dist = reinterpret_cast<intptr_t>(Trampoline) - static_cast<intptr_t>(ProgramCounter);
++    if (Dist < -(1 << 27) || Dist >= (1 << 27)) return false;
++
++    uint64_t LockAddr = reinterpret_cast<uint64_t>(&UASpinLock);
++    uint32_t sf = (SizeBits == 3) ? (1u << 31) : 0u; // 64-bit ALU flag
++
++    uint32_t* p = Trampoline;
++    auto emit = [&](uint32_t w) { *p++ = w; };
++
++    // Save scratch regs and LR: STP x_T1, x_T2, [sp, #-32]!  +  STR x30, [sp, #16]
++    // BL sets LR=PC+4; save it so JIT code after the call finds LR unchanged.
++    emit(0xA9BE0000u | (T2 << 10) | (31u << 5) | T1); // STP T1, T2, [sp, #-32]!
++    emit(0xF9000BFEu);                                  // STR x30, [sp, #16]
++
++    // Load spinlock address into T1 (4 × MOV/MOVK, 16-bit chunks)
++    emit(0xD2800000u | (uint32_t)((LockAddr & 0xFFFF) << 5)         | T1);
++    emit(0xF2A00000u | (uint32_t)(((LockAddr >> 16) & 0xFFFF) << 5) | T1);
++    emit(0xF2C00000u | (uint32_t)(((LockAddr >> 32) & 0xFFFF) << 5) | T1);
++    emit(0xF2E00000u | (uint32_t)(((LockAddr >> 48) & 0xFFFF) << 5) | T1);
++
++    // Acquire spinlock via SWPAL (lock addr is ALIGNED → no fault)
++    emit(0x52800020u | T2);                                // MOV w_T2, #1
++    emit(0xB8E08000u | (T2 << 16) | (T1 << 5) | T2);     // SWPAL w_T2, w_T2, [x_T1]
++    emit(0x35000000u | (0x7FFFFu << 5) | T2);             // CBNZ w_T2, .spin (back 1 instr = -4)
++
++    // Load old value (T2 = old value; Xn address is preserved until after the store)
++    emit(0x39400000u | (SizeBits << 30) | (Xn << 5) | T2);
++
++    // Compute NEW value into x30 (LR, already saved above). This avoids a Xd==Xn
++    // hazard: when destination register == address register, writing old value to
++    // Xd (step below) would destroy the address before we can store the new value.
++    // By computing into x30 first and storing before writing Xd, the address in Xn
++    // remains valid until the STR completes.
++    uint32_t OpNewBase = (T2 << 5) | 30u; // Rn=T2, Rd=x30
++    switch (Op) {
++    case ATOMIC_ADD_OP:  emit(sf | 0x0B000000u | (Xs << 16) | OpNewBase); break;
++    case ATOMIC_CLR_OP:  emit(sf | 0x0A200000u | (Xs << 16) | OpNewBase); break; // BIC x30,T2,Xs
++    case ATOMIC_EOR_OP:  emit(sf | 0x4A000000u | (Xs << 16) | OpNewBase); break;
++    case ATOMIC_SET_OP:  emit(sf | 0x2A000000u | (Xs << 16) | OpNewBase); break; // ORR x30,T2,Xs
++    case ATOMIC_SWAP_OP: emit(sf | 0x2A0003E0u | (Xs << 16) | 30u);       break; // MOV x30,Xs
++    default: return false;
++    }
++
++    // Store new value BEFORE writing to Xd (Xn still holds original address here)
++    emit(0x39000000u | (SizeBits << 30) | (Xn << 5) | 30u); // STR x30, [Xn]
++
++    // Release spinlock: 32-bit store-release of 0 (lock addr ALIGNED → safe)
++    emit(0x889FFC00u | (T1 << 5) | 31u);                 // STLR WZR, [x_T1]
++
++    // Write old value to result register (AFTER the store so Xd==Xn is safe).
++    // For ≤32-bit: use sf=0 so W-register write zero-extends upper 32 bits.
++    if (Xd == 30u) {
++        // x30 must hold the old-value result AND serve as return address for RET — impossible.
++        // Instead: set x30=old_value, restore T1+T2 (not LR), then B <PC+4> (direct branch
++        // to the BL return addr, whose offset is known at emit time and fits in ±128MB).
++        emit(sf | 0x2A0003E0u | (T2 << 16) | 30u);       // MOV x30/w30, T2 (old value → Xd)
++        emit(0xA8C20000u | (T2 << 10) | (31u << 5) | T1); // LDP T1, T2, [sp], #32 (skip saved LR)
++        uintptr_t BPos = reinterpret_cast<uintptr_t>(p);
++        uintptr_t RetAddr = ProgramCounter + 4;
++        intptr_t BDist = static_cast<intptr_t>(RetAddr) - static_cast<intptr_t>(BPos);
++        int32_t BImm26 = static_cast<int32_t>(BDist >> 2);
++        emit(0x14000000u | (static_cast<uint32_t>(BImm26) & 0x3FFFFFFu)); // B <PC+4>
++    } else {
++        if (Xd != 31u) {
++            emit(sf | 0x2A0003E0u | (T2 << 16) | Xd);    // MOV Xd/Wd, T2/WT2
++        }
++        // Restore LR and scratch regs: LDR x30, [sp, #16]  +  LDP x_T1, x_T2, [sp], #32
++        emit(0xF9400BFEu);                                  // LDR x30, [sp, #16]
++        emit(0xA8C20000u | (T2 << 10) | (31u << 5) | T1); // LDP T1, T2, [sp], #32
++        emit(0xD65F03C0u);                                  // RET
++    }
++
++    // Flush I-cache for the generated trampoline
++    size_t TLen = reinterpret_cast<uintptr_t>(p) - reinterpret_cast<uintptr_t>(Trampoline);
++    ClearICache(Trampoline, TLen);
++
++    // Patch the original LDADDAL with BL <trampoline> (atomic CAS so only first thread wins)
++    int32_t BLImm26 = static_cast<int32_t>(Dist >> 2);
++    uint32_t BLInstr = 0x94000000u | (static_cast<uint32_t>(BLImm26) & 0x3FFFFFFu);
++    uint32_t Expected = Instr;
++    bool CASWon = std::atomic_ref<uint32_t>(PC[0]).compare_exchange_strong(
++            Expected, BLInstr, std::memory_order_release, std::memory_order_relaxed);
++    if (CASWon) {
++        ClearICache(PC, sizeof(uint32_t));
++    }
++    return true;
++}
++// END LOCAL PATCH: unaligned atomic trampoline backpatch
++
+ [[nodiscard]]
+ std::optional<int32_t> HandleUnalignedAccess(FEXCore::Core::InternalThreadState* Thread, UnalignedHandlerType HandleType,
+                                              uintptr_t ProgramCounter, uint64_t* GPRs, bool IsJIT) {
+@@ -2050,7 +2251,9 @@ std::optional<int32_t> HandleUnalignedAccess(FEXCore::Core::InternalThreadState*
+     // This mask has a partial overlap with ATOMIC_MEM_INST so we need to check this here.
+   } else if ((Instr & ArchHelpers::Arm64::ATOMIC_MEM_MASK) == ArchHelpers::Arm64::ATOMIC_MEM_INST) { // Atomic memory op
+     if (ArchHelpers::Arm64::HandleAtomicMemOp(Instr, GPRs, StrictSplitLockMutex)) {
+-      // Skip this instruction now
++      // LOCAL PATCH: after emulating this op, backpatch site with BL to a generated
++      // trampoline so future executions run fault-free (~20 ns/op vs ~1500 ns/op via SIGBUS).
++      TryBackpatchUnalignedAtomicOp(ProgramCounter, Instr);
+       return 4;
+     } else {
+       uint8_t Op = (PC[0] >> 12) & 0xF;

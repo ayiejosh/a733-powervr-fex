@@ -1,0 +1,13 @@
+{
+  "_comment": "Recommended ~/.fex-emu/Config.json knobs for the A733 (no patch needed). Merge into your own Config (which also sets RootFS/ThunkHostLibs/etc).",
+  "Config": {
+    "X87ReducedPrecision": "1",
+    "_X87ReducedPrecision": "use hw 64-bit instead of software 80-bit x87 -> ~18x for x87 code that's really only 64-bit (legacy / -mfpmath=387). Reduces true 80-bit long double accuracy; FEX's Steam template also sets this.",
+    "HideHybrid": "0",
+    "_HideHybrid": "expose the A76 as 'big cores' in CPUID 0x1A so Chrome/V8 pin JIT/render threads to A76 (cores 6-7) not the slower A55s.",
+    "TSOEnabled": "1",
+    "VectorTSOEnabled": "0",
+    "MemcpySetTSOEnabled": "0",
+    "_TSO": "TSO emulation on (correctness for MT apps); the A733 has FEAT_LRCPC (v8.3) so FEX uses cheaper ldapr for half-barriers. Vector/Memcpy TSO off = no SIMD/memcpy barriers."
+  }
+}

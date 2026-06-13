@@ -7,6 +7,16 @@ plus the setup/launcher scripts used here.
 > Bring your own x86 rootfs and apps — none are bundled. The scripts build/use a
 > rootfs you create; no proprietary binaries are in this repo.
 
+
+## FEX patches + config (validated wins)
+See [`patches/`](patches/) — local FEX patches developed on this board:
+- **Perf:** unaligned-atomic backpatch (**~88×**) + thread-context pooling (**~6.8×**) — benchmarked, see `../docs/BENCHMARKS.md`.
+- **Build-compat:** fixes to compile FEX on Debian 11 / gcc-10.
+- **Chrome/VAAPI/stability:** namespace-sandbox support (incl. the `/proc/self/exe` execve fix), a VAAPI thunk for VE2 H.264, and an SMC null-guard.
+- **Config:** [`Config.json.example`](Config.json.example) — `X87ReducedPrecision` (~18× x87-on-64-bit), `HideHybrid`, TSO.
+
+⚠️ AI-assisted; **not for upstream** (FEX no-AI policy). Apply to your own MIT FEX build; run the SMC-stress correctness gate. The `prlimit_64` piece in the Chrome patch deliberately *lies* about RLIMIT_DATA — read `patches/README.md`.
+
 ## The novel bit: a Vulkan GPU thunk
 
 By default a Vulkan app inside FEX would hit a *software* x86 Vulkan (or nothing).

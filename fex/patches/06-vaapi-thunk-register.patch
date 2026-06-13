@@ -1,0 +1,28 @@
+diff --git a/ThunkLibs/GuestLibs/CMakeLists.txt b/ThunkLibs/GuestLibs/CMakeLists.txt
+index 6619712..24c19a2 100644
+--- a/ThunkLibs/GuestLibs/CMakeLists.txt
++++ b/ThunkLibs/GuestLibs/CMakeLists.txt
+@@ -212,6 +212,9 @@ if (BITNESS EQUAL 64)
+   generate(libdrm ${CMAKE_CURRENT_SOURCE_DIR}/../libdrm/libdrm_interface.cpp)
+   target_include_directories_from_pkgconfig(libdrm-guest-deps libdrm /usr/include/drm /usr/include/libdrm)
+   add_guest_lib(drm "libdrm.so.2")
++
++  generate(libva ${CMAKE_CURRENT_SOURCE_DIR}/../libva/libva_interface.cpp)
++  add_guest_lib(va "libva.so.2")
+ endif()
+ 
+ generate(libwayland-client ${CMAKE_CURRENT_SOURCE_DIR}/../libwayland-client/libwayland-client_interface.cpp)
+diff --git a/ThunkLibs/HostLibs/CMakeLists.txt b/ThunkLibs/HostLibs/CMakeLists.txt
+index 28b4234..d5a80c4 100644
+--- a/ThunkLibs/HostLibs/CMakeLists.txt
++++ b/ThunkLibs/HostLibs/CMakeLists.txt
+@@ -138,6 +138,9 @@ foreach(GUEST_BITNESS IN LISTS BITNESS_LIST)
+   generate(libdrm ${CMAKE_CURRENT_SOURCE_DIR}/../libdrm/libdrm_interface.cpp ${GUEST_BITNESS})
+   target_include_directories_from_pkgconfig(libdrm-${GUEST_BITNESS}-deps libdrm /usr/include/drm /usr/include/libdrm)
+   add_host_lib(drm ${GUEST_BITNESS})
++
++  generate(libva ${CMAKE_CURRENT_SOURCE_DIR}/../libva/libva_interface.cpp ${GUEST_BITNESS})
++  add_host_lib(va ${GUEST_BITNESS})
+ endforeach()
+ 
+ set(BITNESS_LIST "32;64")

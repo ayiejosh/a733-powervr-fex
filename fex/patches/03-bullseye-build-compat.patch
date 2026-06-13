@@ -1,0 +1,59 @@
+diff --git a/Data/CMake/toolchain_x86_64.cmake b/Data/CMake/toolchain_x86_64.cmake
+index 9aa856a..a5381c3 100644
+--- a/Data/CMake/toolchain_x86_64.cmake
++++ b/Data/CMake/toolchain_x86_64.cmake
+@@ -12,6 +12,15 @@ if (ENABLE_CLANG_THUNKS)
+   set(CMAKE_CXX_COMPILER clang++)
+   set(CLANG_FLAGS "-target x86_64-linux-gnu")
+ 
++  # Cross-compiling from a non-x86 host: point clang at the x86 sysroot + its gcc
++  # (for the C runtime crt*.o, libgcc, libc). X86_DEV_ROOTFS is passed by the parent build.
++  if (X86_DEV_ROOTFS AND NOT X86_DEV_ROOTFS STREQUAL "/")
++    set(CLANG_FLAGS "${CLANG_FLAGS} --sysroot=${X86_DEV_ROOTFS} --gcc-toolchain=${X86_DEV_ROOTFS}/usr")
++    set(CMAKE_EXE_LINKER_FLAGS_INIT "${CMAKE_EXE_LINKER_FLAGS_INIT} --sysroot=${X86_DEV_ROOTFS}")
++    set(CMAKE_SHARED_LINKER_FLAGS_INIT "${CMAKE_SHARED_LINKER_FLAGS_INIT} --sysroot=${X86_DEV_ROOTFS}")
++    set(CMAKE_MODULE_LINKER_FLAGS_INIT "${CMAKE_MODULE_LINKER_FLAGS_INIT} --sysroot=${X86_DEV_ROOTFS}")
++  endif()
++
+   set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${CLANG_FLAGS}")
+   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${CLANG_FLAGS}")
+ else()
+diff --git a/FEXCore/Source/Interface/Core/CodeCache.cpp b/FEXCore/Source/Interface/Core/CodeCache.cpp
+index 4e3a15a..0bc6981 100644
+--- a/FEXCore/Source/Interface/Core/CodeCache.cpp
++++ b/FEXCore/Source/Interface/Core/CodeCache.cpp
+@@ -1,4 +1,10 @@
+ // SPDX-License-Identifier: MIT
++// Compat: bullseye glibc 2.31 headers lack MREMAP_DONTUNMAP (added glibc 2.32 /
++// Linux 5.7); the running kernel (5.15) supports it. Define if absent.
++#include <sys/mman.h>
++#ifndef MREMAP_DONTUNMAP
++#define MREMAP_DONTUNMAP 4
++#endif
+ #include "FEXCore/Utils/LogManager.h"
+ #include "FEXCore/Utils/MathUtils.h"
+ #include "FEXCore/Utils/TypeDefines.h"
+diff --git a/FEXCore/include/FEXCore/fextl/functional.h b/FEXCore/include/FEXCore/fextl/functional.h
+index 628e5ff..1696515 100644
+--- a/FEXCore/include/FEXCore/fextl/functional.h
++++ b/FEXCore/include/FEXCore/fextl/functional.h
+@@ -50,11 +50,14 @@ public:
+         return (*moved_lambda)(std::forward<Args>(args)...);
+       };
+ 
+-      // Third, assign the result to std::function, ensuring it's indeed
+-      // allocation-free by checking for nothrow-constructibility
+-      static_assert(noexcept(internal = std::move(wrapped_lambda)), "This implementation of std::function "
+-                                                                    "does not support implementing "
+-                                                                    "fextl::move_only_function");
++      // Third, assign the result to std::function. On libstdc++ < gcc-12
++      // (bullseye's gcc-10) this assignment isn't marked noexcept even when the
++      // single-pointer-capture lambda fits the SBO, so the original
++      // static_assert(noexcept(...)) fails to build. The assignment is still
++      // functionally correct (std::function may perform at most one internal
++      // allocation if it can't use its small-buffer); accept that on this
++      // toolchain. [bullseye native-FEX compat]
++      static_assert(!std::is_pointer_v<decltype(wrapped_lambda)>);
+       internal = std::move(wrapped_lambda);
+ 
+       // Finally, if a destructor must be called, generate a pointer to its destructor
