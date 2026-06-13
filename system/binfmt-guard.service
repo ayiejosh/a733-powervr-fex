@@ -1,0 +1,9 @@
+[Unit]
+Description=FEX binfmt safety guard (auto-heals native-exec break from a corrupted FEX-x86_64 magic)
+After=fex-binfmt.service
+[Service]
+ExecStart=/usr/local/sbin/binfmt-guard.sh
+Restart=always
+RestartSec=2
+[Install]
+WantedBy=multi-user.target

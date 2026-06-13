@@ -1,0 +1,15 @@
+[Unit]
+Description=Radxa A7A quiet PWM fan curve (userspace; leaves thermal policy intact)
+Documentation=file:/home/radxa/fan-curve/README.txt
+After=multi-user.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/fan-curve.sh
+Restart=always
+RestartSec=2
+# Belt-and-suspenders: if the service is stopped, leave the fan at full speed.
+ExecStopPost=/bin/sh -c 'for h in /sys/class/hwmon/hwmon*; do [ "$(cat "$h/name" 2>/dev/null)" = pwmfan ] && echo 255 > "$h/pwm1"; done'
+
+[Install]
+WantedBy=multi-user.target

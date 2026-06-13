@@ -1,0 +1,9 @@
+[Unit]
+Description=Register host-native FEX as x86-64 binfmt handler
+After=binfmt-support.service systemd-binfmt.service
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/fex/register-fex-binfmt.sh
+[Install]
+WantedBy=multi-user.target
