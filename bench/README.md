@@ -55,3 +55,13 @@ fio --name=w --rw=randwrite --bs=4k --direct=1 --size=1G --filename=/tmp/fio.bin
 `GPU_BENCHMARK.md` is the original raw GPU run for reference.
 **Methodology note:** these are indicative single-board numbers; report your kernel,
 DDK version (`strings /usr/lib/libVK_IMG.so* | grep -m1 24.`), board, and ambient temp.
+
+## Unaligned-atomic overhead (the "187× myth")
+```sh
+x86_64-linux-gnu-gcc -O2 -static uatomic.c -o uatomic_x86      # cross-compile the x86 bench
+FEXInterpreter ./uatomic_x86 30000000 0    # aligned   (baseline)
+FEXInterpreter ./uatomic_x86 30000000 2    # unaligned (<16B)
+FEXInterpreter ./uatomic_x86 30000000 14   # split-lock (crosses 16B)
+# On this A733 / current FEX: aligned ~154 Mops, unaligned ~61 (2.5x), split-lock ~57 (2.7x).
+# Config-invariant (TSOEnabled / KernelUnalignedAtomicBackpatching / etc. change nothing).
+```

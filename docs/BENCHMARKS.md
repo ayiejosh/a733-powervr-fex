@@ -22,12 +22,21 @@ Per-instruction-class slowdown of x86-under-FEX vs the equivalent native ARM
 | atomics | **1.08×** |
 | x87 floating point | **1.44×** |
 | branchy / unpredictable | **2.17×** |
-| **unaligned atomics** | **187×** ⚠️ (per-op SIGBUS trap; pathological, rare in practice; not config-fixable — no LRCPC2 on A733) |
+| **unaligned atomics** | **~2.5×** (re-measured 2026-06-13; split-lock crossing 16B ~2.7×) — see note ‡ |
 
 **Practical note:** real-app slowness under FEX (e.g. Chrome) is dominated by
 **JIT *compile* time on cold start**, not steady-state translation — an AOT/code
 cache is the lever, not per-instruction overhead. No full-application fps figure
 was measured; treat the table as instruction-class characterization.
+
+**‡ CORRECTION (2026-06-13):** an earlier note claimed unaligned atomics were **187×**.
+Re-measuring on this box with the installed FEX (`bench/uatomic.c`, a `lock xadd` loop)
+shows only **~2.5×** vs the aligned equivalent (split-lock ~2.7×), and it's
+**config-invariant** (toggling `TSOEnabled` / `KernelUnalignedAtomicBackpatching` /
+`HalfBarrierTSOEnabled` / `StrictInProcessSplitLocks` changes nothing) — current FEX
+emits unaligned-safe code at JIT time rather than SIGBUS-trapping per op. The 187×
+figure was **not reproducible** (likely an older FEX or a no-backpatch measurement).
+Reproduce: `x86_64-linux-gnu-gcc -O2 -static bench/uatomic.c -o u && FEXInterpreter ./u 30000000 0|2|14`.
 
 ## GPU (PowerVR BXM-4-64, GLES 3.2, DDK 24.2@6603887)
 Offscreen FBO, ALU-loop fragment shader, 1280×720, Mpix/s. GPU vs the CPU doing the

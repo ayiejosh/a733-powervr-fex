@@ -81,6 +81,7 @@ no GPU/ethernet yet). Months+ away, but it's the only path that raises the ceili
 - **FEX** runs x86/x86-64; a **custom Vulkan thunk** forwards x86 Vulkan to the
   native ARM PowerVR GPU (compute + WSI verified). Chrome (x86) runs and paints.
 - **box64** (upstream, dynarec) runs x86-64 userspace.
+- **Unaligned atomics cost ~2.5× (re-measured 2026-06-13; old "187×" not reproducible) and are hardware-bound, not a config gap.** The A733 (Cortex-A76, ARMv8.2) has `atomics` (LSE) + `lrcpc` (v8.3) but lacks **`uscat` (FEAT_LSE2)** and `ilrcpc` (LRCPC2) — both ARMv8.4. LSE2 is the feature that lets atomics run unaligned within a 16-byte granule without faulting; without it, an unaligned/split-lock atomic raises SIGBUS and FEX must trap + emulate a process-wide global lock. FEX already mitigates by default (`KernelUnalignedAtomicBackpatching`, `HalfBarrierTSOEnabled`); box64's only "fast" option (`ALIGNED_ATOMICS=1`) just SIGBUS-crashes on unaligned LOCK ops. Even *with* LSE2/LRCPC2, x86 memory-model emulation still costs ~10×. Rare in practice (compilers align atomics). **Forward risk:** FEX issue #4120 plans to raise the minimum to ARMv8.4 — which could drop A733 support.
 - **Not viable here:** DirectX/DXVK gaming (PowerVR is missing DXVK-required
   Vulkan extensions) and Steam's CEF UI under FEX (bwrap/pressure-vessel blocker).
   Documented as findings, not as working features.
