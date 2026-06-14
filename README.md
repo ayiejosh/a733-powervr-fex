@@ -46,7 +46,7 @@ differ. Exact baseline:
 |-----|----------|
 | [`kernel/`](kernel/) | **`pvrsrvkm` DRM PRIME-import patch** — adds standard `gem_prime_import` / `prime_fd_to_handle` (which the vendor left unimplemented) so zink/wlroots can share buffers with the GPU. The single most useful patch here. |
 | [`gpu/`](gpu/) | **Zink-on-Vulkan** GL recipe (incl. the one Mesa patch needed) + a **GPU-composited `sway` + `wayvnc`** Wayland desktop (configs + service files). |
-| [`fex/`](fex/) | **Custom FEX Vulkan thunk** (x86 Vulkan → native PowerVR GPU) + FEX setup/launcher scripts + Chrome-on-FEX recipe. |
+| [`fex/`](fex/) | **Custom FEX Vulkan thunk** (x86 Vulkan → native PowerVR GPU) + a **full x86 OpenGL ES 3.2 thunk** ([`fex/thunks/libEGL-gles/`](fex/thunks/libEGL-gles/) — x86-64 **and** i386 → native PowerVR, 358/358 funcs, near-native speed) + FEX setup/launcher scripts + Chrome-on-FEX recipe. |
 | [`box64/`](box64/) | Usage notes for box64 on A733 (links upstream; nothing forked). |
 | [`docs/FINDINGS.md`](docs/FINDINGS.md) | **The capability matrix** — every proven-working path and every confirmed wall, with the *why*. Read this first if you're deciding what's worth attempting. |
 | [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) | Measured numbers — CPU, FEX x86→ARM overhead, GPU vs CPU, RAM, UFS, thermal. |
@@ -58,6 +58,7 @@ Full tables in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md). Headlines:
 - **CPU (native ARM):** 875 ev/s single-core (A76 @ 2.0 GHz), 3204 ev/s all-8 (sysbench).
 - **FEX x86→ARM overhead** (native ARM = 1.0×): most code **1.1–2.2×** — atomics 1.08×, flags 1.26×, x87 1.44×, branchy 2.17×; unaligned-atomics a pathological **187×**. Real-app cost is dominated by **JIT compile on cold start**, not steady-state.
 - **GPU vs CPU** (PowerVR BXM, offscreen GLES shader): **~150–175×** the CPU's best case, **~600×** vs the software (softpipe) fallback. Fill-rate ceiling ~4.2 Gpix/s.
+- **x86 GLES 3.2 under FEX** (measured, same GPU; native ARM → x86-64/i386 FEX): GPU-bound work **identical** — shader-ALU **207 GFLOP/s**, compute **9.1 GIntOp/s**, triangle **14.2 Mtri/s**, fill **~6.7 Gpix/s**, texturing **~8.6 Gtexel/s** (all **1.00×**). Only cheap GL call dispatch shows overhead: `glClear` **3,427 → ~3,020 k/s (~1.13×)**. dEQP-GLES3 sampled ~99 % pass. Full table + sources: [`fex/thunks/libEGL-gles/BENCHMARKS.md`](fex/thunks/libEGL-gles/BENCHMARKS.md).
 - **RAM (LPDDR5 4800 MT/s):** ~15.5 GB/s read (8-thread). **UFS:** 1.64 GB/s read / 255 MB/s write / 115k IOPS 4K-read.
 
 ## ⚠️ What can't be redistributed here — and the workaround

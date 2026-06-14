@@ -70,6 +70,8 @@ fi
 # ===== RATIOS — the reliable change-signals (A/B run back-to-back, load-independent) =====
 r(){ awk "BEGIN{if($2>0)printf \"%.1f\",$1/$2; else print \"NA\"}"; }
 echo "# --- ratios (compare THESE across commits; absolutes above are load-sensitive ±20%) ---"
-[ -n "${AS:-}" ] && m ratio.atomic.stock_over_patched "$(r "${A0:-0}" "${AS:-0}")x   # unaligned-atomic patch win"
+[ -n "${AS:-}" ] && m ratio.atomic.patch_speedup "$(r "${A2:-0}" "${AS:-0}")x   # THE WIN: unaligned op, patched vs stock (same op)"
+[ -n "${AS:-}" ] && m info.atomic.stock_penalty_vs_aligned "$(r "${A0:-0}" "${AS:-0}")x   # info: stock unaligned vs aligned"
+m info.atomic.patched_penalty_vs_aligned "$(r "${A0:-0}" "${A2:-0}")x   # info: residual unaligned vs aligned (patched)"
 [ -n "${ST:-}" ] && m ratio.tcreate.stock_over_patched "$(r "${ST:-0}" "${FT:-0}")x   # thread-pooling patch win"
 m ratio.x87.RP0_over_RP1 "$(r "${X0:-0}" "${X1:-0}")x   # X87ReducedPrecision win"

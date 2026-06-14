@@ -1,0 +1,12 @@
+#!/bin/bash
+# Run x86-64 EGL+GLES apps under FEX on the native PowerVR GPU.
+export FEX_ROOTFS=/home/radxa/crd-rootfs
+export FEX_THUNKHOSTLIBS=/home/radxa/fex-gles-thunk/hostlibs
+export FEX_THUNKGUESTLIBS=/usr/share/fex-emu/GuestThunks
+# HOST: make the GL host thunk's dlopen("libGL.so.1") resolve to vendor hardware GLES
+export LD_LIBRARY_PATH=/home/radxa/fex-gles-thunk/gleslib:/usr/local/lib:${LD_LIBRARY_PATH}
+CFG=$(mktemp /tmp/fexgles.XXXX.json)
+echo '{ "ThunksDB": { "EGL":1, "GL":1, "GLESv2":1, "Vulkan":1, "drm":1 } }' > "$CFG"
+export FEX_THUNKCONFIG="$CFG"
+export DISPLAY="${DISPLAY:-:0}" XAUTHORITY="${XAUTHORITY:-/home/radxa/.Xauthority}"
+exec /opt/fex/bin/FEXInterpreter "$@"

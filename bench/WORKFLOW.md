@@ -7,14 +7,17 @@ and after**, and the **before→after diff goes in the commit message**. Update
 
 ## Do this per change
 ```sh
-bench/run.sh > /tmp/before.txt          # (or: git show HEAD:bench/baseline.txt)
-# ... make the change, rebuild/redeploy ...
-bench/run.sh > /tmp/after.txt
-diff /tmp/before.txt /tmp/after.txt     # <- paste this into the commit body
-# if it's a real, intended improvement:
-cp /tmp/after.txt bench/baseline.txt
-git commit -am "<what changed> + benchmark diff (see body)"
+# 1. make your change, rebuild/redeploy, then:
+bench/compare.sh            # runs the suite + prints a human-readable diff vs the
+                            # committed baseline (git main), with a SIGNAL/ABSOLUTES
+                            # split, Δ%, ▲ better / ▼ worse / ≈ noise, and a verdict.
+# 2. paste that output into the commit body.
+# 3. if it's a real, intended improvement, refresh the baseline:
+bench/run.sh > bench/baseline.txt
+git commit -am "<what changed> + benchmark comparison (see body)"
 ```
+`bench/compare.sh` resolves the baseline as: `origin/main` → local `main` → `HEAD` →
+`bench/baseline.txt` (whichever it finds first); override with `BASELINE=path`.
 
 ## What to trust in the diff
 - **Compare the `ratio.*` lines and the `gpu.*` lines.** These are the reliable

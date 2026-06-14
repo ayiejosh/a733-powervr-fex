@@ -1,19 +1,21 @@
-# a733-bench  kernel=5.15.147-21-a733  fex=FEXInterpreter  date=2026-06-13T17:44Z
-cpu.1thread.evps:                  876.34
-gpu.glbench.loop4.Mpix:            4136
-gpu.glbench.loop16.Mpix:           1210
+# a733-bench  kernel=5.15.147-21-a733  fex=FEXInterpreter  date=2026-06-13T17:51Z
+cpu.1thread.evps:                  754.60
+gpu.glbench.loop4.Mpix:            4180
+gpu.glbench.loop16.Mpix:           1214
 gpu.glbench.loop64.Mpix:           315
 gpu.glbench.loop256.Mpix:          80
-fex.atomic.off0.Mops:              153.69
-fex.atomic.off2.Mops:              60.91
-fex.atomic.off14.Mops:             57.13
-fex.atomic.off2.STOCK.Mops:        0.69
-native.tcreate.nsop:               16358
-fex.tcreate.nsop:                  132854
-fex.tcreate.STOCK.nsop:            807952
-fex.x87.RP0.nsiter:                77.7
-fex.x87.RP1.nsiter:                4.1
+fex.atomic.off0.Mops:              120.75
+fex.atomic.off2.Mops:              48.30
+fex.atomic.off14.Mops:             43.36
+fex.atomic.off2.STOCK.Mops:        0.59
+native.tcreate.nsop:               21441
+fex.tcreate.nsop:                  199995
+fex.tcreate.STOCK.nsop:            1142418
+fex.x87.RP0.nsiter:                87.5
+fex.x87.RP1.nsiter:                5.2
 # --- ratios (compare THESE across commits; absolutes above are load-sensitive ±20%) ---
-ratio.atomic.stock_over_patched:   222.7x   # unaligned-atomic patch win
-ratio.tcreate.stock_over_patched:  6.1x   # thread-pooling patch win
-ratio.x87.RP0_over_RP1:            19.0x   # X87ReducedPrecision win
+ratio.atomic.patch_speedup:        81.9x   # THE WIN: unaligned op, patched vs stock (same op)
+info.atomic.stock_penalty_vs_aligned: 204.7x   # info: stock unaligned vs aligned
+info.atomic.patched_penalty_vs_aligned: 2.5x   # info: residual unaligned vs aligned (patched)
+ratio.tcreate.stock_over_patched:  5.7x   # thread-pooling patch win
+ratio.x87.RP0_over_RP1:            16.8x   # X87ReducedPrecision win
