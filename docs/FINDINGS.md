@@ -1,87 +1,160 @@
-# A733 / PowerVR BXM-4-64 — capability matrix & walls
+# A733 / PowerVR BXM-4-64 — capability matrix & walls (trixie / 6.6)
 
 Hardware: Allwinner A733 (`sun60iw2`), GPU **Imagination PowerVR B-Series
-BXM-4-64 MC1** (BVNC `36.56.104.183`), Radxa BSP **Debian 11 (bullseye)**, kernel
-`5.15.147-21-a733` (NOT Trixie / NOT 6.6 BSP), Imagination DDK `24.2@6603887` (kernel `pvrsrvkm` +
-`img-bxm-dkms`). Vulkan ICD `libVK_IMG`.
+BXM-4-64 MC1** (BVNC `36.56.104.183`, Vulkan **1.3.277**), Radxa BSP **Debian 13
+(trixie)**, kernel `6.6.x-aw2511`, closed `pvrsrvkm` (out-of-tree DKMS) + closed
+`libVK_IMG` Vulkan ICD.
 
-The short version: **the GPU works great per-workload; it cannot be the system
-default renderer or drive a desktop-GL environment.** Details below.
+> This is the **trixie / 6.6** matrix. The Debian 11 / 5.15 matrix is on the
+> [`bullseye`](../../../tree/bullseye) branch — a different stack.
 
-## ✅ Proven working
+The short version: **the GPU works great per-workload — including GPU Direct3D
+9/10/11 and off-screen GL — but it cannot drive a GPU-composited desktop (that
+deadlocks the kernel).** Details below.
 
-**GPU compute / graphics**
-- **Vulkan 1.3** — vendor ICD (`libVK_IMG`, `img_icd.json`) enumerates
-  `PowerVR B-Series BXM-4-64 MC1`, INTEGRATED_GPU, ~5.9 GB device-local. Works
-  via direct ICD probe; the bullseye system loader (1.2.162) is too old for a
-  1.3 ICD, so use a newer loader or load the ICD directly.
-- **OpenGL via Zink-on-Vulkan** — Mesa 25.3 `zink` on the vendor Vulkan ICD →
-  `zink (PowerVR B-Series BXM-4-64 MC1)`. Needs one Mesa patch (see `gpu/`).
-- **Native GLES 3.2** at full GPU speed — offscreen (GBM render node) **and** on
-  a native glamor X11 server. Offscreen FBO shader throughput ~1.2 Gpix/s at a
-  64-deep ALU loop (≈150–600× the CPU/llvmpipe path).
-- **OpenCL** — `libPVROCL` present.
+## Proven working
 
-**Kernel / compositor**
-- **DRM PRIME import** — the vendor `pvrsrvkm` shipped without
-  `prime_fd_to_handle` / `gem_prime_import` (ENOSYS), which blocked zink/wlroots
-  buffer sharing. The patch in `kernel/` implements it; foreign dma-buf import
-  (e.g. from `/dev/dma_heap/system`) is proven GPU-renderable.
-- **GPU-composited Wayland desktop** — `sway` (wlroots, vendor GLES2) composites
-  on the GPU; captured by `wayvnc` → noVNC for a browser desktop. This is the one
-  reliably-capturable GPU desktop. Recipe in `gpu/sway/`.
+**x86 / x64 emulation**
+- **Linux x86-64 ELF** -> routed to **FEX** by default (binfmt). FEX handles
+  clone3/threads and static-glibc multithreading correctly. Run a bare
+  `./prog.x86_64` and it uses FEX.
+- **Linux x86-32 ELF** -> FEX (`FEX-x86` binfmt).
+- **box64 v0.4.3** (built from source) at `/usr/bin/box64`, used **explicitly**
+  (`box64 app`) — clone3 fixed vs the Debian 0.3.4, ~9% faster, with a heavily-tuned
+  `/etc/box64.box64rc`. Strength = dynamically-linked games via lib-wrapping.
 
-**Media**
-- **H.264 hardware encode** works (VE2). HW decode H.265/VP9/AVS2 per datasheet.
+**Windows apps (Hangover 11.9 = wine 11.9 + FEX/box64 WoW64)** — see `windows/`
+- **CLI/console apps** (`winrun`): verified 7-Zip 24.08 — full compress/test/extract
+  byte-perfect, plus the multithreaded LZMA benchmark.
+- **GUI apps** (`guirun`, **software-GL** window): verified Notepad, WordPad, 7-Zip
+  File Manager — real titled windows, clean lifecycle. GUI render is CPU/llvmpipe
+  (the PowerVR GL blob deadlocks wine graphics init).
 
-## 🧱 Walls (with the reason)
+**GPU Direct3D 9/10/11 (FL 11_0)** via native arm64ec DXVK-Sarek -> PowerVR Vulkan — see `gpu/dxvk/`
+- WORKS: **instancing** (~370k tris/s), **compute/GPGPU**, **render-to-texture**,
+  **textures incl. BC1-5** (decoded in-driver), **depth/Z**, **MRT**, **windowed
+  present** (~227 fps; software-llvmpipe window). Verified end-to-end (`tri.exe`,
+  textured+depth+BC1 `cube.exe`) without wedging the board.
+- The headline new capability vs the bullseye branch (where DX/DXVK was a documented
+  dead-end). See the D3D capability matrix below.
 
-**Hard — driver/silicon class, not fixable on the shipped vendor stack**
+**GPU OpenGL via zink -> PowerVR Vulkan (OFF-SCREEN)** — see `gpu/README.md`
+- `glrun` runs **EGL/off-screen** GL on the GPU (system Mesa 25.0.7 zink + the
+  feature-strip Vulkan layer). **glmark2-es2 `--off-screen` = 661.** GLES2 / GL2.1
+  class (hardware feature ceiling). **Windowed / desktop GL does NOT work** (see walls).
 
-- **KDE Plasma / KWin GPU = impossible.** KWin needs desktop OpenGL
-  (GL ≥ 3 / GLSL > 1.20). Reachable *display* GL here is **GLES2-class**:
-  - native vendor GLES 3.2 only works **offscreen** (GBM) — no window-system
-    path (vendor Mesa built `xorg_release`/X11-only; even X11 DRI3 resolves the
-    driver name to `zink`, not the native PowerVR driver);
-  - **Zink** gives a display path but is capped at **GL 2.1 / GLSL 1.20** because
-    the mobile Vulkan lacks features Zink needs for higher GL (geometryShader,
-    fillModeNonSolid, …).
-  Result: KWin can't create a GL context (X11) / has no client EGL (Wayland) and
-  falls back to software (XRender / QtQuick-software). Tested many ways.
-- **No transparent / default EGL→GPU.** GLVND only ships the Mesa (llvmpipe) EGL
-  vendor; the vendor EGL is a **closed, X11-only Mesa fork** with a private
-  `__DRI` ABI. There's no clean drop-in PowerVR EGL vendor to register
-  (reproducing one from mainline = re-forging Imagination's private patches —
-  abandoned). **Default stays llvmpipe; GPU is opt-in per app.**
-- **Native Wayland GL *clients* crash** — zink's `kopper` WSI present path
-  SIGSEGVs on this Vulkan ICD, and the vendor Mesa has no Wayland EGL platform.
-  So `sway` *composites* on GPU, but GPU Wayland client apps don't present.
-- **HEVC hardware *encode*** — dead end (no IDR; vendor lib limit). H.264 encode
-  is the ceiling.
-- **DDK can't be upgraded** — `24.2@6603887` is identical across the Radxa apt
-  repo, BSP v1.4.8, the 6.6 BSP, and every community build.
+**GPU compute / Vulkan**
+- The closed `libVK_IMG` Vulkan blob **works for off-screen render** (compute,
+  graphics-to-FBO). Vulkan 1.3.277, INTEGRATED_GPU, ~5.9 GB device-local.
 
-**Soft — environmental / version, not silicon**
+**Kernel**
+- **DRM PRIME import** — the `pvrsrvkm` patch in `kernel/` (still applies on 6.6)
+  implements `prime_fd_to_handle` / `gem_prime_import`, so zink/kmsro can share
+  buffers with the GPU. The off-screen kmsro/renderonly bridge on `card0` is proven
+  (a SCANOUT|RENDER buffer succeeds).
 
-- **Native X11 GPU desktop can't be screen-scraped** — glamor GPU→CPU readback
-  hangs `x11vnc`; `AccelMethod none` hangs the X server. Only `sway` + `wayvnc`
-  (wlroots screencopy) captures cleanly.
-- **System Vulkan loader too old** (1.2.162) for the 1.3 ICD.
+## Walls (with the reason)
 
-## 🔮 The only lever that lifts the hard walls
+**Hard — kernel/driver class, not fixable from userspace**
 
-Mainline **`drm/imagination` + Mesa `pvr`** (clean open Vulkan → clean EGL; Zink
-could then expose GL ≥ 3; transparent wiring; Wayland clients; potentially
-KDE-GPU). The BXM family is covered by that driver, but **A733 mainline is at the
-bare-DTS upstreaming stage** (first DTS series posted mid-2026 — CPUs/MMC/UART/SD,
-no GPU/ethernet yet). Months+ away, but it's the only path that raises the ceiling.
+- **GPU-accelerated DESKTOP (X11 or Wayland) = HARD-BLOCKED at the KERNEL.** The
+  off-screen bridge (kmsro/renderonly on `card0` + zink/PowerVR render) is *proven*.
+  But the moment a **live compositor** drives the PowerVR GPU to scan out the HDMI
+  display, the **kernel deadlocks** — `pvrsrvkm` `mutex_spin_on_owner` in IRQ -> hard
+  hang -> power-cycle (confirmed in `journalctl -b -1` after the attempt). Same failure
+  class: KDE GL compositing, `DXVK_HUD`, and `scrot` while a GPU app runs. **Off-screen
+  GPU render is fine.** NOT fixable from userspace — needs a fixed `pvrsrvkm`/kernel.
+  The desktop stays on **software-rendered X11** (the `LIBGL_ALWAYS_SOFTWARE`
+  workaround is the board's defense against exactly this hang). See `kernel/`.
+- **D3D12** (vkd3d-proton) — **infeasible**: needs Vulkan features the blob lacks.
+- **Geometry shaders / tessellation / MSAA — not native.** The blob *advertises*
+  `geometryShader=1` but GS *pipelines* fail (the report is a lie); `tessellation` is
+  unsupported; no native MSAA. GS is emulated via compute (see below) but at **~80x
+  slow** = compatibility-grade only.
+- **Open Mesa PowerVR (`pvr`) Vulkan on this kernel — HARD-BLOCKED.** The open driver
+  targets the **mainline `powervr` DRM UAPI** (`DEV_QUERY`/`CREATE_BO`/`SUBMIT_JOBS`);
+  our kernel only implements the **closed `pvrsrvkm` bridge UAPI** (`PVR_SRVKM_CMD` +
+  sync ioctls). The ICDs don't match; mainline `powervr` is absent from this 6.6 BSP
+  (no `CONFIG_DRM_POWERVR`, DT node is `img,gpu` sunxi-BSP, no mainline-format firmware
+  for BVNC `36.56.104.183`). So the closed blob is the only GPU stack here.
 
-## x86 emulation (FEX / box64) — see `fex/`, `box64/`
+**Soft — environmental / emulator class**
 
-- **FEX** runs x86/x86-64; a **custom Vulkan thunk** forwards x86 Vulkan to the
-  native ARM PowerVR GPU (compute + WSI verified). Chrome (x86) runs and paints.
-- **box64** (upstream, dynarec) runs x86-64 userspace.
-- **Unaligned atomics cost **~190× on stock FEX** (≈1430 ns/op; verified 2026-06-13) — the original figure was right. Root cause: A733 lacks `FEAT_LSE2` (`uscat`), so unaligned/split-lock atomics SIGBUS-trap per op. It is **fixable in FEX codegen, not config**: a local `Arm64.cpp` patch that engages the unaligned-atomic backpatch brings it to **~2.5×** (~88× win) — but that is a local patch, not upstream FEX.** The A733 (Cortex-A76, ARMv8.2) has `atomics` (LSE) + `lrcpc` (v8.3) but lacks **`uscat` (FEAT_LSE2)** and `ilrcpc` (LRCPC2) — both ARMv8.4. LSE2 is the feature that lets atomics run unaligned within a 16-byte granule without faulting; without it, an unaligned/split-lock atomic raises SIGBUS and FEX must trap + emulate a process-wide global lock. FEX already mitigates by default (`KernelUnalignedAtomicBackpatching`, `HalfBarrierTSOEnabled`); box64's only "fast" option (`ALIGNED_ATOMICS=1`) just SIGBUS-crashes on unaligned LOCK ops. Even *with* LSE2/LRCPC2, x86 memory-model emulation still costs ~10×. Rare in practice (compilers align atomics). **Forward risk:** FEX issue #4120 plans to raise the minimum to ARMv8.4 — which could drop A733 support.
-- **Not viable here:** DirectX/DXVK gaming (PowerVR is missing DXVK-required
-  Vulkan extensions) and Steam's CEF UI under FEX (bwrap/pressure-vessel blocker).
-  Documented as findings, not as working features.
+- **box64 static-glibc multithreaded binaries -> abort.** box64 0.4.3 corrupts the
+  glibc mutex `__owner` field on static-linked pthread programs (`pthread_mutex_lock`
+  assertion / SIGSEGV / deadlock), **nondeterministically, under every config tried**
+  (22 configurations, 0 passes — it is not tunable away). **Mitigation:** FEX is the
+  binfmt default for bare `./binary` execs and handles static MT correctly, so this
+  only bites if box64 is invoked *explicitly* on a static threaded binary. Dynamically
+  linked x86-64 MT binaries run fine under box64.
+- **Windows / D3D GUI is software-GL.** The PowerVR GL blob deadlocks wine's graphics
+  init, so `guirun` and DXVK's windowed *present* use an llvmpipe (CPU) window. The D3D
+  *render* is on the real GPU; only the final window blit is software (~1.9 ms/frame).
+
+## D3D capability matrix (DXVK-Sarek -> PowerVR Vulkan)
+
+| Feature | Status | Note |
+|---|---|---|
+| D3D11 feature level 11_0 | works | `FL=0xb000`; D3D9/10 paths via DXVK too |
+| Instancing | works | ~370k tris/s |
+| Compute / GPGPU | works | |
+| Render-to-texture / depth (Z) / MRT | works | |
+| Textures incl. **BC1-5** | works | decoded in-driver (a patch added to this DXVK-Sarek build) |
+| Windowed present | works | software-llvmpipe window (~1.9 ms/frame), ~227 fps trivial scene |
+| Geometry shaders | emulated | compute-based, ~80x slow, gated OFF (`d3d11.emulateGeometryShaders`) |
+| Tessellation / MSAA (native) | no | blob lacks the features |
+| D3D12 (vkd3d-proton) | no | needs Vulkan features the blob lacks |
+
+> **NEVER set `DXVK_HUD`** — it wedges the GPU (the live-compositor deadlock class).
+
+## Why the draw-call wall is *not* GPU/emulation bound
+
+Profiling the shipping DXVK-Sarek stack (strace delta + DXVK info log; `perf`
+unavailable on the custom kernel):
+
+- The only state op that materially costs is the **pipeline (PSO) swap**: ~+3 us/draw,
+  ~40% throughput drop (~140k -> ~99k trivial draws/s; the distinct-PSO ceiling for
+  real content lands at **~1000-1100 draws/s**). Constant-buffer / SRV / vertex-buffer
+  rebinds and Draw-vs-DrawInstanced are all near-noise.
+- The PSO cost lands on **DXVK's CPU side** (state re-record + CS-thread handoff): the
+  added syscalls are **futex** (DXVK thread sync), while **ioctl** (the kernel/driver
+  submit count) stays **flat** — so it is **not** the wine->driver thunk, **not** the
+  PowerVR blob, and **not** shader compilation (state-cache hit confirmed).
+- For a **realistic** textured/depth frame, the dominant cost is **GPU fill** (PowerVR
+  BXM-4-64 raster/fragment ceiling), scaling linearly with triangle count and
+  dominating CPU-record by 4-6x. No remaining DXVK software lever speeds it.
+
+## Geometry-shader compute-emulation (branch `gs-compute`)
+
+A compute-based GS emulation (libpoly-style: GS->compute SPIR-V codegen + a 3-pass
+runtime driver — VS capture -> compute-GS dispatch -> counter-driven indirect draw) is
+**proven to render**: the probe `gs.exe` produces the GS-tinted output (`GS_OK`,
+RC=0, reproducible) on branch `gs-compute`. But it is **~80x slower** than a native
+draw (worst-case small-draw: each emulated GS draw replaces one native draw with a
+serialized copy + 2 dispatches + counter->indirect chain), so it is **compatibility-grade
+only**, gated behind `dxvk.conf d3d11.emulateGeometryShaders` (default OFF). The
+general Pass-1 (VS-as-compute for arbitrary app vertex shaders, with format-aware input
+gather) is **scoped but not implemented** — the current capture path is a probe-specific
+shortcut. Full detail in `gpu/dxvk/README.md`.
+
+## The only lever that lifts the hard walls
+
+A **fixed `pvrsrvkm`** (no live-compositor mutex deadlock) and/or **mainline
+`drm/imagination` + Mesa `pvr`** for A733 — which would give a clean open Vulkan, a
+GPU desktop, and potentially the missing features. Mesa's `pvr` docs *list* this exact
+part (BXM-4-64, BVNC `36.56.104.183`), but on **this** kernel the UAPI/DT/firmware
+don't line up (see the open-Mesa wall above), and A733 mainline is at the bare-DTS
+upstreaming stage. Months+ away, but it's the only path that raises the ceiling.
+
+## x86 emulation tuning — see `fex/`, `box64/`
+
+- **FEX is the default** x86-64/x86-32 Linux ELF interpreter (binfmt). Trixie tuning:
+  `TSOEnabled=0` + `Multiblock=1` (~-7% on the CPU bench; the load-bearing knob is
+  TSO-off). **TSO-off carries a multithread-correctness risk** — revert if a
+  multithreaded guest misbehaves.
+- **box64 0.4.3** (explicit invoke): `CALLRET=1` (~-9%) + `SAFEFLAGS=0` (~-4%) ~ -15%
+  on the CPU bench. `SAFEFLAGS=0` is a flag-correctness risk; `CALLRET=1` alone is the
+  safe ~-9%.
+- Single-thread emulation reaches ~**71%** (FEX-tuned) / ~**64%** (box64-tuned) of
+  native on a big core. The biggest system lever is **core placement** (big vs LITTLE,
+  ~2.3-6.5x) — handled by the scheduler; don't hard-pin.

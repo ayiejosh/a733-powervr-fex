@@ -1,67 +1,46 @@
-# GPU OpenGL (Zink) + a GPU-composited Wayland desktop
+# GPU on A733 / PowerVR BXM-4-64 (trixie / 6.6)
 
-## 1. OpenGL via Zink-on-Vulkan
+The PowerVR GPU is **usable per-workload** on the trixie stack — for **Direct3D**,
+**off-screen OpenGL**, and Vulkan compute/render — but it **cannot drive a
+GPU-composited desktop** (a live compositor on `pvrsrvkm` deadlocks the kernel). Pick the
+path for your workload:
 
-The vendor stack gives you Vulkan (via `libVK_IMG`) but no usable display-GL. The
-working route to **GPU OpenGL** is Zink (GL → Vulkan) on a recent Mesa, on top of
-the vendor Vulkan ICD.
+| Want | Use | Doc |
+|---|---|---|
+| **GPU Direct3D 9/10/11** (windowed or headless) | `d3drun` (DXVK-Sarek -> PowerVR Vulkan) | [`dxvk/`](dxvk/) |
+| **GPU OpenGL, off-screen / EGL** | `glrun` (zink -> PowerVR Vulkan) | [`zink-trixie.md`](zink-trixie.md) |
+| **GPU Vulkan compute / render** | native `libVK_IMG` ICD (off-screen) | `../bench/` |
+| A **GPU desktop** | — not possible — | [`../kernel/`](../kernel/), [`../docs/FINDINGS.md`](../docs/FINDINGS.md) |
 
-Build Mesa 25.3.x with:
+## 1. Direct3D (the headline new capability) -> [`dxvk/`](dxvk/)
 
-```
--Dgallium-drivers=zink,softpipe -Dvulkan-drivers= \
--Dplatforms=x11,wayland -Dglvnd=disabled -Dllvm=disabled
-```
+GPU-accelerated **D3D9/10/11 (FL 11_0)** via a native arm64ec **DXVK-Sarek** build over
+the closed PowerVR Vulkan blob: instancing, compute, render-to-texture, **BC1-5** textures
+(in-driver decode), depth/MRT, windowed present. Geometry shaders are compute-emulated
+(slow, gated off); D3D12 is infeasible. Full recipe, capability matrix, and the critical
+`DXVK_HUD` warning in [`dxvk/README.md`](dxvk/README.md).
 
-(Mesa 25.3 needs `wayland-scanner` ≥ 1.20; bullseye ships 1.18 — build wayland
-1.23 first and put its `bin` on PATH + `pkgconfig` on `PKG_CONFIG_PATH`.)
+## 2. OpenGL via zink (off-screen only) -> [`zink-trixie.md`](zink-trixie.md)
 
-**One required patch:** the img Vulkan device lacks `robustness2.nullDescriptor`,
-which Zink hard-requires. In `src/gallium/drivers/zink/zink_screen.c`, find the
-`nullDescriptor` check (around the feature-validation block, ~line 3457 in 25.3.6)
-and make it **warn + continue** instead of `goto fail`. (`fillModeNonSolid=0` is
-only a warning — wireframe — not a blocker.)
+GPU OpenGL via **zink** on the **system Mesa 25.0.7** + the PowerVR Vulkan ICD + the
+feature-strip layer. **glmark2-es2 `--off-screen` = 661.** GLES2/GL2.1 class; **windowed
+and desktop GL do NOT work**. Note the **dual-Mesa conflict** (system 25.0.7 vs
+`/usr/local` IMG 24.0.1) — `glrun` scopes the env around it. Details in
+[`zink-trixie.md`](zink-trixie.md).
 
-Run any GL app against it:
+## 3. The kernel wall: no GPU-composited desktop
 
-```sh
-GALLIUM_DRIVER=zink MESA_LOADER_DRIVER_OVERRIDE=zink \
-LIBGL_DRIVERS_PATH=<mesa-zink>/lib/aarch64-linux-gnu/dri \
-VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/img_icd.json \
-LD_LIBRARY_PATH=<mesa-zink>/lib/aarch64-linux-gnu:/usr/local/lib \
-<your-gl-app>
-# GL_RENDERER -> zink (PowerVR B-Series BXM-4-64 MC1)
-```
+A live compositor driving the PowerVR GPU to scan out HDMI **deadlocks the kernel**
+(`pvrsrvkm` mutex spin-on-owner in IRQ -> power-cycle). The off-screen kmsro/renderonly
+bridge on `card0` is *proven* (a `SCANOUT|RENDER` gbm buffer + zink/PowerVR succeeds), so
+the wall is the closed `pvrsrvkm`, not Mesa. The desktop stays software-rendered X11. See
+[`../kernel/`](../kernel/) and [`../docs/FINDINGS.md`](../docs/FINDINGS.md).
 
-> Gotcha: `LIBGL_ALWAYS_SOFTWARE=1` is often set in desktop session env and forces
-> zink-CPU. `unset` it.
+> The `sway/` configs (a GPU-composited Wayland desktop, from the bullseye line) are kept
+> for reference, but on this stack any **live** GPU compositor hits the kernel deadlock
+> above — they are not a working desktop here. Off-screen GPU render is unaffected.
 
-Native GLES (no Zink) also works **offscreen** via `LD_LIBRARY_PATH=/usr/local/lib`
-against `/dev/dri/renderD128`, and on a native glamor X11 server — but **not** as a
-default and **not** for Wayland clients (see `docs/FINDINGS.md`).
+## Kernel patch
 
-## 2. GPU-composited Wayland desktop (`sway` + `wayvnc`)
-
-`sway/` holds a working, capturable GPU desktop:
-
-- `sway.config` — headless output 1280×720, keybinds, autostart terminal.
-- `waybar.config` + `waybar-style.css` — status bar with **tappable Apps/Term
-  buttons** (usable over touch/VNC, where there's no Super key).
-- `sway-headless.service`, `wayvnc.service` — user services (enable + linger).
-
-```sh
-mkdir -p ~/.config/sway ~/.config/waybar ~/.config/systemd/user
-cp sway/sway.config        ~/.config/sway/config
-cp sway/waybar.config      ~/.config/waybar/config
-cp sway/waybar-style.css   ~/.config/waybar/style.css
-cp sway/{sway-headless,wayvnc}.service ~/.config/systemd/user/
-systemctl --user enable --now sway-headless wayvnc      # linger must be on
-```
-
-`sway-headless.service` runs sway with `WLR_BACKENDS=headless WLR_RENDERER=gles2
-LD_LIBRARY_PATH=/usr/local/lib` (vendor GLES → GPU compositing). `wayvnc` serves it
-on `127.0.0.1:5901`; point a websockify/noVNC at that for a browser desktop.
-`grim` (wlr-screencopy) confirms it's compositing on the GPU.
-
-This is GLES2-class — great for a compositor, **not** enough for KDE/KWin (needs
-GL ≥ 3). That's a hard wall here; see `docs/FINDINGS.md`.
+The `pvrsrvkm` DRM PRIME-import patch (needed for zink/kmsro buffer sharing) is in
+[`../kernel/`](../kernel/) and still applies on 6.6.

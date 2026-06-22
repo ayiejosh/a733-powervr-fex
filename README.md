@@ -4,31 +4,38 @@ Patches, recipes, and hard-won findings for getting the **PowerVR BXM-4-64 GPU**
 and **x86 emulation** working on the **Allwinner A733** (`sun60iw2`) — as shipped on
 the Radxa Cubie A7A / A7S boards.
 
-This is the result of an extended bring-up effort on a Cubie A7A running the Radxa
-Debian 11 BSP (kernel `5.15.147-21-a733`, Imagination DDK `24.2@6603887`). It
-documents what genuinely works, the recipes to reproduce it, and — just as
-importantly — the walls that are **not** crossable on the shipped vendor stack and
-why.
+> **Branches:** this is the **`trixie` / kernel 6.6** line (Debian 13, kernel
+> `6.6.x-aw2511`). The original Debian 11 / kernel 5.15 work lives on the
+> [`bullseye`](../../tree/bullseye) branch. They are different OS + kernel + Mesa
+> stacks; cross-check the **Tested environment** table below before reproducing.
+
+This branch is the result of an extended bring-up on a Cubie A7A running **Debian 13
+(trixie)** on the **6.6 BSP**. It documents what genuinely works — including
+**GPU-accelerated Direct3D 9/10/11**, **GPU OpenGL via zink**, and **Windows apps via
+Hangover** — the recipes to reproduce it, and — just as importantly — the walls that
+are **not** crossable on the shipped vendor stack and why (the big one: a live
+GPU-composited desktop **deadlocks the kernel**).
 
 ## Tested environment (read this before reproducing)
 
-All findings/benchmarks here are on the **stock Radxa BSP — Debian 11 + kernel 5.15**,
-**not** Trixie and **not** the 6.6 BSP. Other A733 efforts use those; results can
-differ. Exact baseline:
+All findings/benchmarks here are on **Debian 13 (trixie) + kernel 6.6**. The bullseye
+branch is a *different* stack (Debian 11 / 5.15). Exact baseline:
 
 | | |
 |---|---|
-| Board / SoC | Radxa **Cubie A7A** · Allwinner **A733** (`sun60iw2`), 2×A76 @2.0 + 6×A55 @1.79, ~6 GB LPDDR5, UFS storage |
-| OS | **Debian 11 (bullseye)** — *not* Trixie |
-| Kernel | **`5.15.147-21-a733`** (Radxa BSP) — *not* mainline, *not* 6.6 |
-| GPU | PowerVR **BXM-4-64 MC1**, DDK **`24.2@6603887`**, firmware BVNC `36.56.104.183` |
-| Toolchain | glibc **2.31**, gcc **10**, Python **3.9.2** |
-| Userspace GL | stock Debian **Mesa 20.3.5** (+ vendor PVR blobs); the Zink-GL recipe uses a *separately-built* **Mesa 25.3** |
-| x86 layer | FEX-Emu (built from upstream) · box64 **v0.4.3** |
-| Vendor pkgs | `img-bxm-dkms`, `xserver-xorg-img-bxm` from **`radxa-repo.github.io/a733-bullseye`** |
+| Board / SoC | Radxa **Cubie A7A** · Allwinner **A733** (`sun60iw2`), **heterogeneous big.LITTLE** — cores **0-5 LITTLE** (cap 385), cores **6-7 BIG** (cap 1024); max ~1716 MHz (firmware-capped; 1794 unreachable), ~6 GB LPDDR5 |
+| OS | **Debian 13 (trixie)** — *not* bullseye |
+| Kernel | **`6.6.x-aw2511`** (Radxa A733 BSP, `pvrsrvkm` out-of-tree DKMS) — *not* mainline |
+| GPU | PowerVR **B-Series BXM-4-64 MC1**, BVNC `36.56.104.183`, closed `pvrsrvkm` + closed `libVK_IMG` Vulkan blob (**Vulkan 1.3.277**) |
+| Display | split: `card0` = `sunxi-drm` (HDMI scanout) · `card1`/`renderD128` = `pvrsrvkm` (render), bridged by DRM-PRIME/renderonly |
+| Userspace GL | **TWO Mesa installs (conflict)** — `/usr/local` IMG Mesa **24.0.1** (`pvr_dri`, X11-only, drives the desktop, ldconfig-priority) vs system Mesa **25.0.7** (has `zink`+`kmsro`); version-incompatible, scope each per app |
+| x86 layer | **FEX-Emu** (the default for x86-64 Linux ELF via binfmt) · **box64 v0.4.3** (explicit-invoke) |
+| Windows | **Hangover 11.9** (wine 11.9 + FEX/box64 WoW64) · **DXVK-Sarek** (native arm64ec) for D3D |
+| Vendor pkgs | `img-bxm-dkms`, `xserver-xorg-img-bxm` from the Radxa A733 repo |
 
-> Bullseye + Python 3.9 are why some things are pinned/built-from-source (e.g. the
-> Zink Mesa). Bullseye LTS EOL is ~2026-08-31.
+> The dual-Mesa split is load-bearing: the desktop runs on the `/usr/local` IMG Mesa
+> (X11), while zink/kmsro live in the system Mesa 25.0.7. Keep both; scope the env per
+> use (see `gpu/README.md`).
 
 ## Install
 
@@ -36,87 +43,90 @@ differ. Exact baseline:
 ./install.sh          # guided: vendor fetch -> kernel patch -> GPU sway desktop (prompts each step)
 ./install.sh vendor   # fetch the proprietary PowerVR stack from the vendor (not bundled — see below)
 ./install.sh kernel   # just the pvrsrvkm PRIME patch (dry-runs first)
-./install.sh sway     # just the GPU sway+wayvnc desktop
 ```
-(The Zink Mesa build + FEX rootfs stay manual — see `gpu/README.md`, `fex/README.md`.)
+(The Mesa/zink build, FEX rootfs, DXVK-Sarek, and Hangover stay manual — see the
+per-component READMEs.)
 
 ## What's here
 
 | Dir | Contents |
 |-----|----------|
-| [`kernel/`](kernel/) | **`pvrsrvkm` DRM PRIME-import patch** — adds standard `gem_prime_import` / `prime_fd_to_handle` (which the vendor left unimplemented) so zink/wlroots can share buffers with the GPU. The single most useful patch here. |
-| [`gpu/`](gpu/) | **Zink-on-Vulkan** GL recipe (incl. the one Mesa patch needed) + a **GPU-composited `sway` + `wayvnc`** Wayland desktop (configs + service files). |
-| [`fex/`](fex/) | **Custom FEX Vulkan thunk** (x86 Vulkan → native PowerVR GPU) + a **full x86 OpenGL ES 3.2 thunk** ([`fex/thunks/libEGL-gles/`](fex/thunks/libEGL-gles/) — x86-64 **and** i386 → native PowerVR, 358/358 funcs, near-native speed) + FEX setup/launcher scripts + Chrome-on-FEX recipe. |
-| [`box64/`](box64/) | Usage notes for box64 on A733 (links upstream; nothing forked). |
-| [`docs/FINDINGS.md`](docs/FINDINGS.md) | **The capability matrix** — every proven-working path and every confirmed wall, with the *why*. Read this first if you're deciding what's worth attempting. |
-| [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) | Measured numbers — CPU, FEX x86→ARM overhead, GPU vs CPU, RAM, UFS, thermal. |
+| [`kernel/`](kernel/) | **`pvrsrvkm` DRM PRIME-import patch** (still applies on 6.6) + the finding that a **live GPU compositor through `pvrsrvkm` deadlocks the kernel**. |
+| [`gpu/`](gpu/) | **zink OpenGL** on PowerVR Vulkan (off-screen) + **`gpu/dxvk/`: GPU-accelerated Direct3D 9/10/11 (FL 11_0)** via native arm64ec DXVK-Sarek — the headline new capability. |
+| [`windows/`](windows/) | **Windows apps via Hangover 11.9** — `winrun` (CLI) and `guirun` (GUI, software-GL) launchers; verified 7-Zip / Notepad / WordPad. |
+| [`fex/`](fex/) | FEX setup + the custom Vulkan/GLES thunks; FEX is now the **default** x86-64 binfmt interpreter, with trixie tuning (`TSOEnabled=0` + `Multiblock=1`). |
+| [`box64/`](box64/) | box64 **0.4.3** (built from source) usage + the static-glibc-MT → FEX routing. |
+| [`docs/FINDINGS.md`](docs/FINDINGS.md) | **The capability matrix** — every proven path and every confirmed wall, with the *why*. Read this first. |
+| [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) | Measured numbers — CPU, FEX/box64 overhead, the D3D draw-call / fill-rate characterization. |
+
+## Capabilities at a glance (trixie)
+
+- **x86 / x64 Linux** → **FEX** by default (binfmt); **box64 0.4.3** on explicit invoke. Single-thread emulation reaches ~71% (FEX-tuned) / ~64% (box64-tuned) of native on a big core.
+- **Windows apps** (Hangover 11.9): CLI (`winrun`) and GUI (`guirun`, software GL). Verified 7-Zip, Notepad, WordPad.
+- **GPU Direct3D 9/10/11 (FL 11_0)** via DXVK-Sarek → PowerVR Vulkan (`d3drun`): instancing, compute, render-to-texture, BC1-5 textures, depth/MRT, windowed present. (D3D12 infeasible; geometry/tessellation/MSAA not native.)
+- **GPU OpenGL** via **zink** → PowerVR Vulkan (`glrun`): **off-screen only** (GLES2/GL2.1 class).
+- **NOT possible:** a **GPU-accelerated desktop** — a live compositor on `pvrsrvkm` hard-hangs the kernel. The desktop stays software-rendered. See `docs/FINDINGS.md`.
 
 ## Benchmarks (highlights)
 
-Full tables in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md). Headlines:
+Full tables in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md). Headlines (trixie):
 
-- **CPU (native ARM):** 875 ev/s single-core (A76 @ 2.0 GHz), 3204 ev/s all-8 (sysbench).
-- **FEX x86→ARM overhead** (native ARM = 1.0×): most code **1.1–2.2×** — atomics 1.08×, flags 1.26×, x87 1.44×, branchy 2.17×; unaligned-atomics a pathological **187×**. Real-app cost is dominated by **JIT compile on cold start**, not steady-state.
-- **GPU vs CPU** (PowerVR BXM, offscreen GLES shader): **~150–175×** the CPU's best case, **~600×** vs the software (softpipe) fallback. Fill-rate ceiling ~4.2 Gpix/s.
-- **x86 GLES 3.2 under FEX** (measured, same GPU; native ARM → x86-64/i386 FEX): GPU-bound work **identical** — shader-ALU **207 GFLOP/s**, compute **9.1 GIntOp/s**, triangle **14.2 Mtri/s**, fill **~6.7 Gpix/s**, texturing **~8.6 Gtexel/s** (all **1.00×**). Only cheap GL call dispatch shows overhead: `glClear` **3,427 → ~3,020 k/s (~1.13×)**. dEQP-GLES3 sampled ~99 % pass. Full table + sources: [`fex/thunks/libEGL-gles/BENCHMARKS.md`](fex/thunks/libEGL-gles/BENCHMARKS.md).
-- **RAM (LPDDR5 4800 MT/s):** ~15.5 GB/s read (8-thread). **UFS:** 1.64 GB/s read / 255 MB/s write / 115k IOPS 4K-read.
+- **CPU single-thread** (sum-ms CPU bench, big core): native **5488** / box64-tuned **8564** (~64% of native) / **FEX-tuned 7746** (~71% of native).
+- **box64 0.4.3** built from source: clone3 fixed, **~9% faster** than the Debian 0.3.4; `CALLRET=1 + SAFEFLAGS=0` ≈ **-15%** on the CPU bench.
+- **FEX tuning:** `TSOEnabled=0 + Multiblock=1` ≈ **-7%** on the CPU bench (load-bearing knob is TSO-off).
+- **GPU D3D11** (DXVK-Sarek → PowerVR): instancing ~**370k tris/s**; trivial windowed present ~**227 fps** (~530 fps for clear-only); the draw-call submission ceiling is ~**1000–1100 PSO-swap-bound draws/s** of distinct pipeline state — a realistic textured/depth frame is **GPU-fill-bound**, not emulation-bound.
+- **GPU OpenGL** (zink, off-screen): **glmark2-es2 `--off-screen` = 661**.
 
 ## ⚠️ What can't be redistributed here — and the workaround
 
-This repo is **only** open / original work (patches, scripts, docs). It cannot
-legally include the proprietary pieces — **but every one of them is fetchable from
-its official source**, so the workaround is *"install script pulls from the vendor;
-this repo layers the patches on top."* Nothing is bundled here.
+This repo is **only** open / original work (patches, scripts, docs). It cannot legally
+include the proprietary pieces — **but every one of them is fetchable from its official
+source**, so the workaround is *"install script pulls from the vendor; this repo layers
+the patches on top."* Nothing is bundled here.
 
-| Can't ship here | Where it actually comes from | How the workaround gets it |
+| Can't ship here | Where it comes from | How the workaround gets it |
 |---|---|---|
-| **Entire PowerVR userspace + firmware** — `libGLESv2_PVR_MESA`, `libVK_IMG`, `libsrv_um`, `libEGL`, `rgx.fw.*` (all in one package: **`xserver-xorg-img-bxm`**) | Radxa / Imagination vendor channel — the Radxa Cubie A7A image, the Radxa apt repo, or `radxa/allwinner-target` (branch `target-a733-v1.4.x`) | `install.sh vendor` installs the vendor `.deb` from your configured source (it does **not** download it from us) |
-| **`img-bxm-dkms`** kernel module source | Radxa apt repo (`a733-bullseye`) | `apt-get install img-bxm-dkms`, then **our patch** (`kernel/`) applies on top |
-| **FEX x86 rootfs** (3.8 GB) | you build it | `fex/complete-fex-env.sh` rebuilds it from a base image |
-| **Steam / Proton / Chrome** etc. | their own vendors | install them into your rootfs yourself |
+| **PowerVR userspace + firmware** — `libVK_IMG`, `libsrv_um`, `libEGL`, `rgx.fw.*` (package: **`xserver-xorg-img-bxm`**) | Radxa / Imagination vendor channel | `install.sh vendor` installs the vendor `.deb` from your configured source |
+| **`img-bxm-dkms`** kernel module source | Radxa apt repo | `apt-get install img-bxm-dkms`, then **our patch** (`kernel/`) on top |
+| **DXVK-Sarek / Hangover / wine** | their own upstreams | build/install yourself (see `gpu/dxvk/`, `windows/`) |
+| **FEX x86 rootfs**, Steam / Chrome / Windows apps | you build / their vendors | build the rootfs; install apps into it yourself |
 
-So the model is **patch + recipe + fetch-from-vendor**, the same pattern DKMS /
-proprietary-driver installers use: we never host the closed bits, we point the
-installer at the vendor's own distribution and apply the open work over it.
-Run `./install.sh vendor` to do the fetch step (it tells you exactly where to point
-it if the package isn't already in your apt sources).
+So the model is **patch + recipe + fetch-from-vendor** — we never host the closed bits.
 
 ## Honest summary
 
-The GPU is **fully usable per-workload** — Vulkan, GL via Zink, native GLES on X11,
-a GLES2-class `sway` desktop, H.264 hardware encode. It **cannot** be the *default*
-renderer or drive a desktop-GL environment like KDE Plasma; that ceiling is the
-closed vendor stack and is only liftable by mainline (`drm/imagination` + Mesa
-`pvr`), which for A733 is still at the bare-DTS upstreaming stage. See
-[`docs/FINDINGS.md`](docs/FINDINGS.md) for the full matrix.
+The GPU is **fully usable per-workload** — Vulkan, **GPU D3D9/10/11**, GL via zink
+(off-screen), windowed-present. It **cannot** drive a GPU-composited desktop: a live
+compositor on `pvrsrvkm` **deadlocks the kernel** (mutex spin-on-owner in IRQ →
+power-cycle). That ceiling is the closed kernel driver and is only liftable by a fixed
+`pvrsrvkm` / mainline `drm/imagination` (not present for A733 on this kernel). The
+desktop stays on **software-rendered X11**. See [`docs/FINDINGS.md`](docs/FINDINGS.md)
+for the full matrix.
 
 ## Contributing — this is meant to be a living baseline
 
 The point of publishing is so others can **reproduce, test, optimize, and extend** —
-and push their findings back so the project grows. Concretely:
+and push their findings back. Concretely:
 
-- **Reproduce the numbers:** the harnesses are in [`bench/`](bench/); add your
-  board's results to [`RESULTS.md`](RESULTS.md). Cross-board data makes regressions
-  and wins visible.
-- **Challenge a finding:** [`docs/FINDINGS.md`](docs/FINDINGS.md) is dated
-  observations, not gospel — if a "wall" falls for you (newer DDK, mainline, a flag),
-  that's a great PR.
-- **Open problems / help wanted** (the live walls): Wayland GPU *clients* (zink
-  kopper crash), transparent EGL→GPU, FEX AOT/code-cache cold-start, Steam-CEF under
-  FEX, mainline `drm/imagination` tracking, HEVC HW encode. See
+- **Reproduce the numbers:** harnesses are in [`bench/`](bench/); add your board's
+  results to [`RESULTS.md`](RESULTS.md).
+- **Challenge a finding:** [`docs/FINDINGS.md`](docs/FINDINGS.md) is dated observations,
+  not gospel — if a "wall" falls for you (newer DDK, fixed `pvrsrvkm`, mainline), that's
+  a great PR.
+- **Open problems / help wanted:** the GPU-desktop kernel deadlock, the draw-call
+  submission ceiling, general VS-as-compute for the GS-emulation path, D3D12. See
   [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
-Issue templates (benchmark result / bug / board test) and a PR checklist are set up.
+Issue templates and a PR checklist are set up.
 **Rule:** no proprietary blobs, rootfs, app binaries, or secrets in commits.
 
 ## Acknowledgments
 Built on the Linux kernel DRM subsystem, the Imagination PowerVR DDK, the Radxa /
-Allwinner BSP, FEX-Emu, box64, Mesa/Zink, and sway/wlroots/wayvnc — plus the wider
-A733 community (NickAlilovic, OctaneOS, crescenzo77, Orange Pi, dok2d). Full list +
-links in [`ACKNOWLEDGMENTS.md`](ACKNOWLEDGMENTS.md).
+Allwinner BSP, FEX-Emu, box64, Mesa/Zink, DXVK / DXVK-Sarek, Hangover and wine — plus
+the wider A733 community. Full list + links in [`ACKNOWLEDGMENTS.md`](ACKNOWLEDGMENTS.md).
 
 ## License
 
 Original code/patches/scripts here are MIT (see `LICENSE`). They are intended to be
-applied on top of vendor/upstream sources that carry their own licenses; obtain
-those from their respective sources.
+applied on top of vendor/upstream sources that carry their own licenses; obtain those
+from their respective sources.

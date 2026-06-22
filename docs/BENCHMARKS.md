@@ -1,96 +1,137 @@
-# Benchmarks — Allwinner A733 / Radxa Cubie A7A
+# Benchmarks — Allwinner A733 / Radxa Cubie A7A (trixie / 6.6)
 
-Measured on a Cubie A7A, Debian 11 (bullseye), kernel `5.15.147-21-a733` (not Trixie/6.6), ambient ~27 °C.
-Numbers are indicative (single board, methodology noted per section) — not a
-controlled suite. Use for orders-of-magnitude, not precise comparison.
-**All numbers re-validated 2026-06-13** (sysbench/fio/the `bench/` harnesses); load-sensitive
-ones (CPU-all-core, RAM) vary ±15% with background activity.
+Measured on a Cubie A7A, **Debian 13 (trixie)**, kernel `6.6.x-aw2511`. Numbers are
+indicative (single board, methodology noted per section) — not a controlled suite. Use
+for orders-of-magnitude, not precise comparison. The bullseye (Debian 11 / 5.15) branch
+has its own, separately-measured numbers; the two stacks are not directly comparable.
 
-## CPU (native ARM64)
-SoC: **2× Cortex-A76 @ 2.0 GHz + 6× Cortex-A55 @ 1.79 GHz** (A76 = cpu6,7).
+## CPU — emulated x86-64 single-thread (the headline trixie number)
+SoC: **heterogeneous big.LITTLE** — cores **0-5 LITTLE** (cap 385), **6-7 BIG**
+(cap 1024), ~1716 MHz ceiling (1794 MHz firmware-locked, not reachable from sysfs).
 
-| Test (sysbench, prime ≤ 20000) | Result |
-|---|---|
-| single-core (A76 @ 2.0 GHz) | **876 events/s** |
-| all 8 cores | **3654 events/s** (≈4.2× scaling, heterogeneous; load-sensitive) |
+`bench/cpubench.c` cross-built static x86-64 (`x86_64-linux-gnu-gcc -O2 -static -lm`);
+native = the same source built arm64. Metric = sum of per-section ms (int/float/hash/
+qsort/matmul); lower = faster. Pinned to a big core for the headline figure.
 
-## FEX — x86→ARM translation overhead (native ARM = 1.0× baseline)
-Per-instruction-class slowdown of x86-under-FEX vs the equivalent native ARM.
-**Most real code lands in the ~1.0–1.5× band** (a real branchy interpreter is harsher).
-These micro-numbers are **bench-dependent** — treat as characterization, not precise.
-
-| Workload class | FEX overhead vs native | note |
+| build | sum-ms | % of native |
 |---|---|---|
-| aligned atomics | **~1.0×** | FEX ≈ native (measured FEX 154 vs native 143 Mops — FEX marginally faster) |
-| flag-heavy arithmetic | **~1.4×** | re-measured 2026-06-13 (1.43×) |
-| branchy / unpredictable | **~1.4–2.2×** | synthetic ~1.45×; a real **Python interpreter** ~2.17× |
-| x87 (80-bit long double) | **~1.4×** | bench-dependent; see the x87 section below |
-| **unaligned atomics** | **~190×** stock → **~2.5×** with local FEX patch | see note ‡ |
+| native arm64 (big core) | **5488** | 100% |
+| box64 0.4.3, tuned (`CALLRET=1 SAFEFLAGS=0`) | **8564** | ~64% |
+| FEX, tuned (`TSOEnabled=0 Multiblock=1`) | **7746** | ~71% |
 
-**Practical note:** real-app slowness under FEX (e.g. Chrome) is dominated by
-**JIT *compile* time on cold start**, not steady-state translation — an AOT/code
-cache is the lever, not per-instruction overhead. No full-application fps figure
-was measured; treat the table as instruction-class characterization.
+> **Core placement is the single biggest lever**: the same x86 work runs ~**2.3-6.5x**
+> faster on a BIG core (6-7) than a LITTLE core (0-5) — pure IPC, even at the same clock
+> (e.g. matmul 6.5x, primes/mandel/qsort 2.3x). The capacity-aware scheduler already
+> puts hot work on the big cores; **don't hard-pin**. The CPU governor (performance vs
+> ondemand) is ~0% for sustained compute — its only value is bursty launch latency.
 
-**‡ (re-verified 2026-06-13, stock vs patched):** on **stock upstream FEX** an unaligned
-`lock` atomic costs **~190×** the aligned equivalent (≈1430 ns/op, 0.70 Mops/s) — it
-SIGBUS-traps per op because the A733 lacks `FEAT_LSE2` (`uscat`). A **local FEX codegen
-patch** (an `Arm64.cpp` change that makes the unaligned-atomic *backpatch* engage, so the
-site stops faulting) cuts it to **~2.5×** (≈16 ns/op, 61 Mops/s) — an ~88× win. That patch
-is **local, not in upstream FEX**, so a stock-FEX user reproducing this will see ~190×
-unless they apply it. Reproduce: `x86_64-linux-gnu-gcc -O2 -static bench/uatomic.c -o u`,
-then run under stock vs patched FEX: `FEXInterpreter ./u 30000000 0|2|14`.
+## FEX tuning (x86-64 -> ARM64), CPU bench, TOTAL ms
+Single option at a time, then the winner combo, median runs; correctness checksum
+identical to native in every case. (Detail: `fex/README.md`.)
 
-## GPU (PowerVR BXM-4-64, GLES 3.2, DDK 24.2@6603887)
-Offscreen FBO, ALU-loop fragment shader, 1280×720, Mpix/s. GPU vs the CPU doing the
-same math (OpenMP 8-core, NEON, -O3) and vs the desktop's software (softpipe) path.
-
-| Shader ALU loop | GPU (PowerVR) | CPU 8-core best-case | softpipe (llvmpipe-class) |
-|---|---|---|---|
-| 4   | **4198** | 28 | — |
-| 16  | **1216** | 7 | — |
-| 64  | **315** | 2 | — |
-| 256 | **80** | 0.46 | — |
-| (fill-rate ceiling) | ~4.2 Gpix/s | — | ~0.5 Mpix/s |
-
-→ **GPU ≈ 150–175× the CPU's absolute best case**, and **~600× vs the actual
-software (softpipe) fallback** the desktop otherwise uses. `GL_RENDERER =
-PowerVR B-Series BXM-4-64`. (Offscreen FBO throughput, not full-app fps; the CPU
-baseline is generous — no raster overhead — so the real-world gain is ≥150×.)
-
-## x87 — X87ReducedPrecision (config, default off)
-Validated 2026-06-13 (`bench/x87l.c`, A76-pinned). The win is **pattern-dependent**:
-
-| x87 pattern | X87RP=0 (full 80-bit) | X87RP=1 (64-bit) | |
-|---|---|---|---|
-| `fldl`/`faddl` (64-bit doubles on x87 stack) | 75.7 ns/iter | **4.1 ns/iter** | **~18× faster** |
-| `fldt`/`faddp` (true 80-bit `long double`) | ~78 ns/iter | ~81 ns/iter | no change (80-bit transfers dominate) |
-
-So `X87ReducedPrecision=1` swaps FEX's software 80-bit emulation for hardware 64-bit —
-**~18× for x87 code that's really only doing double-precision** (legacy / `-mfpmath=387`),
-but it can't help (and reduces accuracy of) genuine 80-bit `long double`. Default is
-`false`; FEX's own Steam template sets it `true`. Toggle confirmed applied (low digits of
-the result change). x87 is rare in 64-bit x86 apps (they use SSE), so this matters mainly
-for legacy x87-heavy code.
-
-## Memory (LPDDR5, 2400 MHz / ~4800 MT/s)
-sysbench memory, 1M blocks (optimistic vs STREAM):
-
-| | read | write |
+| config | TOTAL ms | delta vs default |
 |---|---|---|
-| 1 thread | 10.3 GB/s | 8.5 GB/s |
-| 8 threads | ~17 GB/s | ~10 GB/s |
+| default | 20568 | — |
+| `TSOEnabled=0` | ~19103 | **-6.8%** (load-bearing) |
+| **`TSOEnabled=0` + `Multiblock=1`** | **19118** | **-7.1%** (best, shipped) |
 
-## Storage (UFS — *not* eMMC)
-fio, `direct=1`, on the root device:
+The win concentrates in memory-ordering-bound metrics (hash streaming loads ~-12%, qsort
+swap-heavy indirect-call loop ~-8.5%); pure-compute (primes, mandel) is silicon-bound and
+unaffected. **`TSOEnabled=0` is a correctness risk for MULTITHREADED guests** (it stops
+FEX inserting x86-TSO barriers) — validate per multithreaded workload or keep the default.
+`Multiblock=1` is safe. Knobs *not* present in this FEX build: AOT/object cache (only WIP
+flags), ParanoidTSO (maps onto `TSOEnabled`), SRA (always-on).
 
-| | value |
+## box64 0.4.3 tuning (explicit invoke), CPU bench
+Built from source (clone3 fixed; ~9% faster than the Debian 0.3.4). Paired A/B harness
+(cancels neighbor-core load drift); ratios are robust, absolute ms are not.
+
+| option | delta | verdict |
+|---|---|---|
+| `BOX64_DYNAREC_CALLRET=1` | **-9.4 to -9.7%** | biggest single gain (call/ret; helps the qsort indirect-call path) |
+| `BOX64_DYNAREC_SAFEFLAGS=0` | **-4.2%** | win, but flag-correctness risk |
+| `CALLRET=1 + SAFEFLAGS=0` | **~-15%** | best combo (stacks) |
+| `BOX64_DYNAREC_NATIVEFLAGS=0` | +35% | DO NOT SET |
+| `STRONGMEM=1/2/3`, `BIGBLOCK=0/1` | +11 to +16% | slower; defaults already optimal |
+
+Conservative (no flag risk): `CALLRET=1` only (~-9%). No persistent dynarec/JIT cache
+exists in 0.4.3 (re-JITs every start). Leave everything else at default.
+
+## GPU — Direct3D 11 via DXVK-Sarek -> PowerVR Vulkan
+Native arm64ec DXVK-Sarek, FL 11_0. The shipping `d3d11.dll` (BCn build) was used
+unmodified for all timing; `dxvk.conf` unmutated; **never `DXVK_HUD`** (wedges GPU).
+
+### Draw-call submission ceiling (headless RTT, per-frame GPU-finish)
+Sweep at 2000 frames x 256 draws; each frame ends `CopyResource+Map` (forces GPU finish).
+The DELTA between cases isolates the per-draw CPU state cost.
+
+| state op changed per draw | us/draw | draws/s | delta vs baseline |
+|---|---|---|---|
+| baseline (no state change) | 7.14 | ~140k | — |
+| **PSO swap (VS+PS pair)** | 10.09 | ~99k | **+2.96 us (+41%)** |
+| constant-buffer update | 7.50 | ~133k | +0.36 us |
+| SRV / texture rebind | 7.66 | ~130k | +0.53 us |
+| vertex-buffer rebind | 7.52 | ~133k | +0.38 us |
+| DrawIndexed / DrawInstanced vs Draw | ~7.1 | ~140k | ~0 (the draw verb is free) |
+
+The **pipeline (PSO) swap is the only state op that moves the needle** (+~3 us/draw,
+constant at N=256 and N=1024 -> a true per-draw cost). For real content the
+distinct-pipeline draw-call ceiling is **~1000-1100 draws/s**. Attribution (strace delta
+b vs a, matched scale): PSO swap adds **futex** calls (DXVK CS-thread sync) while
+**ioctl is flat** (driver submit count unchanged) -> the cost is **DXVK CPU-side state
+re-record + CS-thread handoff**, NOT the wine->driver thunk, NOT the PowerVR blob, NOT
+shader compile (state-cache hit confirmed via DXVK info log). `perf` was unavailable
+(kernel-tools mismatch on the custom 6.6 kernel); attribution rests on the syscall delta.
+
+### A realistic frame is GPU-fill-bound
+Textured (32x32 RGBA + linear sampler) + depth-tested (D32_FLOAT) 512x512 offscreen RTT,
+N small quads, dynamic cbuffer per draw, a few real PSO swaps. CPU-record vs GPU-finish
+split per frame:
+
+| draws | tris | CPU-record ms | GPU-finish ms | inferred bound |
+|---|---|---|---|---|
+| 500 | 1000 | 0.53 | 3.17 | GPU-bound |
+| 1000 | 2000 | 0.89 | 6.03 | GPU-bound |
+| 2000 | 4000 | 1.78 | 10.96 | GPU-bound |
+| 4000 | 8000 | 4.63 | 19.45 | GPU-bound |
+
+GPU-finish scales ~**linearly** with triangle count and is **4-6x** the CPU-record at
+every level (CPU-record is <=~19% of frame even at 4000 draws). The linear-with-triangles
+fingerprint = the PowerVR BXM-4-64 fill/raster ceiling is the wall, reached through
+DXVK's Vulkan path — NOT emulation/submission. No remaining DXVK software lever speeds it.
+
+### Present cost (windowed swapchain, software llvmpipe window)
+Trivial clear-only scene, IMMEDIATE present, vsync off: clear/record ~0.015 ms;
+**present ~1.87 ms/frame** (~530 fps). For a realistic frame already spending 7-24 ms on
+GPU render, present is a ~8-25% tax, not the dominant cost (and overlappable). The ~1.9 ms
+is inherent to the **software** window path (the broken PowerVR GL blob forces an llvmpipe
+blit of the backbuffer to the X11 window); the only true fix is a working GL/WSI present
+blob (a driver problem) or rendering offscreen.
+
+### Other measured D3D points
+- Instancing: ~**370k tris/s**.
+- Windowed present (realbench trivial scene): ~**227 fps** (~530 fps clear-only).
+- BC1-5 textures decode in-driver (textured+depth+BC1 cube renders, `hr=0x0`).
+
+## GPU — OpenGL via zink -> PowerVR Vulkan (off-screen)
+System Mesa 25.0.7 `zink_dri.so` on the closed PowerVR Vulkan ICD + the feature-strip
+layer. `GL_RENDERER = zink Vulkan 1.3 (PowerVR B-Series BXM-4-64)`.
+
+| bench | result |
 |---|---|
-| sequential read | ~1.7 GB/s (QD≥8); ~0.9 GB/s (QD1) |
-| sequential write | 265 MB/s |
-| random 4K read | 112k IOPS |
-| random 4K write | 52.5k IOPS |
+| **glmark2-es2 `--off-screen`** | **661** (~662 fps; build 646 / texture 826 / shading 485) |
+| eglinfo | EGL 1.5 Mesa, zink -> PowerVR confirmed |
+| glmark2 FULL suite `--off-screen` | functional but too slow to finish in 240s (shader-compile bound) |
 
-## Thermal (context)
-Passive (fan off): idle ~50 °C; sustained all-core load climbs past 78 °C and keeps
-rising → active cooling required under sustained load (see `system/fan-curve.sh`).
+Ceiling is **GL 2.1 / GLES 2.0** (the blob lacks `fillModeNonSolid`, `descriptorIndexing`,
+`robustness2`, etc. — faked features are stripped at `CreateDevice`). **Windowed/GLX GL
+does not work** (the X server GLX isn't wired to zink, and a live compositor would hit the
+kernel deadlock). zink warns `PowerVR lacks fillModeNonSolid` -> non-solid/wireframe fill
+unreliable; solid-fill scenes render correctly.
+
+## Memory / storage / thermal (context, board-level, stable across stacks)
+- **RAM (LPDDR5 ~4800 MT/s):** ~17 GB/s read / ~10 GB/s write (8-thread, sysbench).
+- **UFS:** ~1.7 GB/s seq read (QD>=8) / 265 MB/s write / ~112k IOPS 4K-read.
+- **Thermal:** single-core emulation load held 1716 MHz at ~59-61 C — no throttling
+  (the 1716 cap is a static policy limit, not live throttling). Sustained all-core load
+  needs active cooling (`system/fan-curve.sh`).
