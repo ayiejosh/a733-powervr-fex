@@ -10,6 +10,12 @@ just demoable, and without wedging the board.
 > blob`. Wine runs under Hangover (FEX/box64 WoW64). The arm64ec DXVK build is the key —
 > it runs DXVK as native ARM code, not emulated x86.
 
+> **2026-07-02:** shipping build rebased onto upstream DXVK-Sarek `2c80828f`
+> (+4,625 commits: UMA heap-budget fix, `lowerSinCos` crash fixes, config sync) with the
+> BC1-5 patch as commit `25dce6a8`. All capability tests + BC1-5 decode re-verified,
+> perf unchanged. Note `dxvk.tilerMode` is a no-op on this stack (see docs/FINDINGS.md).
+> The dll SET ships together: d3d11 + dxgi + d3d10core (dxgi carries the BC format table).
+
 ## The recipe
 
 1. **DXVK-Sarek, built arm64ec.** DXVK-Sarek is the lower-feature-level DXVK fork that

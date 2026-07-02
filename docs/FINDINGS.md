@@ -158,3 +158,28 @@ upstreaming stage. Months+ away, but it's the only path that raises the ceiling.
 - Single-thread emulation reaches ~**71%** (FEX-tuned) / ~**64%** (box64-tuned) of
   native on a big core. The biggest system lever is **core placement** (big vs LITTLE,
   ~2.3-6.5x) — handled by the scheduler; don't hard-pin.
+
+## 2026-07-02 additions
+
+### Closed vs mainline GPU firmware: same packaging family, decoded byte-level
+`/lib/firmware/rgx.fw.36.56.104.183` (closed DDK 24.2) and mainline
+`powervr/rogue_*_v1.fw` are BOTH 32-bit MIPS ELFs with the SAME trailing-4K
+`pvr_fw_info` block and identical 6×24-byte layout tables — the closed file is header
+**v2** (flags = closed build options `0x80020810`, fw ABI = DDK 24.2 build 6603887),
+mainline requires **v3** + the `OPEN_SOURCE` flag + open fw ABI v1. So conversion is NOT
+possible (kernel↔fw shared-struct ABI differs), but the gap is precise: **IMG building
+its open-ABI firmware for BVNC 36.56.104.183** is a build-config request — they already
+ship the sibling BXM revision `36.53.104.796` (TH1520/LicheePi 4A) in linux-firmware.
+That is the single missing artifact between the A733 and the mainline `powervr` DRM +
+Mesa open driver (which already carries `bxm-4-64.h` with this exact BVNC).
+
+### DXVK-Sarek `dxvk.tilerMode`: currently a NO-OP on this stack
+Sarek's backport only sets `preferCachedMemory`; the actual tiler render-pass
+optimization is still TODO upstream, and `Auto` already matches the Imagination driver
+ID. Don't chase it for perf on PowerVR yet. (The upstream rebase DID bring a real UMA
+fix: heap budget is no longer wrongly enforced on unified-memory GPUs.)
+
+### FEX rebuild (d848cbb + patches) beats the bullseye numbers
+Same bench suite, trixie vs bullseye baseline: unaligned atomics **+11–18%**
+(136.6/53.8/51.1 Mops vs 120.8/48.3/43.4), thread create+join **30% faster**
+(139,849 ns vs 199,995 ns), CPU/GPU baselines unchanged. See bench/baseline.txt.

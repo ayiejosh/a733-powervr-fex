@@ -67,6 +67,32 @@ render on the real PowerVR GPU. Compute dispatch + WSI forwarding are verified w
 There is also a full x86 OpenGL ES 3.2 thunk in
 [`thunks/libEGL-gles/`](thunks/libEGL-gles/) (x86-64 and i386 -> native PowerVR).
 
+### Status on trixie (2026-07-02): REBUILT AND VERIFIED ✅
+
+Both thunks were rebuilt on Debian 13 / kernel 6.6 against FEX `d848cbb` (the commit the
+patches target). Patches 01/02/04/05/06 apply clean; from 03 only the
+`toolchain_x86_64.cmake` sysroot hunk is needed (the rest is bullseye-only). Evidence:
+`vkthunk_render.x86_64` → `device: PowerVR B-Series BXM-4-64 MC1`, full readback PASS;
+`glesfullbench` (x86-64) → `renderer: PowerVR ... OpenGL ES 3.2 build 24.2@6603887`,
+GPU-bound metrics identical to native (see BENCHMARKS.md), call dispatch ~1.0×.
+Vulkan is enabled globally via `"ThunksDB": {"Vulkan": 1, "drm": 1}` in
+`~/.fex-emu/Config.json`; GLES runs through the `fex-gles` launcher.
+
+**Trixie-specific gotchas** (cost hours — read before reproducing):
+- The GL host thunk must link **GLVND** (`OpenGL::GLX` + `OpenGL::OpenGL`), NOT legacy
+  `libGL`: the `gleslib` redirect of `libGL.so.1` → `libGLESv2_PVR_MESA.so` otherwise
+  leaves `glXGetProcAddress` unresolvable and the thunk fails silently. EGL host links
+  `libEGL` explicitly.
+- Offscreen native GLES needs `EGL_PLATFORM=surfaceless` and the app's
+  `eglChooseConfig` must ask for `EGL_SURFACE_TYPE=EGL_PBUFFER_BIT` (default
+  `WINDOW_BIT` yields 0 configs on this stack).
+- binfmt's `F` flag caches the interpreter **inode** — after swapping `/opt/fex`
+  binaries you MUST re-run `register-fex-binfmt.sh` or the kernel keeps executing the
+  old (deleted) interpreter.
+- Guest thunk cross-builds need the dev headers installed *inside* the x86 rootfs.
+- i386 (32-bit) thunks: deferred on trixie — the rootfs has no i386 multiarch and
+  thunkgen needs i386 dev headers. x86-64 is unaffected.
+
 ## Setup / launcher scripts
 
 | Script | What it does |

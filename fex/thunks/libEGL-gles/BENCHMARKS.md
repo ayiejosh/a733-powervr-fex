@@ -42,3 +42,18 @@ x86/i386 under FEX runs at **effectively native GPU throughput**, with single-di
 overhead confined to CPU-side call issuing. For context, FEX's *general* x86→ARM CPU
 overhead on this board is 1.1–2.2×; GLES thunking sits at the low end because the expensive
 half runs on the native driver.
+
+## Trixie rebuild re-run (2026-07-02, Debian 13 / kernel 6.6, FEX d848cbb + patches)
+
+Spot re-run after the trixie rebuild (x86-64 via thunk vs native the same day):
+
+| Metric | native ARM (today) | x86-64/FEX (today) | vs native |
+|---|---:|---:|---:|
+| shader-ALU throughput | 207 GFLOP/s | 206.6 GFLOP/s | 1.00× |
+| triangle rate | 14.2 Mtri/s | 14.2 Mtri/s | 1.00× |
+| compute throughput | 9.1 GIntOp/s | 9.1 GIntOp/s | 1.00× |
+| glClear call rate | 2621 k/s | 2684 k/s | ~1.0× |
+
+Call-dispatch overhead ≈1.0× (better than the 1.13× bullseye reference — newer FEX).
+Note today's native glClear (2621k) is lower than the bullseye-era 3427k on both sides
+(desktop running); the thunk-vs-native ratio is the meaningful number.
