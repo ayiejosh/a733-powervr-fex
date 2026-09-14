@@ -6,7 +6,7 @@
 # ---------------------------------------------------------------------------
 --- a/physmem_dmabuf.c
 +++ b/physmem_dmabuf.c
-@@ -2201,3 +2201,133 @@
+@@ -2201,3 +2201,142 @@
  	PVR_ASSERT(eError != PVRSRV_OK);
  	return eError;
  }
@@ -89,6 +89,14 @@
 +		return ERR_PTR(iErr);
 +	}
 +
++	{
++	/* GCC 15 (-Wstringop-overread, -Werror in kernel builds) flags passing a
++	 * short string literal where PhysmemCreateNewDmaBufBackedPMR's prototype
++	 * declares a DEVMEM_ANNOTATION_MAX_LEN-sized array parameter -- use an
++	 * actual DEVMEM_ANNOTATION_MAX_LEN buffer so the argument's real object
++	 * size matches what the callee's signature claims. */
++	static const IMG_CHAR aszAnnotation[DEVMEM_ANNOTATION_MAX_LEN] = "gemprimeimport";
++
 +	PMRFactoryLock();
 +	eError = PhysmemCreateNewDmaBufBackedPMR(
 +	             psDevNode->apsPhysHeap[PVRSRV_PHYS_HEAP_EXTERNAL],
@@ -99,9 +107,10 @@
 +	             1,                /* ui32NumPhysChunks */
 +	             1,                /* ui32NumVirtChunks */
 +	             &ui32MappingTable,
-+	             sizeof("gemprimeimport"),
-+	             "gemprimeimport",
++	             sizeof(aszAnnotation),
++	             aszAnnotation,
 +	             &psPMR);
++	}
 +	if (eError == PVRSRV_OK)
 +	{
 +		PMR_SetLayoutFixed(psPMR, IMG_TRUE);
