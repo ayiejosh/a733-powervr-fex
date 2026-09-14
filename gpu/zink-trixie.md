@@ -47,6 +47,8 @@ layer reports `geometryShader=true` so zink proceeds, then **strips** it at
 `CreateDevice` so the blob accepts the device. (Faking GS this way means GS-using GL would
 crash the blob — rare for 2D/desktop GL.) The same layer is used by the DXVK path.
 
+Source: [`vk-feature-strip/`](vk-feature-strip/).
+
 ## What works
 
 | bench | result |
