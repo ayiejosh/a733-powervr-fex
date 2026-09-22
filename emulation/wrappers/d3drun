@@ -1,0 +1,26 @@
+#!/bin/bash
+# d3drun <app.exe> [args] — GPU-accelerated D3D9/10/11 on PowerVR via native arm64ec DXVK-Sarek.
+# Window GL = software llvmpipe (board HW GL is broken); DXVK render+present = PowerVR Vulkan.
+# Feature-strip layer NO LONGER NEEDED: DXVK-Sarek's Mali-optional commits gate missing features,
+# and the in-DXVK BC1-5 decode patch removed the textureCompressionBC requirement.
+export WINEPREFIX="${WINEPREFIX:-/home/radxa/.wine-dxvk}" HOME=/home/radxa WINEDEBUG="${WINEDEBUG:--all}" HODLL=wowbox64.dll
+export WINEDLLOVERRIDES="d3d11,dxgi,d3d10core,d3d9=native,builtin;mscoree,mshtml="
+export GALLIUM_DRIVER=llvmpipe MESA_LOADER_DRIVER_OVERRIDE=llvmpipe __GLX_VENDOR_LIBRARY_NAME=mesa
+export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/img_icd.json
+export DXVK_CONFIG_FILE=/home/radxa/dxvk.conf
+export DISPLAY="${DISPLAY:-:0}" XAUTHORITY="${XAUTHORITY:-/home/radxa/.crd-xauth}"
+# --- measured dynarec tuning (2026-09-22, docs/FEX-BOX-TUNING-2026-09-22.md) ---
+# Environment variables are the ONLY working route here: a .box64rc at
+# %USERPROFILE% hangs WowBox64, and /etc/box64.box64rc is never read by it.
+# CALLRET=1 measured -8.0% on emulated throughput (find.exe scanning 198 MB /
+# 4M lines, output identical), and the same setting already ships for the DXVK
+# DLLs in /etc/box64.box64rc. Revert for one run by prefixing the same command:
+#     BOX64_DYNAREC_CALLRET=0 <this wrapper> <app.exe>
+export BOX64_DYNAREC_CALLRET=1
+# BIGBLOCK=3 / FORWARD=512 measured WORSE than CALLRET alone (5.96 s vs 5.75 s),
+# and SAFEFLAGS=0 is already the default here, so neither is set.
+# FEX's own Windows backend is faster still (5.18 s vs 6.25 s, -17.1%). Uncomment
+# the next line to try it: it replaces the emulator for every Windows app, so it
+# deserves a test on the title you actually care about.
+# export HODLL=libwow64fex.dll
+exec wine "$@"

@@ -1,0 +1,23 @@
+#!/bin/bash
+# winrun <app.exe> [args] — run a Windows program (x86/x64/ARM64) via Hangover.
+# CRITICAL: forces software GL/Vulkan — the PowerVR blob DEADLOCKS wine's graphics init.
+# GUI apps render via llvmpipe (CPU, usable not fast). Real GPU/D3D = separate DXVK effort.
+export WINEPREFIX="${WINEPREFIX:-/home/radxa/.wine-hangover}" HOME=/home/radxa WINEDEBUG="${WINEDEBUG:--all}"
+export HODLL=wowbox64.dll
+export LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+export DISPLAY="${DISPLAY:-:0}" XAUTHORITY="${XAUTHORITY:-/home/radxa/.crd-xauth}"
+# --- measured dynarec tuning (2026-09-22, docs/FEX-BOX-TUNING-2026-09-22.md) ---
+# Environment variables are the ONLY working route here: a .box64rc at
+# %USERPROFILE% hangs WowBox64, and /etc/box64.box64rc is never read by it.
+# CALLRET=1 measured -8.0% on emulated throughput (find.exe scanning 198 MB /
+# 4M lines, output identical), and the same setting already ships for the DXVK
+# DLLs in /etc/box64.box64rc. Revert for one run by prefixing the same command:
+#     BOX64_DYNAREC_CALLRET=0 <this wrapper> <app.exe>
+export BOX64_DYNAREC_CALLRET=1
+# BIGBLOCK=3 / FORWARD=512 measured WORSE than CALLRET alone (5.96 s vs 5.75 s),
+# and SAFEFLAGS=0 is already the default here, so neither is set.
+# FEX's own Windows backend is faster still (5.18 s vs 6.25 s, -17.1%). Uncomment
+# the next line to try it: it replaces the emulator for every Windows app, so it
+# deserves a test on the title you actually care about.
+# export HODLL=libwow64fex.dll
+exec wine "$@"

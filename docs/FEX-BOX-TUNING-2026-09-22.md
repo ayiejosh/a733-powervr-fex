@@ -248,10 +248,9 @@ game-path bug — but it is reproducible, and it is a reason to leave
 ## 6. Remaining headroom, ranked
 
 1. **A/B the Windows backend on a real title: `HODLL=libwow64fex.dll` vs
-   `wowbox64.dll`.** Launch cost is a wash (both ~0.2 s warm, ~1.0 s cold), so what
-   remains unknown is emulated *throughput*, and `cmd /c ver` cannot answer it because it
-   barely executes guest code. Both backends ship; the switch is one environment
-   variable. *Highest expected value, and only a real game can settle it.*
+   `wowbox64.dll`.** *Answered for throughput in §10 — FEX's backend won by 17.1%.
+   What remains open is whether a real game agrees, since the workload used was a
+   console builtin rather than a title.*
 2. **Thunk ALSA for the FEX path.** `libasound` ships in `/opt/fex/lib/fex-emu/HostThunks/`
    but `ThunksDB` enables only `Vulkan` and `drm`, so guest audio is emulated. Adding
    `"asound": 1` moves it to native. Not applied here: it changes audio behaviour and
@@ -350,6 +349,7 @@ demonstrated firing on a boot-id mismatch.
 | `matrix.sh` | interleaved A/B driver (round-robin, minimum-of-N, pinning) |
 | `sweep-fex.sh` | the 15-configuration FEX knob sweep |
 | `clean-measure.sh` | core-selection and DiskCache measurements, serialised |
+| `wine-throughput-ab.sh` | the Windows-path throughput A/B that produced §10 |
 | `wine-backend-ab.sh` | box64 vs FEX Windows backend, with the SIGKILL purge discipline and a refusal to run against leftovers |
 | `box64-rcfile-ab-clean.sh` | the A/B that established the rcfile hang |
 | `box64-rcfile-salvage.sh` | mode/content variants, and the recovery check that proved removal fixes it |
@@ -364,4 +364,55 @@ x86_64-linux-gnu-gcc -O2 -static -pthread -o build/fexbench_x64 fexbench.c
 REPS=3 ./matrix.sh                      # native vs FEX vs box64
 REPS=3 ./sweep-fex.sh                   # FEX knob surface
 ./clean-measure.sh                      # core selection + disk cache
+REPS=3 ./wine-throughput-ab.sh          # Windows emulated throughput, with the purge discipline
 ```
+
+---
+
+## 10. The Windows path measured properly, and the change that was applied
+
+`cmd /c ver` cannot rank a codegen setting. An emulated i386 PE builtin doing real work
+can: `syswow64\find.exe /C the C:\bench200.txt` over a 198 MB / 4,000,000-line file,
+with a full SIGKILL purge and an asserted-empty process table before every run, and the
+line count checked on every run.
+
+| variant | run 1 | run 2 | run 3 | best | vs default |
+|---|---|---|---|---|---|
+| box64 default | 6.37 | 6.35 | 6.25 | 6.25 s | — |
+| box64 `CALLRET=1` | 5.76 | 5.75 | 5.85 | **5.75 s** | **−8.0%** |
+| box64 `CALLRET=1 BIGBLOCK=3 FORWARD=512` | 5.98 | 5.96 | 6.08 | 5.96 s | −4.6% |
+| **FEX backend** (`HODLL=libwow64fex.dll`) | 5.27 | 5.27 | 5.18 | **5.18 s** | **−17.1%** |
+
+Every run exited 0 and printed exactly `4000000` lines, so none of this speed is bought
+with wrong results.
+
+Three things follow:
+
+1. **`CALLRET=1` is worth 8.0% here, measured first-hand** — consistent with the −9.4%
+   in earlier session notes, and it is the same setting the stock `/etc/box64.box64rc`
+   already applies to the DXVK DLLs.
+2. **`BIGBLOCK=3` + `FORWARD=512` gave back most of that gain** (5.96 s vs 5.75 s).
+   Adding more settings from a list of "known good" options made it *slower*; that is
+   the argument for measuring each one on the workload you actually care about.
+3. **FEX's Windows backend is 17.1% faster than box64's for emulated work.** This was
+   the open question, and the answer is not what the Linux-side numbers predicted —
+   box64 looked competitive there thanks to its x87 advantage, but on this workload it
+   is simply slower.
+
+### Applied
+
+`BOX64_DYNAREC_CALLRET=1` is now exported by **`d3drun`, `winrun` and `guirun`** — the
+only route that works, since the rcfile route hangs (§5). Verified live: box64 self-reports
+`BOX64ENV: Variables overridden: BOX64_DYNAREC_CALLRET=1` through both `d3drun` and
+`winrun`, both still start in ~1.1 s, and the wrapper diffs are pure insertions.
+
+- Originals archived at `/home/radxa/fex-tune/wrapper-backups/`.
+- Revert for a single run: `BOX64_DYNAREC_CALLRET=0 d3drun <app.exe>`.
+- Risk, stated plainly: `CALLRET` assumes a callee does not read the caller's flags,
+  which is why the distro file scopes it to specific DLLs rather than globally. Output
+  was identical on this workload, but if a title renders or saves wrongly this is the
+  first line to remove.
+
+**Not applied, deliberately:** switching the backend to FEX. It is the bigger win, but
+it replaces the emulator for every Windows app and the evidence is a console builtin,
+not a game. It is one commented line in each wrapper.
