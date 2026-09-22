@@ -1,20 +1,26 @@
-# a733-bench  kernel=6.6.98-3-aw2511  fex=FEXInterpreter  date=2026-07-02T05:20Z
-cpu.1thread.evps:                  759.83
-gpu.glbench.loop4.Mpix:            4186
-gpu.glbench.loop16.Mpix:           1215
-gpu.glbench.loop64.Mpix:           315
-gpu.glbench.loop256.Mpix:          80
-fex.atomic.off0.Mops:              136.64
-fex.atomic.off2.Mops:              53.77
-fex.atomic.off14.Mops:             51.12
+# a733-bench  kernel=6.6.98-5-aw2511  fex=FEXInterpreter  date=2026-09-22T04:16Z
+# clocks: GPU=1104000000 DSU=1027000000 CPU_big=2002000 gov=schedutil  (overlays/, cpu-mode.sh auto)
+cpu.1thread.evps:                  847.80
+gpu.glbench.loop4.Mpix:            7392
+gpu.glbench.loop16.Mpix:           2229
+gpu.glbench.loop64.Mpix:           579
+gpu.glbench.loop256.Mpix:          147
+fex.atomic.off0.Mops:              152.14
+fex.atomic.off2.Mops:              61.40
+fex.atomic.off14.Mops:             56.85
 fex.atomic.off2.STOCK.Mops:        NA
-native.tcreate.nsop:               25581
-fex.tcreate.nsop:                  139849
+native.tcreate.nsop:               18094
+fex.tcreate.nsop:                  159850
 fex.tcreate.STOCK.nsop:            NA
-fex.x87.RP0.nsiter:                84.4
-fex.x87.RP1.nsiter:                4.5
+fex.x87.RP0.nsiter:                77.3
+fex.x87.RP1.nsiter:                4.1
 # --- ratios (compare THESE across commits; absolutes above are load-sensitive ±20%) ---
 info.atomic.patched_penalty_vs_aligned: 2.5x   # info: residual unaligned vs aligned (patched)
-ratio.x87.RP0_over_RP1:            18.8x   # X87ReducedPrecision win
+ratio.x87.RP0_over_RP1:            18.9x   # X87ReducedPrecision win
 # NOTE: STOCK rows are NA since the 2026-07-02 FEX rebuild (no stock binary kept);
 # historical stock ratios (81.9x atomic win, 5.7x tcreate) are in git history of this file.
+# NOTE: this run overlapped ambient load — tcreate is the spread to expect on an always-on
+# box: fex.tcreate read 159850 here, 116988-123820 when quiet, 139849 in the 2026-07-02 run;
+# native.tcreate likewise 18094 here vs 25581 then. Ratios, not these two, are the signal.
+# The gpu.* rows ARE load-independent: they rose from 4186/1215/315/80 at the driver's
+# default 600 MHz purely because the GPU now runs at 1104 MHz (overlays/gpu-clk.dts).

@@ -1,0 +1,55 @@
+/dts-v1/;
+/plugin/;
+
+/*
+ * dsu-clk.dtbo — raise the A733 DSU (L3 / coherency fabric) clock above the 780 MHz
+ * it boots with.
+ *
+ * Why: the vendor's DSU frequency-scaling driver is NOT compiled into this kernel
+ *     (# CONFIG_AW_SUNXI_DSUFREQ is not set), so nothing ever scales the DSU — it
+ *     stays at whatever the bootloader programmed (780 MHz) while the CPU clusters
+ *     run up to 1794/2002 MHz.  The DT's dsu-opp-table (compatible
+ *     "allwinner,dsu-operating-points") lists points up to 1352 MHz that no driver
+ *     consumes.
+ *
+ * Measured before (DSU 780 MHz, A76 @ 2002 MHz, arrays pinned to a big core):
+ *     l3read   10.2 GB/s      l3shared  12.4 GB/s
+ *     dramread  9.2 GB/s      dramcopy   3.2 GB/s
+ * L3 bandwidth barely exceeds DRAM bandwidth — consistent with the DSU being the
+ * limiter.  See Main/PERFORMANCE-PROFILE-2026-09-22.md.
+ *
+ * Safety: the DSU is supplied by the same rail as the little cluster (dsu-supply),
+ * which idles at 950 mV; the dsu-opp-table only asks for >=1000 mV above ~1248 MHz,
+ * so the first step (1196 MHz) stays inside the table's lower range.  Stability and
+ * temperatures are measured after each step.
+ *
+ * Rollback: delete /boot/dtbo/dsu-clk.dtbo, run `sudo u-boot-update`, reboot.
+ */
+
+/ {
+	compatible = "radxa,cubie-a7a";
+
+	fragment@0 {
+		target-path = "/dsufreq@0";
+		__overlay__ {
+			/* keep the vendor string first; "syscon" only exists so a driver binds
+			   here — assigned-clock-rates is applied by of_clk_set_defaults(), which
+			   runs on driver probe.  With no driver on this node the first attempt
+			   silently did nothing (clock stayed 780 MHz). */
+			compatible = "allwinner,dsufreq", "syscon";
+			/* <0x05 0x03> = cpupll_ccu@8870000 (phandle 0x05), DSU clock */
+			assigned-clocks = <0x05 0x03>;
+			assigned-clock-rates = <1196000000>;
+		};
+	};
+
+	fragment@1 {
+		target-path = "/soc@3000000/gpu@1800000";
+		__overlay__ {
+			/* second host: the GPU node's driver (pvrsrvkm) definitely binds, so the
+			   same assignment is applied from here too.  Same value twice is fine. */
+			assigned-clocks = <0x05 0x03>;
+			assigned-clock-rates = <1196000000>;
+		};
+	};
+};

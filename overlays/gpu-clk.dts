@@ -1,0 +1,64 @@
+/dts-v1/;
+/plugin/;
+
+/*
+ * gpu-clk.dtbo — PowerVR BXM-4-64: raise the GPU from the driver's 600 MHz fallback to
+ * 1104 MHz, the clock generator's measured ceiling, and pin the GPU rail to the OPP
+ * table's own voltage for that point (990 mV).
+ *
+ * fragment@0 — the GPU clock.
+ *   pvrsrvkm's sunxi_platform.c does NOT use the OPP table / devfreq.  It reads a plain
+ *   "clk_rate" property off the GPU node and falls back to its own default when absent:
+ *     pvrsrvkm 1800000.gpu: warning: default clk_rate is NOT set in DTS, set it to default:600000000
+ *     pvrsrvkm 1800000.gpu: sunxi_parse_dts clk_rate:600000000
+ *   The DT does declare opp@400/600/800/1008000000 in gpu-opp-table, but nothing ever
+ *   asks for them, so the GPU ran at 600 MHz on every boot since install.
+ *
+ *   Why 1104 and not the OPP table's 1008: the clock generator tops out at 1104 MHz —
+ *   requests for 1152/1200/1296/1392 MHz are silently clamped to it, and with both
+ *   overlays applied a request of exactly 1008 MHz can round to a *lower* parent PLL
+ *   (552 MHz observed).  1104 is the highest point that reports back as requested.
+ *   A live sweep of 8 GPU levels in one boot (bench/clkctl/) established this.
+ *
+ * fragment@1 — the GPU rail (axp8191-dcdc4; its only consumer is 1800000.gpu-gpu).
+ *   The driver never consults the OPP table for voltage either (it imports no
+ *   dev_pm_opp_* symbols): it calls regulator_get_voltage() at probe and re-applies
+ *   whatever it finds.  Measured 800 mV at the rail, which is below even the best speed
+ *   bin's requirement for 1008 MHz, so the rail floor is pinned to 990 mV — the
+ *   regulator core then clamps the driver's request up (sunxiSetVoltage:990000).
+ *
+ * Measured (2026-09-22, rail 990 mV, DSU 1027 MHz):
+ *     bench/glbench.c ALU loop   600 MHz: 4186/1215/315/80 Mpix
+ *                                1104 MHz: 7392/2229/579/147 Mpix   (+77..+84%)
+ *     glmark2-es2 (vendor GLES)  659 -> 826        (glmark2 is CPU/driver-bound here)
+ *     glmark2-es2 (zink)         454 -> 581
+ *     sustained load             58-61 C, zero driver error lines
+ *
+ * Build + install (the overlay must be compiled where the board's DTs live):
+ *     dtc -@ -I dts -O dtb -o gpu-clk.dtbo gpu-clk.dts
+ *     sudo cp gpu-clk.dtbo /boot/dtbo/ && sudo u-boot-update     # then reboot
+ * Verify after reboot:
+ *     sudo dmesg | grep sunxi_parse_dts        # -> clk_rate:1104000000
+ *     sudo grep -A1 'pll-gpu$' /sys/kernel/debug/clk/clk_summary
+ *
+ * Rollback: delete /boot/dtbo/gpu-clk.dtbo, run `sudo u-boot-update`, reboot — the GPU
+ * returns to 600 MHz.  Nothing here touches the bootloader or the kernel.
+ */
+
+/ {
+	compatible = "radxa,cubie-a7a";
+
+	fragment@0 {
+		target-path = "/soc@3000000/gpu@1800000";
+		__overlay__ {
+			clk_rate = <1104000000>;
+		};
+	};
+
+	fragment@1 {
+		target-path = "/soc@3000000/twi@7083000/pmu@36/regulators@0/dcdc4";
+		__overlay__ {
+			regulator-min-microvolt = <990000>;
+		};
+	};
+};

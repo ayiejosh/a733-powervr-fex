@@ -10,6 +10,11 @@ stacks and their numbers are not directly comparable.
 | Board | Kernel | DDK | loop=4 | loop=16 | loop=64 | loop=256 | Notes |
 |---|---|---|---|---|---|---|---|
 | Radxa Cubie A7A | 5.15.147-21-a733 | 24.2@6603887 | 4198 | 1216 | 315 | 80 | bullseye baseline (1280×720) |
+| Radxa Cubie A7A | 6.6.98-5-aw2511 | 24.2@6603887 | **7392** | **2229** | **579** | **147** | trixie, GPU **1104 MHz** + DSU 1027 MHz (`overlays/`), 1280×720; a second run read 7644/2227/578/147 |
+
+> The same board at the driver's default **600 MHz** clock read 4186/1215/315/80 — the
+> GPU clock, not the driver, was the difference. See
+> [`docs/PERFORMANCE-2026-09-22.md`](docs/PERFORMANCE-2026-09-22.md).
 
 ## CPU — sysbench events/s (`cpu-max-prime=20000`)
 | Board | Kernel | 1-thread | all-cores | Notes |
@@ -45,7 +50,17 @@ Native arm64ec DXVK-Sarek (FL 11_0). Headless RTT and windowed present, indicati
 ## GPU — OpenGL via zink → PowerVR Vulkan, off-screen (trixie)
 | Board | Kernel | bench | score | Notes |
 |---|---|---|---|---|
-| Radxa Cubie A7A | 6.6.x-aw2511 | glmark2-es2 `--off-screen` | **661** | system Mesa 25.0.7 zink; GLES2/GL2.1 ceiling; windowed/desktop GL does NOT work |
+| Radxa Cubie A7A | 6.6.x-aw2511 | glmark2-es2 `--off-screen`, zink | **661** | June 2026 measurement, GPU at 600 MHz; system Mesa 25.0.7 zink; GLES2/GL2.1 ceiling; windowed/desktop GL does NOT work |
+| Radxa Cubie A7A | 6.6.98-5-aw2511 | glmark2-es2 `--off-screen`, zink | 454 → **581** | 2026-09-22: 454 at the stock 600 MHz, 581 at **1104 MHz** (`overlays/gpu-clk.dts`) |
+| Radxa Cubie A7A | 6.6.98-5-aw2511 | glmark2-es2 `--off-screen`, vendor GLES | 659 → **826** | 2026-09-22, `LD_LIBRARY_PATH=/usr/local/lib`, same 600 → 1104 MHz step |
+
+> glmark2 is **CPU/driver-bound** on this board: moving the GPU 1008 → 1104 MHz changed
+> nothing measurable there (vendor 816–829, zink 573–588 across runs); use
+> `bench/glbench.c` for a GPU-throughput signal, which does track it (+77–84%).
+>
+> Note the 454 above is *below* June's 661 for zink **at the same 600 MHz** — that gap
+> predates the clock work (447–469 across pre-overlay runs on 2026-09-22) and is a
+> userspace difference, not the clock; the clock overlays do not touch zink's shader path.
 
 ## Memory / storage
 | Board | RAM 8-thr read | RAM write | UFS/eMMC seq read | seq write | Notes |

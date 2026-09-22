@@ -43,6 +43,37 @@ gcc enctest_h264.c -o enctest_h264 -lva -lva-drm   # adjust libs to your VAAPI s
 ./enctest_h264
 ```
 
+## Memory hierarchy — is the L3/DSU fabric starving you? (`membw.c`)
+```sh
+gcc -O3 -fopenmp -march=native -ffast-math membw.c -o membw -lm
+taskset -c 6 ./membw          # pin to a BIG core (6-7); L3 is per-DSU, not per-core
+./membw 8                     # multi-thread: coherency/DRAM under load
+# If l3read is barely above dramread, the DSU clock is your bottleneck, not DRAM.
+# A733 stock (DSU 780 MHz): l3read 10.2 / l3shared 12.4 / dramread 8.2-9.3 / dramcopy 3.2 GB/s
+# This is how the stuck-at-780-MHz DSU was found -> overlays/dsu-clk.dts
+```
+
+## Clock sweeping without reboots (`clkctl/`)
+A ~60-line debugfs module that exposes `clk_set_rate()` for the GPU and DSU clocks, so an
+8-point frequency sweep (and the generator's real ceiling) is measured in **one boot**
+instead of eight. See [`clkctl/`](clkctl/) — build lines, usage and caveats are there.
+
+## The clock-work harnesses (what produced `overlays/`)
+```sh
+sudo insmod clkctl/clkctl.ko && sudo ./gpu-clk-sweep.sh   # GPU ceiling in one boot (restores the boot rate)
+sudo ./gpu-stress.sh 1104mhz-990mv                        # is that clock actually stable? (6 iterations, fault-watching)
+sudo ./gpu-clock-bench.sh 1104mhz-990mv                   # clock state + glmark2 on both GL paths, one file
+sudo ./dsu-ab.sh 1027                                     # memory BW + CPU + GPU + thermals for a DSU setting
+sudo ./cpu-oc-sweep.sh                                    # try to beat the spec clock; shows the wall (needs the experiment overlay)
+```
+| harness | the claim it backs |
+|---|---|
+| `gpu-clk-sweep.sh` | GPU ceiling is **1104 MHz** — 1152/1200/1248/1296/1344/1392 all report 1104 |
+| `gpu-stress.sh` | 1104 MHz @ 990 mV: 58-61 °C, zero driver error lines, X survives |
+| `dsu-ab.sh` | DSU 780 → 1027 MHz: `l3read` +19%, `dramread` +38%, FEX thread-start −32%, GPU/compute unchanged |
+| `cpu-oc-sweep.sh` | the CPU **cannot** be overclocked here — added OPPs are never offered |
+| `gpu-clock-bench.sh` | the overlay is live (`sunxi_parse_dts clk_rate:…`) and glmark2 plateaus before the GPU does |
+
 ## CPU / RAM / storage (standard tools)
 ```sh
 sysbench --test=cpu  --cpu-max-prime=20000 --num-threads=1 run   # single-core

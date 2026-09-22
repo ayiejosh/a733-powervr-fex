@@ -6,8 +6,11 @@ for orders-of-magnitude, not precise comparison. The bullseye (Debian 11 / 5.15)
 has its own, separately-measured numbers; the two stacks are not directly comparable.
 
 ## CPU — emulated x86-64 single-thread (the headline trixie number)
-SoC: **heterogeneous big.LITTLE** — cores **0-5 LITTLE** (cap 385), **6-7 BIG**
-(cap 1024), ~1716 MHz ceiling (1794 MHz firmware-locked, not reachable from sysfs).
+SoC: **heterogeneous big.LITTLE** — cores **0-5 LITTLE** (cap 385, max **1794 MHz**),
+**6-7 BIG** (cap 1024, max **2002 MHz**). Both ceilings are reachable from sysfs; the
+"~1716 MHz firmware cap" this doc used to claim was a **stale thermal clamp** (a frozen
+cooling-device state), not a firmware lock — see
+[`PERFORMANCE-2026-09-22.md`](PERFORMANCE-2026-09-22.md) §5.
 
 `bench/cpubench.c` cross-built static x86-64 (`x86_64-linux-gnu-gcc -O2 -static -lm`);
 native = the same source built arm64. Metric = sum of per-section ms (int/float/hash/
@@ -22,8 +25,12 @@ qsort/matmul); lower = faster. Pinned to a big core for the headline figure.
 > **Core placement is the single biggest lever**: the same x86 work runs ~**2.3-6.5x**
 > faster on a BIG core (6-7) than a LITTLE core (0-5) — pure IPC, even at the same clock
 > (e.g. matmul 6.5x, primes/mandel/qsort 2.3x). The capacity-aware scheduler already
-> puts hot work on the big cores; **don't hard-pin**. The CPU governor (performance vs
-> ondemand) is ~0% for sustained compute — its only value is bursty launch latency.
+> puts hot work on the big cores; **don't hard-pin**. The CPU governor is ~0% for
+> **saturated all-core** compute, but **not** for bursty work: a single busy thread that
+> keeps blocking (GPU ioctls, Wine/desktop launches) only reaches 1.2-1.4 GHz under
+> `schedutil`, which measured **-29%** on CPU-bound GL scenes. That is what
+> `system/cpu-boost.py` exists to fix (idle 416 MHz, floors pinned to max while
+> `user.slice` shows demand) — see [`PERFORMANCE-2026-09-22.md`](PERFORMANCE-2026-09-22.md) §6.
 
 ## FEX tuning (x86-64 -> ARM64), CPU bench, TOTAL ms
 Single option at a time, then the winner combo, median runs; correctness checksum
@@ -132,6 +139,15 @@ unreliable; solid-fill scenes render correctly.
 ## Memory / storage / thermal (context, board-level, stable across stacks)
 - **RAM (LPDDR5 ~4800 MT/s):** ~17 GB/s read / ~10 GB/s write (8-thread, sysbench).
 - **UFS:** ~1.7 GB/s seq read (QD>=8) / 265 MB/s write / ~112k IOPS 4K-read.
-- **Thermal:** single-core emulation load held 1716 MHz at ~59-61 C — no throttling
-  (the 1716 cap is a static policy limit, not live throttling). Sustained all-core load
-  needs active cooling (`system/fan-curve.sh`).
+- **Thermal:** single-core emulation load holds the big cores at **2002 MHz / ~59-61 C**
+  with the fan curve active. The old "1716 MHz at 59-61 C, no throttling" line was
+  **wrong**: the board *was* clamped (1508/1716 MHz) by a thermal cooling-device state
+  that stuck when `fan-curve.sh` switched the zones to `user_space` — real,
+  permanent-looking throttling that `scaling_max_freq` could not override. Releasing the
+  cooling devices restored 1794/2002 MHz (**+14.1%** on SHA-256 8-thread). Sustained
+  all-core load still needs active cooling (`system/fan-curve.sh`).
+- **L3 / DSU fabric:** the DSU clock is **not** scaled by this kernel
+  (`# CONFIG_AW_SUNXI_DSUFREQ is not set`) — it boots at 780 MHz and stays there. Raising
+  it to 1027 MHz (`overlays/dsu-clk.dts`) measured: `l3read` 10.2 -> 10.9-12.2 GB/s,
+  `l3shared` 12.4 -> 13.4-15.6, `dramread` 8.2-9.3 -> 10.3-11.8, `fex.tcreate`
+  181951 -> 123820 ns/op, with compute/GPU unchanged. Probe: `bench/membw.c`.

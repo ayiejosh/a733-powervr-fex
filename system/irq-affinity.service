@@ -1,0 +1,11 @@
+[Unit]
+Description=IRQ affinity: GPU/storage on big cores, constant samplers on little cores
+After=multi-user.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/irq-affinity.sh
+
+[Install]
+WantedBy=multi-user.target

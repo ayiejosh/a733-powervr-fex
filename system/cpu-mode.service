@@ -1,0 +1,13 @@
+# Applies the chosen CPU power/performance profile at boot.
+# Change the mode with:  sudo sed -i 's/cpu-mode.sh .*/cpu-mode.sh balanced/' /etc/systemd/system/cpu-mode.service
+[Unit]
+Description=Apply CPU power/performance profile (see /usr/local/sbin/cpu-mode.sh)
+After=multi-user.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/cpu-mode.sh auto
+
+[Install]
+WantedBy=multi-user.target

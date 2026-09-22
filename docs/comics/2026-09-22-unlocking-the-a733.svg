@@ -1,0 +1,185 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 1200" width="1240" height="1200"
+     font-family="Helvetica, Arial, sans-serif" role="img"
+     aria-label="Comic: how the A733 board's GPU and CPU were unlocked, 2026-09-22">
+  <title>Unlocking the A733 — GPU and CPU, 2026-09-22</title>
+  <desc>A five panel comic explaining why the PowerVR GPU ran at 600 MHz instead of 1008 MHz,
+        why the CPU was silently capped at 84 percent for months, and how a small program now
+        gives full speed on demand with low power at idle.</desc>
+
+  <defs>
+    <style>
+      .panel  { fill:#ffffff; stroke:#1f2933; stroke-width:3; rx:18; }
+      .h      { font-size:26px; font-weight:bold; fill:#1f2933; }
+      .t      { font-size:19px; fill:#1f2933; }
+      .small  { font-size:16px; fill:#52606d; }
+      .mono   { font-family:"DejaVu Sans Mono", Menlo, Consolas, monospace; font-size:16px; fill:#1f2933; }
+      .bubble { fill:#ffffff; stroke:#1f2933; stroke-width:2.5; }
+      .board  { fill:#2f7d4f; stroke:#1f2933; stroke-width:3; }
+      .chip   { fill:#37474f; }
+      .fan    { fill:#90a4ae; stroke:#1f2933; stroke-width:2.5; }
+      .needly { stroke:#d64545; stroke-width:5; stroke-linecap:round; }
+      .gauge  { fill:none; stroke:#cbd2d9; stroke-width:12; stroke-linecap:round; }
+      .good   { fill:#2f7d4f; font-weight:bold; }
+      .bad    { fill:#d64545; font-weight:bold; }
+      .tag    { font-size:15px; font-weight:bold; fill:#ffffff; }
+      .tagbg  { rx:9; }
+    </style>
+  </defs>
+
+  <rect width="1240" height="1200" fill="#f5f7fa"/>
+  <text x="620" y="46" text-anchor="middle" class="h" style="font-size:32px">
+    Unlocking the A733 — what one day of measuring found
+  </text>
+  <text x="620" y="74" text-anchor="middle" class="small">
+    Radxa Cubie A7A · PowerVR BXM-4-64 · 22 Sep 2026
+  </text>
+
+  <!-- ================= PANEL 1: GPU handbrake ================= -->
+  <g transform="translate(30,95)">
+    <rect class="panel" width="570" height="400"/>
+    <rect class="tagbg" x="16" y="-14" width="150" height="30" fill="#d64545"/>
+    <text x="30" y="7" class="tag">1 · THE GPU</text>
+
+    <!-- board with GPU block -->
+    <rect class="board" x="40" y="70" width="200" height="150" rx="14"/>
+    <rect class="chip" x="70" y="100" width="140" height="90" rx="8"/>
+    <text x="140" y="140" text-anchor="middle" fill="#ffffff" font-size="17" font-weight="bold">GPU</text>
+    <text x="140" y="163" text-anchor="middle" fill="#b0bec5" font-size="14">can do 1008</text>
+
+    <!-- gauge showing 600 of 1008 -->
+    <path class="gauge" d="M300 210 A85 85 0 0 1 470 210"/>
+    <line class="needly" x1="385" y1="210" x2="330" y2="150"/>
+    <circle cx="385" cy="210" r="7" fill="#1f2933"/>
+    <text x="385" y="255" text-anchor="middle" class="h" style="font-size:24px">600 MHz</text>
+    <text x="385" y="278" text-anchor="middle" class="small">of 1008 possible</text>
+
+    <text x="40" y="300" class="t" font-weight="bold" fill="#d64545">Running at 60% speed.</text>
+    <text x="40" y="325" class="t">The chip's own spec table said 1008 MHz.</text>
+    <text x="40" y="348" class="small">The driver read one setting the board never filled in,</text>
+    <text x="40" y="368" class="small">so it fell back to a slower default. Every boot. For months.</text>
+  </g>
+
+  <!-- ================= PANEL 2: CPU silently capped ================= -->
+  <g transform="translate(640,95)">
+    <rect class="panel" width="570" height="400"/>
+    <rect class="tagbg" x="16" y="-14" width="150" height="30" fill="#d64545"/>
+    <text x="30" y="7" class="tag">2 · THE CPU</text>
+
+    <rect class="board" x="40" y="70" width="200" height="150" rx="14"/>
+    <rect class="chip" x="70" y="95" width="140" height="45" rx="8"/>
+    <text x="140" y="123" text-anchor="middle" fill="#ffffff" font-size="15" font-weight="bold">6 slow cores</text>
+    <rect class="chip" x="70" y="150" width="140" height="45" rx="8"/>
+    <text x="140" y="178" text-anchor="middle" fill="#ffffff" font-size="15" font-weight="bold">2 fast cores</text>
+
+    <path class="gauge" d="M300 210 A85 85 0 0 1 470 210"/>
+    <line class="needly" x1="385" y1="210" x2="345" y2="140"/>
+    <circle cx="385" cy="210" r="7" fill="#1f2933"/>
+    <text x="385" y="255" text-anchor="middle" class="h" style="font-size:24px">84% speed</text>
+    <text x="385" y="278" text-anchor="middle" class="small">1508 / 1716 MHz, not 1794 / 2002</text>
+
+    <text x="40" y="300" class="t" font-weight="bold" fill="#d64545">A leftover safety brake.</text>
+    <text x="40" y="325" class="t">The fan script took over cooling, but never released</text>
+    <text x="40" y="348" class="t">the low-speed limit the system had set at boot.</text>
+    <text x="40" y="368" class="small">Nobody noticed. Everything still worked — just 14% slower.</text>
+  </g>
+
+  <!-- ================= PANEL 3: the false choice ================= -->
+  <g transform="translate(30,515)">
+    <rect class="panel" width="570" height="395"/>
+    <rect class="tagbg" x="16" y="-14" width="220" height="30" fill="#b7791f"/>
+    <text x="30" y="7" class="tag">3 · THE OBVIOUS CHOICES</text>
+
+    <!-- option A -->
+    <rect x="40" y="30" width="230" height="140" rx="12" fill="#fff4e6" stroke="#b7791f" stroke-width="2.5"/>
+    <text x="155" y="58" text-anchor="middle" class="t" font-weight="bold">Always full speed</text>
+    <text x="155" y="86" text-anchor="middle" class="small">Fast, but hot and</text>
+    <text x="155" y="108" text-anchor="middle" class="small">wasteful when idle</text>
+    <text x="155" y="140" text-anchor="middle" style="font-size:30px">🔥</text>
+    <text x="155" y="162" text-anchor="middle" class="small" fill="#b7791f">"performance"</text>
+
+    <!-- option B -->
+    <rect x="300" y="30" width="230" height="140" rx="12" fill="#eef4fb" stroke="#3e6b9c" stroke-width="2.5"/>
+    <text x="415" y="58" text-anchor="middle" class="t" font-weight="bold">Power saving</text>
+    <text x="415" y="86" text-anchor="middle" class="small">Cool and quiet, but</text>
+    <text x="415" y="108" text-anchor="middle" class="small">30% slower in bursts</text>
+    <text x="415" y="140" text-anchor="middle" style="font-size:30px">🐢</text>
+    <text x="415" y="162" text-anchor="middle" class="small" fill="#3e6b9c">"schedutil"</text>
+
+    <text x="40" y="215" class="t">Neither is right. The good one is slow,</text>
+    <text x="40" y="240" class="t">the fast one is wasteful — the board needs</text>
+    <text x="40" y="265" class="t" font-weight="bold">full speed only while you work.</text>
+
+    <text x="40" y="300" class="small">Why the "good" one is so slow here: the chip decides speed from an</text>
+    <text x="40" y="320" class="small">average, and a game's work comes in short uneven bursts — so the</text>
+    <text x="40" y="340" class="small">average looks lazy and the speed never rises.</text>
+    <text x="40" y="366" class="small">The two helpers that would fix this are missing in this kernel.</text>
+  </g>
+
+  <!-- ================= PANEL 4: the helper ================= -->
+  <g transform="translate(640,515)">
+    <rect class="panel" width="570" height="395"/>
+    <rect class="tagbg" x="16" y="-14" width="200" height="30" fill="#2f7d4f"/>
+    <text x="30" y="7" class="tag">4 · THE FIX</text>
+
+    <text x="40" y="48" class="t">A tiny helper checks <tspan font-weight="bold">5 times a second</tspan>:</text>
+    <text x="40" y="74" class="t">"is the <tspan font-weight="bold">user</tspan> doing something?"</text>
+
+    <!-- idle branch -->
+    <rect x="40" y="95" width="230" height="120" rx="12" fill="#eef7f1" stroke="#2f7d4f" stroke-width="2.5"/>
+    <text x="155" y="124" text-anchor="middle" class="t" font-weight="bold">Nothing happening</text>
+    <text x="155" y="152" text-anchor="middle" style="font-size:26px">😴</text>
+    <text x="155" y="182" text-anchor="middle" class="small">slow, cool, quiet</text>
+    <text x="155" y="203" text-anchor="middle" class="small">fan nearly off</text>
+
+    <!-- busy branch -->
+    <rect x="300" y="95" width="230" height="120" rx="12" fill="#fff0f0" stroke="#d64545" stroke-width="2.5"/>
+    <text x="415" y="124" text-anchor="middle" class="t" font-weight="bold">You start a game</text>
+    <text x="415" y="152" text-anchor="middle" style="font-size:26px">🏎️</text>
+    <text x="415" y="182" text-anchor="middle" class="small">ALL cores to max</text>
+    <text x="415" y="203" text-anchor="middle" class="small">in 0.2 seconds</text>
+
+    <text x="40" y="250" class="t" font-weight="bold">The trick: it watches YOUR programs,</text>
+    <text x="40" y="275" class="t" font-weight="bold">not the background chores.</text>
+    <text x="40" y="303" class="small">The backup tool syncthing is always busy. It fooled the</text>
+    <text x="40" y="323" class="small">first version into thinking you were working — so it never</text>
+    <text x="40" y="343" class="small">slowed down. Now the helper only listens to your desktop,</text>
+    <text x="40" y="363" class="small">games and emulators. Backup noise is ignored.</text>
+  </g>
+
+  <!-- ================= PANEL 5: results ================= -->
+  <g transform="translate(30,935)">
+    <rect class="panel" width="1180" height="250"/>
+    <rect class="tagbg" x="16" y="-14" width="180" height="30" fill="#2f7d4f"/>
+    <text x="30" y="7" class="tag">5 · THE RESULT</text>
+
+    <rect x="40" y="35" width="255" height="180" rx="14" fill="#eef7f1" stroke="#2f7d4f" stroke-width="2.5"/>
+    <text x="167" y="72" text-anchor="middle" class="small">GPU speed</text>
+    <text x="167" y="112" text-anchor="middle" class="h" style="font-size:30px">+26%</text>
+    <text x="167" y="142" text-anchor="middle" class="small">600 → 1008 MHz</text>
+    <text x="167" y="170" text-anchor="middle" class="small">same cooling, same heat</text>
+    <text x="167" y="196" text-anchor="middle" class="small">tested stable under load</text>
+
+    <rect x="320" y="35" width="255" height="180" rx="14" fill="#eef7f1" stroke="#2f7d4f" stroke-width="2.5"/>
+    <text x="447" y="72" text-anchor="middle" class="small">CPU speed</text>
+    <text x="447" y="112" text-anchor="middle" class="h" style="font-size:30px">+14%</text>
+    <text x="447" y="142" text-anchor="middle" class="small">brake removed</text>
+    <text x="447" y="170" text-anchor="middle" class="small">works in every mode</text>
+    <text x="447" y="196" text-anchor="middle" class="small">cosy 58 °C when idle</text>
+
+    <rect x="600" y="35" width="255" height="180" rx="14" fill="#eef4fb" stroke="#3e6b9c" stroke-width="2.5"/>
+    <text x="727" y="72" text-anchor="middle" class="small">Idle</text>
+    <text x="727" y="112" text-anchor="middle" class="h" style="font-size:30px">low power</text>
+    <text x="727" y="142" text-anchor="middle" class="small">cores drop to 416 MHz</text>
+    <text x="727" y="170" text-anchor="middle" class="small">fan almost silent</text>
+    <text x="727" y="196" text-anchor="middle" class="small">no speed lost when needed</text>
+
+    <rect x="880" y="35" width="260" height="180" rx="14" fill="#fff7e6" stroke="#b7791f" stroke-width="2.5"/>
+    <text x="1010" y="72" text-anchor="middle" class="small">The lesson</text>
+    <text x="1010" y="100" text-anchor="middle" class="t" font-weight="bold">Measure, don't assume</text>
+    <text x="1010" y="128" text-anchor="middle" class="small">both brakes were invisible</text>
+    <text x="1010" y="152" text-anchor="middle" class="small">in logs nobody read —</text>
+    <text x="1010" y="176" text-anchor="middle" class="small">found by timing, not by</text>
+    <text x="1010" y="200" text-anchor="middle" class="small">reading documentation</text>
+  </g>
+</svg>

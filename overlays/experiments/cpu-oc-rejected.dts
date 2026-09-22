@@ -1,0 +1,184 @@
+/dts-v1/;
+/plugin/;
+
+/*
+ * cpu-oc.dts — CPU overclock TEST overlay (v2).
+ *
+ * Adds OPP entries above the vendor table, mirroring the vendor entries' complete
+ * property set (opp-microvolt-vfNNNN / 26m-vfNNNN).  Required: the OPP core rejects entries
+ * without voltage info while the device manages a regulator —
+ *     opp_parse_microvolt: opp-microvolt missing although OPP managing regulators
+ *     _of_add_opp_table_v2: Failed to add OPP, -22   ->  "OPP table can't be empty"
+ * which killed cpufreq entirely with v1 of this overlay (CPU pinned at 1014 MHz).
+ *
+ * Rails are pinned up (fragment@2/@3) for voltage margin — this kernel never scales CPU
+ * voltage, since the vendor vf values are all zero.
+ *
+ * SAFETY: the boost controller runs with --max-floor 2002000, so none of these levels is
+ * ever selected automatically; they only apply when scaling_max_freq is written at
+ * runtime (a crash during a sweep therefore reboots back to spec).
+ *
+ * Rollback: delete /boot/dtbo/cpu-oc.dtbo, `sudo u-boot-update`, reboot.
+ */
+
+/ {
+	compatible = "radxa,cubie-a7a";
+
+	fragment@0 {
+		target-path = "/cluster1-opp-table";
+		__overlay__ {
+			opp@2100000000 {
+				opp-hz = /bits/ 64 <2100000000>;
+				clock-latency-ns = <244144>;
+				opp-microvolt-vf0000 = <0x00>;
+				opp-microvolt-vf0100 = <0x00>;
+				opp-microvolt-vf0200 = <0x00>;
+				opp-microvolt-vf0300 = <0x00>;
+				opp-microvolt-vf0400 = <0x00>;
+				opp-microvolt-vf0500 = <0x00>;
+				opp-microvolt-vf0600 = <0x00>;
+				opp-microvolt-vf0401 = <0x00>;
+				opp-microvolt-vf0501 = <0x00>;
+				opp-microvolt-26m-vf0000 = <0x00>;
+				opp-microvolt-26m-vf0100 = <0x00>;
+				opp-microvolt-26m-vf0200 = <0x100590>;
+				opp-microvolt-26m-vf0300 = <0x00>;
+				opp-microvolt-26m-vf0400 = <0x100590>;
+				opp-microvolt-26m-vf0500 = <0xf4240>;
+				opp-microvolt-26m-vf0600 = <0x00>;
+				opp-microvolt-26m-vf0401 = <0xf4240>;
+				opp-microvolt-26m-vf0501 = <0xea600>;
+			};
+			opp@2200000000 {
+				opp-hz = /bits/ 64 <2200000000>;
+				clock-latency-ns = <244144>;
+				opp-microvolt-vf0000 = <0x00>;
+				opp-microvolt-vf0100 = <0x00>;
+				opp-microvolt-vf0200 = <0x00>;
+				opp-microvolt-vf0300 = <0x00>;
+				opp-microvolt-vf0400 = <0x00>;
+				opp-microvolt-vf0500 = <0x00>;
+				opp-microvolt-vf0600 = <0x00>;
+				opp-microvolt-vf0401 = <0x00>;
+				opp-microvolt-vf0501 = <0x00>;
+				opp-microvolt-26m-vf0000 = <0x00>;
+				opp-microvolt-26m-vf0100 = <0x00>;
+				opp-microvolt-26m-vf0200 = <0x100590>;
+				opp-microvolt-26m-vf0300 = <0x00>;
+				opp-microvolt-26m-vf0400 = <0x100590>;
+				opp-microvolt-26m-vf0500 = <0xf4240>;
+				opp-microvolt-26m-vf0600 = <0x00>;
+				opp-microvolt-26m-vf0401 = <0xf4240>;
+				opp-microvolt-26m-vf0501 = <0xea600>;
+			};
+			opp@2300000000 {
+				opp-hz = /bits/ 64 <2300000000>;
+				clock-latency-ns = <244144>;
+				opp-microvolt-vf0000 = <0x00>;
+				opp-microvolt-vf0100 = <0x00>;
+				opp-microvolt-vf0200 = <0x00>;
+				opp-microvolt-vf0300 = <0x00>;
+				opp-microvolt-vf0400 = <0x00>;
+				opp-microvolt-vf0500 = <0x00>;
+				opp-microvolt-vf0600 = <0x00>;
+				opp-microvolt-vf0401 = <0x00>;
+				opp-microvolt-vf0501 = <0x00>;
+				opp-microvolt-26m-vf0000 = <0x00>;
+				opp-microvolt-26m-vf0100 = <0x00>;
+				opp-microvolt-26m-vf0200 = <0x100590>;
+				opp-microvolt-26m-vf0300 = <0x00>;
+				opp-microvolt-26m-vf0400 = <0x100590>;
+				opp-microvolt-26m-vf0500 = <0xf4240>;
+				opp-microvolt-26m-vf0600 = <0x00>;
+				opp-microvolt-26m-vf0401 = <0xf4240>;
+				opp-microvolt-26m-vf0501 = <0xea600>;
+			};
+			opp@2400000000 {
+				opp-hz = /bits/ 64 <2400000000>;
+				clock-latency-ns = <244144>;
+				opp-microvolt-vf0000 = <0x00>;
+				opp-microvolt-vf0100 = <0x00>;
+				opp-microvolt-vf0200 = <0x00>;
+				opp-microvolt-vf0300 = <0x00>;
+				opp-microvolt-vf0400 = <0x00>;
+				opp-microvolt-vf0500 = <0x00>;
+				opp-microvolt-vf0600 = <0x00>;
+				opp-microvolt-vf0401 = <0x00>;
+				opp-microvolt-vf0501 = <0x00>;
+				opp-microvolt-26m-vf0000 = <0x00>;
+				opp-microvolt-26m-vf0100 = <0x00>;
+				opp-microvolt-26m-vf0200 = <0x100590>;
+				opp-microvolt-26m-vf0300 = <0x00>;
+				opp-microvolt-26m-vf0400 = <0x100590>;
+				opp-microvolt-26m-vf0500 = <0xf4240>;
+				opp-microvolt-26m-vf0600 = <0x00>;
+				opp-microvolt-26m-vf0401 = <0xf4240>;
+				opp-microvolt-26m-vf0501 = <0xea600>;
+			};
+		};
+	};
+
+	fragment@1 {
+		target-path = "/cluster0-opp-table";
+		__overlay__ {
+			opp@1900000000 {
+				opp-hz = /bits/ 64 <1900000000>;
+				clock-latency-ns = <244144>;
+				opp-microvolt-vf0000 = <0x00>;
+				opp-microvolt-vf0100 = <0x00>;
+				opp-microvolt-vf0200 = <0x00>;
+				opp-microvolt-vf0300 = <0x00>;
+				opp-microvolt-vf0400 = <0x00>;
+				opp-microvolt-vf0500 = <0x00>;
+				opp-microvolt-vf0600 = <0x00>;
+				opp-microvolt-vf0401 = <0x00>;
+				opp-microvolt-vf0501 = <0x00>;
+				opp-microvolt-26m-vf0000 = <0x00>;
+				opp-microvolt-26m-vf0100 = <0x00>;
+				opp-microvolt-26m-vf0200 = <0x100590>;
+				opp-microvolt-26m-vf0300 = <0x00>;
+				opp-microvolt-26m-vf0400 = <0x100590>;
+				opp-microvolt-26m-vf0500 = <0xf4240>;
+				opp-microvolt-26m-vf0600 = <0x00>;
+				opp-microvolt-26m-vf0401 = <0xf4240>;
+				opp-microvolt-26m-vf0501 = <0xea600>;
+			};
+			opp@2000000000 {
+				opp-hz = /bits/ 64 <2000000000>;
+				clock-latency-ns = <244144>;
+				opp-microvolt-vf0000 = <0x00>;
+				opp-microvolt-vf0100 = <0x00>;
+				opp-microvolt-vf0200 = <0x00>;
+				opp-microvolt-vf0300 = <0x00>;
+				opp-microvolt-vf0400 = <0x00>;
+				opp-microvolt-vf0500 = <0x00>;
+				opp-microvolt-vf0600 = <0x00>;
+				opp-microvolt-vf0401 = <0x00>;
+				opp-microvolt-vf0501 = <0x00>;
+				opp-microvolt-26m-vf0000 = <0x00>;
+				opp-microvolt-26m-vf0100 = <0x00>;
+				opp-microvolt-26m-vf0200 = <0x100590>;
+				opp-microvolt-26m-vf0300 = <0x00>;
+				opp-microvolt-26m-vf0400 = <0x100590>;
+				opp-microvolt-26m-vf0500 = <0xf4240>;
+				opp-microvolt-26m-vf0600 = <0x00>;
+				opp-microvolt-26m-vf0401 = <0xf4240>;
+				opp-microvolt-26m-vf0501 = <0xea600>;
+			};
+		};
+	};
+
+	fragment@2 {
+		target-path = "/soc@3000000/twi@7083000/pmu@36/regulators@0/dcdc3";
+		__overlay__ {
+			regulator-min-microvolt = <1100000>;
+		};
+	};
+
+	fragment@3 {
+		target-path = "/soc@3000000/twi@7083000/pmu@36/regulators@0/dcdc5";
+		__overlay__ {
+			regulator-min-microvolt = <1020000>;
+		};
+	};
+};

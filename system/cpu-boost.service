@@ -1,0 +1,18 @@
+# Demand-driven clock boost: keeps schedutil as the base governor (idle at 416 MHz) and
+# raises the per-cluster frequency floor to the hardware maximum while user.slice shows
+# real work.  Stopping the service returns the floors to minimum.
+# See ../cpu-boost.py and ../../docs/PERFORMANCE-2026-09-22.md.
+[Unit]
+Description=Demand-driven CPU clock boost (schedutil + dynamic frequency floor)
+After=multi-user.target
+Conflicts=shutdown.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/cpu-boost.py
+Restart=always
+RestartSec=2
+Nice=-5
+
+[Install]
+WantedBy=multi-user.target

@@ -4,7 +4,15 @@
 **GPU:** Imagination PowerVR **B-Series BXM-4-64 MC1** (BVNC 36.56.104.183), 1 core
 **Driver:** Imagination DDK **24.2@6603887** — kernel `pvrsrvkm` (img-bxm-dkms) + userspace in `/usr/local/lib`
 **APIs proven working:** **Vulkan 1.3.277**, **OpenGL ES 3.2**, OpenCL 3.0 (libPVROCL)
-**GPU clock:** 600 MHz fixed (DTS sets no DVFS table — see Optimization)
+**GPU clock:** 600 MHz fixed *at the time of these measurements* (DTS sets no DVFS table — see Optimization)
+
+> **Superseded 2026-09-22 (clocks only).** All numbers below were taken with the GPU at
+> its driver-default 600 MHz. The clock is now **1104 MHz** via
+> [`../overlays/gpu-clk.dts`](../overlays/gpu-clk.dts) — the ceiling is the clock
+> generator, measured (requests for 1152/1200/1296/1392 MHz all come back 1104), and the
+> same `glbench.c` now reads **7392 / 2229 / 579 / 147 Mpix/s** (+77% / +83% / +84% / +84%).
+> The *analysis* here (driver is tuned, wiring is the real win, softpipe ratio) still
+> holds. Full write-up: [`../docs/PERFORMANCE-2026-09-22.md`](../docs/PERFORMANCE-2026-09-22.md).
 
 ## TL;DR
 The GPU was never missing — it was just never wired into the GL stack (the desktop falls back to a software rasterizer). Measured, the GPU does **real GLES 3.2 rendering ~150–175× faster than the CPU's absolute best case** (all 8 cores, NEON, pure math, no rasterization overhead), and **~600× faster than the software rasterizer the desktop actually falls back to (softpipe)**.
@@ -33,7 +41,14 @@ The GPU was never missing — it was just never wired into the GL stack (the des
 
 ## Can it be optimized further?
 - **Driver:** the numbers are from Imagination's own proprietary DDK (their optimized driver) — there is little driver-side headroom; this is close to the hardware's real throughput.
-- **Clock:** GPU runs at a **fixed 600 MHz** (kernel log: *"default clk_rate is NOT set in DTS, set it to default:600000000"*). No DVFS/boost table is configured. If the BXM-4-64 can clock higher, a DTS/clk change could add headroom — needs verification against the chip's rated GPU clock (do NOT assume; risk of instability).
+- **Clock — RESOLVED 2026-09-22, and it was not "needs verification", it was a missing
+  property.** `pvrsrvkm` ignores the OPP table and reads a plain `clk_rate` off the GPU
+  node; with none present it fell back to 600 MHz. Supplying it via overlay gives
+  **1104 MHz**, which is the **hard ceiling of the clock generator** (1152/1200/1296/
+  1392 MHz requests are silently clamped to 1104 — verified by sweeping `clk_set_rate`
+  live, no reboots). No DVFS/boost table exists or is needed: the rail floor is pinned to
+  the OPP's own 990 mV for that point (`overlays/gpu-clk.dts`), giving 58–61 °C and zero
+  error lines under sustained load. Ceiling method: [`clkctl/`](clkctl/).
 - **The real "optimization" is wiring, not tuning:** today nothing uses the GPU. The win is moving work *off* the 8 CPU cores (currently burning on software GL) — which simultaneously frees CPU for the VE2 encoder and app logic.
 - **API choice:** native GLES (tested) is optimal; a Zink (GL-on-Vulkan) path would add a translation layer — only worth it for apps that need newer GL than the DDK exposes.
 

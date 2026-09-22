@@ -24,6 +24,21 @@ POLICIES=""
 for p in /sys/devices/system/cpu/cpufreq/policy*; do POLICIES="$POLICIES $p"; done
 restore_clock() { for p in $POLICIES; do cat "$p/cpuinfo_max_freq" > "$p/scaling_max_freq" 2>/dev/null; done; }
 cap_clock()     { for p in $POLICIES; do echo "$1"               > "$p/scaling_max_freq" 2>/dev/null; done; }
+
+# 2026-09-22: release the thermal clamp the kernel applied BEFORE we switched the zones to
+# user_space.  Once a zone is user_space its cooling state is frozen, and a stale non-zero
+# state pins scaling_max_freq below cpuinfo_max_freq through the thermal freq-QoS clamp —
+# writing scaling_max_freq cannot override it.  Measured cost of the stale state:
+# little cores 1508 MHz / big cores 1716 MHz instead of 1794/2002 MHz = ~14% CPU lost
+# (SHA-256, 8 threads: 5.78M -> 6.59M once released).
+release_clamps() {
+  for c in /sys/class/thermal/cooling_device*; do
+    case "$(cat "$c/type" 2>/dev/null)" in
+      cpufreq-*) echo 0 > "$c/cur_state" 2>/dev/null ;;
+    esac
+  done
+}
+release_clamps
 restore_clock
 THROTTLE_AT=78000; THROTTLE_TO=1404000; RESTORE_BELOW=74000; capped=0
 # max CPU/GPU temp in MILLIDEGREES
@@ -50,7 +65,7 @@ cur=-1
 while :; do
   mc=$(cpu_mtemp)
   if [ "$capped" -eq 0 ] && [ "$mc" -ge "$THROTTLE_AT" ]; then cap_clock "$THROTTLE_TO"; capped=1; fi
-  if [ "$capped" -eq 1 ] && [ "$mc" -lt "$RESTORE_BELOW" ]; then restore_clock; capped=0; fi
+  if [ "$capped" -eq 1 ] && [ "$mc" -lt "$RESTORE_BELOW" ]; then release_clamps; restore_clock; capped=0; fi
   want=$(fan_for "$mc")
   if [ "$want" != "$cur" ]; then
     if [ "$cur" -le 0 ] && [ "$want" -gt 0 ] && [ "$want" -lt 110 ]; then set_pwm 110; sleep 1; fi

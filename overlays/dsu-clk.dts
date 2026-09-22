@@ -1,0 +1,68 @@
+/dts-v1/;
+/plugin/;
+
+/*
+ * dsu-clk.dtbo — raise the A733 DSU (L3 + coherency fabric) clock above the 780 MHz it
+ * boots with.
+ *
+ * Why it is stuck: the vendor's DSU frequency-scaling driver is NOT compiled into this
+ * kernel (# CONFIG_AW_SUNXI_DSUFREQ is not set), so nothing ever scales the DSU — it
+ * stays at whatever the bootloader programmed while the CPU clusters run to 1794/2002
+ * MHz.  The DT even ships a full dsu-opp-table (compatible
+ * "allwinner,dsu-operating-points") listing points up to 1352 MHz that no driver reads.
+ *
+ * Evidence it is a real bottleneck (A76 @ 2002 MHz, arrays pinned to a big core,
+ * bench/membw.c) — at 780 MHz the L3 read bandwidth barely exceeds DRAM:
+ *     DSU  780 MHz:  l3read 10.2   l3shared 12.4   dramread 8.2-9.3   dramcopy 3.2 GB/s
+ *     DSU 1027 MHz:  l3read 10.9-12.2  l3shared 13.4-15.6  dramread 10.3-11.8  dramcopy 3.4
+ * plus fex.tcreate 181951 -> 123820 ns/op (thread start); compute and GPU unchanged.
+ *
+ * 1032000000 is *requested*; pll-cpu-dsu settles at 1027000000, which is the rate you
+ * will read back.  A 1196 MHz step was measured too and bought nothing further (all
+ * metrics within noise), so the safer 1027 MHz point is kept.
+ *
+ * Two fragments on purpose — `assigned-clock-rates` is applied by
+ * of_clk_set_defaults() when a *driver* probes the node, so a node with no driver
+ * silently ignores it:
+ *   fragment@0  /dsufreq@0 — the DSU node itself.  "syscon" is added only so some driver
+ *               binds here; keeping the vendor compatible first preserves its meaning.
+ *               Measured: this alone did nothing (clock stayed 780 MHz).
+ *   fragment@1  the GPU node — pvrsrvkm definitely binds here, so the same assignment is
+ *               applied from a node that has a driver.  This is the fragment that
+ *               actually takes effect; the same value twice is harmless.
+ *   <0x05 0x03> = cpupll_ccu@8870000 (phandle 0x05), DSU clock.
+ *
+ * Safety: the DSU shares the little cluster's rail (dsu-supply, 950 mV idle) and the
+ * dsu-opp-table only asks for >=1000 mV above ~1248 MHz, so 1027 MHz stays inside the
+ * table's low range.  Two sustained mixed-load passes (60 s + 40 s) at this setting:
+ * 0 kernel-trouble lines, 62-65 C.
+ *
+ * Build + install:
+ *     dtc -@ -I dts -O dtb -o dsu-clk.dtbo dsu-clk.dts
+ *     sudo cp dsu-clk.dtbo /boot/dtbo/ && sudo u-boot-update     # then reboot
+ * Verify after reboot:
+ *     sudo grep pll-cpu-dsu /sys/kernel/debug/clk/clk_summary     # -> 1027000000
+ *
+ * Rollback: delete /boot/dtbo/dsu-clk.dtbo, run `sudo u-boot-update`, reboot.
+ */
+
+/ {
+	compatible = "radxa,cubie-a7a";
+
+	fragment@0 {
+		target-path = "/dsufreq@0";
+		__overlay__ {
+			compatible = "allwinner,dsufreq", "syscon";
+			assigned-clocks = <0x05 0x03>;
+			assigned-clock-rates = <1032000000>;
+		};
+	};
+
+	fragment@1 {
+		target-path = "/soc@3000000/gpu@1800000";
+		__overlay__ {
+			assigned-clocks = <0x05 0x03>;
+			assigned-clock-rates = <1032000000>;
+		};
+	};
+};

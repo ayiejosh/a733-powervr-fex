@@ -25,8 +25,14 @@ Fail-safe trap sets PWM 255 on exit.
 sudo cp fan-curve.sh /usr/local/sbin/ && sudo chmod +x /usr/local/sbin/fan-curve.sh
 sudo cp fan-curve.service /etc/systemd/system/ && sudo systemctl enable --now fan-curve
 ```
-> Single-core emulation load holds 1716 MHz at ~60 C with headroom; sustained all-core
-> load climbs past 78 C — the fan is required there.
+> Single-core emulation load holds the big cores at **2002 MHz / ~60 C** with headroom;
+> sustained all-core load climbs past 78 C — the fan is required there.
+>
+> ⚠️ **`release_clamps()` (2026-09-22) is not optional.** Switching a zone to `user_space`
+> *freezes* its cooling state, so a non-zero state the kernel applied earlier keeps
+> pinning `scaling_max_freq` through the thermal freq-QoS clamp — and that clamp cannot be
+> overridden by writing `scaling_max_freq`. Without it the big cores sat at 1716 MHz and
+> the little at 1508 MHz (**~14% of the CPU lost**: SHA-256 8-thread 5.78M -> 6.59M).
 
 ## FEX binfmt reliability — `binfmt-guard` + `fex-binfmt.service`
 `fex-binfmt.service` registers the FEX `binfmt_misc` handlers; `binfmt-guard` self-heals
@@ -42,12 +48,38 @@ sudo systemctl enable binfmt-guard fex-binfmt
 > can't even run `echo`). The guard exists to prevent/recover that. On trixie FEX is the
 > x86 default (`../fex/`), so this guard matters more, not less.
 
-## CPU governor — `performance` (persistent)
-A oneshot drop-in sets every cpufreq policy to `performance` at boot
-(`/etc/systemd/system/cpu-performance.service`, non-fatal `|| true` so it can't block
-boot). Measured throughput gain for sustained jobs is ~0% (ondemand ramps to max under
-load); the value is removing ramp-up latency for **bursty** sub-second emulated launches
-(the common Wine/desktop case). 1794 MHz is firmware-locked; 1716 MHz is the ceiling.
+## CPU clocking — `cpu-mode.sh` + `cpu-boost.py` (four profiles, low idle / max on demand)
+`schedutil` is the base governor (416 MHz idle) and `cpu-boost.service` raises the
+per-cluster frequency **floor** to the hardware maximum while `user.slice` shows real
+work — full-speed throughput while work lasts, back to idle ~1 s after it stops. The
+demand signal is cgroup v2 CPU accounting on `user.slice`, so background daemons
+(syncthing, tailscaled — `system.slice`) can never trigger it; a system-wide guard still
+boosts for heavy system jobs (apt/dkms builds). This exists because the kernel cannot
+express it otherwise: `CONFIG_UCLAMP_TASK` is not set and neither `schedutil`'s nor
+`ondemand`'s tunables are exposed in sysfs, while plain `schedutil` costs **-29%** on
+bursty CPU-bound work (a single thread blocked on GPU ioctls only reaches 1.2-1.4 GHz).
+```sh
+sudo cp cpu-boost.py cpu-mode.sh irq-affinity.sh /usr/local/sbin/ && sudo chmod +x /usr/local/sbin/{cpu-boost.py,cpu-mode.sh,irq-affinity.sh}
+sudo cp cpu-boost.service cpu-mode.service irq-affinity.service /etc/systemd/system/
+sudo systemctl enable --now cpu-mode cpu-boost irq-affinity
+sudo cpu-mode.sh auto|max|balanced|eco     # switch profile at runtime
+```
+| mode | little / big governor | boost | intent |
+|---|---|---|---|
+| `auto` *(default)* | schedutil / schedutil | on | 416 MHz idle, max on demand — best of both |
+| `max` | performance / performance | off | always max, no dynamics |
+| `balanced` | schedutil / performance | off | big cores always ready |
+| `eco` | schedutil / schedutil | off | lowest idle power, -29% on bursty work |
+
+> The ceilings are **1794 MHz (little) / 2002 MHz (big)** — reachable, not
+> "firmware-locked" as this README used to say. The old `cpu-performance.service`
+> (always-`performance`) is superseded and left disabled.
+
+## IRQ affinity — `irq-affinity.sh`
+CPU0 was carrying 5.3M interrupts against ~1.1M on its siblings (2.6M `sunxi-gpadc` +
+1.5M `pvrsrvkm`), stealing time from whatever ran there. The unit re-applies affinity
+each boot (IRQ numbers move): `pvrsrvkm` -> cpu6, `ufshcd` -> cpu7, `sunxi-gpadc` ->
+cpu2, `tcon3` -> cpu3.
 
 ## Auto-suspend masked
 The board's idle auto-suspend was breaking long jobs (it wakes as a fresh boot). The

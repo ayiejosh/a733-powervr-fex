@@ -23,7 +23,7 @@ branch is a *different* stack (Debian 11 / 5.15). Exact baseline:
 
 | | |
 |---|---|
-| Board / SoC | Radxa **Cubie A7A** · Allwinner **A733** (`sun60iw2`), **heterogeneous big.LITTLE** — cores **0-5 LITTLE** (cap 385), cores **6-7 BIG** (cap 1024); max ~1716 MHz (firmware-capped; 1794 unreachable), ~6 GB LPDDR5 |
+| Board / SoC | Radxa **Cubie A7A** · Allwinner **A733** (`sun60iw2`), **heterogeneous big.LITTLE** — cores **0-5 LITTLE** (cap 385), cores **6-7 BIG** (cap 1024); max **1794 MHz LITTLE / 2002 MHz BIG**, both reachable (the "~1716 MHz firmware cap" was a *stale thermal clamp*, see [`docs/PERFORMANCE-2026-09-22.md`](docs/PERFORMANCE-2026-09-22.md)), ~6 GB LPDDR5 |
 | OS | **Debian 13 (trixie)** — *not* bullseye |
 | Kernel | **`6.6.x-aw2511`** (Radxa A733 BSP, `pvrsrvkm` out-of-tree DKMS) — *not* mainline |
 | GPU | PowerVR **B-Series BXM-4-64 MC1**, BVNC `36.56.104.183`, closed `pvrsrvkm` + closed `libVK_IMG` Vulkan blob (**Vulkan 1.3.277**) |
@@ -56,6 +56,9 @@ per-component READMEs.)
 | [`windows/`](windows/) | **Windows apps via Hangover 11.9** — `winrun` (CLI) and `guirun` (GUI, software-GL) launchers; verified 7-Zip / Notepad / WordPad. |
 | [`fex/`](fex/) | FEX setup + the custom Vulkan/GLES thunks; FEX is now the **default** x86-64 binfmt interpreter, with trixie tuning (`TSOEnabled=0` + `Multiblock=1`). |
 | [`box64/`](box64/) | box64 **0.4.3** (built from source) usage + the static-glibc-MT → FEX routing. |
+| [`overlays/`](overlays/) | **Device-tree overlays that un-throttle the board**: GPU **600 → 1104 MHz** (the driver reads a `clk_rate` property Radxa never set; 1104 is the clock generator's measured ceiling) and the L3/DSU fabric **780 → 1027 MHz** (its scaling driver is not compiled in). Both are pure `fdtoverlays` — deleting the `.dtbo` fully reverts them. |
+| [`system/`](system/) | Board services: fan curve (**with the thermal-clamp fix** that was costing 14% CPU), demand-driven CPU boost (`cpu-boost.py`: 416 MHz idle, max on demand), `cpu-mode.sh` profiles, IRQ affinity, FEX binfmt guard. |
+| [`docs/PERFORMANCE-2026-09-22.md`](docs/PERFORMANCE-2026-09-22.md) | **The clock/ceiling investigation** — GPU ceiling hunt, the stuck DSU fabric, why the CPU cannot be overclocked on this BSP, and the corrected thermal-clamp story. Illustrated: [`docs/comics/`](docs/comics/). |
 | [`docs/FINDINGS.md`](docs/FINDINGS.md) | **The capability matrix** — every proven path and every confirmed wall, with the *why*. Read this first. |
 | [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) | Measured numbers — CPU, FEX/box64 overhead, the D3D draw-call / fill-rate characterization. |
 
@@ -72,10 +75,11 @@ per-component READMEs.)
 Full tables in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md). Headlines (trixie):
 
 - **CPU single-thread** (sum-ms CPU bench, big core): native **5488** / box64-tuned **8564** (~64% of native) / **FEX-tuned 7746** (~71% of native).
+- **Clock ceilings** (2026-09-22, released from a stale thermal clamp + two overlays): GPU **600 → 1104 MHz** (+77–84% `glbench`), L3/DSU fabric **780 → 1027 MHz** (`l3read` +19%, `dramread` +38%, FEX thread-start −32%), CPU **1508/1716 → 1794/2002 MHz** (SHA-256 8-thread **+14%**). Going *above* those: the GPU generator clamps, the DSU knee is ~1027, and the CPU is not overclockable on this BSP. See [`docs/PERFORMANCE-2026-09-22.md`](docs/PERFORMANCE-2026-09-22.md).
 - **box64 0.4.3** built from source: clone3 fixed, **~9% faster** than the Debian 0.3.4; `CALLRET=1 + SAFEFLAGS=0` ≈ **-15%** on the CPU bench.
 - **FEX tuning:** `TSOEnabled=0 + Multiblock=1` ≈ **-7%** on the CPU bench (load-bearing knob is TSO-off).
 - **GPU D3D11** (DXVK-Sarek → PowerVR): instancing ~**370k tris/s**; trivial windowed present ~**227 fps** (~530 fps for clear-only); the draw-call submission ceiling is ~**1000–1100 PSO-swap-bound draws/s** of distinct pipeline state — a realistic textured/depth frame is **GPU-fill-bound**, not emulation-bound.
-- **GPU OpenGL** (zink, off-screen): **glmark2-es2 `--off-screen` = 661**.
+- **GPU OpenGL** (glmark2-es2 `--off-screen`, GPU 600 → 1104 MHz): vendor GLES **659 → 826**, zink **454 → 581**. glmark2 on this board is CPU/driver-bound — it does not track the last 1008 → 1104 MHz step — so use `bench/glbench.c` for GPU throughput: **4186/1215/315/80 → 7392/2229/579/147** Mpix/s.
 
 ## ⚠️ What can't be redistributed here — and the workaround
 

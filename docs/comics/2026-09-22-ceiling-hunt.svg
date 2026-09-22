@@ -1,0 +1,199 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 1380" width="1240" height="1380"
+     font-family="Helvetica, Arial, sans-serif" role="img"
+     aria-label="Comic: how high can the A733 clocks go — GPU ceiling, hidden L3 clock, CPU wall">
+  <title>How high can it go? — A733 clock ceiling hunt, 2026-09-22</title>
+  <desc>Comic explaining the frequency-ceiling investigation on the Radxa Cubie A7A:
+        the GPU tops out at 1104 MHz, the L3/DSU fabric was stuck at 780 MHz because its
+        driver is not compiled in, and the CPU is already at its ceiling because the
+        vendor selects frequencies from the chip's speed bin.</desc>
+
+  <defs>
+    <style>
+      .panel  { fill:#ffffff; stroke:#1f2933; stroke-width:3; rx:18; }
+      .h      { font-size:26px; font-weight:bold; fill:#1f2933; }
+      .t      { font-size:19px; fill:#1f2933; }
+      .small  { font-size:16px; fill:#52606d; }
+      .good   { fill:#2f7d4f; font-weight:bold; }
+      .bad    { fill:#d64545; font-weight:bold; }
+      .tag    { font-size:15px; font-weight:bold; fill:#ffffff; }
+      .tagbg  { rx:9; }
+      .bar    { rx:6; }
+      .mono   { font-family:"DejaVu Sans Mono", Menlo, Consolas, monospace; font-size:15px; fill:#1f2933; }
+    </style>
+  </defs>
+
+  <rect width="1240" height="1380" fill="#f5f7fa"/>
+  <text x="620" y="46" text-anchor="middle" class="h" style="font-size:32px">How high can it go?</text>
+  <text x="620" y="74" text-anchor="middle" class="small">
+    A733 clock ceiling hunt · GPU, L3 fabric, CPU · 22 Sep 2026
+  </text>
+
+  <!-- ============ PANEL 1: the question ============ -->
+  <g transform="translate(30,95)">
+    <rect class="panel" width="570" height="380"/>
+    <rect class="tagbg" x="16" y="-14" width="185" height="30" fill="#3e6b9c"/>
+    <text x="30" y="7" class="tag">1 · THE QUESTION</text>
+
+    <text x="40" y="60" class="t">The GPU was unlocked to 1008 MHz and the CPU</text>
+    <text x="40" y="85" class="t">brake removed. So the obvious next question:</text>
+    <text x="40" y="115" class="t" font-weight="bold">how much higher can each part actually go?</text>
+
+    <rect x="50" y="150" width="150" height="90" rx="12" fill="#eef4fb" stroke="#3e6b9c" stroke-width="2.5"/>
+    <text x="125" y="185" text-anchor="middle" class="t" font-weight="bold">GPU</text>
+    <text x="125" y="212" text-anchor="middle" class="small">1008 → ?</text>
+
+    <rect x="215" y="150" width="150" height="90" rx="12" fill="#eef4fb" stroke="#3e6b9c" stroke-width="2.5"/>
+    <text x="290" y="185" text-anchor="middle" class="t" font-weight="bold">L3 fabric</text>
+    <text x="290" y="212" text-anchor="middle" class="small">780 → ?</text>
+
+    <rect x="380" y="150" width="150" height="90" rx="12" fill="#eef4fb" stroke="#3e6b9c" stroke-width="2.5"/>
+    <text x="455" y="185" text-anchor="middle" class="t" font-weight="bold">CPU</text>
+    <text x="455" y="212" text-anchor="middle" class="small">2002 → ?</text>
+
+    <text x="40" y="285" class="small">Three parts, three questions. Each needs its own answer,</text>
+    <text x="40" y="308" class="small">because each one is limited by something different:</text>
+    <text x="40" y="331" class="small">the clock generator, a missing driver, or the chip itself.</text>
+    <text x="40" y="358" class="small">And the only way to know is to measure it.</text>
+  </g>
+
+  <!-- ============ PANEL 2: the method ============ -->
+  <g transform="translate(640,95)">
+    <rect class="panel" width="570" height="380"/>
+    <rect class="tagbg" x="16" y="-14" width="200" height="30" fill="#2f7d4f"/>
+    <text x="30" y="7" class="tag">2 · HOW WE TESTED</text>
+
+    <text x="40" y="58" class="t">Normally each speed needs a reboot —</text>
+    <text x="40" y="83" class="t">slow, and one bad value can stop the boot.</text>
+    <text x="40" y="113" class="t" font-weight="bold">So instead: change the clock while running.</text>
+
+    <rect x="40" y="140" width="490" height="86" rx="12" fill="#f0f4f8" stroke="#9aa5b1" stroke-width="2.5"/>
+    <text x="60" y="172" class="mono">echo 1200000000 &gt; /sys/kernel/debug/clkctl/gpu_clk</text>
+    <text x="60" y="200" class="small">a 60-line helper exposes the clocks; a script walks up the</text>
+    <text x="60" y="219" class="small">list, measuring speed and watching for errors each step.</text>
+
+    <text x="40" y="262" class="t" font-weight="bold">8 GPU speeds · 5 CPU speeds · 3 L3 speeds</text>
+    <text x="40" y="290" class="small">— tested in a single boot, ~20 seconds each —</text>
+    <text x="40" y="313" class="small">instead of ~16 reboots. A crash mid-sweep is harmless:</text>
+    <text x="40" y="336" class="small">the higher speeds are never saved, so the board</text>
+    <text x="40" y="359" class="small">simply comes back at its safe setting.</text>
+  </g>
+
+  <!-- ============ PANEL 3: GPU ceiling ============ -->
+  <g transform="translate(30,495)">
+    <rect class="panel" width="570" height="400"/>
+    <rect class="tagbg" x="16" y="-14" width="275" height="30" fill="#d64545"/>
+    <text x="30" y="7" class="tag">3 · GPU STOPS AT 1104 MHz</text>
+
+    <!-- bar chart -->
+    <line x1="70" y1="300" x2="540" y2="300" stroke="#9aa5b1" stroke-width="2"/>
+    <rect class="bar" x="90"  y="250" width="70" height="50"  fill="#cbd2d9"/>
+    <text x="125" y="242" text-anchor="middle" class="small">600</text>
+    <text x="125" y="322" text-anchor="middle" class="small">before</text>
+
+    <rect class="bar" x="250" y="216" width="70" height="84"  fill="#7fb069"/>
+    <text x="285" y="208" text-anchor="middle" class="small">1008</text>
+    <text x="285" y="322" text-anchor="middle" class="small">spec table</text>
+
+    <rect class="bar" x="410" y="188" width="70" height="112" fill="#2f7d4f"/>
+    <text x="445" y="180" text-anchor="middle" class="good">1104</text>
+    <text x="445" y="322" text-anchor="middle" class="small">the real ceiling</text>
+
+    <text x="40" y="70" class="t">Asked for 1152, 1200, 1296, 1392 MHz…</text>
+    <text x="40" y="98" class="t bad" font-weight="bold">every one came back as 1104.</text>
+    <text x="40" y="128" class="small">That is the fastest the GPU's clock generator can make.</text>
+    <text x="40" y="151" class="small">Not a setting we can change — a hardware limit.</text>
+
+    <text x="40" y="360" class="small">Tested at 990 mV, 58–61 °C, no errors in any run.</text>
+    <text x="40" y="382" class="small">Result: +84 % over the 600 MHz it started the day at.</text>
+  </g>
+
+  <!-- ============ PANEL 4: the hidden L3 ============ -->
+  <g transform="translate(640,495)">
+    <rect class="panel" width="570" height="400"/>
+    <rect class="tagbg" x="16" y="-14" width="310" height="30" fill="#b7791f"/>
+    <text x="30" y="7" class="tag">4 · THE ONE NOBODY KNEW ABOUT</text>
+
+    <text x="40" y="58" class="t">Between the CPU and memory sits the L3 fabric.</text>
+    <text x="40" y="88" class="t" font-weight="bold">It was running at 780 MHz — and nothing</text>
+    <text x="40" y="113" class="t" font-weight="bold">was ever going to raise it.</text>
+
+    <rect x="40" y="135" width="490" height="80" rx="12" fill="#fff7e6" stroke="#b7791f" stroke-width="2.5"/>
+    <text x="60" y="166" class="mono"># CONFIG_AW_SUNXI_DSUFREQ is not set</text>
+    <text x="60" y="196" class="small">the chip's L3 speed-scaling driver was left out of this kernel,</text>
+
+    <text x="60" y="236" class="small">so the L3 sat at its power-on speed while the CPUs hit 2002.</text>
+
+    <rect x="40" y="252" width="230" height="118" rx="12" fill="#eef7f1" stroke="#2f7d4f" stroke-width="2.5"/>
+    <text x="155" y="280" text-anchor="middle" class="small">raised 780 → 1027 MHz</text>
+    <text x="155" y="308" text-anchor="middle" class="good" style="font-size:22px">+19 % L3</text>
+    <text x="155" y="332" text-anchor="middle" class="good" style="font-size:22px">+38 % memory read</text>
+    <text x="155" y="356" text-anchor="middle" class="small">thread-start −32 % (FEX)</text>
+
+    <rect x="300" y="252" width="230" height="118" rx="12" fill="#f0f4f8" stroke="#9aa5b1" stroke-width="2.5"/>
+    <text x="415" y="280" text-anchor="middle" class="small">then tried 1196 MHz</text>
+    <text x="415" y="308" text-anchor="middle" class="t" font-weight="bold">no further gain</text>
+    <text x="415" y="334" text-anchor="middle" class="small">memory path already full</text>
+    <text x="415" y="356" text-anchor="middle" class="small">kept the safer 1027</text>
+
+    <text x="40" y="390" class="small">A bottleneck nobody could see in any log — found by measuring.</text>
+  </g>
+
+  <!-- ============ PANEL 5: CPU wall ============ -->
+  <g transform="translate(30,915)">
+    <rect class="panel" width="570" height="400"/>
+    <rect class="tagbg" x="16" y="-14" width="270" height="30" fill="#52606d"/>
+    <text x="30" y="7" class="tag">5 · CPU: ALREADY AT THE TOP</text>
+
+    <text x="40" y="58" class="t">Plan: add faster speeds (2100–2400 MHz) to the</text>
+    <text x="40" y="83" class="t">board's speed table, then test each one.</text>
+
+    <text class="t bad" x="40" y="118" font-weight="bold">The chip refused to use them.</text>
+
+    <rect x="40" y="140" width="490" height="108" rx="12" fill="#fff0f0" stroke="#d64545" stroke-width="2.5"/>
+    <text x="60" y="170" class="small">This board does not pick speeds from the table — it picks them</text>
+    <text x="60" y="192" class="small">from the chip's own "speed grade" recorded at the factory.</text>
+    <text x="60" y="214" class="small">Our extra entries were ignored, and the top speed even</text>
+    <text x="60" y="236" class="small">shifted 2002 → 1992 MHz, so the change was reverted.</text>
+
+    <text x="40" y="285" class="t">So the CPU is already running as fast as this chip</text>
+    <text x="40" y="310" class="t">is qualified to run: <tspan font-weight="bold">2002 MHz</tspan> on the fast cores,</text>
+    <text x="40" y="335" class="t"><tspan font-weight="bold">1794 MHz</tspan> on the small ones.</text>
+
+    <text x="40" y="366" class="small">Pushing further would mean ignoring the factory speed grade —</text>
+    <text x="40" y="386" class="small">possible in theory, not worth the risk of random crashes.</text>
+  </g>
+
+  <!-- ============ PANEL 6: what we actually gained ============ -->
+  <g transform="translate(640,915)">
+    <rect class="panel" width="570" height="400"/>
+    <rect class="tagbg" x="16" y="-14" width="225" height="30" fill="#2f7d4f"/>
+    <text x="30" y="7" class="tag">6 · WHAT IT BOUGHT US</text>
+
+    <rect x="40" y="45" width="230" height="96" rx="12" fill="#eef7f1" stroke="#2f7d4f" stroke-width="2.5"/>
+    <text x="155" y="72" text-anchor="middle" class="small">GPU</text>
+    <text x="155" y="104" text-anchor="middle" class="good" style="font-size:26px">600 → 1104</text>
+    <text x="155" y="130" text-anchor="middle" class="small">+84 % · stable</text>
+
+    <rect x="300" y="45" width="230" height="96" rx="12" fill="#eef7f1" stroke="#2f7d4f" stroke-width="2.5"/>
+    <text x="415" y="72" text-anchor="middle" class="small">L3 fabric</text>
+    <text x="415" y="104" text-anchor="middle" class="good" style="font-size:26px">780 → 1027</text>
+    <text x="415" y="130" text-anchor="middle" class="small">memory +19–38 %</text>
+
+    <rect x="40" y="158" width="230" height="96" rx="12" fill="#eef4fb" stroke="#3e6b9c" stroke-width="2.5"/>
+    <text x="155" y="185" text-anchor="middle" class="small">CPU brake</text>
+    <text x="155" y="217" text-anchor="middle" style="font-size:26px" font-weight="bold" fill="#3e6b9c">+14 %</text>
+    <text x="155" y="243" text-anchor="middle" class="small">removed earlier today</text>
+
+    <rect x="300" y="158" width="230" height="96" rx="12" fill="#f0f4f8" stroke="#9aa5b1" stroke-width="2.5"/>
+    <text x="415" y="185" text-anchor="middle" class="small">CPU clock</text>
+    <text x="415" y="217" text-anchor="middle" class="t" font-weight="bold">at its ceiling</text>
+    <text x="415" y="243" text-anchor="middle" class="small">2002 / 1794 MHz</text>
+
+    <text x="40" y="292" class="t" font-weight="bold">The lesson: the biggest wins were not</text>
+    <text x="40" y="317" class="t" font-weight="bold">overclocking — they were settings.</text>
+    <text x="40" y="347" class="small">A fallback value, a stuck safety brake, a driver that was</text>
+    <text x="40" y="369" class="small">never compiled in. Each was invisible until measured,</text>
+    <text x="40" y="391" class="small">and each was worth more than pushing the silicon.</text>
+  </g>
+</svg>
