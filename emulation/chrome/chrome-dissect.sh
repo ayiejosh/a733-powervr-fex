@@ -62,6 +62,22 @@ done
 
 mkdir -p "$OUTDIR" "$GHOME/.fex-emu"
 
+# --- the workload page is generated if absent. An earlier round of benchmarking was
+# invalidated because a workload file under /tmp was deleted by a cleanup and the script
+# silently measured nothing. Committed tooling must not depend on a file in /tmp.
+if [ ! -s /tmp/heavy.html ]; then
+  {
+    echo '<!doctype html><html><head><meta charset=utf-8><title>heavy</title>'
+    echo '<style>.row{display:block;padding:1px} b{color:#08f}</style></head><body>'
+    echo '<h1>heavy dom</h1><div id=root>'
+    for i in $(seq 1 4000); do
+      echo "<div class=\"row\" id=\"r$i\"><span>item $i</span><b>$(( i * 7 % 97 ))</b></div>"
+    done
+    echo '</div></body></html>'
+  } > /tmp/heavy.html
+  echo "# generated workload /tmp/heavy.html ($(wc -c < /tmp/heavy.html) bytes)"
+fi
+
 # --- the guest-HOME config: DiskCache on, TSO left at default on purpose -----------
 # FEX resolves ~/.fex-emu/Config.json from HOME, and these launchers override HOME,
 # so writing the host config is not enough. See docs section 13.
