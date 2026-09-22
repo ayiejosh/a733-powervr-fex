@@ -236,13 +236,65 @@ grep -c DRM_POWERVR /boot/config-$(uname -r)                  # 0
 
 ## 6. What is *not* established here
 
-* Whether the historical `mutex_spin_on_owner` hang still reproduces — it was last seen on KWin
-  **Wayland** (impossible on this DDK anyway) and has not been re-triggered deliberately, because
-  triggering it means a hard hang. §2.2 shows the *X11 client* path is stable under sustained
-  load; that is not the same thing as a compositor holding DRM master and doing atomic commits.
-* Whether `KWIN_COMPOSE=O2ES` (path 2) survives — untested, on purpose.
+* Whether the historical `mutex_spin_on_owner` hang still reproduces — the compositor path was
+  attempted after this research was written and did **not** hang the kernel: KWin crashes in
+  userspace instead (§7). §2.2 shows the X11 client path is stable under sustained load.
+* Whether `KWIN_COMPOSE=O2ES` (path 2) can be made to work — attempted, it crashes in Qt's EGL
+  config negotiation, §7. Root cause narrowed but not closed.
 * The mechanism behind the per-sync cost (measured, not explained): it tracks shader size, which is
   why it looks like a per-frame shader re-upload rather than a buffer copy. Not confirmed.
 * Whether Mesa's pvr driver would actually come up on BVNC 36.56.104.183 — the device table entry
   exists and the firmware matches, but nothing here has run the open driver.
 * Whether the DDK's Vulkan ICD passes CTS on this BVNC (Radxa's own flag says it does not).
+
+---
+
+## 7. The GPU-composited desktop, attempted
+
+Path 2 from §4 was run on 2026-09-22 behind a boot-safe guard — `test.sh` / `revert.sh` plus
+`gpu-test-guard.service` (a `Before=display-manager` unit that restores the known-good compositor
+config if the board reboots mid-test, so a hang cannot become a boot loop). Tooling:
+`/home/radxa/gpu-desktop-test/`.
+
+Setup: `kwinrc [Compositing] Enabled=true`, a KWin user-unit drop-in
+`plasma-kwin_x11.service.d/gles-test.conf` with `KWIN_COMPOSE=O2ES`, `KWIN_OPENGL_INTERFACE=egl` and
+`UnsetEnvironment=LIBGL_ALWAYS_SOFTWARE QT_QUICK_BACKEND` (the Plasma X11 session exports software GL
+into the *systemd user manager*, which would otherwise silently defeat the test), then
+`systemctl --user restart plasma-kwin_x11.service`.
+
+**It fails in userspace, and it does not hang the kernel:**
+
+| | |
+|---|---|
+| kernel | **clean** — 0 Oops / BUG / Call trace across every attempt; the board stayed up, the desktop kept running, no power cycle |
+| KWin | **SIGSEGV** while initialising GL compositing (`Application::crashHandler() called with signal 11`); systemd restarts it, and it then protects itself: *"Compositing disabled: video driver seems unstable…"* (`[Compositing] LastFailureTimestamp`, `openGLIsBroken=true`) |
+| every start, before any of that | `Cannot find EGLConfig, returning null config` — that string is **Qt's** (`libQt6Gui.so.6`), not KWin's |
+| Qt's GL integration | tries `xcb_glx` → *"Failed to initialize"* (the vendor Xorg exports no GLX, §1) → falls back to `xcb_egl` → *"successfully initialized"* |
+| the test itself | verified to have taken effect: the running KWin's `/proc/<pid>/environ` shows `KWIN_COMPOSE=O2ES` and no `LIBGL_ALWAYS_SOFTWARE` |
+
+So "the live compositor path deadlocks the kernel" (the June conclusion) no longer describes what
+happens on this stack: today the failure is a **userspace EGL config negotiation failure inside
+Qt/KWin**, contained to the compositor.
+
+It is also not "the driver has no usable configs". New probe
+[`../bench/egl-configs.c`](../bench/egl-configs.c) enumerates the vendor EGL on this display:
+
+```
+EGL 1.5  vendor=Mesa Project  apis=OpenGL_ES
+TOTAL configs=36   window-capable=36   alpha>=8=18   ES2-renderable=36   (visuals 33 and 34)
+  minimal RGB888 + WINDOW + ES2             -> matched
+  RGB888 + ALPHA8 + depth24 + stencil8      -> matched
+  BUFFER_SIZE=32 + ALPHA8                   -> matched
+  desktop OpenGL (EGL_OPENGL_BIT) + WINDOW  -> NO CONFIG   <-- the vendor DDK is GLES-only
+```
+
+36 configs cover ES2/ES3 in every alpha/depth/stencil/samples combination, and the X default visual
+(`0x21` = 33) is one of the two they map to. So the mismatch is in the *attribute set Qt asks for* —
+its chooser also filters on the target window's visual, and it tries desktop GL first. Narrowing that
+further needs a Qt-side trace; the desktop is worth more working than broken, so it stopped there.
+
+**State after the test: reverted and verified** — `Enabled=false`, drop-in removed, picom XRender
+running, KWin restarted through its unit, sentinel cleared. `LastFailureTimestamp` was deliberately
+**left in place**: the protection is accurate now, and it stops anyone re-enabling GL compositing
+straight into a crash loop. To retry anyway:
+`kwriteconfig6 --file kwinrc --group Compositing --key LastFailureTimestamp --delete`.

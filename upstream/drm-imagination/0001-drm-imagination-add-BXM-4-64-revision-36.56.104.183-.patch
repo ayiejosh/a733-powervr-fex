@@ -1,0 +1,47 @@
+From 9937866c39fbfd92e6a23ebb564285a3b372d2aa Mon Sep 17 00:00:00 2001
+From: Jon <jon@pionex.com>
+Date: Tue, 22 Sep 2026 22:54:47 +0800
+Subject: [PATCH 1/2] drm/imagination: add BXM-4-64 revision 36.56.104.183 as
+ experimental
+
+The Allwinner A733 (sun60i) integrates a PowerVR BXM-4-64 MC1 at BVNC
+36.56.104.183 -- one silicon revision from the 36.52.104.182 already handled
+here for the T-HEAD TH1520.
+
+Nothing else is missing for this part: Imagination's firmware tree carries
+open-ABI firmware for exactly this revision (powervr/rogue_36.56.104.183_v1.fw,
+version 1.1.OS@6976702, PVR_FW_INFO_VERSION 3 with PVR_FW_FLAGS_OPEN_SOURCE,
+packed BVNC matching the hardware), and Mesa's device table already knows the
+GPU ID (0x36104183, src/imagination/common/device_info/bxm-4-64.h). Today the
+kernel is the only component that refuses the part: pvr_gpu_support_level()
+returns PVR_GPU_UNKNOWN, so probe fails with -ENODEV unless the user passes
+exp_hw_support=1.
+
+List it as experimental first. Following the 36.52.104.182 precedent it can be
+promoted to PVR_GPU_SUPPORTED once a Vulkan CTS run has been made on the
+hardware.
+
+Hardware: Radxa Cubie A7A, Allwinner A733, GPU BVNC 36.56.104.183.
+
+Signed-off-by: Jon <jon@pionex.com>
+---
+ drivers/gpu/drm/imagination/pvr_device.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/drivers/gpu/drm/imagination/pvr_device.c b/drivers/gpu/drm/imagination/pvr_device.c
+index 54fe418..6be7fc9 100644
+--- a/drivers/gpu/drm/imagination/pvr_device.c
++++ b/drivers/gpu/drm/imagination/pvr_device.c
+@@ -535,6 +535,9 @@ pvr_gpu_support_level(const struct pvr_gpu_id *gpu_id)
+ 	case PVR_PACKED_BVNC(36, 53, 104, 796):
+ 		return PVR_GPU_SUPPORTED;
+ 
++	case PVR_PACKED_BVNC(36, 56, 104, 183):
++		return PVR_GPU_EXPERIMENTAL;
++
+ 	default:
+ 		return PVR_GPU_UNKNOWN;
+ 	}
+-- 
+2.47.3
+

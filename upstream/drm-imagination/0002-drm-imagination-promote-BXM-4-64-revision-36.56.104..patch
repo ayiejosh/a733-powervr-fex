@@ -1,0 +1,41 @@
+From 046bc51debb1c34d09894b369eb3c2face5b5388 Mon Sep 17 00:00:00 2001
+From: Jon <jon@pionex.com>
+Date: Tue, 22 Sep 2026 22:55:19 +0800
+Subject: [PATCH 2/2] drm/imagination: promote BXM-4-64 revision 36.56.104.183
+ to supported
+
+The A733's BXM-4-64 MC1 (BVNC 36.56.104.183) has now been validated on
+hardware: <Vulkan CTS version> passes on <board>, with firmware
+powervr/rogue_36.56.104.183_v1.fw (1.1.OS@6976702) and Mesa's pvr driver,
+which already carries this GPU ID (0x36104183).
+
+Move the case from PVR_GPU_EXPERIMENTAL to PVR_GPU_SUPPORTED, so the driver
+binds without requiring the exp_hw_support module parameter, matching the
+36.52.104.182 precedent.
+
+NOTE: do not send until the line above is filled in with a real result.
+
+Signed-off-by: Jon <jon@pionex.com>
+---
+ drivers/gpu/drm/imagination/pvr_device.c | 4 +---
+ 1 file changed, 1 insertion(+), 3 deletions(-)
+
+diff --git a/drivers/gpu/drm/imagination/pvr_device.c b/drivers/gpu/drm/imagination/pvr_device.c
+index 6be7fc9..05c2c81 100644
+--- a/drivers/gpu/drm/imagination/pvr_device.c
++++ b/drivers/gpu/drm/imagination/pvr_device.c
+@@ -533,10 +533,8 @@ pvr_gpu_support_level(const struct pvr_gpu_id *gpu_id)
+ 	case PVR_PACKED_BVNC(33, 15, 11, 3):
+ 	case PVR_PACKED_BVNC(36, 52, 104, 182):
+ 	case PVR_PACKED_BVNC(36, 53, 104, 796):
+-		return PVR_GPU_SUPPORTED;
+-
+ 	case PVR_PACKED_BVNC(36, 56, 104, 183):
+-		return PVR_GPU_EXPERIMENTAL;
++		return PVR_GPU_SUPPORTED;
+ 
+ 	default:
+ 		return PVR_GPU_UNKNOWN;
+-- 
+2.47.3
+

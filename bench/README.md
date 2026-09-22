@@ -34,6 +34,18 @@ buffer, the swap and the X server were each ruled out (see `../docs/GPU-RESEARCH
 Windowed throughput is a flat ≈18 Mpix/s at every resolution; at 1920×1080 with a light shader,
 vsync'd, it holds **59.8 fps** — so 1080p60 GPU compositing is feasible, heavy per-pixel work is not.
 
+### What the vendor EGL actually offers (`egl-configs.c`)
+Written to explain why KWin cannot start GL compositing ("Cannot find EGLConfig, returning null
+config" from Qt, then a KWin segfault — see `../docs/GPU-RESEARCH-2026-09-22.md` §7).
+```sh
+gcc -O2 egl-configs.c -o /tmp/egl-configs -lX11 -lEGL
+LD_LIBRARY_PATH=/usr/local/lib DISPLAY=:0 /tmp/egl-configs   # vendor PowerVR EGL
+DISPLAY=:0 /tmp/egl-configs                                  # system Mesa EGL, for contrast
+```
+Vendor result: 36 configs, all window-capable, all ES2/ES3, 18 with alpha=8, mapped to visuals 33
+and 34 only; RGB888+WINDOW+ES2, RGB888+ALPHA8+depth24+stencil8 and BUFFER_SIZE=32+ALPHA8 all match —
+but **desktop OpenGL (`EGL_OPENGL_BIT`) has no config at all**, because the DDK is GLES-only.
+
 ## GPU present & usable (Vulkan ICD probe)
 ```sh
 gcc vkprobe.c -o vkprobe -ldl

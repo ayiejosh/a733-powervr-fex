@@ -1,0 +1,15 @@
+[Unit]
+Description=GPU desktop test guard - restore the known-good compositor config after a hang
+Documentation=file:/home/radxa/gpu-desktop-test/README.md
+DefaultDependencies=no
+After=local-fs.target
+Before=display-manager.service graphical.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=no
+# Only acts while the test sentinel exists, so it is inert in normal operation.
+ExecStart=/bin/bash -c 'test -f /home/radxa/gpu-desktop-test/IN-PROGRESS && /home/radxa/gpu-desktop-test/revert.sh --config-only || true'
+
+[Install]
+WantedBy=graphical.target
