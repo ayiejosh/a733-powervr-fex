@@ -247,18 +247,8 @@ game-path bug — but it is reproducible, and it is a reason to leave
 
 ## 6. Remaining headroom, ranked
 
-0. **Chrome's launch, which is the JIT-compile-bound case in the wild.** Chrome is the
-   largest x86-64 body of code on this board (`/home/radxa/crd-rootfs/opt/google/chrome/`),
-   so its launch is dominated by exactly the cost §11 and §12 measure: translating code
-   before anything appears on screen. It is also the case where `DiskCache` should pay
-   most, because the cache is worst-case-empty on a first launch and near-complete on
-   every launch after — and DiskCache is now enabled. The board already has the
-   instruments for this (`chrome-fex-headless-test.sh`, `chrome-fex-paint-test.sh`, and
-   fifteen more `chrome-fex-*.sh` scripts), so it is measurable rather than speculative:
-   time N cold launches against N warm-cache launches, then check whether
-   `EnableCodeCachingWIP` (which does *not* stack with DiskCache on python) behaves
-   differently on a binary this size. **Not yet done** — recorded as the next target
-   rather than guessed at.
+0. **Chrome's launch — done, and it turned out to be the largest single win in this
+   study: 262 s → 32 s, 8.1x. Full write-up in §13 at the end of this document.**
 
 1. **A/B the Windows backend on a real title: `HODLL=libwow64fex.dll` vs
    `wowbox64.dll`.** *Answered for throughput in §10 — FEX's backend won by 17.1%.
@@ -650,3 +640,75 @@ recorded here rather than guessed at.
   x86-64 **and i686**, and this box has no i686 sysroot — a pre-existing gap, not
   something introduced here (the original `build/Guest_32/` is empty too). Thunks only
   affect GL/Vulkan/audio redirection, not JIT compile speed or CPU throughput.
+
+---
+
+## 13. Chrome: the JIT cost in the wild — 262 s to 32 s
+
+Chrome is the largest x86-64 body of code on this board (a 276 MB binary), so its launch
+is the purest example of the cost §11 and §12 measure. It was also the worst case, for a
+reason that had nothing to do with tuning:
+
+**Every `chrome-fex-*.sh` script on this board overrides `HOME` to the guest rootfs home
+(`/home/radxa/crd-rootfs/home/crd`), and FEX resolves `~/.fex-emu/Config.json` from
+`HOME`.** There was no config there, so every Chrome launch ran with **default FEX
+config**: `DiskCache` off, `TSOEnabled` back on, `X87ReducedPrecision` off. The tuning in
+`/home/radxa/.fex-emu/Config.json` had never applied to Chrome at all. FEX's own telemetry
+files proved where it was reading from.
+
+### Measured
+
+Headless launch of the same page through the working recipe (pinned to the two A76 cores),
+verifying the DOM byte count on every run so a fast-but-wrong run cannot pass:
+
+| run | wall | DOM bytes |
+|---|---|---|
+| no cache (`FEX_DISKCACHE=0`) — today's behaviour | **262 s** | 250326 |
+| DiskCache, cache warm | **32 s** | 250326 |
+| DiskCache, cache warm (rep 2, interleaved) | **34 s** | 250326 |
+| no cache (rep 2, interleaved) | 261 s | 250326 |
+
+**That is 8.1× faster**, and it is the disk cache: the two variants were alternated after
+everything else was warm, so page cache, FEXServer state and Chrome's own profile were
+identical between them. Warm-cache timings were 32/34 s against 262/261 s.
+
+Also measured: **pinning does not matter for Chrome** (warm 32 s pinned to 2 cores, 30 s
+unpinned) — consistent with §4, where pinning hurt threaded work but Chrome's launch is
+dominated by translation rather than by parallel execution.
+
+### The fix, which needs no per-script edit
+
+A config was written to the guest home, so every launcher that overrides `HOME` picks it up
+without touching seventeen scripts:
+
+`/home/radxa/crd-rootfs/home/crd/.fex-emu/Config.json` — `DiskCache`, `Multiblock`,
+`X87ReducedPrecision`, and **deliberately not `TSOEnabled`**. Upstream calls TSO-off
+"highly likely to break any multithreaded application" and this study measured real
+store-order violations with it (§7, 35 in 2.15M pairs). A browser is exactly the heavily
+threaded lock-free code where that would bite, so the risk was not taken by default.
+TSO-off remains available as a further, separately-measured step.
+
+### Two things not established, stated as such
+
+1. **Why a no-cache run is 4× slower than a run that starts with an empty cache** (262 s vs
+   the 59 s measured once for a cache-populating cold run) is **not** explained by this
+   study. Writing a cache while compiling should cost, not save. Reading the source, the
+   disk-cache lookup sits on the same miss path as a normal compile
+   (`Core.cpp` ~line 943, with `DiskCache.Store` only after `CompileCode`), so the write
+   path alone cannot account for it. The candidate explanations visible in that code —
+   that a cache-enabled run also resolves the executable file *region* and marks guest
+   executable ranges, which interacts with `SMCChecks=mtrack` invalidation — were not
+   tested. The headline conclusion does not depend on it: both cache-enabled runs were
+   vastly faster than both no-cache runs.
+2. The 59 s cold figure is a single measurement and should be treated as indicative only.
+
+### Operational caveat, and it matters for a browser
+
+The cache reached **558 MB** for Chrome alone, and upstream documents **no invalidation
+when guest files change**. Chrome auto-updates itself, so after a Chrome update the cache
+must be cleared or it may serve translations of the old binary:
+
+```
+rm -rf /home/radxa/crd-rootfs/home/crd/.cache/fex-emu    # the guest-home cache (Chrome)
+rm -rf /home/radxa/.cache/fex-emu                        # the normal-home cache (everything else)
+```
