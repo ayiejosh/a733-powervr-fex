@@ -3,9 +3,10 @@
 **Board:** Radxa Cubie A7A, Allwinner A733 — 6× Cortex-A55 (1794 MHz) + 2× Cortex-A76 (2002 MHz), ~6 GB LPDDR5, PowerVR BXM-4-64.
 **Date:** 2026-09-22. **Kernel:** 6.6.98-5-aw2511 (untouched by this work).
 
-This is a measurement-first study. Two of its most useful results are negative, and
-one of them is a correction to a claim in the version of this document that would
-have been written from documentation alone.
+This is a measurement-first study. Three of its most useful results are negative, and
+one of them corrects an earlier revision of this very document: a box64 config change
+was applied here, then found to hang the emulated Windows path, and reverted (§5). The
+traps that hid the problem are worth as much as the findings.
 
 ---
 
@@ -17,7 +18,7 @@ knobs matter:
 | Path | What runs the guest code | Where the tuning lives |
 |---|---|---|
 | **x86-64 Linux** (`fexrun`, `steam-fex`) | **FEX-2609** at `/opt/fex/bin/FEX` | `~/.fex-emu/Config.json` + `FEX_*` env |
-| **Windows programs, 32-bit PE** (`d3drun`, `winrun`, `guirun`) | **`wowbox64.dll`** (box64 0.4.4) inside Wine 11.16 **Hangover** | `<prefix>/drive_c/users/radxa/.box64rc` — **not** `/etc/box64.box64rc` |
+| **Windows programs, 32-bit PE** (`d3drun`, `winrun`, `guirun`) | **`wowbox64.dll`** (box64 0.4.4) inside Wine 11.16 **Hangover** | `BOX64_*` environment variables — **not** a rcfile, which hangs this build (§5) |
 | **DXVK** (d3d9/11, dxgi) | **native ARM64/ARM64EC** (DXVK-Sarek v1.14.0) | `/home/radxa/dxvk.conf` |
 | Windows API side (ntdll, cmd, …) | **native ARM64** builtins | — |
 
@@ -155,28 +156,71 @@ a formality on a board with syncthing, udev workers and a web harness in the bac
 
 ---
 
-## 5. The one config change that was actually applied
+## 5. The Windows path: a change that was applied, found harmful, and reverted
 
-**`/etc/box64.box64rc` is dead config for Windows programs on this board.** That file
-contains a carefully tuned set of DXVK sections which have never applied, because
-`wowbox64.dll` reads the rcfile from `%USERPROFILE%`, not from `/etc` and not from
-`~/.box64rc`. Before this change, **zero box64 settings were in force for `d3drun`.**
+This section is a correction. An earlier revision of this document claimed that
+`<prefix>/drive_c/users/radxa/.box64rc` was the rcfile WowBox64 actually reads, and
+that writing it there fixed "zero box64 tuning in force". **That claim was wrong, the
+evidence for it was a measurement artifact, and the change was removed.** What follows
+is what survived re-testing.
 
-Proven by putting `BOX64_NOBANNER=1` in each candidate location and counting the
-`[BOX64]` banner lines from `wine 'C:\windows\syswow64\cmd.exe' /c ver`:
+### The rcfile route hangs this build
 
-| rcfile location | banner lines | read? |
-|---|---|---|
-| none | 2 | — |
-| `~/.box64rc` | 2 | **no** |
-| `/etc/box64.box64rc` | 2 | **no** |
-| `<prefix>/drive_c/users/radxa/.box64rc` | **0** | **yes** |
+With a purge that verifiably empties the process table before every trial, and three
+repetitions:
 
-Written to both `~/.wine-dxvk` and `~/.wine-hangover`, with `[*setup*]`/`[*install*]`
-safety sections first and then a global section carrying the settings measured on this
-board in earlier paired A/B work: `CALLRET=1` (**−9.4%**), `SAFEFLAGS=0` (**−4.2%**,
-≈−15% together), `BIGBLOCK=2`, `FORWARD=512`. `NATIVEFLAGS=0` (+35%) and
-`ALIGNED_ATOMICS=1` are deliberately omitted, with the reasons recorded in the file.
+| rcfile state | run 1 | run 2 | run 3 |
+|---|---|---|---|
+| **absent** | 1.05 s ok | 1.03 s ok | 1.06 s ok |
+| tuned content, mode 600 | HANG | HANG | HANG |
+| tuned content, mode 644 | HANG | — | — |
+| empty `[*]` | HANG | — | — |
+
+Every one of seven different contents hung, including a file containing nothing but
+`[*]`, at both file modes. Removing the file restored ~1.0 s every time, in both
+`~/.wine-dxvk` and `~/.wine-hangover`. So this is not a settings problem — **creating
+any `.box64rc` at `%USERPROFILE%` makes WowBox64-emulated processes hang on this build.**
+`/etc/box64.box64rc` and `~/.box64rc` remain not-read (which is what made the distro's
+tuned file inert in the first place).
+
+### Three measurement traps, all of which produced a wrong answer first
+
+1. **A count of zero from a killed process is not evidence of success.** The original
+   "proof" was `timeout 90 wine … | grep -c BOX64`: it prints `0` both when a banner is
+   genuinely suppressed *and* when the run is killed before printing anything. The `0`
+   was a hang. The banner was never a valid signal for anything — later,
+   `BOX64_NOBANNER=1` was reported as an applied override *and the banner still printed*.
+2. **A timed-out Wine run poisons the prefix.** Orphaned `services.exe` /
+   `winedevice.exe` / `plugplay.exe` survive it, and a stuck `winedevice.exe` ignores
+   SIGTERM — it needs SIGKILL. Two bisect attempts produced confident nonsense
+   ("every setting hangs, even an empty file") because every trial started against
+   leftovers. Any Wine A/B on this board must purge with SIGKILL and **assert an empty
+   process table** before each trial.
+3. **Launch cost is not throughput.** `cmd /c ver` completes in ~1.0 s cold and ~0.2 s
+   with a warm wineserver, and exercises almost no guest code.
+
+### What is actually true, and usable
+
+- **Environment variables are the working route**, and box64 proves it applied them
+  itself:
+  ```
+  [BOX64] BOX64ENV: Variables overridden:
+      BOX64_DYNAREC_CALLRET=1
+      BOX64_DYNAREC_BIGBLOCK=2
+  ```
+- **`BOX64_DYNAREC_SAFEFLAGS=0` is a no-op here** — it is not reported as an override
+  because `0` *is* the default. The "−4.2%" attributed to it in earlier session notes
+  therefore does not apply to this build; there is nothing to gain.
+- Confirmed settable and non-hanging: `CALLRET=1`, `SAFEFLAGS=1`, `BIGBLOCK=2/3`,
+  `FORWARD=512`.
+- **Both Windows CPU backends launch equally fast**: ~0.2 s warm / ~1.0 s cold for
+  `wowbox64.dll` and the same for `HODLL=libwow64fex.dll`. An earlier reading of "FEX is
+  100× faster" was the orphan poison, not a real difference.
+
+Net effect on the live system: the rcfile was written, found harmful, and **deleted from
+both prefixes**, each verified back at ~1.0–1.2 s. The contribution of this whole
+section to speed is negative knowledge — the kind that is worth more than a hopeful
+config file.
 
 ### box64 crash found while testing this
 
@@ -196,17 +240,18 @@ Fatal glibc error: pthread_mutex_lock.c:94 (___pthread_mutex_lock):
 | `BOX64_DYNAREC_STRONGMEM=2` | passes, checksum exact |
 
 This is a static-glibc pattern, not the Wine/PE path, so it is not necessarily a
-game-path bug — but it is reproducible and it is the reason `ALIGNED_ATOMICS` is not
-in the new rcfile.
+game-path bug — but it is reproducible, and it is a reason to leave
+`ALIGNED_ATOMICS` alone.
 
 ---
 
 ## 6. Remaining headroom, ranked
 
-1. **A/B the Windows backend: `HODLL=libwow64fex.dll` vs `wowbox64.dll`.** Both ship.
-   Given FEX beats box64 by 1.73× vs 1.86× on the Linux side and wins bulk memory
-   copies by a wide margin, the FEX backend may well be faster for games — and it costs
-   one environment variable to find out. *Untested; highest expected value.*
+1. **A/B the Windows backend on a real title: `HODLL=libwow64fex.dll` vs
+   `wowbox64.dll`.** Launch cost is a wash (both ~0.2 s warm, ~1.0 s cold), so what
+   remains unknown is emulated *throughput*, and `cmd /c ver` cannot answer it because it
+   barely executes guest code. Both backends ship; the switch is one environment
+   variable. *Highest expected value, and only a real game can settle it.*
 2. **Thunk ALSA for the FEX path.** `libasound` ships in `/opt/fex/lib/fex-emu/HostThunks/`
    but `ThunksDB` enables only `Vulkan` and `drm`, so guest audio is emulated. Adding
    `"asound": 1` moves it to native. Not applied here: it changes audio behaviour and
@@ -305,6 +350,13 @@ demonstrated firing on a boot-id mismatch.
 | `matrix.sh` | interleaved A/B driver (round-robin, minimum-of-N, pinning) |
 | `sweep-fex.sh` | the 15-configuration FEX knob sweep |
 | `clean-measure.sh` | core-selection and DiskCache measurements, serialised |
+| `wine-backend-ab.sh` | box64 vs FEX Windows backend, with the SIGKILL purge discipline and a refusal to run against leftovers |
+| `box64-rcfile-ab-clean.sh` | the A/B that established the rcfile hang |
+| `box64-rcfile-salvage.sh` | mode/content variants, and the recovery check that proved removal fixes it |
+
+The two earlier bisect attempts are deliberately **not** included: they are the ones
+that produced wrong answers by running against a poisoned prefix, and keeping them
+would invite repeating the mistake. Their lesson is in the comments of the survivors.
 
 ```bash
 gcc -O2 -static -pthread -o build/fexbench_arm64 fexbench.c
