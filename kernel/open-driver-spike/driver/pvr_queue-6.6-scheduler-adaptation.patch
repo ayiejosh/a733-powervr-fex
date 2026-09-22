@@ -1,0 +1,28 @@
+--- /home/radxa/kspike/linux/drivers/gpu/drm/imagination/pvr_queue.c	2026-09-23 07:19:10.171424507 +0800
++++ img/pvr_queue.c	2026-09-23 07:48:04.173782876 +0800
+@@ -1085,7 +1085,7 @@
+ 	if (!pvr_cccb_cmdseq_can_fit(&queue->cccb, job_cmds_size(job, min_native_dep_count)))
+ 		return -E2BIG;
+ 
+-	err = drm_sched_job_init(&job->base, &queue->entity, 1, THIS_MODULE);
++	err = drm_sched_job_init(&job->base, &queue->entity, THIS_MODULE);
+ 	if (err)
+ 		return err;
+ 
+@@ -1282,9 +1282,15 @@
+ 
+ 	queue->timeline_ufo.value = cpu_map;
+ 
++	/*
++	 * Adapted for this 6.6 BSP kernel: it has no submit_wq/num_rqs (the multi-ring
++	 * scheduler support) and no job 'credits', so both are dropped here. That
++	 * degrades the driver's queue arbitration - fine for a bring-up test, not a
++	 * shippable configuration. See kernel/open-driver-spike/README in the repo.
++	 */
+ 	err = drm_sched_init(&queue->scheduler,
+ 			     &pvr_queue_sched_ops,
+-			     pvr_dev->sched_wq, 1, 64 * 1024, 1,
++			     64 * 1024, 1,
+ 			     msecs_to_jiffies(500),
+ 			     pvr_dev->sched_wq, NULL, "pvr-queue",
+ 			     pvr_dev->base.dev);
