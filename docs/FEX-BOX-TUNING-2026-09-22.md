@@ -645,6 +645,11 @@ recorded here rather than guessed at.
 
 ## 13. Chrome: the JIT cost in the wild — 262 s to 32 s
 
+> **Superseded in part by section 14.** The 32 s here was real but not reproducible in
+> isolation: the same command later hung, because the guest rootfs had no `/proc` mounted.
+> Section 14 has the root cause, the fix, and the per-phase dissection. The DiskCache
+> finding below stands unchanged.
+
 Chrome is the largest x86-64 body of code on this board (a 276 MB binary), so its launch
 is the purest example of the cost §11 and §12 measure. It was also the worst case, for a
 reason that had nothing to do with tuning:
@@ -712,3 +717,175 @@ must be cleared or it may serve translations of the old binary:
 rm -rf /home/radxa/crd-rootfs/home/crd/.cache/fex-emu    # the guest-home cache (Chrome)
 rm -rf /home/radxa/.cache/fex-emu                        # the normal-home cache (everything else)
 ```
+
+## 14. Chrome, second pass: the launch was broken, not merely slow
+
+Section 13 treated 262 s as a tuning problem. It was two problems, and only one of them
+was about speed. This section is the dissection: every phase measured separately, and the
+finding that the launchers had never been able to start Chrome *reliably* at all.
+
+### 14.1 The symptom, which did not reproduce
+
+Re-running the section-13 recipe failed. The exact command that returned rc=0 in 33 s now
+hung until killed, twice, with and without a fresh profile. Instrumenting the launch
+(`chrome-dissect.sh`) showed why it read as a hang rather than a crash — two children died
+instantly while the browser kept running:
+
+```
+FATAL:sandbox/linux/services/thread_helpers.cc:41] Check failed: . : No such file or directory (2)
+```
+
+The browser then waits on IPC for a child that never arrives. With
+`--ipc-connection-timeout=3600` that wait is an hour, so `timeout` was the only thing
+ending the run. That is the shape of "this board sucks at launching Chrome".
+
+### 14.2 Root cause: `<rootfs>/proc` was an empty directory
+
+`thread_helpers.cc:41` is `PCHECK(0 == fstatat_ret)` immediately after:
+
+```cpp
+int proc_fd = open("/proc", O_RDONLY | O_DIRECTORY);
+fstatat(proc_fd, "self/task/", &task_stat, 0);
+```
+
+A minimal reproducer (`procprobe.c`) localised it exactly. It is **deterministic, not a
+race** — 200 iterations per variant:
+
+| probe | before | after |
+|---|---|---|
+| `fstatat(open("/proc"), "self/task/")` — *the Chrome call* | 200/200 ENOENT | 0/200 |
+| `fstatat(open("/proc"), "self")` | 200/200 ENOENT | 0/200 |
+| `fstatat(openat(AT_FDCWD,"/proc"), "self/task/")` | 200/200 ENOENT | 0/200 |
+| `fstatat(open("/etc"), "hostname")` — non-`/proc` dirfd | 0/200 | 0/200 |
+| `fstatat(open("/"), "proc/self/task/")` | 0/200 | 0/200 |
+| `fstatat(open("/proc/self"), "task/")` | 0/200 | 0/200 |
+| `stat("/proc/self/task/")` — absolute control | 0/200 | 0/200 |
+
+FEX resolves absolute `/proc` paths, and it resolves dirfd-relative paths in general. What
+fails is a *relative lookup against a directory fd opened on `/proc`* — because that fd is
+`<rootfs>/proc`, an empty directory. FEX's own internal `ProcFD` is a host fd and works
+fine (`FileManagement.cpp:343`, used by `UpdatePID` as `fstatat(ProcFD, "self/fd/N")`);
+only the guest's view is empty.
+
+**So this is a deployment bug, not an emulator bug.** The project's own `crd-run.sh` and
+`crd-rootfs-enter.sh` bind-mount `proc sys dev dev/pts` into the rootfs. The Chrome
+launchers (`chrome-fex-*.sh`) never call them — they set `FEX_ROOTFS` and exec Chrome
+directly. Every Chrome launch on this board therefore ran against an empty `/proc`, and an
+empty `/dev/shm`.
+
+### 14.3 The fix, and making it survive reboot
+
+`emulation/chrome/rootfs-mounts.sh` applies the same `--rbind` + `--make-rslave` pattern
+the project already uses. The `rslave` step is not optional: a recursive `/sys` bind once
+propagated an unmount back and killed the host's `/sys/fs/cgroup`.
+
+`rootfs-kernel-mounts.service` runs it at boot (installed and enabled). Verified:
+
+```
+/proc      mounted    (proc proc)          guest /dev/shm: 2.9G total, 2.9G avail
+/sys       mounted    (sysfs sysfs)
+/dev       mounted    (udev devtmpfs)
+/dev/pts   mounted    (devpts devpts)
+```
+
+### 14.4 What the remaining ~30 s actually is
+
+Measured, warm cache, 8 cores:
+
+| measurement | wall |
+|---|---|
+| `chrome --version` (load FEX + the 276 MB binary + libs) | **0.30 s** |
+| `procprobe` (static x86-64, 10 iterations) | 0.20 s |
+| `python3 -c pass` (dynamic guest binary from the rootfs) | 0.62 s |
+| `fc-list` (fontconfig enumeration; caches exist) | 0.31 s |
+| `--dump-dom about:blank` | **28–34 s** |
+| `--dump-dom file:///tmp/heavy.html` | **29–33 s** |
+
+`about:blank` costs the same as the heavy page, so **the 32 s is Chrome's own startup
+execution — not binary loading, not page work, not fonts, not I/O.** Process tree during a
+launch: browser 142% CPU, network utility process 20–30%, two crashpad handlers ~2%,
+iowait ~0%. There is no stuck child being waited on; it is CPU-bound in emulated guest
+code (user:kernel ≈ 90:10). Ambient load on this board accounts for 26–27% of system CPU
+during a launch — syncthing, tailscaled, cloudflared, plus a permanently running FEX'd
+guest desktop (`chrome-remote-desktop-host`, at-spi, dbus).
+
+### 14.5 Levers tested and rejected
+
+| lever | result | verdict |
+|---|---|---|
+| `FEX_DISKCACHE=0` (control) | 259 s vs 32 s | the cache works, worth **8.1×** |
+| `FEX_DISKCACHEVALIDATION=0` | 32 s | no effect |
+| `FEX_DISKCACHEFILEMAPPING=0` | 34 s | no effect |
+| drop `--disable-dev-shm-usage` (now that `/dev/shm` is real) | 34 s vs 32 s | no gain |
+| `FEX_TSOENABLED=0` | 50 s cold, **26 s** warm | within noise; risk not taken |
+| `FEX_SMCCHECKS=mtrack` | 27–28 s | within noise |
+| `FEX_SMCCHECKS=none` | 52 s cold | not pursued |
+| `FEX_VECTORTSOENABLED=0 FEX_HALFBARRIERTSOENABLED=0` | 53 s cold, 30 s warm | within noise |
+
+Nothing moved the launch beyond noise. The remaining time is Chrome's startup running
+under emulation at roughly 1.7× overhead on a workload that uses only ~1.6 of 8 cores —
+so adding cores does not help either (see 14.7).
+
+### 14.6 A methodological trap: each FEX config gets its own cache set
+
+The first cold number in that table is the trap. DiskCache keys on the JIT configuration,
+so **a run under a new config cannot hit the cache — it recompiles**, and the result looks
+like a catastrophic regression rather than a warmup. Four configs produced four cache
+sets totalling **2.2 GB**:
+
+```
+543M 757cd13014fb91cb319d184e7df1400f     <- experimental
+587M 7a6e53c92dbd46acb4da5caf5d45e547     <- production, kept
+511M 9509da9768a83d48bb253cc25e2d2dfb     <- experimental
+545M f05aec1657068d7c5c5467288bce9018     <- experimental
+```
+
+Any FEX-knob A/B on this board must run each variant **twice** and compare the second
+runs, or it is measuring compilation. The experimental sets were pruned; leaving them
+would silently waste 1.6 GB and inflate page-cache pressure on a 5.8 GB board.
+
+### 14.7 Honest limits, and one reliability caveat that matters
+
+1. **All numbers are the headless `--dump-dom` recipe.** The headed GUI path was not
+   re-measured. The mount fix is global to the rootfs, so the crash fix applies there too,
+   but the windowed wall time is unverified.
+2. **`--no-zygote` is still required.** With `/proc` mounted, allowing the zygote still
+   hangs (rc=124 at 90 s, 0 FATALs). That is a second, separate bug — FEX's emulated
+   clone/exec handshake for `base::LaunchProcess` — and it was **not** fixed. It also
+   means renderers cannot fork, so every child re-pays FEX init and relocation.
+3. **The launch is timing-sensitive.** The harness's own 200 ms `/proc` sampler was enough
+   to flip a 4/4-successful configuration into a hang. The mitigation found empirically is
+   an **explicit `taskset`** — even `-c 0-7`, which is semantically a no-op, succeeds where
+   no affinity mask at all hangs. A55-only (`-c 0,1`) hangs; A76-only (`-c 6,7`) and mixed
+   masks work. On a board carrying 26% ambient CPU this is a real reliability risk, and it
+   is the most likely explanation for intermittent "Chrome won't start" reports.
+4. **Nothing here reduced the ~30 s.** It removed a hard failure and made the launch
+   reproducible; the startup cost itself is irreducible without fixing 14.7.2 or improving
+   FEX's generated code.
+
+### 14.8 Reproducing
+
+```bash
+sudo emulation/chrome/rootfs-mounts.sh          # or rely on rootfs-kernel-mounts.service
+x86_64-linux-gnu-gcc -O1 -static -o /tmp/procprobe emulation/chrome/procprobe.c
+FEX_ROOTFS=/home/radxa/crd-rootfs /tmp/procprobe 200   # expect 0 failures everywhere
+
+# the working launch (8 cores, no zygote, no FATALs)
+cd /home/radxa
+export FEX_ROOTFS=/home/radxa/crd-rootfs
+export HOME=/home/radxa/crd-rootfs/home/crd USER=crd XDG_RUNTIME_DIR=/tmp/fexrun
+timeout 120 env FEX_DISKCACHE=1 taskset -c 0-7 \
+  /home/radxa/crd-rootfs/opt/google/chrome/chrome \
+  --headless --no-sandbox --no-zygote --disable-gpu --in-process-gpu \
+  --disable-dev-shm-usage --ipc-connection-timeout=3600 --no-first-run \
+  --disable-extensions --disable-background-networking --no-pings \
+  --metrics-recording-only --disable-default-apps --disable-sync \
+  --user-data-dir=/home/radxa/chrome-data --dump-dom file:///tmp/heavy.html
+
+# per-phase attribution of any launch
+emulation/chrome/chrome-dissect.sh <label> headless -- --no-zygote
+emulation/chrome/dissect-report.py /home/radxa/fex-tune/chrome-runs/<label>.tsv
+```
+
+Verified end state, 2026-09-22: **29–30 s, rc=0, DOM byte-identical (250326), 0 FATALs**,
+repeated 4/4; `procprobe` 0 failures across all 8 variants.
