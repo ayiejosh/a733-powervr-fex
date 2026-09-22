@@ -901,3 +901,55 @@ emulation/chrome/dissect-report.py /home/radxa/fex-tune/chrome-runs/<label>.tsv
 Verified end state, 2026-09-22: **29–33 s, rc=0, DOM byte-identical (250326), 0 FATALs**,
 with no taskset and no affinity mask; `procprobe` 0 failures across all 8 variants.
 The only launcher-level requirement left is `--no-zygote`.
+
+## 15. Chrome removed from the device, and what was kept
+
+**Decision (2026-09-22): the x86-64 Chrome was removed from the guest rootfs.** A browser
+that needs 29–33 s to show a blank page when its 595 MB translation cache is warm, and
+259 s when it is not, is not a usable browser — and section 14 established that this
+cannot be configured away. The board keeps a native browser instead.
+
+Removed:
+
+| item | size |
+|---|---|
+| `/opt/google/chrome` payload (purged as `google-chrome-stable 149.0.7827.155-1`) | 403 MB |
+| guest FEX disk cache, which existed only for this one binary | 595 MB |
+| conffiles, apt source, `/etc/default/google-chrome`, desktop entries | — |
+
+Kept, deliberately:
+
+- **The general fixes, which were never Chrome-specific.** `rootfs-mounts.sh` +
+  `rootfs-kernel-mounts.service` still bind-mount `/proc`, `/sys`, `/dev` and `/dev/pts`
+  into the rootfs. The reproducer in 14.2 was a plain x86-64 program, not Chrome: *any*
+  guest binary doing a dirfd-relative lookup against `open("/proc")` got ENOENT 200/200
+  before this. Every x86-64 process on the board — including the two `crd-mirror` guest
+  desktops — benefits, with no launcher flags anywhere. Re-verified after the removal:
+  mounts `enabled`/`active`, `procprobe` 0/100 failures on all 8 variants.
+- Both FEX configs, the instrumentation (`chrome-dissect.sh`, `dissect-report.py`,
+  `procprobe.c`, `unlinkprobe.c`), and this document.
+- The Chrome profile at `/home/radxa/chrome-data` (49 MB) and the 18 launcher scripts in
+  `/home/radxa/`, left in place rather than deleted. The scripts are now inert.
+
+Verification after removal: `dpkg-query` reports `google-chrome-stable: unknown ok
+not-installed`, **`dpkg --audit` prints nothing** (database consistent, 533 packages),
+`chrome-remote-desktop 150.0.7871.19` is `install ok installed`, and both
+`crd-mirror.service` and `crd-mirror2.service` are still active. Reinstalling would mean
+re-downloading `google-chrome-stable_current_amd64.deb`; no local copy was cached.
+
+### One anomaly, recorded honestly and not attributed
+
+`dpkg --purge` removed the entire payload correctly and then failed with:
+
+```
+unable to delete control info file
+'/var/lib/dpkg/info/google-chrome-stable.postinst': No such file or directory
+```
+
+while that file was demonstrably still present (20367 bytes). Because this has the same
+shape as the `/proc` bug, it was tested rather than assumed: `unlinkprobe.c` exercises
+absolute `unlink`, `unlinkat(dirfd, "rel")` — the dpkg-shaped call — `unlinkat(AT_FDCWD,
+abs)`, a nested dirfd, and a stat-then-unlink sequence. **All five succeed under FEX with
+0 failures.** So unlink is not broken and the cause is unexplained; it is recorded as a
+caution, not a finding. The practical lesson is to run `dpkg --audit` after any dpkg
+operation in that rootfs, which is how the consistency above was confirmed.
