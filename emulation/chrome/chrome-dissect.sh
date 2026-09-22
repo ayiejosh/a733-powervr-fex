@@ -51,6 +51,15 @@ PROFILE=${PROFILE:-/home/radxa/chrome-data}
 PAGE=${PAGE:-file:///tmp/heavy.html}
 
 
+# --- precheck: the target binary. The x86-64 Chrome was removed from this board on
+# 2026-09-22 (docs section 15). This harness is kept as the documented method -- it works
+# again if Chrome is reinstalled, or if CHROME/ROOTFS are pointed at another guest binary.
+[ -x "$CHROME" ] || {
+  echo "target not found: $CHROME" >&2
+  echo "  the x86-64 Chrome was removed 2026-09-22 -- see docs section 15" >&2
+  exit 2
+}
+
 # --- precheck: without the kernel mounts the guest /proc is an empty dir and Chrome
 # does not fail fast, it hangs. Warn loudly rather than burn the timeout.
 for m in proc dev; do
