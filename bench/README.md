@@ -18,6 +18,22 @@ gcc -O3 -fopenmp -march=native cpubench.c -o cpubench -lm
 ./cpubench <loop> <frames>
 ```
 
+### The windowed path (`gles-x11.c`) — and the per-frame-sync wall
+`glbench` never presents. `gles-x11.c` creates a real X11 window, a real EGL window surface and
+calls `eglSwapBuffers` every frame, timing draw / `glFinish` / swap separately.
+```sh
+gcc -O2 gles-x11.c -o /tmp/gles-x11 -lX11 -lEGL -lGLESv2
+LD_LIBRARY_PATH=/usr/local/lib DISPLAY=:0 SWAP_INTERVAL=0 /tmp/gles-x11 800 600 64 200
+LD_LIBRARY_PATH=/usr/local/lib BLIT=1 SWAP_INTERVAL=0 /tmp/gles-x11 800 600 64 200  # offscreen+copy
+glrun /tmp/gles-x11 800 600 64 300                                                  # via zink->Vulkan
+```
+Measured 2026-09-22 (vendor stack, GPU at 1104 MHz): off-screen FBO **579 Mpix/s** at loop 64, but
+the *same shader* pipelined vs one `glFinish()` per frame off-screen is 9 125 → 756 fps (loop 1) and
+598 → 21 fps (loop 64). A per-frame sync costs **1.3–48 ms** and scales with the shader; the window
+buffer, the swap and the X server were each ruled out (see `../docs/GPU-RESEARCH-2026-09-22.md` §2.3).
+Windowed throughput is a flat ≈18 Mpix/s at every resolution; at 1920×1080 with a light shader,
+vsync'd, it holds **59.8 fps** — so 1080p60 GPU compositing is feasible, heavy per-pixel work is not.
+
 ## GPU present & usable (Vulkan ICD probe)
 ```sh
 gcc vkprobe.c -o vkprobe -ldl
