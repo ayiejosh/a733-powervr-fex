@@ -853,12 +853,22 @@ would silently waste 1.6 GB and inflate page-cache pressure on a 5.8 GB board.
    hangs (rc=124 at 90 s, 0 FATALs). That is a second, separate bug — FEX's emulated
    clone/exec handshake for `base::LaunchProcess` — and it was **not** fixed. It also
    means renderers cannot fork, so every child re-pays FEX init and relocation.
-3. **The launch is timing-sensitive.** The harness's own 200 ms `/proc` sampler was enough
-   to flip a 4/4-successful configuration into a hang. The mitigation found empirically is
-   an **explicit `taskset`** — even `-c 0-7`, which is semantically a no-op, succeeds where
-   no affinity mask at all hangs. A55-only (`-c 0,1`) hangs; A76-only (`-c 6,7`) and mixed
-   masks work. On a board carrying 26% ambient CPU this is a real reliability risk, and it
-   is the most likely explanation for intermittent "Chrome won't start" reports.
+3. **CORRECTED 2026-09-22: `taskset` is NOT required, and the earlier claim that it was
+   load-bearing was an artifact of this study's own instrumentation.** Runs made through
+   `chrome-dissect.sh` carry a sampler that walks `/proc` every 200 ms and costs ~40% of a
+   core; that contention — not the absence of an affinity mask — is what flipped launches
+   into hangs. Re-measured directly, with no sampler and no affinity mask of any kind:
+
+   | configuration (no sampler, no taskset, mounts in place) | result |
+   |---|---|
+   | `--no-zygote` | **31 s / 33 s / 32 s — 3 of 3 succeed** |
+   | zygote allowed | hang, rc=124 at 75 s |
+
+   So the single real requirement is `--no-zygote`; the affinity results (A55-only hanging,
+   A76-only working) were measured on a machine model that included the sampler and should
+   be treated as unproven. The honest lesson is methodological: this launch is sensitive
+   enough that a 40%-of-one-core observer changes the outcome, so any measurement of it
+   has to state its own overhead.
 4. **Nothing here reduced the ~30 s.** It removed a hard failure and made the launch
    reproducible; the startup cost itself is irreducible without fixing 14.7.2 or improving
    FEX's generated code.
@@ -870,22 +880,24 @@ sudo emulation/chrome/rootfs-mounts.sh          # or rely on rootfs-kernel-mount
 x86_64-linux-gnu-gcc -O1 -static -o /tmp/procprobe emulation/chrome/procprobe.c
 FEX_ROOTFS=/home/radxa/crd-rootfs /tmp/procprobe 200   # expect 0 failures everywhere
 
-# the working launch (8 cores, no zygote, no FATALs)
+# the working launch: no taskset, no affinity mask, no FATALs
 cd /home/radxa
 export FEX_ROOTFS=/home/radxa/crd-rootfs
 export HOME=/home/radxa/crd-rootfs/home/crd USER=crd XDG_RUNTIME_DIR=/tmp/fexrun
-timeout 120 env FEX_DISKCACHE=1 taskset -c 0-7 \
+timeout 120 env FEX_DISKCACHE=1 \
   /home/radxa/crd-rootfs/opt/google/chrome/chrome \
   --headless --no-sandbox --no-zygote --disable-gpu --in-process-gpu \
   --disable-dev-shm-usage --ipc-connection-timeout=3600 --no-first-run \
   --disable-extensions --disable-background-networking --no-pings \
   --metrics-recording-only --disable-default-apps --disable-sync \
   --user-data-dir=/home/radxa/chrome-data --dump-dom file:///tmp/heavy.html
+#    ^ the ONLY non-default requirement is --no-zygote
 
 # per-phase attribution of any launch
 emulation/chrome/chrome-dissect.sh <label> headless -- --no-zygote
 emulation/chrome/dissect-report.py /home/radxa/fex-tune/chrome-runs/<label>.tsv
 ```
 
-Verified end state, 2026-09-22: **29–30 s, rc=0, DOM byte-identical (250326), 0 FATALs**,
-repeated 4/4; `procprobe` 0 failures across all 8 variants.
+Verified end state, 2026-09-22: **29–33 s, rc=0, DOM byte-identical (250326), 0 FATALs**,
+with no taskset and no affinity mask; `procprobe` 0 failures across all 8 variants.
+The only launcher-level requirement left is `--no-zygote`.
