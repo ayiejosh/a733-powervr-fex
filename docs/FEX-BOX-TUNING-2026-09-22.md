@@ -475,6 +475,31 @@ Caveats for `DiskCache`: upstream documents unbounded growth and **no invalidati
 guest files change**, so clear it when a title is updated, or if something starts
 misbehaving: `rm -rf ~/.cache/fex-emu`. It is per-user and off by default.
 
+### Applied: `DiskCache: "1"` in `~/.fex-emu/Config.json`
+
+Enabled 2026-09-22 with the user's approval, verified through the **config file** rather
+than an environment override, with the cache cleared first so run 1 pays full price:
+
+| launch | time | cache size |
+|---|---|---|
+| 1 (cold, rebuilds everything) | 1.239 s | 5.8 MB |
+| 2 | 0.733 s | 9.7 MB |
+| 3 | 0.519 s | 12 MB |
+| **4 (steady state)** | **0.439 s** | 12 MB |
+
+No `Unknown configuration option` warnings, and the pre-change file is backed up beside
+it as `Config.json.bak-prediskcache-*`. Because `libwow64fex.dll` reads the same file,
+this applies to Windows programs on the FEX backend as well. Clearing rule if a title is
+updated or misbehaves: `rm -rf ~/.cache/fex-emu`.
+
+Correction to an earlier claim in this report: the suggestion that a rebuild would gain
+from `-mcpu` was **wrong**. The installed binary already carries `-mcpu=cortex-a76`
+(`TUNE_CPU=native` auto-detects it via `Scripts/aarch64_fit_native.py`). The earlier
+check looked in `CMakeCache.txt`, but compiler flags live in `flags.make` / `build.ninja`,
+so it saw nothing and drew the wrong conclusion. **LTO is therefore the only remaining
+build lever**, since this build sets `ENABLE_LTO=False` while the source's own default is
+`TRUE`.
+
 ### It applies to the Windows path too
 
 `/usr/lib/wine/aarch64-windows/libwow64fex.dll` — the FEX Windows backend — carries the
