@@ -525,3 +525,79 @@ Also noted: box64 was configured with `-DRK3588=ON` — a Rockchip SoC flag — 
 Allwinner A733, and with no `-mcpu` either. It happens to set only `BAD_SIGNAL` (which
 the cache shows as OFF), so it is probably inert, but it is a build-script bug worth
 fixing before any box64 rebuild is trusted.
+
+---
+
+## 12. The LTO rebuild, and where the JIT time actually goes
+
+Both built from source into side directories. **Nothing was installed**: the judgement
+below is that it is not worth installing.
+
+### LTO is real but marginal — about 5%
+
+`-DENABLE_LTO=ON`, `-mcpu=cortex-a76` (already what the installed build uses), everything
+else matched to the working build's flags.
+
+| python import start-up, DiskCache forced off | installed | LTO | delta |
+|---|---|---|---|
+| rep 1 | 1.253 s | 1.182 s | −5.7% |
+| rep 2 | 1.236 s | 1.164 s | −5.8% |
+| rep 3 | 1.253 s | 1.206 s | −3.8% |
+
+`-flto=thin` appears 410 times in the generated build graph, so it is genuinely applied.
+Throughput and all nine checksums are **identical** — LTO optimises FEX's own code, not
+the code its JIT emits, so this is a compile-speed win only.
+
+**Recommendation: leave it uninstalled.** Five percent off an *un-cached* launch is small
+next to DiskCache's −64%, which already removes most of that time, and replacing a
+validated system binary with a local build for that margin is a bad trade. It stays at
+`FEX-2609/build-lto/Bin/FEX` if that judgement ever changes.
+
+### Profiler attribution: the JIT is IR-bound, not encoding-bound
+
+`-DENABLE_FEXCORE_PROFILER=ON` writes plain-text events to ftrace's `trace_marker`
+(`"<name> (lduration=-<ns>)"`), so **no GUI viewer is needed** — but the run must be root,
+because a non-root user cannot even list `/sys/kernel/tracing`. An earlier attempt
+silently captured nothing for exactly that reason.
+
+Aggregated over one profiled run of the import-heavy start-up (1.43 s, 85,334 events):
+
+| phase | calls | total | mean |
+|---|---|---|---|
+| **`CompileBlock`** | 30,791 | **1031 ms** | 33.5 µs |
+| `GenerateIR` | 7,777 | 760 ms | 97.7 µs |
+| `Run` (pass pipeline) | 7,777 | 276 ms | 35.4 µs |
+| `RA` (register allocation) | 7,777 | 151 ms | 19.4 µs |
+| `CompileCode` (instruction encoding) | 7,777 | 151 ms | 19.4 µs |
+| `DFE` | 7,777 | 100 ms | 12.8 µs |
+| `DecodeInstructions` | 7,777 | 13 ms | 1.7 µs |
+
+Scopes nest, so these durations overlap; the ratios are the point, not the sums.
+
+Two conclusions:
+
+1. **Compilation dominates** — about 72% of the run is inside `CompileBlock`, which
+   independently confirms the ~65% compile fraction inferred from the DiskCache delta
+   (§11). Two different methods, same answer.
+2. **The cost is IR-bound, not encoding-bound.** IR generation and the pass pipeline
+   (register allocation, dead-flag elimination) are the bulk; the final ARM64 encoding
+   step is a smaller slice. So the lever for FEX itself is fewer blocks to translate —
+   which is what `DiskCache` does — not faster encoding.
+
+The accumulation counters (`AccumulatedJITTime`, `AccumulatedDiskCacheHitCount`) do **not**
+appear in the binary even with the profiler enabled, so disk-cache hit/miss counts are
+not available from this backend; the strings check confirmed they are compiled out. The
+`CompileBlock`/`GenerateIR` call-count ratio (≈4:1) is not explained by this study and is
+recorded here rather than guessed at.
+
+### Build notes worth keeping
+
+- FEX requires clang; a fresh build directory picks `cc`→gcc and stops with
+  "FEX doesn't support GCC". Name the compilers explicitly.
+- `BUILD_FEXCONFIG` defaults to TRUE and needs Qt; the working build sets it OFF.
+- `X86_DEV_ROOTFS` must point at an amd64 sysroot (`/home/radxa/crd-rootfs` here) or the
+  thunk shims cannot link.
+- `BUILD_THUNKS=OFF` was used for these builds: the guest thunk shims cross-compile for
+  x86-64 **and i686**, and this box has no i686 sysroot — a pre-existing gap, not
+  something introduced here (the original `build/Guest_32/` is empty too). Thunks only
+  affect GL/Vulkan/audio redirection, not JIT compile speed or CPU throughput.

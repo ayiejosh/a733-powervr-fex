@@ -29,11 +29,25 @@ exec > >(tee "$LOG") 2>&1
 echo "=== configure $(date -Is) ==="
 # FEX requires clang ("FEX doesn't support GCC"), and a fresh build dir has no
 # cached compiler, so it must be named explicitly or cmake picks cc/c++ = gcc.
-rm -rf "$BUILD"
+#
+# BUILD_THUNKS=OFF: the guest thunk shims cross-compile for x86-64 AND i686, and
+# this box has no i686 sysroot, so the 32-bit half cannot configure. That gap is
+# pre-existing (the original build/Guest_32 is empty too) and irrelevant here:
+# thunks only matter for GL/Vulkan/audio redirection, not for JIT compile speed or
+# CPU throughput. The installed thunk data in /opt/fex stays where it is.
+#
+# X86_DEV_ROOTFS is the cross sysroot for the thunk guest libraries: without it
+# the guest-libs configure step cannot find Scrt1.o/libc/libstdc++ for
+# -target x86_64-linux-gnu and the build dies at ~331/430. The amd64 rootfs on
+# this box is exactly that sysroot, and the working build points at it too.
+#
+# No clean: this resumes incrementally from whatever is already built.
 cmake -S "$SRC" -B "$BUILD" -G Ninja \
   -DCMAKE_C_COMPILER=/usr/bin/clang -DCMAKE_CXX_COMPILER=/usr/bin/clang++ \
+  -DX86_DEV_ROOTFS=/home/radxa/crd-rootfs \
   -DCMAKE_BUILD_TYPE=Release -DENABLE_LTO=ON -DTUNE_CPU=native -DENABLE_CCACHE=ON \
-  -DBUILD_TESTS=OFF -DBUILD_THUNKS=ON -DENABLE_GDB_SYMBOLS=ON -DENABLE_ASSERTIONS=OFF \
+  -DBUILD_FEXCONFIG=OFF -DBUILD_TESTING=OFF -DBUILD_FEX_LINUX_TESTS=OFF \
+  -DBUILD_STEAM_SUPPORT=OFF -DBUILD_THUNKS=OFF -DENABLE_GDB_SYMBOLS=ON -DENABLE_ASSERTIONS=OFF \
   || { echo "CONFIGURE FAILED"; exit 1; }
 
 echo "=== build -j$JOBS started $(date -Is) ==="
@@ -77,11 +91,12 @@ echo "=== done with the LTO build + A/B $(date -Is) ==="
 echo
 echo "=== profiler (instrumented) build $(date -Is) ==="
 PBUILD=$SRC/build-lto-prof
-rm -rf "$PBUILD"
 cmake -S "$SRC" -B "$PBUILD" -G Ninja \
   -DCMAKE_C_COMPILER=/usr/bin/clang -DCMAKE_CXX_COMPILER=/usr/bin/clang++ \
+  -DX86_DEV_ROOTFS=/home/radxa/crd-rootfs \
   -DCMAKE_BUILD_TYPE=Release -DENABLE_LTO=ON -DTUNE_CPU=native -DENABLE_CCACHE=ON \
-  -DBUILD_TESTS=OFF -DBUILD_THUNKS=ON -DENABLE_ASSERTIONS=OFF \
+  -DBUILD_FEXCONFIG=OFF -DBUILD_TESTING=OFF -DBUILD_FEX_LINUX_TESTS=OFF \
+  -DBUILD_STEAM_SUPPORT=OFF -DBUILD_THUNKS=OFF -DENABLE_ASSERTIONS=OFF \
   -DENABLE_FEXCORE_PROFILER=ON -DFEXCORE_PROFILER_BACKEND=gpuvis \
   || { echo "PROFILER CONFIGURE FAILED (the LTO result above still stands)"; exit 0; }
 cmake --build "$PBUILD" -j"$JOBS" || { echo "PROFILER BUILD FAILED (the LTO result above still stands)"; exit 0; }
