@@ -46,6 +46,23 @@ Vendor result: 36 configs, all window-capable, all ES2/ES3, 18 with alpha=8, map
 and 34 only; RGB888+WINDOW+ES2, RGB888+ALPHA8+depth24+stencil8 and BUFFER_SIZE=32+ALPHA8 all match —
 but **desktop OpenGL (`EGL_OPENGL_BIT`) has no config at all**, because the DDK is GLES-only.
 
+It also cross-references X's three visuals against the EGL configs: all three — including the
+32-bit ARGB visual a compositor needs — have a matching config. So the failure is not a missing
+class of config, it is *which API the request names*: see `egl-trace.c` below.
+
+### Whose request fails, and with what attributes (`egl-trace.c`)
+```sh
+gcc -shared -fPIC -O2 egl-trace.c -o /tmp/egl-trace.so -ldl
+LD_PRELOAD=/tmp/egl-trace.so LD_LIBRARY_PATH=/usr/local/lib kwin_x11 --version
+```
+Dumps every `eglChooseConfig` a process makes (also hooks `eglGetProcAddress`, since Qt resolves
+entry points through it). KWin's compositing init asks `RENDERABLE_TYPE=8` (`EGL_OPENGL_BIT`,
+desktop GL) six times, gets `matched=0` every time, logs Qt's *"Cannot find EGLConfig, returning
+null config"*, and then calls `eglCreateContext(config=NULL)` — which this driver answers with a
+non-null context **and** `EGL_BAD_CONFIG`. `KWIN_COMPOSE=O2ES`, `KWIN_OPENGL_INTERFACE=egl` and
+`QT_OPENGL=es2` all leave the request unchanged. Full analysis:
+[`../docs/GPU-RESEARCH-2026-09-22.md`](../docs/GPU-RESEARCH-2026-09-22.md) §7.
+
 ## GPU present & usable (Vulkan ICD probe)
 ```sh
 gcc vkprobe.c -o vkprobe -ldl

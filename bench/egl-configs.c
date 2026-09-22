@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <X11/Xlib.h>
+#include <X11/Xutil.h>
 #include <EGL/egl.h>
 
 static int q(EGLDisplay d, EGLConfig c, EGLint a){ EGLint v=-1; eglGetConfigAttrib(d,c,a,&v); return v; }
@@ -35,6 +36,34 @@ static void try(EGLDisplay d, const char *label, EGLint *attrs){
     EGLConfig c; EGLint n=0;
     EGLBoolean ok=eglChooseConfig(d,attrs,&c,1,&n);
     printf("  %-46s -> ok=%d matched=%d%s\n", label, ok, n, n?"":"   <-- NO CONFIG");
+}
+
+/* Which X visuals can the GPU actually render to? A compositor needs a depth-32 ARGB visual;
+ * Qt's EGL chooser filters the config list by EGL_NATIVE_VISUAL_ID == the window's visual, so a
+ * visual with no matching config is exactly the "Cannot find EGLConfig" case. */
+static void visuals(EGLDisplay d){
+    Display *x=XOpenDisplay(NULL);
+    if(!x){ printf("\n(no X display: skipping the visual cross-reference)\n"); return; }
+    XVisualInfo tmpl; int n=0;
+    XVisualInfo *list=XGetVisualInfo(x, VisualNoMask, &tmpl, &n);
+    printf("\n=== X visuals (%d) vs the EGL configs that can target them ===\n", n);
+    printf("visual  depth  class        ARGB   matching configs\n");
+    int noegl=0, argb_noegl=0;
+    for(int i=0;i<n;i++){
+        XVisualInfo *v=&list[i];
+        EGLint attrs[]={ EGL_SURFACE_TYPE,EGL_WINDOW_BIT, EGL_RENDERABLE_TYPE,EGL_OPENGL_ES2_BIT,
+                         EGL_NATIVE_VISUAL_ID,(EGLint)v->visualid, EGL_NONE };
+        EGLConfig c; EGLint m=0;
+        eglChooseConfig(d,attrs,&c,1,&m);
+        const char *cls = v->class==TrueColor?"TrueColor":(v->class==DirectColor?"DirectColor":"other");
+        printf("0x%02lx    %2d     %-12s %-5s  %d%s\n", v->visualid, v->depth, cls,
+               v->depth==32?"yes":"no", m, m?"":"   <-- NO EGL CONFIG");
+        if(!m){ noegl++; if(v->depth==32) argb_noegl++; }
+    }
+    printf("summary: %d of %d visuals have no EGL config", noegl, n);
+    if(argb_noegl) printf(", including %d depth-32 (ARGB) visual(s) -- a compositor has nothing to bind to", argb_noegl);
+    printf("\n");
+    XFree(list);
 }
 
 int main(void){
@@ -78,5 +107,6 @@ int main(void){
     try(d,"BUFFER_SIZE=32 + ALPHA8",a3);
     try(d,"desktop OpenGL (not ES) + WINDOW",a4);
     try(d,"any window config at all",a5);
+    visuals(d);
     return 0;
 }

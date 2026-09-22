@@ -288,10 +288,42 @@ TOTAL configs=36   window-capable=36   alpha>=8=18   ES2-renderable=36   (visual
   desktop OpenGL (EGL_OPENGL_BIT) + WINDOW  -> NO CONFIG   <-- the vendor DDK is GLES-only
 ```
 
-36 configs cover ES2/ES3 in every alpha/depth/stencil/samples combination, and the X default visual
-(`0x21` = 33) is one of the two they map to. So the mismatch is in the *attribute set Qt asks for* —
-its chooser also filters on the target window's visual, and it tries desktop GL first. Narrowing that
-further needs a Qt-side trace; the desktop is worth more working than broken, so it stopped there.
+36 configs cover ES2/ES3 in every alpha/depth/stencil/samples combination; X has three visuals
+(`0x21` 24-bit TrueColor, `0x22` 24-bit DirectColor, `0x7f` **32-bit ARGB**) and **all three** have a
+matching config — so the compositor's ARGB visual is not the problem either.
+
+**The root cause is the API the request names.** New shim
+[`../bench/egl-trace.c`](../bench/egl-trace.c) `LD_PRELOAD`s into a process and dumps every
+`eglChooseConfig` (hooking `eglGetProcAddress` as well, because Qt resolves its entry points that
+way). Against KWin's compositing init:
+
+```
+[egl-trace] eglChooseConfig(RED=8 GREEN=8 BLUE=8 ALPHA=0 SAMPLES=0 SAMPLE_BUFFERS=0 DEPTH=0 STENCIL=0
+                            SURFACE_TYPE=4 RENDERABLE_TYPE=8)
+[egl-trace]   -> ok=1 matched=0   <-- NOTHING MATCHES     (x6, progressively fewer constraints)
+Cannot find EGLConfig, returning null config
+[egl-trace] eglCreateContext(config=(nil)): ?=2 ?=0
+[egl-trace]   -> ctx=0x… err=0x3000        <- EGL_BAD_CONFIG — and a *non-null* context
+```
+
+`RENDERABLE_TYPE=8` is `EGL_OPENGL_BIT`: **desktop OpenGL, on every single request.** The vendor DDK
+is GLES-only (`EGL_CLIENT_APIS: OpenGL_ES`, §1), so no config can ever match. Qt then logs the
+message, calls `eglCreateContext()` with the null config anyway, and gets a context pointer plus
+`EGL_BAD_CONFIG` back (a conformant driver returns `EGL_NO_CONTEXT` there) — after which KWin records
+the failure, disables compositing, and in the earlier runs segfaulted.
+
+All three obvious levers were measured, and none of them changes the request:
+
+| tried | measured effect |
+|---|---|
+| `KWIN_COMPOSE=O2ES` (KWin's OpenGL ES backend) | still `RENDERABLE_TYPE=8` — **not one ES2 request is made** |
+| `KWIN_OPENGL_INTERFACE=egl` | honoured (EGL is used) but the attribute set is unchanged |
+| `QT_OPENGL=es2` | unchanged |
+
+So GPU-composited KWin here is blocked in **Qt's EGL config negotiation**, which asks for an API the
+vendor driver does not implement — not in the kernel, and not by anything settable from the
+environment. Lifting it needs either a Qt/KWin-side change (ask for ES2 in the QPA/compositor probe)
+or a driver exposing desktop-GL configs; neither exists on this stack today.
 
 **State after the test: reverted and verified** — `Enabled=false`, drop-in removed, picom XRender
 running, KWin restarted through its unit, sentinel cleared. `LastFailureTimestamp` was deliberately
