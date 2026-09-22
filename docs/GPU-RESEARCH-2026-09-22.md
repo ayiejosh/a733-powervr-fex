@@ -400,3 +400,34 @@ unsupported`), which is why the session-wide feature fake is unavoidable on this
   into per-application wrappers (as `glrun` does).
 * zink logs `PERF WARNING! > 100 copy boxes detected` for the shell — an inefficiency, not an error.
 * OpenCL needed nothing: `/etc/OpenCL/vendors/IMG.icd` -> `libPVROCL.so` was already registered.
+
+---
+
+## 9. The PRIME-import patch is applied and verified
+
+The patch in [`../kernel/`](../kernel/README.md) is ours — written for the 5.15 BSP and still
+applying to the 6.6 DDK. It is now built, installed, loaded at boot and proven:
+
+| check | result |
+|---|---|
+| live module build-id | `5d842b08…` (patched; stock is `50b99ea6…`) |
+| `drmPrimeFDToHandle` on a foreign dma-buf (from `/dev/dma_heap/system`) | `OK -> handle=1` (stock: `EINVAL`) |
+| re-export handle -> fd | `OK` |
+| GPU writes into the imported foreign pages | `readback: 65536/65536 == 0xCAFEF00D` -> **PASS** |
+
+Two traps cost two reboots, both recorded in
+[`../kernel/prime-import-activation/README.md`](../kernel/prime-import-activation/README.md):
+
+1. **`xz`'s default check breaks `modprobe`.** The DKMS module uses `Check: CRC32`; `xz`'s default is
+   `CRC64`; this kernel's in-kernel XZ decoder supports CRC32 only, so it refuses the stream and
+   `modprobe` returns `EINVAL` — while `insmod` of the same uncompressed `.ko` succeeds. Compress
+   with `xz -c --check=crc32`.
+2. **My boot "safety" guard caused the failure it was meant to catch.** It restored the stock module
+   before udev's autoload ran, so the stock build loaded and it looked like the patched module would
+   not load. It is report-only now, and `pvrsrvkm-load.service` loads the module explicitly before
+   `display-manager`, logging the build-id it got.
+
+What it changes for the user, honestly: nothing visible *yet*. The consumers of foreign dma-buf
+import (kmsro, wlroots, a compositor that scans out its own GPU buffers) are blocked elsewhere — no
+Wayland surface extensions in this DDK (§3.3), KWin blocked in Mesa's kopper integration (§8). It
+closes *this* gap so those paths are not additionally blocked by the driver.

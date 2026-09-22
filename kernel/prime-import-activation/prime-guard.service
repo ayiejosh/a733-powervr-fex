@@ -1,0 +1,12 @@
+[Unit]
+Description=GPU driver guard - fall back to the stock pvrsrvkm if the patched one did not load
+DefaultDependencies=no
+After=local-fs.target
+Before=display-manager.service graphical.target
+
+[Service]
+Type=oneshot
+ExecStart=/home/radxa/prime-build/guard.sh
+
+[Install]
+WantedBy=graphical.target
