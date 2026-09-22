@@ -247,6 +247,19 @@ game-path bug — but it is reproducible, and it is a reason to leave
 
 ## 6. Remaining headroom, ranked
 
+0. **Chrome's launch, which is the JIT-compile-bound case in the wild.** Chrome is the
+   largest x86-64 body of code on this board (`/home/radxa/crd-rootfs/opt/google/chrome/`),
+   so its launch is dominated by exactly the cost §11 and §12 measure: translating code
+   before anything appears on screen. It is also the case where `DiskCache` should pay
+   most, because the cache is worst-case-empty on a first launch and near-complete on
+   every launch after — and DiskCache is now enabled. The board already has the
+   instruments for this (`chrome-fex-headless-test.sh`, `chrome-fex-paint-test.sh`, and
+   fifteen more `chrome-fex-*.sh` scripts), so it is measurable rather than speculative:
+   time N cold launches against N warm-cache launches, then check whether
+   `EnableCodeCachingWIP` (which does *not* stack with DiskCache on python) behaves
+   differently on a binary this size. **Not yet done** — recorded as the next target
+   rather than guessed at.
+
 1. **A/B the Windows backend on a real title: `HODLL=libwow64fex.dll` vs
    `wowbox64.dll`.** *Answered for throughput in §10 — FEX's backend won by 17.1%.
    What remains open is whether a real game agrees, since the workload used was a
@@ -413,9 +426,45 @@ only route that works, since the rcfile route hangs (§5). Verified live: box64 
   was identical on this workload, but if a title renders or saves wrongly this is the
   first line to remove.
 
-**Not applied, deliberately:** switching the backend to FEX. It is the bigger win, but
-it replaces the emulator for every Windows app and the evidence is a console builtin,
-not a game. It is one commented line in each wrapper.
+**Applied: the WoW64 (32-bit) Windows backend was switched to FEX.**
+
+`d3drun`, `winrun` and `guirun` now export `HODLL="${HODLL_OVERRIDE:-libwow64fex.dll}"`,
+so 32-bit Windows programs run on FEX instead of box64. Re-measured on a second workload
+(an emulated i386 PE scanning a 100 MB file, 12/12 runs correct):
+
+| variant | best | vs box64 default |
+|---|---|---|
+| box64 default | 3.51 s | — |
+| box64 + `CALLRET=1` | 3.42 s | −2.6% |
+| box64 + CALLRET+BIGBLOCK+FORWARD | 3.48 s | −0.9% |
+| **FEX backend** | **3.01 s** | **−14.2%** |
+
+**The bitness mapping, which is the reason this is safe** — verified, not assumed:
+
+| guest | backend used | affected by `HODLL`? |
+|---|---|---|
+| 32-bit (i386) PE | `wowbox64.dll` or `libwow64fex.dll` | **yes** — this is the switch |
+| 64-bit (x86-64) PE | **always `libarm64ecfex.dll` (FEX)** | **no** — ignores `HODLL` entirely |
+
+All three `HODLL` values produced `starting FEX … libarm64ecfex.dll` for a 64-bit PE and
+the program ran. So 64-bit Windows programs were *already* on FEX, and this change only
+touches 32-bit ones. It also corrects an earlier statement in this report: box64 is the
+emulator for the 32-bit Windows path only.
+
+Verified through the wrappers: default `d3drun` on the 32-bit workload ran on FEX with the
+correct output; a 64-bit PE through `d3drun` still used `libarm64ecfex.dll`; `winrun` and
+`guirun` (the other prefix) both still work; zero leftover Wine processes afterwards.
+
+**A deliberate one-line escape hatch, and a bug found while testing it.** The first version
+documented `HODLL=wowbox64.dll d3drun …` as the revert path, and that silently did *not*
+work — each wrapper already assigns `HODLL` itself, so a caller's value was overwritten.
+Testing the document found the document was wrong. The effective value now comes from a
+distinct variable so the two cannot collide:
+
+```
+HODLL_OVERRIDE=wowbox64.dll d3drun <app.exe>     # back to box64 for one run
+```
+Verified: that run prints the `WowBox64 arm64 v0.4.4` banner again (3.40 s vs 3.16 s).
 
 ---
 
