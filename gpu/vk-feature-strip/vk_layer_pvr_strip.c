@@ -38,6 +38,16 @@
 #define VK_LAYER_EXPORT __attribute__((visibility("default")))
 #define FAKE_EXT_NAME "VK_EXT_robustness2"
 
+/* VK_KHR_robustness2 is a LATER alias of VK_EXT_robustness2: headers new enough to know
+ * the KHR spellings also keep the EXT ones, but headers from the trixie stack this repo
+ * targets (VK_HEADER_VERSION 309) define only EXT.  Map KHR -> EXT when absent so the
+ * file builds on both. */
+#ifndef VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_KHR
+#define VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_KHR \
+    VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT
+typedef VkPhysicalDeviceRobustness2FeaturesEXT VkPhysicalDeviceRobustness2FeaturesKHR;
+#endif
+
 typedef struct {
     VkInstance instance;
     PFN_vkGetInstanceProcAddr GetInstanceProcAddr;
@@ -60,6 +70,23 @@ static DeviceData g_dev;
 
 static int enabled(void) {
     const char *e = getenv("PVR_FAKE_GS");
+    return e && e[0] && e[0] != '0';
+}
+
+/* The VK_EXT_robustness2 / nullDescriptor lie is a SEPARATE, opt-in switch, off by default.
+ *
+ * Reason (measured 2026-09-22 on a Cubie A7A, DDK 24.2@6603887, Mesa 25.0.7): faking
+ * nullDescriptor=VK_TRUE makes zink write real null descriptors, and the closed blob then
+ * segfaults *inside libVK_IMG.so* on the first draw -- a userspace dereference, no kernel
+ * fault.  Advertising the extension alone is harmless (glmark2 804 vs 806), so it is
+ * specifically the feature bit that must not be volunteered.
+ *
+ * It exists for zink builds that refuse to initialise without nullDescriptor (Mesa >= 26:
+ * "Zink requires the nullDescriptor feature of KHR/EXT robustness2").  Set PVR_FAKE_R2=1
+ * to get past that *screen-creation* check -- expect a crash as soon as null descriptors
+ * are actually used, which on this blob they will be. */
+static int enabled_r2(void) {
+    const char *e = getenv("PVR_FAKE_R2");
     return e && e[0] && e[0] != '0';
 }
 
@@ -140,20 +167,20 @@ static VKAPI_ATTR void VKAPI_CALL PVRSTRIP_GetPhysicalDeviceFeatures(
 static VKAPI_ATTR void VKAPI_CALL PVRSTRIP_GetPhysicalDeviceFeatures2(
     VkPhysicalDevice physicalDevice, VkPhysicalDeviceFeatures2 *pFeatures)
 {
-    g_inst.GetPhysicalDeviceFeatures2(physicalDevice, pFeatures);
+    if (g_inst.GetPhysicalDeviceFeatures2) g_inst.GetPhysicalDeviceFeatures2(physicalDevice, pFeatures);
     if (enabled()) {
         pFeatures->features.geometryShader = VK_TRUE;
-        patch_robustness2(pFeatures->pNext, VK_TRUE);
+        if (enabled_r2()) patch_robustness2(pFeatures->pNext, VK_TRUE);
     }
 }
 
 static VKAPI_ATTR void VKAPI_CALL PVRSTRIP_GetPhysicalDeviceFeatures2KHR(
     VkPhysicalDevice physicalDevice, VkPhysicalDeviceFeatures2KHR *pFeatures)
 {
-    g_inst.GetPhysicalDeviceFeatures2KHR(physicalDevice, pFeatures);
+    if (g_inst.GetPhysicalDeviceFeatures2KHR) g_inst.GetPhysicalDeviceFeatures2KHR(physicalDevice, pFeatures);
     if (enabled()) {
         pFeatures->features.geometryShader = VK_TRUE;
-        patch_robustness2(pFeatures->pNext, VK_TRUE);
+        if (enabled_r2()) patch_robustness2(pFeatures->pNext, VK_TRUE);
     }
 }
 
@@ -163,7 +190,7 @@ static VKAPI_ATTR VkResult VKAPI_CALL PVRSTRIP_EnumerateDeviceExtensionPropertie
     VkPhysicalDevice physicalDevice, const char *pLayerName,
     uint32_t *pPropertyCount, VkExtensionProperties *pProperties)
 {
-    if (!enabled() || pLayerName != NULL) {
+    if (!enabled_r2() || pLayerName != NULL) {
         return g_inst.EnumerateDeviceExtensionProperties(physicalDevice, pLayerName, pPropertyCount, pProperties);
     }
 
@@ -221,10 +248,11 @@ static VKAPI_ATTR VkResult VKAPI_CALL PVRSTRIP_CreateDevice(
     VkDeviceCreateInfo modCreateInfo = *pCreateInfo;
     const char **extNames = NULL;
     VkPhysicalDeviceFeatures modFeatures;
+    VkBool32 origGs = VK_FALSE, origNull = VK_FALSE;   /* app's real values, restored after */
 
     if (enabled()) {
         /* drop the fake extension name so the real driver never sees it */
-        if (pCreateInfo->enabledExtensionCount > 0) {
+        if (enabled_r2() && pCreateInfo->enabledExtensionCount > 0) {
             extNames = malloc(sizeof(char *) * pCreateInfo->enabledExtensionCount);
             uint32_t j = 0;
             for (uint32_t i = 0; i < pCreateInfo->enabledExtensionCount; i++) {
@@ -247,9 +275,15 @@ static VKAPI_ATTR VkResult VKAPI_CALL PVRSTRIP_CreateDevice(
         VkBaseOutStructure *s = (VkBaseOutStructure *)modCreateInfo.pNext;
         while (s) {
             if (s->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2) {
-                ((VkPhysicalDeviceFeatures2 *)s)->features.geometryShader = VK_FALSE;
-            } else if ((int)s->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_KHR) {
-                ((VkPhysicalDeviceRobustness2FeaturesKHR *)s)->nullDescriptor = VK_FALSE;
+                VkPhysicalDeviceFeatures2 *f = (VkPhysicalDeviceFeatures2 *)s;
+                origGs = f->features.geometryShader;
+                f->features.geometryShader = VK_FALSE;
+            } else if (enabled_r2() &&
+                       (int)s->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_KHR) {
+                VkPhysicalDeviceRobustness2FeaturesKHR *r =
+                    (VkPhysicalDeviceRobustness2FeaturesKHR *)s;
+                origNull = r->nullDescriptor;
+                r->nullDescriptor = VK_FALSE;
             }
             s = s->pNext;
         }
@@ -262,9 +296,10 @@ static VKAPI_ATTR VkResult VKAPI_CALL PVRSTRIP_CreateDevice(
         VkBaseOutStructure *s = (VkBaseOutStructure *)pCreateInfo->pNext;
         while (s) {
             if (s->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2) {
-                ((VkPhysicalDeviceFeatures2 *)s)->features.geometryShader = VK_TRUE;
-            } else if ((int)s->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_KHR) {
-                ((VkPhysicalDeviceRobustness2FeaturesKHR *)s)->nullDescriptor = VK_TRUE;
+                ((VkPhysicalDeviceFeatures2 *)s)->features.geometryShader = origGs;
+            } else if (enabled_r2() &&
+                       (int)s->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_KHR) {
+                ((VkPhysicalDeviceRobustness2FeaturesKHR *)s)->nullDescriptor = origNull;
             }
             s = s->pNext;
         }
