@@ -256,10 +256,10 @@ game-path bug — but it is reproducible, and it is a reason to leave
    `"asound": 1` moves it to native. Not applied here: it changes audio behaviour and
    audio output could not be verified from this session. Do **not** thunk GL/EGL —
    display `:0` exports no GLX, which is why the nested-Xephyr path exists.
-3. **`FEX_DISKCACHE=1`** (new in 2609): measured **0.418 s → 0.378 s** (~10%) on a 0.4 s
-   guest launch, cache 1.6 MB. Real but small on this workload, and upstream notes it
-   grows without bound and is not invalidated when guest files change. Worth testing on
-   an actual title before adopting; not enabled by default.
+3. **`FEX_DISKCACHE=1`** (new in 2609) — **corrected in §11: it is −64%, not ~10%.**
+   The figure here was measured on a cache that had not finished warming and against a
+   workload that barely compiles anything. See §11 for the proper numbers and the
+   invalidate-on-update caveat.
 4. **Scope `TSOEnabled` per application** — see §7.
 5. **`dxvk.numCompilerThreads` / `shaderCompilationMethod`** are already set to the
    conservative values in `/home/radxa/dxvk.conf`; DXVK-Sarek upstream recommends
@@ -416,3 +416,87 @@ only route that works, since the rcfile route hangs (§5). Verified live: box64 
 **Not applied, deliberately:** switching the backend to FEX. It is the bigger win, but
 it replaces the emulator for every Windows app and the evidence is a console builtin,
 not a game. It is one commented line in each wrapper.
+
+---
+
+## 11. JIT cost: where it actually is, and the two wins
+
+"Can the JIT be optimized further?" splits into two costs that need different fixes:
+
+- **compile cost** — paid once per translated block. This is what launch delay and
+  in-game stutter are made of.
+- **run cost** — paid per block dispatch and per emulated instruction, and set by the
+  *quality* of the emitted ARM64.
+
+Both JITs are built from source on this board (`FEX-2609/build/`, `box64-0.4.4-src/build-a76/`),
+so build flags are in scope as well as runtime knobs.
+
+### The emitted code is invariant — all the recoverable cost is compilation
+
+Across every knob tested, the nine benchmark checksums stay **bit-identical** and the
+per-test timings do not move outside noise:
+
+| knob | effect on emitted code / throughput |
+|---|---|
+| `MaxInst` 1000 / 5000 / 20000 | none (1000 marginally worse) |
+| `Multiblock` (already on) | — |
+| `DynamicL1Cache`, `DisableL2Cache`, both heuristics | none measurable |
+| `EnableCodeCachingWIP` | none (checksums identical) |
+| TSO, x87 | no throughput change (x87 changes *accuracy*) |
+
+So FEX's JIT has **no code-quality headroom left in its configuration surface**. What
+follows is compile cost, and it is large. Measured on an import-heavy python start-up
+(a real amount of x86-64 gets translated):
+
+| configuration | time | vs no cache |
+|---|---|---|
+| no cache — recompiles every launch | 1.238 s | — |
+| `FEX_ENABLECODECACHINGWIP=1` (in-memory, experimental) | 0.77 s | −38% |
+| **`FEX_DISKCACHE=1`, cache warm** | **0.44 s** | **−64%** |
+| both together | 0.64 s | −48% — *worse than disk cache alone* |
+| trivial `python3 -c pass`: no cache → warm | 0.62 s → **0.19 s** | −70% |
+
+**The two caching mechanisms do not stack.** Disk cache alone wins; the WIP code cache is
+only worth having if the disk cache is unacceptable (0.77 s vs 1.24 s).
+
+Two corrections this produced:
+
+- **`DiskCache` is −64%, not the ~10% reported earlier in this document.** That number
+  came from a cache that had not finished warming (still growing, 3.4 → 5.6 MB, across
+  the three runs) and from comparing means rather than steady state. The trivial
+  workload made it worse: `-c pass` barely compiles anything.
+- **`MaxInst` is not a stutter lever here**, despite being `AffectsCodeGen`.
+
+Correctness: the full nine-test suite with the experimental code caching enabled gives
+**identical checksums** to baseline — only the `syscall` sum differs, and that is a sum of
+process ids. Nothing was miscompiled.
+
+Caveats for `DiskCache`: upstream documents unbounded growth and **no invalidation when
+guest files change**, so clear it when a title is updated, or if something starts
+misbehaving: `rm -rf ~/.cache/fex-emu`. It is per-user and off by default.
+
+### It applies to the Windows path too
+
+`/usr/lib/wine/aarch64-windows/libwow64fex.dll` — the FEX Windows backend — carries the
+same `FEX_DISKCACHE`, `FEX_ENABLECODECACHINGWIP`, `FEX_MAXINST`, `FEX_ROOTFS` and
+`FEX_TSOENABLED` strings and looks for `Config.json` under `/.fex-emu/`. So these settings
+are not limited to the x86-64 Linux path.
+
+### Build-time headroom — the largest remaining, untested
+
+| | installed | source default | note |
+|---|---|---|---|
+| `ENABLE_LTO` | **False** | `TRUE` | this build is *less* optimized than upstream's default |
+| `TUNE_CPU` | unset | — | FEX's own code targets generic ARMv8, not the A76 it runs on |
+| `ENABLE_FEXCORE_PROFILER` | OFF | OFF | would show where compile time goes |
+
+Because the dominant JIT cost is **the compiler's own speed**, the most direct remaining
+lever is making that compiler faster: rebuild with `-DENABLE_LTO=ON` and
+`-DTUNE_CPU=cortex-a76` (or `native`), from a **separate build directory**, and A/B it
+against the installed binary before anything is installed anywhere. With a warm ccache
+and ninja on 8 cores this is a real but bounded cost.
+
+Also noted: box64 was configured with `-DRK3588=ON` — a Rockchip SoC flag — on an
+Allwinner A733, and with no `-mcpu` either. It happens to set only `BAD_SIGNAL` (which
+the cache shows as OFF), so it is probably inert, but it is a build-script bug worth
+fixing before any box64 rebuild is trusted.
