@@ -330,3 +330,73 @@ running, KWin restarted through its unit, sentinel cleared. `LastFailureTimestam
 **left in place**: the protection is accurate now, and it stops anyone re-enabling GL compositing
 straight into a crash loop. To retry anyway:
 `kwriteconfig6 --file kwinrc --group Compositing --key LastFailureTimestamp --delete`.
+
+---
+
+## 8. What was actually applied (session-wide GPU GL), and the wall that remains
+
+Everything above is diagnosis. This is the part that changed the machine, on 2026-09-22.
+
+### The change
+
+`~/.config/plasma-workspace/env/10-software-render.sh` forced software GL on X11
+(`LIBGL_ALWAYS_SOFTWARE=1`, `QT_QUICK_BACKEND=software`) as the board's defence against the
+historical deadlock. That defence is no longer justified — §2.2 and §7 show the X11 client path is
+stable and the compositor failure is userspace, not a hang — so the X11 branch now routes all GL
+through **system Mesa + zink -> PowerVR Vulkan**. The applied file and the revert recipe are in
+[`../system/desktop-gl-zink/`](../system/desktop-gl-zink/README.md).
+
+### Why zink and not the vendor GLES
+
+The vendor DDK answers `EGL_CLIENT_APIS: OpenGL_ES` only, while Qt's X11 EGL integration asks for
+`EGL_OPENGL_BIT` (§7). Measured side by side:
+
+| desktop-GL + WINDOW request | result |
+|---|---|
+| vendor EGL | **0 configs** -> Qt logs *"Cannot find EGLConfig, returning null config"*, null config |
+| system Mesa + zink | **45 configs**, context created, no message |
+
+### What it buys (measured, same window, same shader)
+
+| workload | GPU via zink | software (llvmpipe) | gain |
+|---|---|---|---|
+| 320x240, loop=16 | **345.5 fps** (26.5 Mpix/s) | 111.4 fps (8.6 Mpix/s) | **3.1x** |
+| 800x600, loop=64 | **33.5 fps** | 120 frames did not finish in 60 s (<2 fps) | **>17x** |
+
+The gain is workload-dependent, and the small-workload case shows why: the GPU path pays a **~2.9 ms
+per-frame floor** (the sync cost of §2.3), so cheap frames collapse the ratio to ~3x. Per-pixel
+throughput is where the GPU wins by orders of magnitude.
+
+Verified after the change: a new client reports
+`GL_RENDERER: zink Vulkan 1.3(PowerVR B-Series BXM-4-64 MC1 (IMAGINATION_PROPRIETARY))`; plasmashell
+maps `libVK_IMG` and renders on the GPU via `QT_QUICK_BACKEND=opengl`; KWin still composites with
+picom XRender; kernel log clean; shell steady-state CPU unchanged at idle (1.3 % vs 1.7 % of a core).
+
+### The wall that remains: KWin's own compositor
+
+Retried three further ways, each reverted afterwards: `KWIN_COMPOSE=O2` (desktop GL) +
+`KWIN_OPENGL_INTERFACE=egl` + `LIBGL_KOPPER_DRI2=1` + both feature fakes. Qt finds configs now, but
+the *platform* integration still fails:
+
+```
+libEGL warning: egl: failed to create dri2 screen
+qt.qpa.gl: Xcb EGL gl-integration initialize failed
+QXcbIntegration: Cannot create platform OpenGL context, neither GLX nor EGL are enabled
+kwin_core: Compositing disabled: no OpenGL support
+```
+
+The block has moved: it is no longer "the vendor driver has no desktop-GL config" (zink fixed that
+for clients) but "Qt's X11 EGL/kopper integration cannot initialize" — a Mesa-side limitation, not
+something settable from the environment. So the desktop still composites with picom on the CPU,
+while its clients and its shell no longer do. Found along the way: zink *hard-requires*
+`geometryShader` on an IMG device (`zink: Imagination proprietary driver w/o geometryShader is
+unsupported`), which is why the session-wide feature fake is unavoidable on this path.
+
+### Trade-offs on record
+
+* `PVR_FAKE_GS=1` is session-wide, so every Vulkan app is told the device has geometry shaders, while
+  the blob rejects GS *pipelines*. An app that trusts the flag and uses GS will fail. This is the
+  price of zink here; narrow it by moving the layer and `PVR_FAKE_*` out of the session script and
+  into per-application wrappers (as `glrun` does).
+* zink logs `PERF WARNING! > 100 copy boxes detected` for the shell — an inefficiency, not an error.
+* OpenCL needed nothing: `/etc/OpenCL/vendors/IMG.icd` -> `libPVROCL.so` was already registered.
