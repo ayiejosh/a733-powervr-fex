@@ -553,9 +553,40 @@ rebuilds out-of-tree with
 | feature | verdict after the addendum | lead |
 |---|---|---|
 | `tessellationShader` | hardware-absent, proven | none |
-| `geometryShader` | hardware-absent; emulation works and costs ~80x per small draw | amortise the per-draw chain (the one item not finished) |
+| `geometryShader` | hardware-absent; emulation works, and its per-draw chain is now 17% cheaper - 64.5x the nogs baseline instead of 78.0x, same-session A/B | batch the passes across draws: the only lever left that is big enough to matter |
 | `multiViewport` | **accepts state, rasterises nothing at 2, crashes at 4** | VPT-id path + `shaderOutputViewportIndex`; not worth it without them |
 | `fillModeNonSolid` | native path draws nothing; expansion is cached-able but pointless here | deliberate non-goal |
 | `descriptorIndexing` (+11) | uniform **and non-uniform buffer indexing both measured working**; native bindless image path is the wall | advertise + lower; plumbing |
 | framebuffer compression | **closed: no UAPI, no driver code, firmware unknown** | none until the kernel grows a compressible-allocation concept |
+
+### A7. `geometryShader`: the per-draw chain is 17% shorter
+
+§2 priced the emulation at ~80x and left it there. The per-draw chain in
+`d3d11_gscompute.cpp` was clear counter → capture dispatch → compute dispatch → write indirect args →
+copy the counter into `args.vertexCount` → rebind → `drawIndirect`, with driver barriers between the
+steps, times 64 draws per frame.
+
+The counter is now the args buffer itself: it gains storage-buffer usage, is bound at the compute-GS's
+counter binding, and the shader's `atomicAdd` at offset 0 lands on `args.vertexCount`. The args are
+initialised `{0,1,0,0}` *before* the dispatch instead of after it, so the count the dispatch accumulates
+is the draw count. One buffer, one clear, one copy and one dependency removed per draw. Measured with
+`gsbench.exe` (2000 frames x 64 draws, headless, warmup verified on every run):
+
+| run | ms/frame | us/draw | warmup |
+|---|---:|---:|---|
+| nogs baseline (same build) | 0.8249 | 12.889 | RED |
+| before, unmodified | 64.3514 | 1005.490 | GREEN |
+| after, counter folded | 53.0429 | 828.795 | GREEN |
+| after, repeat | 53.4575 | 835.273 | GREEN |
+
+**-17.3% per-draw overhead, reproducible to 0.8%**, taking the penalty from 78.0x to 64.5x. The
+cross-session trap is worth recording: June measured 75.48 ms/frame for the *unmodified* code, today it
+measured 64.35 - a 17% drift with nothing changed - so comparing against June would have credited the
+change with ~30% and been wrong. Only the back-to-back runs are evidence.
+
+What is left, in order of size: (1) batch the passes across a frame's draws, so 64 serialised chains
+become one - the only lever big enough to move 64.5x materially; (2) drop the defensive per-draw
+`clearBuffer(vsout)`; (3) remove the vertex-buffer copy by giving the capture CS a format-aware read of
+the application buffer, which is Task B (the VS-as-compute milestone) rather than a tweak. Branch
+`gs-amortise` in the DXVK-Sarek tree; system32 was restored to the shipping BCn DLL afterwards.
 
