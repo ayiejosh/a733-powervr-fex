@@ -1410,3 +1410,36 @@ What is left is the per-tile processing itself: the open driver spends 5.5x what
 for each 16x16 tile it walks, at the same clock. That is inside Mesa's pvr tile pipeline and its
 control streams, and it is the single largest remaining performance item on this stack - bigger than
 the render-area sizing in §18.3, which only affects partial renders.
+
+### 19.1 Clocking was the last easy explanation, and it is not it either
+
+The device tree gives the GPU eight clocks (`clk_parent clk clk_bus clk_800 clk_600 clk_400 clk_300
+clk_200`), and the vendor stack has all five fixed-rate ones enabled with `gpu@1800000` as the
+consumer. That looked like a plausible 4-5x: if our bring-up only maps `core` and `clk_bus`, the
+internal blocks could be running from a much slower source. Sampled under load, with our driver:
+
+```
+pll-peri0-800m  rate=800000000  enable=Y consumer=[gpu@1800000]
+pll-peri0-600m  rate=600000000  enable=Y consumer=[gpu@1800000]
+pll-peri0-400m  rate=400000000  enable=Y consumer=[gpu@1800000]
+pll-peri0-300m  rate=300000000  enable=Y consumer=[gpu@1800000]
+pll-peri0-200m  rate=200000000  enable=Y consumer=[gpu@1800000]
+```
+
+Identical to the vendor, and `gpu0`/`pll-gpu` are at 1,104,000,000 Hz on both sides. So the 5.5x
+per-tile cost is not clocking - it is the per-tile work itself, inside Mesa pvr's control streams
+and tile pipeline configuration.
+
+### 19.2 Where this leaves the biggest item
+
+Everything reachable from outside the driver has now been tried and measured: render area, coverage,
+attachment load and store operations, format and bytes per pixel, batching, clock, runtime PM,
+per-frame allocations, region-header initialisation, empty-tile processing, and the peripheral
+clocks. The gap survives all of them and sits in one number - **0.556 us per 16x16 tile against the
+vendor's 0.101 us** - with a comparable fixed floor.
+
+Closing it needs the PowerVR hardware programming guide (or the upstream maintainers' knowledge of
+what the ISP/TPU control stream should look like per tile), because the next step is to change how
+tiles are set up rather than to remove work the API asked for. That is a genuinely different kind of
+task from everything in this document so far, and it is the honest boundary of what measurement and
+the public sources here can resolve.
