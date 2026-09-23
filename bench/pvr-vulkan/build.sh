@@ -21,6 +21,11 @@ glslangValidator -V --target-env vulkan1.1 -o compute.spv compute.comp
 glslangValidator -V --target-env vulkan1.1 -o render_vert.spv render.vert
 glslangValidator -V --target-env vulkan1.1 -o render_frag.spv render.frag
 glslangValidator -V --target-env vulkan1.1 -o anim_frag.spv anim.frag
+glslangValidator -V --target-env vulkan1.1 -o pc.spv pc.comp
+glslangValidator -V --target-env vulkan1.1 -o pc64.spv pc64.comp
+# bda_*.comp need SPIR-V 1.3 + PhysicalStorageBufferAddresses, so vulkan1.2.
+glslangValidator -V --target-env vulkan1.2 -o bda_pc.spv bda_pc.comp
+glslangValidator -V --target-env vulkan1.2 -o bda_ubo.spv bda_ubo.comp
 
 python3 - <<'PY'
 import struct
@@ -40,6 +45,10 @@ emit('compute.spv', 'compute_spv', 'compute_spv.h')
 emit('render_vert.spv', 'render_vert_spv', 'render_vert_spv.h')
 emit('render_frag.spv', 'render_frag_spv', 'render_frag_spv.h')
 emit('anim_frag.spv', 'anim_frag_spv', 'anim_frag_spv.h')
+emit('pc.spv', 'pc_spv', 'pc_spv.h')
+emit('pc64.spv', 'pc64_spv', 'pc64_spv.h')
+emit('bda_pc.spv', 'bda_pc_spv', 'bda_pc_spv.h')
+emit('bda_ubo.spv', 'bda_ubo_spv', 'bda_ubo_spv.h')
 PY
 
 CC=${CC:-gcc}
@@ -69,6 +78,13 @@ link memtypes memtypes.c
 
 # vkaudit: diffable capability dump, for comparing two ICDs.
 link vkaudit vkaudit.c
+
+# bda: VK_KHR_buffer_device_address functional test (raw address delivered by a
+# push constant and by a uniform buffer; store, load+store and global atomic).
+link bda bda.c
+
+# pctest: minimal vkCmdPushConstants probe, with no buffer device address in it.
+link pctest pctest.c
 
 # pvrscanout also needs libdrm for the KMS/PRIME half.
 $CC $CFLAGS -I/usr/include/libdrm -o pvrscanout pvrscanout.c -lvulkan -ldrm -lm 2>/dev/null || \

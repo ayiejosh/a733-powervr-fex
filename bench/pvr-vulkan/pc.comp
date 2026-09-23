@@ -1,0 +1,26 @@
+#version 450
+// Minimal push constant probe. Deliberately has nothing to do with buffer
+// device addresses: it reads a 16-byte push constant block and copies it into a
+// storage buffer.
+//
+// The second field is a fixed marker, so a zero result is unambiguous: if the
+// marker lands but the copied values are zero, the dispatch ran and read zeros;
+// if nothing lands at all, the dispatch or the buffer path is at fault.
+layout(local_size_x = 64) in;
+
+layout(set = 0, binding = 0, std430) buffer Out {
+    uvec4 got;
+    uvec4 marker;
+} o;
+
+layout(push_constant, std430) uniform PC {
+    uvec4 v;
+} pc;
+
+void main() {
+    if (gl_GlobalInvocationID.x != 0u)
+        return;
+
+    o.got = pc.v;
+    o.marker = uvec4(0xDEADBEEFu, 1u, 2u, 3u);
+}

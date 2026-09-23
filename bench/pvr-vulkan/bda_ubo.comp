@@ -1,0 +1,40 @@
+#version 450
+// The same work as bda_pc.comp, but the address arrives through a uniform buffer
+// instead of a push constant, and as two 32-bit halves that the shader packs into
+// a 64-bit value.
+//
+// Two things this separates out:
+//   - the descriptor path is already known to work (every SSBO/UBO access uses
+//     it), so a failure here is about the address itself, not about how it was
+//     delivered;
+//   - packing the halves in the shader reaches the same 64-bit value by a
+//     different route than loading a uint64_t push constant does.
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+
+layout(local_size_x = 64) in;
+
+layout(buffer_reference, std430, buffer_reference_align = 4) buffer Buf {
+    uint v[];
+};
+
+layout(set = 0, binding = 0, std140) uniform Params {
+    uvec2 addr;  // .x = low 32 bits, .y = high 32 bits
+    uint  count;
+    uint  mode;
+} p;
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= p.count)
+        return;
+
+    Buf b = Buf(packUint2x32(p.addr));
+
+    if (p.mode == 2u)
+        b.v[i] = 0xA5A50000u | i;
+    else if (p.mode == 1u)
+        atomicAdd(b.v[i], 1u);
+    else
+        b.v[i] = b.v[i] + 1u;
+}

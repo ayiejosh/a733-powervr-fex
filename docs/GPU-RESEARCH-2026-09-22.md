@@ -1614,14 +1614,178 @@ been loosened until it passed.
 | extent limit under-reported by 2x (8192 vs 4096) | **fixed**, verified by 6144² and 8192² renders |
 | X11 WSI (xcb/xlib surfaces) absent | **enabled**, verified as advertised; end-to-end pending an X server that does not use the GPU |
 | 2x MSAA implemented but not advertised | **fixed**, verified at 1x/2x/4x |
-| `bufferDeviceAddress` (+ capture replay) | open - implementation work, DXVK/vkd3d want it |
+| `bufferDeviceAddress` (+ capture replay) | base feature **closed in §21**; capture replay still open |
 | 8/16-bit storage, `shaderFloat16`, `shaderInt8` | open - implementation work |
 | `variablePointers`, `drawIndirectCount` | open - implementation work |
 | `depthClamp`, `occlusionQueryPrecise`, `vertexPipelineStoresAndAtomics` | open - implementation work |
 | API 1.2 vs the vendor's 1.3 | open - needs the 1.3 core feature set |
 | timestamps (`timestampPeriod = 0.0`) | open - the driver has no timestamp query path at all, so the value is honest |
 
-Three of the four gaps that were "the driver can already do this" are now closed. What remains needs
+Three of the four gaps that were "the driver can already do this" are now closed.
+
+**Correction (see §21.4):** the extent-limit row above claims verification by 6144² and 8192²
+renders. That was a single passing run and it does not reproduce; rendering at those sizes fails
+on the pre-change ICD too, so the *limit advertisement* is what is verified, not full-frame
+correctness. What remains needs
 features implemented inside Mesa's pvr, not flags flipped: the hardware supports them (the vendor
 driver on this board is the proof), but enabling a feature without implementing it would render
 wrongly rather than work.
+
+## 21. Buffer device addresses: the feature was implemented, only the advertisement was missing
+
+`bufferDeviceAddress` was listed in 20.6 as "implementation work". It turned out to be mostly
+bookkeeping. Everything an application needs was already in the driver:
+
+- `pvr_GetBufferDeviceAddress()` existed and returned `buffer->dev_addr.addr`;
+- `pvr_BindBufferMemory2()` already assigned that address when the buffer was bound;
+- buffer descriptors are filled with `PVR_DEV_ADDR_OFFSET(buffer->dev_addr, offset)`
+  (`pvr_arch_descriptor_set.c:37`), so the device VA a descriptor hands the hardware *is* the value
+  an application would be given;
+- the compiler already lowered `PhysicalStorageBuffer` to the global LD/ST that shared memory itself
+  uses (`pco_trans_nir.c` `trans_load_global`/`trans_store_global`, address format
+  `nir_address_format_2x32bit_global`).
+
+What was missing was the switch. And in this driver the switch is not cosmetic: `vk_spirv_to_nir()`
+installs SPIR-V capability masks derived from `vk_physical_device::supported_features`
+(`vk_physical_device_spirv_caps_gen.py`), so while `bufferDeviceAddress` was false a
+`PhysicalStorageBuffer` shader module was rejected before the compiler ever saw it. The feature flag
+was the gate on a working code path.
+
+### 21.1 The change
+
+| file | change |
+|---|---|
+| `pvr_physical_device.c` | `.KHR_buffer_device_address = true`, `.EXT_buffer_device_address = true`, `.bufferDeviceAddress = true` |
+| `pvr_device.c` | publish `vk_buffer::device_address` at bind; `pvr_GetBufferDeviceAddress()` returns it; add the `KHR`/`EXT` entry point aliases |
+| `pco_nir.c` | late 64-bit cleanup (see 21.2) |
+
+One flat flag is enough for all three feature structs: Mesa's generated feature code maps
+`bufferDeviceAddress` to `VkPhysicalDeviceVulkan12Features`, `VkPhysicalDeviceBufferDeviceAddressFeatures`
+and `...FeaturesEXT` together (`vk_physical_device_features_gen.py:104`).
+
+The entry point aliases are not decoration either. The generated dispatch table references
+`pvr_GetBufferDeviceAddressKHR`/`EXT` as weak symbols that resolve to the entry point stub when
+undefined, so without real definitions `vkGetDeviceProcAddr("vkGetBufferDeviceAddressKHR")` returns
+the stub and an application concludes the feature is absent. That is exactly what the pre-change ICD
+does when asked to create a device with `VK_KHR_buffer_device_address` enabled: `vkCreateDevice`
+returns -7 (`VK_ERROR_EXTENSION_NOT_PRESENT`).
+
+Capture replay stays unsupported, deliberately: it needs the winsys to place an allocation at an
+address chosen by the application, which the heap allocator cannot do. It is optional, and
+DXVK-Sarek on this board only asks for `VK_KHR_buffer_device_address` (checked with `strings`), not
+the capture replay feature.
+
+### 21.2 The crash this uncovered, and the pass-ordering bug behind it
+
+Enabling the feature made the shader compilable but `vkCreateComputePipelines()` **segfaulted**:
+
+```
+Unsupported alu instruction: "32    %12 = unpack_64_2x32_split_x %11"
+SIGSEGV in trans_alu -> trans_cf_nodes -> pco_trans_nir -> pvr_compute_pipeline_compile
+```
+
+`nir_lower_explicit_io()` emits `pack/unpack_64_2x32_split` when it converts a 64-bit address into
+the 2x32-bit global format. Those intrinsics are lowered **only** by `nir_opt_algebraic()`
+(`nir_opt_algebraic.py:2260`); `nir_lower_pack()` handles only the non-split `pack_64_2x32`. In
+`pco_postprocess_nir()` the last `pco_nir_opt()` call passes `algebraic = false`, so its internal
+`nir_lower_int64()` is the last pass that can create them and nothing afterwards removes them. They
+then reach `trans_alu()`, hit the `default:` case, and `UNREACHABLE("")` is undefined behaviour in a
+release build - hence a segfault inside `vkCreateComputePipelines()` instead of an error.
+
+A related pre-existing pathology is now visible in the logs: `pco_nir_opt()` prints
+`WARNING! Infinite opt loop!` and bails out of its optimisation loop after 1000 iterations. The
+reason is a cycle - `nir_lower_int64()` builds 64-bit values out of `pack/unpack_64_2x32_split`,
+while `nir_opt_algebraic()`'s rules rewrite those back into 64-bit `u2u64`/`ishl`/`ushr`. Each pass
+undoes the other, so the loop never converges and whichever state it abandons is arbitrary.
+
+`pco_nir.c` gains a conditional late cleanup: if the shader still contains a split intrinsic, run
+`nir_lower_int64()` + `nir_opt_algebraic()` until it settles (bounded), so the intrinsics are gone
+before translation. The change is **inert for every shader that compiled before it**: such a shader
+provably contained no split intrinsic, so the new block never runs for it.
+
+### 21.3 Verification: a matrix, because "nothing was written" has several causes
+
+`bench/pvr-vulkan/bda.c` runs the address through a descriptor (two 32-bit halves packed in the
+shader) and through a push constant (`uint64_t`, the way applications do it), against three access
+modes: constant store (needs no prior content), load+store, and a global atomic. Every element gets a
+distinct expected value, and the buffer under test is never mapped by the CPU - all transfers go
+through a staging buffer - so a failure means the address is wrong, not that a cache was stale.
+
+| access | address delivered by descriptor | address delivered by push constant |
+|---|---|---|
+| constant store | **256/256** | 0/256 |
+| load+store | **256/256** | 0/256 |
+| `atomicAdd` | **256/256** | 0/256 |
+
+The vendor driver passes all six. So **buffer device addresses work on the open driver**: the
+address, the element indexing, the read path, the write path and global atomics through a raw device
+address are all correct and match the vendor exactly.
+
+The push-constant column is a separate bug, and `bench/pvr-vulkan/pctest.c` reduces it to something
+with no buffer device address in it at all, by pushing byte-identical values into a block declared
+two ways:
+
+| push constant block | result |
+|---|---|
+| `uvec4 v` | **3/3 probes PASS** |
+| `uint64_t a, b` | 3/3 probes FAIL - high 32 bits of each value come back as a copy of the low 32 |
+
+```
+uint64_t  full 16 bytes at offset 0   FAIL  got 11111111 11111111 33333333 33333333
+                                            want 11111111 22222222 33333333 44444444
+```
+
+Push constants in general are fine; **64-bit members** are not. The mechanism is the cycle described
+in 21.2: `unpack_64_2x32_split_y(a)` is rewritten to `u2u32(ushr(a, 32))`, the 64-bit `ushr` is not
+lowered, and `trans_shift()` asserts `bits == 32` - an assert compiled out in a release build - so the
+shift is translated as if the operand were a single 32-bit value and the high half is lost. This is
+the next item, and it is why `bda` without `--bda-only` still fails.
+
+### 21.4 Correction: the earlier extent-limit verification was a single observation
+
+20.6 recorded the extent limit fix as "verified by 6144² and 8192² renders". That was one passing run
+and it does not reproduce. Regression testing showed the larger sizes failing, so the question was
+whether the buffer-device-address work caused it. It did not:
+
+| ICD | 512 | 4096 (x3) | 6144 (x3) | 8192 (x3) |
+|---|---|---|---|---|
+| `build/`, linked 14:57, **before** this work | PASS | FAIL 3/3 | FAIL 3/3 | FAIL 3/3 |
+| `build-x11/`, linked 16:59, after | PASS | FAIL 3/3 | FAIL 3/3 | FAIL 3/3 |
+
+Both drivers fail identically, all-black readbacks (`got 0,0,0,0`), so this predates the change. And
+it is not confined to the newly enabled sizes: **4096 was always a legal size** and it fails too.
+
+What is actually going on is worse than a size limit: rendering reliability degrades within a single
+boot of the module. In one sweep, 512x512 passed first and then failed after the large renders had
+run in the same boot; in another, 4096 passed once and failed 3/3 in a fresh boot. So:
+
+- the extent **limit advertisement** (16.5 -> 8192) is verified by `vkaudit`, which is what that fix
+  was about;
+- full-frame **correctness** at these sizes is not reproducible, and the earlier claim should not
+  have been stated as verified;
+- the degradation is the more interesting defect and is still open. It is not a CPU cache coherency
+  problem: the cached host-visible type added in section 18 is genuinely coherent here (`memtypes`
+  reads it back correctly at 2624 MB/s).
+
+### 21.5 New tools
+
+| tool | what it does |
+|---|---|
+| `bench/pvr-vulkan/bda.c` | the address-delivery x access-mode matrix; `--bda-only` for the address verdict alone |
+| `bench/pvr-vulkan/pctest.c` | minimal `vkCmdPushConstants` probe, `uvec4` vs `uint64_t` block, with a marker field so "dispatch did not run" cannot be mistaken for "values were zero" |
+| `bench/pvr-vulkan/regress.sh` | the whole suite in one table, with `verdict` / `clean` / `known` cases so pre-existing failures are shown without silently gating on them |
+| `bench/pvr-vulkan/order-probe.sh`, `ab-big.sh` | the ordering and pre-change-ICD probes that established the above |
+
+### 21.6 Scorecard
+
+| gap | status |
+|---|---|
+| `bufferDeviceAddress` (KHR + EXT, DXVK/vkd3d's requirement) | **implemented and verified** (descriptor delivery: store, load+store, atomic) |
+| `bufferDeviceAddressCaptureReplay` | open by choice - needs application-directed placement in the winsys |
+| compiler segfault on `PhysicalStorageBuffer` shaders | **fixed** (`pco_nir.c`) |
+| 64-bit push constants | **open** - high half lost; minimal reproducer is `pctest` |
+| large render targets / reliability within a boot | **open** - pre-existing, not a regression; earlier "verified" claim withdrawn |
+| 8/16-bit storage, `shaderFloat16`, `shaderInt8`, `variablePointers`, `drawIndirectCount` | open - implementation work |
+| `depthClamp`, `occlusionQueryPrecise`, `vertexPipelineStoresAndAtomics` | open - implementation work |
+| API 1.2 vs the vendor's 1.3 | open - needs the 1.3 core feature set |
+| timestamps (`timestampPeriod = 0.0`) | open - no timestamp query path exists, so the value is honest |
