@@ -279,7 +279,24 @@ if systemctl is-active --quiet kmsconvt@tty1; then
 fi
 
 say "--- stopping display-manager ---"
-systemctl stop display-manager 2>&1 | sed 's/^/    /' | tee -a "$LOG"
+systemctl stop display-manager
+
+# SDDM can respawn X while the swap is in progress, and a KDE session that starts
+# then runs on the *open* driver by accident: kwin came up on zink, failed, and left
+# the desktop dead (seen twice, once needing a card1 reload). Make sure nothing of the
+# old session survives before the GPU is taken away. Note: only pkill -x here - a
+# pkill -f pattern can match this script's own command line and kill the run.
+for _ in $(seq 1 30); do
+    if ! pgrep -x X >/dev/null && ! pgrep -x kwin_x11 >/dev/null; then
+        break
+    fi
+    sleep 1
+done
+for _p in X kwin_x11 plasmashell picom; do
+    pkill -x "$_p" 2>/dev/null
+done
+sleep 2
+say "session cleared: X=$(pgrep -c -x X 2>/dev/null || echo 0) kwin=$(pgrep -c -x kwin_x11 2>/dev/null || echo 0)" 2>&1 | sed 's/^/    /' | tee -a "$LOG"
 for _ in $(seq 1 30); do
     refs=$(awk '$1=="pvrsrvkm"{print $3}' /proc/modules)
     { [ -z "$refs" ] || [ "$refs" = "0" ]; } && break

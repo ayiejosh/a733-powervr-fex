@@ -1070,3 +1070,23 @@ surface regardless of what is drawn (§16.3), and the fixed per-readback cost (�
 reachable from the harness or from a configuration knob: the levers a test can pull (render area,
 load/store ops, batching, tiling, queue priority, power state, DVFS) have all been tried and
 measured here.
+
+### 16.7 Why the desktop kept dying after a swap
+
+Three separate causes, all found by reading kwin's own log rather than guessing:
+
+1. **SDDM respawns X during the swap window.** A KDE session started *while the open driver was
+   bound*, so kwin came up rendering through **zink on pvr** instead of the vendor GL, failed
+   (`Qt platform plugin "xcb"` then a broken X connection) and left the desktop dead. The swap now
+   waits for X and kwin to be gone, then clears the session (`pkill -x`, never `pkill -f` - a
+   `-f` pattern matches the script's own command line and killed a run that way once).
+2. **The open driver's remove path trips `pvr_context_device_fini` (`pvr_remove`)**, and after that
+   the vendor module can load *without* creating `/dev/dri/card1`; X then cannot start at all. The
+   restore path detects the missing node, reloads the vendor module cleanly and retries - no reboot
+   (that warning is worth its own look: it is in our adapted driver, not in the harness).
+3. **kmscon on tty1 holds most of the GPU references** (§15 addendum), so it is stopped for the
+   duration of a swap.
+
+The useful side effect of (1): a KDE session on the open stack is *nearly* reachable - kwin got as
+far as creating a zink screen on pvr and printing its warning before failing. That is a much
+shorter path to a real desktop on the open driver than it looked.
