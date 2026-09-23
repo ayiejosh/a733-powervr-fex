@@ -2306,3 +2306,61 @@ are local-only. Measured on one board, the vendor driver plus the repo's overlay
 and more compatible choice (~2.3x on draw, 21 more device features); what the open-driver work
 bought is that the open stack now *works* - BDA advertised, 64-bit push constants no longer
 segfaulting, 8192 renders, X11 surfaces, one honest memory type - not that it is quick.
+
+### 19.2 The render-origin route is blocked by the firmware ABI, not by documentation
+
+18.4's fix sketch said to derive the job's tiling from the render area and offset the region-header base
+by the tile origin. The missing mechanism looked like it had been found: `ISP_RENDER_ORIGIN` is
+documented in the *open*, MIT-licensed control-stream definitions as exactly that —
+
+```
+<struct name="ISP_RENDER_ORIGIN" length="1">
+  <doc>This register defines the top-left tile coordinate for the render.</doc>
+  <field name="x" start="16" end="25" type="uint"><doc>X coordinate, in tiles.</doc></field>
+  <field name="y" start="0" end="9"  type="uint"><doc>Y coordinate, in tiles.</doc></field>
+```
+
+— and the **transfer** path already programs it (`pvr_arch_job_transfer.c:1436`, packed from
+`CG_ISP_RENDER_ORIGIN`). The plan was: plumb the render area into `struct pvr_render_job`, compute the
+tile origin from it, and pack the register in `pvr_frag_state_stream_init()` next to `CR_ISP_CTL`.
+
+**It cannot be done from userspace, and the reason is a firmware ABI.** The render job's registers are
+not a userspace control stream. Mesa writes them into the fragment register stream
+(`pvr_frag_state_stream_init()` -> `state->fw_stream`), the kernel *parses* that stream into
+`struct rogue_fwif_cmd_frag.regs` (`pvr_stream_defs.c` -> `pvr_stream_process()`), and the **firmware**
+programs the hardware from that struct at fixed offsets:
+
+```
+OFFSET_CHECK(struct rogue_fwif_frag_regs, isp_ctl,  52);
+OFFSET_CHECK(struct rogue_fwif_frag_regs, tpu,      56);
+OFFSET_CHECK(struct rogue_fwif_cmd_frag,  regs,     16);
+OFFSET_CHECK(struct rogue_fwif_cmd_frag,  flags,   464);
+OFFSET_CHECK(struct rogue_fwif_cmd_frag,  zls_stride, 468);
+```
+
+Every offset is checked at build time because the closed firmware reads the same struct at the same
+offsets. Inserting a field anywhere shifts them (the module refuses to build); appending one leaves it
+inert, because the firmware is what writes registers and it has no field - and therefore no register
+write - for a render origin. `rogue_fwif_transfer_regs` *does* carry `isp_render_origin`; the frag regs
+struct does not. That difference is the DDK 24.2 firmware's capability list, and the firmware is the
+same closed blob for the vendor and open drivers alike
+(`/lib/firmware/powervr/rogue_36.56.104.183_v1.fw`).
+
+So the honest status of 18.3's partial-render item: **not blocked on the programming guide (that was my
+earlier claim, and it was wrong), and not blocked on finding the register - blocked on firmware
+support for that register on the render path.** Both kernel edits were made, the ABI checks identified
+the problem, and both were reverted cleanly (files verified identical to their backups).
+
+What that leaves, in order of promise:
+
+1. **The vendor beats us here with the same firmware** (1.9x sensitivity against our 5.1x, 18.3), so
+   its advantage has to be in userspace. The most likely shape is a **render-target dataset sized to the
+   render area** rather than to the framebuffer: the dataset carries the region headers, MTA/MLIST and
+   TPC sizing, all currently derived from `rt_dataset->width/height` at framebuffer creation
+   (`pvr_arch_job_render.c:634`). That is a dataset-lifetime and per-area-variant change, not a register
+   write - a design job, and the next thing to try.
+2. **Ask upstream** for the register on the render path. The pvr maintainers are Imagination engineers
+   and own both the firmware and the DDK source, so this is a bug report they can act on; our half is
+   the measurement (0.37 ms + 0.556 us/tile against the vendor's 0.26 + 0.101).
+3. Everything in 19.1's list stays refuted: it is not allocation, not region-header re-initialisation
+   (`skip_init_hdrs` is already taken), not empty-tile processing, not load/store ops, not clocks.
