@@ -1,0 +1,46 @@
+PowerVR: add a userspace flag for a CPU-cacheable BO mapping
+
+The kernel already knows how to map a PowerVR BO cacheable (map_wc is cleared
+for PVR_BO_CPU_CACHED), but that flag is kernel-only (bit 63), so userspace
+cannot ask for it and every mapping ends up write-combined: CPU writes are
+fast (5 GB/s) but CPU reads are ~330 MB/s against ~2.6-6.6 GB/s for a
+cacheable mapping. The vendor driver offers both kinds of memory type.
+
+--- a/drivers/gpu/drm/imagination/pvr_gem.c
++++ b/drivers/gpu/drm/imagination/pvr_gem.c
+@@ -350,7 +350,12 @@
+ 		return ERR_CAST(shmem_obj);
+ 
+ 	shmem_obj->pages_mark_dirty_on_put = true;
+-	shmem_obj->map_wc = !(flags & PVR_BO_CPU_CACHED);
++	/* Write-combined unless the caller asked for a CPU-cacheable mapping, either
++	 * through the kernel-only flag or the userspace one (DRM_PVR_BO_CPU_CACHED).
++	 * Write-combined makes CPU writes fast and CPU reads very slow (330 MB/s
++	 * measured); cacheable is the other way round and is what a readback needs.
++	 */
++	shmem_obj->map_wc = !(flags & (PVR_BO_CPU_CACHED | DRM_PVR_BO_CPU_CACHED));
+ 	pvr_obj = shmem_gem_to_pvr_gem(shmem_obj);
+ 	pvr_obj->flags = flags;
+ 
+--- a/drivers/gpu/drm/imagination/pvr_gem.h
++++ b/drivers/gpu/drm/imagination/pvr_gem.h
+@@ -61,6 +61,19 @@
+ /* Bits 2..0 are defined in the UAPI. */
+ 
+ /* Other utilities. */
++/*
++ * The installed kernel headers this module builds against still describe bits
++ * 3..63 of the BO flags as reserved, so define the userspace flag here. Mesa's
++ * copy of the UAPI header carries the same definition; both sides must agree.
++ */
++#ifndef DRM_PVR_BO_CPU_CACHED
++#define DRM_PVR_BO_CPU_CACHED BIT_ULL(3)
++#undef DRM_PVR_BO_FLAGS_MASK
++#define DRM_PVR_BO_FLAGS_MASK \
++	(DRM_PVR_BO_BYPASS_DEVICE_CACHE | DRM_PVR_BO_PM_FW_PROTECT | \
++	 DRM_PVR_BO_ALLOW_CPU_USERSPACE_ACCESS | DRM_PVR_BO_CPU_CACHED)
++#endif
++
+ #define PVR_BO_UNDEFINED_MASK ~(PVR_BO_KERNEL_FLAGS_MASK | DRM_PVR_BO_FLAGS_MASK)
+ 
+ /*

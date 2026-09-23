@@ -1164,3 +1164,63 @@ desktop: X=1 kwin=1 plasmashell=1 ; idle fault rate after restore (10s): 0
 
 Where the same work previously added 128+ fault lines per run - and thousands when the restore failed
 and nothing re-modeset the display.
+
+## 18. Readback: the open driver had only a write-combined memory type
+
+Chasing the GL readback cost (§16.5, 6.5x the vendor) found a concrete driver gap.
+
+### The gap, measured
+
+`memtypes` (new tool) prints every memory type a driver offers and times the two halves of a
+readback. Vendor driver, 1 MB:
+
+| memory type | flags | gpu copy + fence | cpu read | cpu write |
+|---|---|---|---|---|
+| type 2 | DEVICE_LOCAL HOST_VISIBLE HOST_COHERENT | 0.385 ms | **2.827 ms (354 MB/s)** | 0.191 ms |
+| type 3 | DEVICE_LOCAL HOST_VISIBLE HOST_CACHED | 0.392 ms | **0.151 ms (6643 MB/s)** | 0.048 ms |
+
+Mesa's pvr offered exactly **one** type, `DEVICE_LOCAL | HOST_VISIBLE | HOST_COHERENT`, and it
+behaved like the vendor's slow one: 3.031 ms / 330 MB/s. The tell is that CPU *writes* are fast
+(0.19 ms) while reads are slow - that is a **write-combined** mapping.
+
+Where it comes from: the kernel maps PowerVR BOs write-combined unless asked otherwise
+(`drm_gem_shmem`'s `map_wc`), and `pvr_gem.c` clears it only for `PVR_BO_CPU_CACHED` - a
+**kernel-only flag at bit 63** that userspace cannot pass, because the UAPI reserves bits 3..63 and
+the ioctl validates against `DRM_PVR_BO_FLAGS_MASK`.
+
+### The fix
+
+* **Kernel/UAPI**: add `DRM_PVR_BO_CPU_CACHED` (`_BITULL(3)`, previously reserved) and accept it, so
+  userspace can ask for a cacheable mapping.
+* **Mesa**: a second memory type (`DEVICE_LOCAL | HOST_VISIBLE | HOST_CACHED`), a
+  `PVR_WINSYS_BO_FLAG_CPU_CACHED` winsys flag mapped to the new DRM flag, and the BO flags now
+  derived from the memory type's `propertyFlags` - which is exactly what the **FIXME in
+  `pvr_device.c` asks for** ("Need to determine the flags based on
+  `memoryTypes[...].propertyFlags`").
+
+Result with the same tool, open driver:
+
+| memory type | cpu read |
+|---|---|
+| type 0 (write-combined, as before) | 3.019 ms (331 MB/s) |
+| type 1 (new, cacheable) | **0.381 ms (2624 MB/s)** - 7.9x faster |
+
+The flag is deliberately advertised as `HOST_COHERENT` as well as `HOST_CACHED`, because that is
+what Mesa's zink looks for when classifying its cached staging heap (`vk_domain_from_heap`); with
+only `HOST_CACHED` zink silently falls back to the write-combined type and nothing improves.
+
+**Honest caveat**: the sound model for a cacheable, non-coherent mapping is cached-but-not-coherent
+plus working `vkFlush`/`vkInvalidateMappedMemoryRanges`, and pvr's are still no-ops. The type is
+therefore verified by pixel-exact tests rather than assumed: compute (1,048,576/1,048,576 elements),
+render (262,144/262,144 pixels) and 60 frames of zink GL (262,144/262,144 pixels each) all pass with
+the cached type in use. Implementing real flush/invalidate is the follow-up that would make it
+sound for mappings held across frames.
+
+### What it bought, and what it did not
+
+GL readback (`glReadPixels` of a 512x512 frame, zink): **5.5 ms -> 4.48 ms**, with submission still
+at 0.03 ms. That is an 18% improvement, not the 7.9x the memory numbers suggest - so most of the
+readback path's cost is not the CPU read of the staging buffer. Since the image-to-buffer copy was
+measured at only 1.4x the vendor's (§16.2), the remaining suspect is the synchronisation around the
+copy on the readback path, which is the next thing to measure (an image-to-host-buffer variant of
+`memtypes` would separate copy, sync and CPU read).
