@@ -229,32 +229,92 @@ mode "affects only the final rasterization of polygons".
 **Verdict: not a hardware wall in principle, but the obvious native mechanism does not work, so
 `fillModeNonSolid` moves from "cheapest" to "the index-expansion project".**
 
-## 5. `descriptorIndexing` + 11 sub-features - the hard one, and honestly unresolved
+## 5. `descriptorIndexing` - **not one question. It splits three ways.**
 
-This is where the probe did **not** reach a verdict, and it should be stated as such.
+The first version of this section said "unresolved", on the strength of my own reading. A deeper probe
+found that the honest answer is three different answers depending on which part you mean, and that one
+part is a **software gap, not a wall** - which is the single most useful result in this report.
 
-What is established from source:
+### 5.1 Hardware wall: native bindless, i.e. the texture unit fetching a descriptor from memory
 
-* The device has no descriptor/bindless capability token in its 46-feature list.
-* pvr's descriptor identity is a **compile-time packed immediate**: `pco_nir_tex.c:462` does
-  `pco_unpack_desc(tex->texture_index, &tex_desc_set, &tex_binding)` and earlier code asserts the
-  descriptor set is a scalar constant. Descriptors live in compiler-allocated "shared register" slots
-  that the CPU fills before a draw.
-* The ISA has an extended sampler form `I_SMP_EXTA` (`pco_map.py:1485`) whose operands include
-  `('drc', ('pco_ref_get_drc', SRC(0)))` - a **register** source into the sampler. But a `drc` is a
-  dependent-read counter from a small fixed enum (`_PCO_DRC_COUNT`), not an arbitrary descriptor index,
-  so this is suggestive rather than decisive.
+This part is real and it is proven by absence of capability, not by guesswork:
 
-What that means: the *buffer* half of descriptor indexing (UBO/SSBO/texel buffers) could in principle be
-lowered to a global memory load through an address fetched from a descriptor buffer - and the machinery
-for that now exists here, because buffer device address and global loads landed in this session. The
-*image* half needs the texture unit to accept a runtime-selected descriptor, and **that is the crux,
-and it is unresolved**.
+* The 46-feature capability list for this core has no bindless or indirect-descriptor bit.
+* `RGX_FEATURE_BINDLESS_IMAGE_AND_TEXTURE_STATE` exists **only in the Volcanic hwdefs** - it is not
+  defined for any `36.V` config and is absent from the Rogue family entirely.
+* The only use of that feature in the whole DDK is to gate a **memory-resident texture-state heap**:
+  `TextureStateIsPresent()` in `rgxinit.c:4035-4047` decides whether the firmware reserves
+  `RGX_TEXTURE_STATE_HEAP`. On Rogue the macro is never defined, so it returns false unconditionally.
+* Descriptors are not fetched from memory at all. They are **DMA'd by the PDS into the USC "common
+  store"** at compile-time-assigned register indices (`pvr_arch_pipeline.c:473-527`, destination and size
+  via the PDS `doffset`/`a0`/`bsize` fields against `COMMON_STORE`), and the shader names them by
+  register number.
 
-The strongest evidence is negative and circumstantial: **Imagination's own driver does not advertise it
-on this core**, with full hardware documentation in hand. That does not prove impossibility - they may
-simply not have implemented it for this generation - but it is the best available signal, and it means
-anyone attempting this is on their own.
+So there is no descriptor table in memory for the texture unit to index. **Bindless in the usual sense is
+closed on this part.**
+
+### 5.2 Not a wall: dynamically-uniform descriptor indexing - the compiler side already exists
+
+The ISA has a runtime register-index mechanism. `F_REGBANK` in `pco_isa.py:326-337` includes
+`idx0` and `idx1`, and the 11-bit source index field packs as `[pointee bank:3][immediate offset:8]`
+(`pco_map.h.py:73-141`), which is why `ROGUE_MAX_REG_OFFSET` is 255. Only three source slots can be
+index-register operands (`pco_internal.h:3009-3022`), and `O_SMP`'s operand map puts tex state in S0 and
+sampler state in S2 - exactly those slots.
+
+And upstream pco **already contains the whole lowering path**: `O_SMP_DYNIDX` / `O_SMP_WRT_DYNIDX`
+(`pco_ops.py:546-554`) are consumed by `legalize_smp_dynidx()` (`pco_legalize.c:338-453`), which computes
+`elem * stride` into an index register and attaches it to the tex/sampler state ref. The generic
+non-sampler version is `legalize_dynidx()` (`:248-330`).
+
+Three independent idioms in the driver agree that a hardware register number is
+`IDX + immediate offset` (inferred - no ISA prose states it, but the three are mutually consistent).
+
+**What is actually missing is Vulkan plumbing and budget, not compiler work:**
+
+| missing piece | evidence |
+|---|---|
+| the master `.descriptorIndexing` and everything at the 1.2 level | `pvr_physical_device.c:342` and `:346-362` |
+| runtime descriptor arrays | `pvr_descriptor_set.c:200` - `if (!binding->descriptorCount) continue;` |
+| update-after-bind / partially-bound / variable count | binding flags are stored (`:222`) and never interpreted; every update-after-bind limit is hard 0 (`pvr_physical_device.c:921-935`) |
+| descriptor budget for a resident heap | 1024/1024/2048 shared registers per stage (VS/FS/CS), 4 dwords per combined image+sampler, so **~256 image descriptors is the plausible ceiling, not 64k** |
+
+**And a correction to how this was framed:** the driver is *not* missing uniform dynamic indexing. The
+core-1.0 features `shaderUniformBufferArrayDynamicIndexing`, `shaderSampledImageArrayDynamicIndexing`,
+`shaderStorageBufferArrayDynamicIndexing`, `shaderStorageImageArrayDynamicIndexing` are **already
+advertised** (`pvr_physical_device.c:289-292`). What is false is the 1.2-level set. So the uniform path
+may already work today and has simply never been tested - which is the top lead below.
+
+### 5.3 Undetermined: non-uniform (per-lane divergent) indexing
+
+One `smp` instruction carries exactly one texture descriptor, so expressing per-lane divergent image
+descriptors needs either divergent `IDX0`/`IDX1` values that the TPU can service, or a compiler
+emulation that makes the index dynamically uniform per iteration. **No source in either tree answers the
+divergence question**, and there is no `nir_lower_non_uniform_access`-style pass in the driver. This is
+the one thing that separates "non-uniform is a wall" from "non-uniform needs emulation".
+
+### 5.4 The buffer half is emulatable
+
+A UBO/SSBO descriptor is not a texture-unit descriptor at all - it is a 4-dword
+`{u64 addr; u32 size; u32 offset;}` in the shared file, read as registers and turned into a 64-bit
+address for an ordinary global load (`pco_trans_nir.c:1317-1388`). Since buffer device address and
+`nir_address_format_2x32bit_global` now work here, a genuinely per-lane dynamic lookup could be built by
+putting the descriptor table in memory and giving the shader its address - and there is precedent for
+delivering a 64-bit GPU address into a shader per draw (`PVR_BUFFER_TYPE_SPILL_INFO` →
+`pco_trans_nir.c:1793-1834`). The missing piece is a shader-visible handle on the descriptor-set buffer,
+which today is consumed by the PDS and never seen by the shader.
+
+### 5.5 Ranked leads
+
+1. **Prove the uniform path on hardware.** Index a descriptor array with a dynamically *uniform* index
+   and see whether the TPU honours an `idx`-banked state operand. The compiler side exists; nobody has
+   ever shown the hardware side works. One test decides whether the image/texel half is only plumbing.
+2. **Settle divergence with a microbenchmark**: same array, index = `gl_SubgroupInvocationID & 1`, two
+   descriptors, read back and compare. This is the single unknown that separates wall from emulation.
+3. **Buffer half via descriptor-in-memory** (§5.4) for genuine per-lane dynamic UBO/SSBO indexing.
+4. **Vulkan plumbing** (§5.2) - definitely software, independent of 1-3.
+5. Only if 1 and 2 succeed, implement non-uniform emulation and advertise the `*NonUniformIndexing`
+   features with `*Native = false` - which is already the posture the driver takes
+   (`pvr_physical_device.c:910-914`).
 
 ## 6. The lead that is actually worth chasing first: framebuffer compression
 
@@ -295,19 +355,21 @@ checked.
 | `geometryShader` | **hardware-absent**; emulation proven and priced at ~80x | the DXVK branch exists; the cost is per-draw and could be amortised |
 | `multiViewport` | **hardware path exists and the CSB emission is already generalised**; unproven on silicon | `view_port_count` (4 bits, up to 16), `vpt_tgt_pres`, `PPP_CTRL.vpt_scissor`, indexed scissor array; blockers are `PVR_MAX_VIEWPORTS 1`, two asserts, and `shaderOutputViewportIndex = false` |
 | `fillModeNonSolid` | hardware object types 5/6 exist but **draw nothing** - tried, measured, reverted | index expansion is the remaining route; the native path is ruled out |
-| `descriptorIndexing` (+11) | **unresolved** | buffer half plausibly lowerable to global loads; image half needs a runtime descriptor fetch that is not established |
+| `descriptorIndexing` (+11) | **splits three ways**: native bindless is a **hardware wall**; uniform indexing is a **software gap** whose compiler path already exists; non-uniform is **undetermined** | prove the uniform path on hardware first - one test decides whether the image half is only plumbing |
 | *framebuffer compression* | **not asked about, and the highest-value lead** | hardware present, device info knows it, `cr.xml` models it, driver never uses it, and it sits on the bottleneck |
 
 Ordered by what to try first, given the corrections and the one experiment that was run:
-**`multiViewport`** (hardware path identified, CSB emission already generalised, but one unproven
-assumption about the silicon and a hard blocker in `shaderOutputViewportIndex`), then `geometryShader`
-only if the 80x can be amortised, then `fillModeNonSolid` as the index-expansion project;
-`tessellationShader` is closed; `descriptorIndexing` needs an experiment before it deserves a plan; and
-framebuffer compression remains the only item here with a user-visible payoff.
+**`descriptorIndexing`'s uniform half** (the compiler path already exists and the core-1.0 features are
+already advertised - one test decides whether the rest is plumbing), then **`multiViewport`** (hardware
+path identified, CSB emission already generalised, but one unproven assumption about the silicon and a
+hard blocker in `shaderOutputViewportIndex`), then `geometryShader` only if the 80x can be amortised,
+then `fillModeNonSolid` as the index-expansion project; `tessellationShader` is closed; and framebuffer
+compression remains the only item here with a user-visible payoff.
 
-Three of the five now carry a measured or proven answer rather than an argument: tessellation is
-provably absent, geometry-shader emulation is priced at 80x, and the fillModeNonSolid object type was
-tried and draws nothing. That is a better place to stop than a list of five maybes.
+Four of the five now carry a measured or proven answer rather than an argument: tessellation is provably
+absent, geometry-shader emulation is priced at 80x, the fillModeNonSolid object type was tried and draws
+nothing, and descriptor indexing turns out to be one wall, one software gap and one open question rather
+than one unknown. That is a better place to stop than a list of five maybes.
 
 The three artefacts worth keeping from this: the PVR_strip layer and the GS branch are prior work that
 still stands; `glceiling.sh` is new and shows the GL ceiling is a device-level wall rather than a blob
@@ -315,14 +377,22 @@ one; and the compression lead is the only one here that would change what a user
 
 ## Appendix: method and its limits
 
-Sections 1, 2 and 6, plus the prior-work section, come from my own probe. Sections 3 and 4 were
-rewritten from a deeper delegated probe after the first version of both was wrong - in the
+Sections 1, 2 and 6, plus the prior-work section, come from my own probe. Sections 3, 4 and 5 were
+rewritten from deeper delegated probes after the first version of each was inadequate - in the
 `fillModeNonSolid` case wrong because the negative claim ("no fill/polygon/wireframe field exists") was
-**asserted rather than grepped**, which is the mistake worth remembering here: a negative grep result is
-only evidence if the grep was actually run, and mine had not been.
+**asserted rather than grepped**, and in the `descriptorIndexing` case because "unresolved" was a
+give-up rather than an answer. Both are worth remembering: a negative grep result is only evidence if
+the grep was actually run, and "I could not determine this" is worth saying only after the question has
+been split into the parts that *are* determinable.
 
-What is still open and would need silicon rather than source: whether this core implements
-`view_port_count > 1` and object types 5/6 at all; the width and encoding of the per-vertex viewport ID;
-whether `PPP_CTRL.vpt_scissor` inserts viewport transforms as well as scissor/depth-bias; and whether the
-texture unit can take a runtime-selected descriptor. The vendor's user-space capability table would
-answer several of these and is a stripped binary, so it cannot be read.
+The descriptor probe also surfaced the correction that the core-1.0 uniform dynamic-indexing features are
+**already advertised** - so the framing "the driver has none of descriptor indexing" was wrong in the
+same direction as the fill-mode error: a claim about absence that had not been checked against the
+feature table's actual contents.
+
+What is still open and would need silicon rather than source: whether this core honours an `idx`-banked
+state operand at all; whether `IDX0`/`IDX1` may hold divergent per-lane values; whether this core
+implements `view_port_count > 1` and object types 5/6; the width and encoding of the per-vertex viewport
+ID; and whether `PPP_CTRL.vpt_scissor` inserts viewport transforms as well as scissor/depth-bias. The
+vendor's user-space capability table would answer several of these and is a stripped binary, so it cannot
+be read.
