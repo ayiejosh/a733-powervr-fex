@@ -783,3 +783,32 @@ display was simultaneously scanning out. It passed, then failed, then passed aga
 not a driver result, it is a race in the test, so the verification moved to a separate submission
 after the loop stops, plus a steady-state case whose expected value is unambiguous. Two runs of a
 flaky check are not evidence; the fix was to stop racing rather than to re-run until it agreed.
+
+### §12 addendum: two harness bugs found, and where zink over pvr really stops
+
+Chasing the GL failure further produced two genuine fixes - to **our** side, not to Mesa:
+
+1. **`MESA_LOADER_DRIVER_OVERRIDE` is ignored for root.** `loader_get_driver_for_fd()` honours
+   the override only `if (__normal_user())`. The swap script runs as root, so zink was never
+   selected: the loader fell back to the kernel's DRM name, `powervr`, found no gallium driver for
+   it, and `driCreateNewScreen3()` returned NULL with no message at all. The GL phase now runs as
+   the desktop user (`runuser -u radxa`), who is in the `render` group. This is the kind of thing
+   that looks exactly like a driver bug and is not one.
+2. **The GBM backend search path is baked in at configure time.** Loading `dri_gbm.so` failed with
+   `cannot open shared object file: No such file or directory (search paths
+   /usr/local/lib/aarch64-linux-gnu/gbm)` because the build was configured with the default prefix
+   and only installed under `DESTDIR`. `GBM_BACKENDS_PATH` now points at the real location. A
+   proper install to the configured prefix would make both this and `LIBGL_DRIVERS_PATH`
+   unnecessary - that is the cleaner fix and the next thing to do here.
+
+With the override actually applying and the backend found, the GBM path gets further than the
+surfaceless one: `gbm_create_device()` reaches the zink driver and pvr's Vulkan device is created
+twice (its conformance warning appears once per device creation), then screen creation still fails.
+
+My first theory was that zink needs `VK_EXT_image_drm_format_modifier` to import the DRM fd
+(Mesa's pvr advertises `KHR_external_memory_fd` and `EXT_external_memory_dma_buf` but not the
+modifier extension). Reading `zink_screen.c:3593` does not support that: only the dmabuf-modifier
+*query* callbacks are gated on it, not fd import. So that theory is recorded here as a dead end.
+
+The next concrete step is instrumentation, not another guess: zink creates a pvr device and then
+fails without logging anything, so the failure is between device selection and screen completion.

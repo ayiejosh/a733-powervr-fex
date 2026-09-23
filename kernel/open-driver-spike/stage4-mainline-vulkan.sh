@@ -188,8 +188,15 @@ fi
 GL_PREFIX=/home/radxa/mesa/inst-gl/usr/local/lib/aarch64-linux-gnu
 if [ -x "$BENCH/glheadless" ] && [ -d /home/radxa/mesa/gldri ]; then
     say "--- zink GL (Mesa 25.3) over Mesa pvr + mainline driver ---"
-    ( cd "$BENCH" && LD_LIBRARY_PATH="$GL_PREFIX" LIBGL_DRIVERS_PATH=/home/radxa/mesa/gldri \
-        MESA_LOADER_DRIVER_OVERRIDE=zink EGL_PLATFORM=device \
+    # NB: MESA_LOADER_DRIVER_OVERRIDE is only honoured for non-root users
+    # (loader.c: __normal_user()), and running as root made the loader fall back to
+    # the kernel driver name "powervr", for which there is no gallium driver - the
+    # screen then failed to be created with no message. So run this as the desktop
+    # user, who is in the render group.
+    ( cd "$BENCH" && runuser -u radxa -- env HOME=/home/radxa \
+        LD_LIBRARY_PATH="$GL_PREFIX" LIBGL_DRIVERS_PATH=/home/radxa/mesa/gldri \
+        GBM_BACKENDS_PATH="$GL_PREFIX/gbm" \
+        MESA_LOADER_DRIVER_OVERRIDE=zink EGL_PLATFORM=gbm \
         DRM_RENDER_NODE=/dev/dri/renderD128 \
         EGL_LOG_LEVEL=debug LIBGL_DEBUG=verbose \
         VK_ICD_FILENAMES="$MESA_ICD" VK_DRIVER_FILES="$MESA_ICD" \

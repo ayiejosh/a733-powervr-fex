@@ -13,13 +13,17 @@
  *
  * Build: see build.sh   Run: EGL_PLATFORM=surfaceless ./glheadless [size] [iters]
  */
+#include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 #include <math.h>
 #include <time.h>
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
+#include <gbm.h>
 #if defined(__has_include)
 #  if __has_include(<GLES3/gl3.h>)
 #    include <GLES3/gl3.h>   /* superset of GLES2; provides GL_RGBA8 */
@@ -127,7 +131,24 @@ int main(int argc, char **argv)
      * which is the more robust path when several drivers are installed. */
     const char *want = getenv("EGL_PLATFORM");
     EGLDisplay dpy = EGL_NO_DISPLAY;
-    if (want && strcmp(want, "device") == 0) {
+    if (want && strcmp(want, "gbm") == 0) {
+        /* The GBM platform loads its gallium driver through LIBGL_DRIVERS_PATH,
+         * which is a different code path from the DRI2 screen setup. Useful when
+         * the DRI2 path cannot find a driver for the kernel's DRM name. */
+        const char *node = getenv("DRM_RENDER_NODE");
+        if (!node)
+            DIE("EGL_PLATFORM=gbm needs DRM_RENDER_NODE");
+        int fd = open(node, O_RDWR | O_CLOEXEC);
+        if (fd < 0)
+            DIE("cannot open %s: %s", node, strerror(errno));
+        struct gbm_device *gbm = gbm_create_device(fd);
+        if (!gbm)
+            DIE("gbm_create_device(%s) failed", node);
+        printf("gbm device created on %s\n", node);
+        PFNEGLGETPLATFORMDISPLAYEXTPROC get_pd =
+            (PFNEGLGETPLATFORMDISPLAYEXTPROC)eglGetProcAddress("eglGetPlatformDisplayEXT");
+        dpy = get_pd(EGL_PLATFORM_GBM_KHR, gbm, NULL);
+    } else if (want && strcmp(want, "device") == 0) {
         PFNEGLQUERYDEVICESEXTPROC query_devices =
             (PFNEGLQUERYDEVICESEXTPROC)eglGetProcAddress("eglQueryDevicesEXT");
         PFNEGLQUERYDEVICESTRINGEXTPROC query_device_string =

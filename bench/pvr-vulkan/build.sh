@@ -67,7 +67,7 @@ $CC $CFLAGS -I/usr/include/libdrm -o pvranimate pvranimate.c -lvulkan -ldrm -lm 
 
 # glheadless links EGL + GLES2; the Mesa build that provides zink is separate
 # (mesa/build-gl) and is selected at run time with LD_LIBRARY_PATH.
-$CC $CFLAGS -o glheadless glheadless.c -lEGL -lGLESv2 -lm || \
-  $CC $CFLAGS -o glheadless glheadless.c -l:libEGL.so.1 -l:libGLESv2.so.2 -lm
+$CC $CFLAGS -o glheadless glheadless.c -lEGL -lGLESv2 -lgbm -lm || \
+  $CC $CFLAGS -o glheadless glheadless.c -l:libEGL.so.1 -l:libGLESv2.so.2 -l:libgbm.so.1 -lm
 
 echo "built: $(pwd)/vktest, $(pwd)/vkrender and $(pwd)/glheadless"
