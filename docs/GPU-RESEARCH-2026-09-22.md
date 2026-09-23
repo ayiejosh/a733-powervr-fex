@@ -1364,3 +1364,49 @@ region-header base by the tile origin so the smaller grid still indexes correctl
 
 Worth doing because it is exactly a compositor's workload - a partial render into a full-size target -
 and because the same grid also feeds the clear path, so the win applies to clears as well.
+
+## 19. The draw gap quantified: 5.5x the per-tile cost, nothing else
+
+A size sweep of the same render-only workload (one full-screen triangle, 16x16 tiles) fits a simple
+model with two terms - a fixed floor and a per-tile cost - and the whole gap is in the second term:
+
+| size | tiles | vendor GPU | open GPU | ratio |
+|---|---|---|---|---|
+| 256x256 | 256 | 0.284 ms | 0.516 ms | 1.8x |
+| 512x512 | 1,024 | 0.360 ms | 0.903 ms | 2.5x |
+| 1024x1024 | 4,096 | 0.645 ms | 2.570 ms | 4.0x |
+| 2048x2048 | 16,384 | 1.914 ms | 9.479 ms | 5.0x |
+
+```
+open   ~ 0.37 ms + 0.556 us/tile      (predicts 0.94 / 2.65 / 9.5 ms - all match)
+vendor ~ 0.26 ms + 0.101 us/tile      (predicts 0.36 / 0.67 / 1.9 ms - all match)
+```
+
+The fixed cost is comparable (0.37 against 0.26 ms); the per-16x16-tile cost is **5.5x**. That single
+number explains everything else measured: the growing ratio with resolution (the ratio is
+`(0.37 + 0.556n) / (0.26 + 0.101n)`, so it climbs towards 5.5x as n grows), the 4K animation gap
+(32,400 tiles -> ~18 ms of tile work against the vendor's ~3.3 ms), and why small frames look
+better than large ones.
+
+The driver's own tile trace confirms the grid (`PVR_TILE_TRACE=1`):
+
+```
+[tile] rt 1024x1024 samples=1 -> tiles 64x64 mtiles 4x4 tiles_per_mtile 16x16 x_tile_max=63 y_tile_max=63
+[tile] features: simple_internal_parameter_format=1 gpu_multicore_support=1 process_empty_tiles=1 -> skip_init_hdrs=1
+```
+
+### Hypotheses tested and rejected on the way here
+
+* **per-frame BO allocation** - driver counters say 2 BOs / 132 KiB per frame, not a surface-sized
+  buffer (§18.3).
+* **region-header re-initialisation** - the device takes the `skip_init_hdrs` path.
+* **empty-tile clearing** (`process_empty_tiles`) - setting `LOAD_OP_DONT_CARE` in a clean
+  render-only run changes nothing: 2.594 ms against 2.635 ms (my earlier load-op test was polluted
+  by the copy stage, which is why it read as "no difference" for the wrong reason).
+* **the attachment store** - `STORE_OP_DONT_CARE` changes nothing (2.547 against 2.506 ms).
+* **render area / coverage / format / clock / runtime PM** - all measured in §16.3 and §18.2.
+
+What is left is the per-tile processing itself: the open driver spends 5.5x what the vendor spends
+for each 16x16 tile it walks, at the same clock. That is inside Mesa's pvr tile pipeline and its
+control streams, and it is the single largest remaining performance item on this stack - bigger than
+the render-area sizing in §18.3, which only affects partial renders.

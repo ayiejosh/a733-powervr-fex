@@ -26,6 +26,99 @@ index ccf6c21..cd4724d 100644
  
  /**
   * struct drm_pvr_ioctl_create_bo_args - Arguments for %DRM_IOCTL_PVR_CREATE_BO
+diff --git a/src/imagination/vulkan/pvr_arch_cmd_buffer.c b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
+index f21b320..3692b56 100644
+--- a/src/imagination/vulkan/pvr_arch_cmd_buffer.c
++++ b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
+@@ -9939,8 +9939,28 @@ void PVR_PER_ARCH(CmdWriteTimestamp2)(VkCommandBuffer commandBuffer,
+    UNREACHABLE("Timestamp queries are not supported.");
+ }
+ 
++extern uint64_t pvr_alloc_count, pvr_alloc_bytes;
++
+ VkResult PVR_PER_ARCH(EndCommandBuffer)(VkCommandBuffer commandBuffer)
+ {
++   /* Report what this command buffer allocated, for PVR_ALLOC_TRACE=1. A driver that
++    * allocates buffers per command buffer pays for them every frame. */
++   {
++      static uint64_t last_count, last_bytes;
++      static int last_frames;
++      extern uint64_t pvr_alloc_count, pvr_alloc_bytes;
++
++      if (getenv("PVR_ALLOC_TRACE")) {
++         uint64_t dcount = pvr_alloc_count - last_count;
++         uint64_t dbytes = pvr_alloc_bytes - last_bytes;
++         last_count = pvr_alloc_count;
++         last_bytes = pvr_alloc_bytes;
++         if (++last_frames <= 5 || last_frames % 50 == 0)
++            fprintf(stderr, "[alloc] command buffer %d: %llu bo(s), %llu KiB\n", last_frames,
++                    (unsigned long long)dcount, (unsigned long long)(dbytes / 1024));
++      }
++   }
++
+    VK_FROM_HANDLE(pvr_cmd_buffer, cmd_buffer, commandBuffer);
+    struct pvr_cmd_buffer_state *state = &cmd_buffer->state;
+    VkResult result;
+diff --git a/src/imagination/vulkan/pvr_arch_job_render.c b/src/imagination/vulkan/pvr_arch_job_render.c
+index bf96f55..025a05b 100644
+--- a/src/imagination/vulkan/pvr_arch_job_render.c
++++ b/src/imagination/vulkan/pvr_arch_job_render.c
+@@ -1140,6 +1140,29 @@ static void pvr_frag_state_stream_init(struct pvr_render_ctx *ctx,
+                                rt_dataset->width,
+                                rt_dataset->height,
+                                rt_dataset->samples);
++   /* PVR_TILE_TRACE=1: what tiling does this job actually use, and does it take the
++    * skip_init_hdrs path? One line, so the numbers can be checked against the
++    * timing rather than inferred. */
++   if (getenv("PVR_TILE_TRACE")) {
++      static bool traced;
++      if (!traced) {
++         traced = true;
++         fprintf(stderr,
++                 "[tile] rt %ux%u samples=%u -> tiles %ux%u mtiles %ux%u tiles_per_mtile "
++                 "%ux%u x_tile_max=%u y_tile_max=%u\n",
++                 rt_dataset->width, rt_dataset->height, rt_dataset->samples,
++                 tiling_info.num_tiles_x, tiling_info.num_tiles_y, tiling_info.mtiles_x,
++                 tiling_info.mtiles_y, tiling_info.tiles_per_mtile_x,
++                 tiling_info.tiles_per_mtile_y, tiling_info.x_tile_max, tiling_info.y_tile_max);
++         fprintf(stderr,
++                 "[tile] features: simple_internal_parameter_format=%d gpu_multicore_support=%d "
++                 "process_empty_tiles=%d -> skip_init_hdrs=%d\n",
++                 PVR_HAS_FEATURE(dev_info, simple_internal_parameter_format),
++                 PVR_HAS_FEATURE(dev_info, gpu_multicore_support), job->process_empty_tiles,
++                 (PVR_HAS_FEATURE(dev_info, gpu_multicore_support) &&
++                  PVR_HAS_FEATURE(dev_info, simple_internal_parameter_format)));
++      }
++   }
+    pvr_csb_pack (stream_ptr, CR_ISP_CTL, value) {
+       value.sample_pos = true;
+       value.process_empty_tiles = job->process_empty_tiles;
+diff --git a/src/imagination/vulkan/pvr_bo.c b/src/imagination/vulkan/pvr_bo.c
+index 629c4f8..1f0537f 100644
+--- a/src/imagination/vulkan/pvr_bo.c
++++ b/src/imagination/vulkan/pvr_bo.c
+@@ -338,6 +338,11 @@ static inline void pvr_bo_free_bo(const struct pvr_device *const device,
+  *
+  * \sa #pvr_bo_free()
+  */
++/* Allocation counters, for finding per-frame work. Enabled with PVR_ALLOC_TRACE=1:
++ * a compositor or game records a fresh command buffer per frame, so any buffer the
++ * driver creates per command buffer is per-frame cost. */
++uint64_t pvr_alloc_count, pvr_alloc_bytes;
++
+ VkResult pvr_bo_alloc(struct pvr_device *device,
+                       struct pvr_winsys_heap *heap,
+                       uint64_t size,
+@@ -356,6 +361,9 @@ VkResult pvr_bo_alloc(struct pvr_device *device,
+ 
+    pvr_bo->ref_count = 1;
+ 
++   pvr_alloc_count++;
++   pvr_alloc_bytes += size;
++
+    result = device->ws->ops->buffer_create(device->ws,
+                                            size,
+                                            alignment,
 diff --git a/src/imagination/vulkan/pvr_device.c b/src/imagination/vulkan/pvr_device.c
 index 57d843b..558a29e 100644
 --- a/src/imagination/vulkan/pvr_device.c
