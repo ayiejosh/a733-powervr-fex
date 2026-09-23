@@ -502,7 +502,7 @@ index 6dde9d2..922bfd8 100644
        printf("Unsupported alu instruction: \"");
        nir_print_instr(&alu->instr, stdout);
 diff --git a/src/imagination/vulkan/pvr_arch_cmd_buffer.c b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
-index f21b320..7671303 100644
+index f21b320..164aeb2 100644
 --- a/src/imagination/vulkan/pvr_arch_cmd_buffer.c
 +++ b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
 @@ -6595,6 +6595,17 @@ static void pvr_setup_output_select(struct pvr_cmd_buffer *const cmd_buffer)
@@ -523,7 +523,27 @@ index f21b320..7671303 100644
        state.vtxsize = vs_data->vs.vtxouts;
        state.psprite_size_pres = has_point_size;
        state.vpt_tgt_pres = has_viewport;
-@@ -9939,8 +9950,28 @@ void PVR_PER_ARCH(CmdWriteTimestamp2)(VkCommandBuffer commandBuffer,
+@@ -6697,6 +6708,19 @@ pvr_setup_isp_faces_and_control(struct pvr_cmd_buffer *const cmd_buffer,
+             : NULL;
+    }
+ 
++   /* VkPolygonMode is deliberately not consulted here. The hardware does have
++    * object types for it - ppp.xml's OBJTYPE enum has LINE_FILLED_TRIANGLE=5 and
++    * POINT_FILLED_TRIANGLE=6, and TA_STATE_ISPA.pointlinewidth is documented as
++    * "the width/pitch used for rendering lines, point-filled and line-filled
++    * triangles" - but selecting them for a triangle topology produces no
++    * fragments at all on this part (measured: 0 of 262144 pixels written, with
++    * pointlinewidth set to a valid non-zero 15, while the same draw in
++    * VK_POLYGON_MODE_FILL is 262144/262144 correct). The frame also goes from
++    * 1.96 ms to 31.5 ms, so the hardware does take a different path and
++    * rasterises nothing visible. Whatever else LINE_FILLED_TRIANGLE needs is not
++    * in the published definitions. See docs/GPU-FEATURE-FEASIBILITY-2026-09-24.md;
++    * fillModeNonSolid stays unadvertised.
++    */
+    const enum ROGUE_TA_OBJTYPE obj_type =
+       pvr_ta_objtype(dynamic_state->ia.primitive_topology);
+ 
+@@ -9939,8 +9963,28 @@ void PVR_PER_ARCH(CmdWriteTimestamp2)(VkCommandBuffer commandBuffer,
     UNREACHABLE("Timestamp queries are not supported.");
  }
  
@@ -941,7 +961,7 @@ index 57d843b..8c5f8be 100644
                         VkBuffer _buffer,
                         const VkAllocationCallbacks *pAllocator)
 diff --git a/src/imagination/vulkan/pvr_physical_device.c b/src/imagination/vulkan/pvr_physical_device.c
-index 860f43d..d612c17 100644
+index 860f43d..d3da133 100644
 --- a/src/imagination/vulkan/pvr_physical_device.c
 +++ b/src/imagination/vulkan/pvr_physical_device.c
 @@ -123,9 +123,20 @@ void pvr_physical_device_free_pipeline_cache(
@@ -974,16 +994,22 @@ index 860f43d..d612c17 100644
        .EXT_color_write_enable = true,
        .EXT_custom_border_color = true,
        .EXT_debug_marker = true,
-@@ -252,7 +264,7 @@ static void pvr_physical_device_get_supported_features(
+@@ -252,8 +264,13 @@ static void pvr_physical_device_get_supported_features(
        .logicOp = true,
        .multiDrawIndirect = true,
        .drawIndirectFirstInstance = true,
 -      .depthClamp = false,
 +      .depthClamp = true,
        .depthBiasClamp = true,
++      /* Not advertised: the hardware has LINE_FILLED_TRIANGLE and
++       * POINT_FILLED_TRIANGLE object types, but selecting them for a triangle
++       * topology draws nothing at all on this part - 0 of 262144 pixels, with the
++       * line width set to a valid value, while FILL is 262144/262144 correct. See
++       * docs/GPU-FEATURE-FEASIBILITY-2026-09-24.md. */
        .fillModeNonSolid = false,
        .depthBounds = false,
-@@ -266,7 +278,7 @@ static void pvr_physical_device_get_supported_features(
+       .wideLines = true,
+@@ -266,7 +283,7 @@ static void pvr_physical_device_get_supported_features(
        .textureCompressionBC = false,
        .occlusionQueryPrecise = false,
        .pipelineStatisticsQuery = false,
@@ -992,7 +1018,7 @@ index 860f43d..d612c17 100644
        .fragmentStoresAndAtomics = true,
        .shaderTessellationAndGeometryPointSize = false,
        .shaderImageGatherExtended = true,
-@@ -298,10 +310,18 @@ static void pvr_physical_device_get_supported_features(
+@@ -298,10 +315,18 @@ static void pvr_physical_device_get_supported_features(
        .inheritedQueries = false,
  
        /* Vulkan 1.1 */
@@ -1015,7 +1041,7 @@ index 860f43d..d612c17 100644
        .variablePointers = false,
        .protectedMemory = false,
        .samplerYcbcrConversion = true,
-@@ -309,13 +329,16 @@ static void pvr_physical_device_get_supported_features(
+@@ -309,13 +334,16 @@ static void pvr_physical_device_get_supported_features(
        /* Vulkan 1.2 */
        .samplerMirrorClampToEdge = true,
        .drawIndirectCount = false,
@@ -1037,7 +1063,7 @@ index 860f43d..d612c17 100644
        .descriptorIndexing = false,
        .shaderInputAttachmentArrayDynamicIndexing = true,
        .shaderUniformTexelBufferArrayDynamicIndexing = true,
-@@ -488,8 +511,22 @@ static void pvr_physical_device_get_supported_features(
+@@ -488,8 +516,22 @@ static void pvr_physical_device_get_supported_features(
        /* Vulkan 1.3 / VK_EXT_texel_buffer_alignment */
        .texelBufferAlignment = true,
  
@@ -1062,7 +1088,7 @@ index 860f43d..d612c17 100644
        .bufferDeviceAddressCaptureReplay = false,
        .bufferDeviceAddressMultiDevice = false,
  
-@@ -535,8 +572,33 @@ static void pvr_physical_device_get_supported_features(
+@@ -535,8 +577,33 @@ static void pvr_physical_device_get_supported_features(
        .workgroupMemoryExplicitLayout8BitAccess = false,
        .workgroupMemoryExplicitLayout16BitAccess = false,
  
@@ -1098,7 +1124,7 @@ index 860f43d..d612c17 100644
  
        /* VK_EXT_border_color_swizzle */
        .borderColorSwizzle = true,
-@@ -580,7 +642,18 @@ static uint32_t get_api_version(void)
+@@ -580,7 +647,18 @@ static uint32_t get_api_version(void)
     if (version_override)
        return version_override;
  
@@ -1118,7 +1144,7 @@ index 860f43d..d612c17 100644
  }
  
  static unsigned
-@@ -601,7 +674,11 @@ static bool pvr_physical_device_get_properties(
+@@ -601,7 +679,11 @@ static bool pvr_physical_device_get_properties(
     UNUSED const uint32_t sub_pixel_precision =
        PVR_HAS_FEATURE(dev_info, simple_internal_parameter_format) ? 4U : 8U;
  
@@ -1131,7 +1157,7 @@ index 860f43d..d612c17 100644
  
     UNUSED const uint32_t max_sample_bits = ((max_multisample << 1) - 1);
  
-@@ -652,10 +729,10 @@ static bool pvr_physical_device_get_properties(
+@@ -652,10 +734,10 @@ static bool pvr_physical_device_get_properties(
        .deviceType = VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU,
        /* deviceName and pipelineCacheUUID are filled below .*/
  
@@ -1145,7 +1171,7 @@ index 860f43d..d612c17 100644
        .maxImageArrayLayers = rogue_get_render_size_max_z(dev_info),
        .maxTexelBufferElements = 64U * 1024U,
        .maxUniformBufferRange = 16U * 1024U,
-@@ -739,8 +816,8 @@ static bool pvr_physical_device_get_properties(
+@@ -739,8 +821,8 @@ static bool pvr_physical_device_get_properties(
        .maxSamplerAnisotropy = 16.0f, /* Requires samplerAnisotropy */
        .maxViewports = 1U, /* Requires multiViewport */
  
@@ -1156,7 +1182,7 @@ index 860f43d..d612c17 100644
        .viewportBoundsRange[0] = -8192.0f,
        .viewportBoundsRange[1] = 8191.0f,
  
-@@ -762,20 +839,32 @@ static bool pvr_physical_device_get_properties(
+@@ -762,20 +844,32 @@ static bool pvr_physical_device_get_properties(
        .maxInterpolationOffset = 0.5f,
        .subPixelInterpolationOffsetBits = 4U,
  
@@ -1200,7 +1226,7 @@ index 860f43d..d612c17 100644
        .storageImageSampleCounts = VK_SAMPLE_COUNT_1_BIT, /* Requires shaderStorageImageMultisample */
        .maxSampleMaskWords = 1U,
        .timestampComputeAndGraphics = false,
-@@ -1222,13 +1311,54 @@ VkResult pvr_physical_device_init(struct pvr_physical_device *pdevice,
+@@ -1222,13 +1316,54 @@ VkResult pvr_physical_device_init(struct pvr_physical_device *pdevice,
     pdevice->memory.memoryHeaps[0].size = pvr_compute_heap_size(instance);
     pdevice->memory.memoryHeaps[0].flags = VK_MEMORY_HEAP_DEVICE_LOCAL_BIT;
  

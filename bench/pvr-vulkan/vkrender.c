@@ -101,7 +101,25 @@ int main(int argc, char **argv)
     const int depth_clamp = dc_env ? atoi(dc_env) : -1;
     const char *vssbo_env = getenv("VSSBO");
     const bool vs_store = vssbo_env && *vssbo_env;
-    const bool use_feat2 = io16 || depth_clamp >= 0 || vs_store;
+
+    /* POLYGONMODE=line|point draws the same triangle through the non-solid fill
+     * modes. The result is counted rather than pattern-matched: a wireframe of
+     * the full-screen triangle touches a few hundred pixels along its edges and a
+     * point fill touches three, so "a small non-zero fraction of the target" is
+     * the check, and it can only pass if the mode actually changed rasterisation.
+     * 0 = line, 1 = point, -1 = untouched (fill). */
+    const char *pm_env = getenv("POLYGONMODE");
+    int polygon_mode = -1;
+    if (pm_env) {
+        if (!strcmp(pm_env, "line"))
+            polygon_mode = 0;
+        else if (!strcmp(pm_env, "point"))
+            polygon_mode = 1;
+        else
+            DIE("POLYGONMODE must be line or point");
+    }
+
+    const bool use_feat2 = io16 || depth_clamp >= 0 || vs_store || polygon_mode >= 0;
 
     if (use_feat2 && api < VK_API_VERSION_1_1)
         api = VK_API_VERSION_1_1;
@@ -199,6 +217,13 @@ int main(int argc, char **argv)
         printf("vertexPipelineStoresAndAtomics = %d\n",
                io_feat2.features.vertexPipelineStoresAndAtomics);
         io_feat2.features.vertexPipelineStoresAndAtomics = VK_TRUE;
+    }
+
+    if (polygon_mode >= 0) {
+        vkGetPhysicalDeviceFeatures2(phys, &io_feat2);
+        printf("fillModeNonSolid = %d (asked for %s fill)\n",
+               io_feat2.features.fillModeNonSolid, polygon_mode == 0 ? "line" : "point");
+        io_feat2.features.fillModeNonSolid = VK_TRUE;
     }
 
     VkDeviceCreateInfo dci = {
@@ -574,7 +599,9 @@ int main(int argc, char **argv)
     VkPipelineRasterizationStateCreateInfo rs = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
         .depthClampEnable = (depth_clamp == 1) ? VK_TRUE : VK_FALSE,
-        .polygonMode = VK_POLYGON_MODE_FILL,
+        .polygonMode = polygon_mode == 0   ? VK_POLYGON_MODE_LINE
+                       : polygon_mode == 1 ? VK_POLYGON_MODE_POINT
+                                           : VK_POLYGON_MODE_FILL,
         .cullMode = VK_CULL_MODE_NONE,
         .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
         .lineWidth = 1.0f,
@@ -814,7 +841,7 @@ int main(int argc, char **argv)
         return 0;
     }
     const unsigned char *px = mapped;
-    uint64_t bad = 0, edge_blended = 0, edge_bad = 0;
+    uint64_t bad = 0, edge_blended = 0, edge_bad = 0, nonclear = 0;
     uint32_t fx = 0, fy = 0;
     int er = 0, eg = 0, eb = 0, ea = 0, gr = 0, gg = 0, gb = 0, ga = 0;
     for (uint32_t y = 0; y < size; y++) {
@@ -822,6 +849,17 @@ int main(int argc, char **argv)
             const unsigned char *p = px + ((size_t)y * size + x) * bpp;
             int wr = 0, wg = 0, wb = 0, wa = 0, gr = 0, gg = 0, gb = 0, ga = 0;
             bool ok;
+
+            /* Non-solid polygon modes are counted, not pattern-matched. A
+             * wireframe of the full-screen triangle touches only its edges and a
+             * point fill touches only its corners, so "a small, non-zero fraction
+             * of the target was written" is the whole check - and it can only
+             * pass if the polygon mode actually changed rasterisation. */
+            if (polygon_mode >= 0) {
+                if (p[0] | p[1] | p[2])
+                    nonclear++;
+                continue;
+            }
 
             /* Each format is checked against what the shader's normalized output
              * must become in that format - the same expression, encoded at the
@@ -887,6 +925,20 @@ int main(int argc, char **argv)
     double ms_total = t1 - t0;
     printf("%d frame(s) in %.3f ms (%.3f ms/frame, %.1f Mpix/s)\n", iters, ms_total,
            ms_total / iters, (double)size * size * iters / (ms_total / 1000.0) / 1e6);
+
+    if (polygon_mode >= 0) {
+        const char *name = polygon_mode == 0 ? "line" : "point";
+        const uint64_t limit = (uint64_t)size * size / 8;
+        const bool ok = nonclear > 0 && nonclear < limit;
+
+        printf("polygon mode %s: %llu of %u pixels written (%.2f%%; want non-zero and under 12.5%%)\n",
+               name, (unsigned long long)nonclear, size * size,
+               100.0 * (double)nonclear / ((double)size * size));
+        printf("  %s  non-solid fill drew a sparse fraction of the target\n", ok ? "ok  " : "FAIL");
+        printf("RESULT: %s - polygon mode %s\n", ok ? "PASS" : "FAIL", name);
+        printf("VERDICT: %s\n", ok ? "PASS" : "FAIL");
+        return ok ? 0 : 1;
+    }
     /* The vertex stage's storage buffer, if VSSBO=1. The store is checked for its
      * exact value; the atomic is checked as "ran at least once and always in
      * steps of three" rather than against a fixed count, because the number of

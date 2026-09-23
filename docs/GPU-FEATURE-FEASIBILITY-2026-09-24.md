@@ -188,8 +188,46 @@ object-type swap is the right shape for that, but whether B-Series honours value
 needs silicon. And `VK_IMG_relaxed_line_rasterization`, which the vendor advertises, is **not** related:
 it is the OpenGL diamond-exit line rule for GL emulation layers, a Zink knob with no wireframe meaning.
 
-**This is now the cheapest of the five to try** - a few lines plus a feature bit, with a fallback
-(triangle-to-line index expansion) if the hardware ignores the object type.
+**This looked like the cheapest of the five to try, so it was tried - and it does not work.**
+
+### 4.1 The experiment, and its result
+
+Selecting the object type from `rs.polygon_mode` in `pvr_setup_isp_faces_and_control()` is a handful of
+lines, and `vkrender` gained `POLYGONMODE=line|point` to test it: the same full-screen triangle, with the
+result *counted* rather than pattern-matched, because a wireframe touches only its edges and a point fill
+only its corners, so "a small, non-zero fraction of the target" can only pass if the mode changed
+rasterisation.
+
+Measured on the open driver, 512x512, four frames:
+
+```
+POLYGONMODE=line    polygon mode line:  0 of 262144 pixels written   FAIL   31.47 ms/frame
+POLYGONMODE=point   polygon mode point: 0 of 262144 pixels written   FAIL   31.04 ms/frame
+(default, FILL)     RESULT: PASS - 262144/262144 pixels correct             1.96 ms/frame
+```
+
+Two things are clear from that. The object type is **accepted** - no error, no hang, and the frame goes
+from 1.96 ms to 31.5 ms, so the hardware is genuinely on a different path. And it **rasterises nothing
+visible**. The line width was not the problem: `pointlinewidth` is `15` (1.0 in 4.4 fixed point) because
+the driver always programmes it from `rs.line.width`.
+
+So `LINE_FILLED_TRIANGLE` needs something else that is not in the published definitions, and the cheap
+path is **ruled out by measurement rather than by argument**.
+
+### 4.2 What was done about it
+
+Both driver changes were **reverted**: `.fillModeNonSolid` is back to `false` and the object type is not
+consulted, with a comment recording the measurement so nobody re-tries it blindly. `regress.sh` is
+**28 passed, 0 failed** after the revert. The `POLYGONMODE` test mode was kept - it is a probe, it is not
+in the regression suite, and it documents the negative result.
+
+The remaining route is the fallback: triangle-to-line index expansion in `pvr_emit_vdm_index_list`,
+which is a real project with documented deviations (vertex shading count and order change, lines are
+clipped instead of the polygon, and polygon culling is bypassed), because the specification says polygon
+mode "affects only the final rasterization of polygons".
+
+**Verdict: not a hardware wall in principle, but the obvious native mechanism does not work, so
+`fillModeNonSolid` moves from "cheapest" to "the index-expansion project".**
 
 ## 5. `descriptorIndexing` + 11 sub-features - the hard one, and honestly unresolved
 
@@ -256,15 +294,20 @@ checked.
 | `tessellationShader` | **hardware-absent, proven** | none - Volcanic-only block, 0 Rogue configs |
 | `geometryShader` | **hardware-absent**; emulation proven and priced at ~80x | the DXVK branch exists; the cost is per-draw and could be amortised |
 | `multiViewport` | **hardware path exists and the CSB emission is already generalised**; unproven on silicon | `view_port_count` (4 bits, up to 16), `vpt_tgt_pres`, `PPP_CTRL.vpt_scissor`, indexed scissor array; blockers are `PVR_MAX_VIEWPORTS 1`, two asserts, and `shaderOutputViewportIndex = false` |
-| `fillModeNonSolid` | **corrected: the hardware has `LINE_FILLED_TRIANGLE`/`POINT_FILLED_TRIANGLE` object types** | select objtype 5/6 when `polygon_mode != FILL` - a few lines, with index expansion as a fallback |
+| `fillModeNonSolid` | hardware object types 5/6 exist but **draw nothing** - tried, measured, reverted | index expansion is the remaining route; the native path is ruled out |
 | `descriptorIndexing` (+11) | **unresolved** | buffer half plausibly lowerable to global loads; image half needs a runtime descriptor fetch that is not established |
 | *framebuffer compression* | **not asked about, and the highest-value lead** | hardware present, device info knows it, `cr.xml` models it, driver never uses it, and it sits on the bottleneck |
 
-Ordered by what to try first, given the corrections: **`fillModeNonSolid`** (smallest change, hardware
-mechanism identified, fallback exists), then **`multiViewport`** (bigger, CSB side already done, but one
-unproven assumption about the silicon), then `geometryShader` only if the 80x can be amortised;
+Ordered by what to try first, given the corrections and the one experiment that was run:
+**`multiViewport`** (hardware path identified, CSB emission already generalised, but one unproven
+assumption about the silicon and a hard blocker in `shaderOutputViewportIndex`), then `geometryShader`
+only if the 80x can be amortised, then `fillModeNonSolid` as the index-expansion project;
 `tessellationShader` is closed; `descriptorIndexing` needs an experiment before it deserves a plan; and
 framebuffer compression remains the only item here with a user-visible payoff.
+
+Three of the five now carry a measured or proven answer rather than an argument: tessellation is
+provably absent, geometry-shader emulation is priced at 80x, and the fillModeNonSolid object type was
+tried and draws nothing. That is a better place to stop than a list of five maybes.
 
 The three artefacts worth keeping from this: the PVR_strip layer and the GS branch are prior work that
 still stands; `glceiling.sh` is new and shows the GL ceiling is a device-level wall rather than a blob
