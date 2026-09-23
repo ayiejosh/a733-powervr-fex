@@ -132,6 +132,11 @@ run_case verdict "vkrender IO16 (16-bit varying)" IO16=1 -- ./vkrender 512 4
 run_case verdict "vkrender depthClamp off (triangle must be clipped)" DEPTHCLAMP=0 -- ./vkrender 512 4
 run_case verdict "vkrender depthClamp on (triangle must be clamped, not clipped)" DEPTHCLAMP=1 -- ./vkrender 512 4
 
+# vertexPipelineStoresAndAtomics: the same triangle with a storage-buffer store
+# and an atomic add from the vertex stage. The image is unchanged, so the pixel
+# check still applies; the buffer is checked after the draw.
+run_case verdict "vkrender vertex-stage SSBO store + atomic" VSSBO=1 -- ./vkrender 512 4
+
 # GL/zink drives the same ICD through a second compiler path, so it is a real
 # regression target rather than an optional extra. It needs nullDescriptor from
 # VK_KHR_robustness2, which the vendor ICD does not expose, so skip it there

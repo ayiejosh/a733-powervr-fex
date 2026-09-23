@@ -941,7 +941,7 @@ index 57d843b..8c5f8be 100644
                         VkBuffer _buffer,
                         const VkAllocationCallbacks *pAllocator)
 diff --git a/src/imagination/vulkan/pvr_physical_device.c b/src/imagination/vulkan/pvr_physical_device.c
-index 860f43d..0e2e4f6 100644
+index 860f43d..d612c17 100644
 --- a/src/imagination/vulkan/pvr_physical_device.c
 +++ b/src/imagination/vulkan/pvr_physical_device.c
 @@ -123,9 +123,20 @@ void pvr_physical_device_free_pipeline_cache(
@@ -983,6 +983,15 @@ index 860f43d..0e2e4f6 100644
        .depthBiasClamp = true,
        .fillModeNonSolid = false,
        .depthBounds = false,
+@@ -266,7 +278,7 @@ static void pvr_physical_device_get_supported_features(
+       .textureCompressionBC = false,
+       .occlusionQueryPrecise = false,
+       .pipelineStatisticsQuery = false,
+-      .vertexPipelineStoresAndAtomics = false,
++      .vertexPipelineStoresAndAtomics = true,
+       .fragmentStoresAndAtomics = true,
+       .shaderTessellationAndGeometryPointSize = false,
+       .shaderImageGatherExtended = true,
 @@ -298,10 +310,18 @@ static void pvr_physical_device_get_supported_features(
        .inheritedQueries = false,
  

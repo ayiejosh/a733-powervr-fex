@@ -2643,12 +2643,41 @@ regress       27 passed, 0 failed, 0 known-open
 | cached memory type | correct, still opt-in (§21.16) |
 | `depthClamp` | **closed** (§21.19) |
 | `occlusionQueryPrecise` | open |
-| `vertexPipelineStoresAndAtomics` | open |
+| `vertexPipelineStoresAndAtomics` | **closed** (§21.20) |
 | `variablePointers`, `variablePointersStorageBuffer` | open |
 | `drawIndirectCount` | open |
 | timestamps (`timestampPeriod = 0.0`) | open - the driver has no timestamp query path, so the value is honest |
 | `bufferDeviceAddressCaptureReplay` | open |
 
-**Remaining feature gap to the vendor: 12 device features.**
+**Remaining feature gap to the vendor: 11 device features.**
+
+## 21.20 vertexPipelineStoresAndAtomics: nothing was missing but the advertisement
+
+Unlike `depthClamp`, there was no half-finished plumbing here - and no gate either. `pco`'s memory path
+does not look at the shader stage: `store_ssbo` and the SSBO atomics are translated by the same code in a
+vertex shader as in a compute one, and pco's stage-specific work
+(`pco_nir_lower_vs_intrinsics`, the attribute and varying allocation) is all about the interface, not
+about memory. So the feature was `false` in the table while the implementation was already complete, and
+the only way to know that is to run it.
+
+`vsstore.vert` is `render.vert`'s triangle plus a storage-buffer store and an `atomicAdd`, with the
+fragment stage left as `render.frag` - so the image, and the 262144-pixel check, are unchanged, and the
+buffer is checked after the draw:
+
+```
+VSSBO=1 ./vkrender 512 4
+  vertexPipelineStoresAndAtomics = 1
+  vertex-stage SSBO: marker = 0xabcd1234 (want 0xabcd1234), counter = 36
+                     (want non-zero and a multiple of 3)
+  RESULT: PASS - 262144/262144 pixels correct
+```
+
+The store is checked against its exact value. The atomic is checked as "ran at least once and always in
+steps of three" rather than against a fixed number, because **the number of vertex shader invocations is
+the hardware's business, not the test's** - 36 is 12 invocations of 3 vertices over 4 frames, but a driver
+is entitled to shade a vertex twice or to cache it, so a test asserting exactly 9 or exactly 36 would be
+asserting something the specification does not promise.
+
+`regress.sh` is now **28 passed, 0 failed, 0 known-open**.
 
 

@@ -41,6 +41,9 @@ glslangValidator -V --target-env vulkan1.1 -o io16.frag.spv io16.frag
 # dc.vert: the depth clamp probe - render.vert's triangle at z outside the clip
 # volume, so the fragment is either clipped or clamped depending on the state.
 glslangValidator -V --target-env vulkan1.1 -o dc.vert.spv dc.vert
+# vsstore.vert: vertexPipelineStoresAndAtomics - the same triangle, plus an SSBO
+# store and an atomic add from the vertex stage.
+glslangValidator -V --target-env vulkan1.1 -o vsstore.vert.spv vsstore.vert
 
 python3 - <<'PY'
 import struct
@@ -71,6 +74,7 @@ emit('bits_storage.spv', 'bits_storage_spv', 'bits_storage_spv.h')
 emit('io16.vert.spv', 'io16_vert_spv', 'io16_vert_spv.h')
 emit('io16.frag.spv', 'io16_frag_spv', 'io16_frag_spv.h')
 emit('dc.vert.spv', 'dc_vert_spv', 'dc_vert_spv.h')
+emit('vsstore.vert.spv', 'vsstore_vert_spv', 'vsstore_vert_spv.h')
 PY
 
 CC=${CC:-gcc}

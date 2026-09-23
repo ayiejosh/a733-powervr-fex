@@ -30,6 +30,7 @@
 #include "io16_vert_spv.h"
 #include "io16_frag_spv.h"
 #include "dc_vert_spv.h"
+#include "vsstore_vert_spv.h"
 
 #define DIE(...)                               \
     do {                                       \
@@ -98,7 +99,9 @@ int main(int argc, char **argv)
      * colour. Either way the shader goes through the same pipeline. */
     const char *dc_env = getenv("DEPTHCLAMP");
     const int depth_clamp = dc_env ? atoi(dc_env) : -1;
-    const bool use_feat2 = io16 || depth_clamp >= 0;
+    const char *vssbo_env = getenv("VSSBO");
+    const bool vs_store = vssbo_env && *vssbo_env;
+    const bool use_feat2 = io16 || depth_clamp >= 0 || vs_store;
 
     if (use_feat2 && api < VK_API_VERSION_1_1)
         api = VK_API_VERSION_1_1;
@@ -189,6 +192,13 @@ int main(int argc, char **argv)
         vkGetPhysicalDeviceFeatures2(phys, &io_feat2);
         printf("depthClamp = %d (asked for %d)\n", io_feat2.features.depthClamp, depth_clamp);
         io_feat2.features.depthClamp = VK_TRUE;
+    }
+
+    if (vs_store) {
+        vkGetPhysicalDeviceFeatures2(phys, &io_feat2);
+        printf("vertexPipelineStoresAndAtomics = %d\n",
+               io_feat2.features.vertexPipelineStoresAndAtomics);
+        io_feat2.features.vertexPipelineStoresAndAtomics = VK_TRUE;
     }
 
     VkDeviceCreateInfo dci = {
@@ -428,10 +438,12 @@ int main(int argc, char **argv)
     const bool use_dc_vert = depth_clamp >= 0;
     VkShaderModuleCreateInfo vsci = {
         .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-        .codeSize = use_dc_vert ? sizeof(dc_vert_spv)
-                                : (io16 ? sizeof(io16_vert_spv) : sizeof(render_vert_spv)),
-        .pCode = use_dc_vert ? dc_vert_spv
-                             : (io16 ? io16_vert_spv : render_vert_spv),
+        .codeSize = vs_store ? sizeof(vsstore_vert_spv)
+                             : (use_dc_vert ? sizeof(dc_vert_spv)
+                                            : (io16 ? sizeof(io16_vert_spv) : sizeof(render_vert_spv))),
+        .pCode = vs_store ? vsstore_vert_spv
+                          : (use_dc_vert ? dc_vert_spv
+                                         : (io16 ? io16_vert_spv : render_vert_spv)),
     };
     VkShaderModule vs;
     VKCHECK(vkCreateShaderModule(dev, &vsci, NULL, &vs));
@@ -444,6 +456,84 @@ int main(int argc, char **argv)
     VkShaderModule fs;
     VKCHECK(vkCreateShaderModule(dev, &fsci, NULL, &fs));
 
+    /* VSSBO=1 gives the vertex stage a storage buffer to write to, which is what
+     * vertexPipelineStoresAndAtomics is about. The fragment stage and the image
+     * are untouched, so the pixel check still applies; the buffer is checked
+     * after the draw. */
+    VkDescriptorSetLayout vssbo_dsl = VK_NULL_HANDLE;
+    VkDescriptorPool vssbo_pool = VK_NULL_HANDLE;
+    VkDescriptorSet vssbo_set = VK_NULL_HANDLE;
+    VkBuffer vssbo_buf = VK_NULL_HANDLE;
+    VkDeviceMemory vssbo_mem = VK_NULL_HANDLE;
+    uint32_t *vssbo_map = NULL;
+    if (vs_store) {
+        VkDescriptorSetLayoutBinding vssbo_bind = {
+            .binding = 0,
+            .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            .descriptorCount = 1,
+            .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+        };
+        VKCHECK(vkCreateDescriptorSetLayout(dev,
+                                            &(VkDescriptorSetLayoutCreateInfo){
+                                               .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+                                               .bindingCount = 1,
+                                               .pBindings = &vssbo_bind },
+                                            NULL, &vssbo_dsl));
+        VKCHECK(vkCreateDescriptorPool(dev,
+                                       &(VkDescriptorPoolCreateInfo){
+                                          .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+                                          .maxSets = 1,
+                                          .poolSizeCount = 1,
+                                          .pPoolSizes = &(VkDescriptorPoolSize){
+                                             .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                             .descriptorCount = 1 } },
+                                       NULL, &vssbo_pool));
+        VKCHECK(vkAllocateDescriptorSets(dev,
+                                         &(VkDescriptorSetAllocateInfo){
+                                            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+                                            .descriptorPool = vssbo_pool,
+                                            .descriptorSetCount = 1,
+                                            .pSetLayouts = &vssbo_dsl },
+                                         &vssbo_set));
+        VKCHECK(vkCreateBuffer(dev,
+                               &(VkBufferCreateInfo){
+                                  .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                                  .size = 4096,
+                                  .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT },
+                               NULL, &vssbo_buf));
+        VkMemoryRequirements vssbo_req;
+        vkGetBufferMemoryRequirements(dev, vssbo_buf, &vssbo_req);
+        uint32_t vssbo_mt = 0;
+        for (uint32_t i = 0; i < mp.memoryTypeCount; i++) {
+            if ((vssbo_req.memoryTypeBits & (1u << i)) &&
+                (mp.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)) {
+                vssbo_mt = i;
+                break;
+            }
+        }
+        VKCHECK(vkAllocateMemory(dev,
+                                 &(VkMemoryAllocateInfo){
+                                    .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                                    .allocationSize = vssbo_req.size,
+                                    .memoryTypeIndex = vssbo_mt },
+                                 NULL, &vssbo_mem));
+        VKCHECK(vkBindBufferMemory(dev, vssbo_buf, vssbo_mem, 0));
+        VKCHECK(vkMapMemory(dev, vssbo_mem, 0, VK_WHOLE_SIZE, 0, (void **)&vssbo_map));
+        vssbo_map[0] = 0xDEADBEEFu;  /* marker, must be overwritten */
+        vssbo_map[1] = 0;            /* counter, must become a multiple of 3 */
+        vkUpdateDescriptorSets(dev, 1,
+                               &(VkWriteDescriptorSet){
+                                  .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                  .dstSet = vssbo_set,
+                                  .dstBinding = 0,
+                                  .descriptorCount = 1,
+                                  .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                  .pBufferInfo = &(VkDescriptorBufferInfo){
+                                     .buffer = vssbo_buf,
+                                     .range = VK_WHOLE_SIZE } },
+                               0, NULL);
+    }
+
     VkPushConstantRange io16_pcr = {
         .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
         .offset = 0,
@@ -451,6 +541,8 @@ int main(int argc, char **argv)
     };
     VkPipelineLayoutCreateInfo plci = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+        .setLayoutCount = vs_store ? 1 : 0,
+        .pSetLayouts = vs_store ? &vssbo_dsl : NULL,
         .pushConstantRangeCount = io16 ? 1 : 0,
         .pPushConstantRanges = io16 ? &io16_pcr : NULL,
     };
@@ -628,6 +720,10 @@ int main(int argc, char **argv)
             vkCmdBeginRenderPass(cmd, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
             if (!empty_pass) {
                 vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+                if (vs_store) {
+                    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pl, 0, 1,
+                                            &vssbo_set, 0, NULL);
+                }
                 if (io16) {
                     /* 0.25 as an IEEE half: 0x3400, in the low half of the dword. */
                     const uint32_t half_quarter = 0x00003400u;
@@ -791,13 +887,27 @@ int main(int argc, char **argv)
     double ms_total = t1 - t0;
     printf("%d frame(s) in %.3f ms (%.3f ms/frame, %.1f Mpix/s)\n", iters, ms_total,
            ms_total / iters, (double)size * size * iters / (ms_total / 1000.0) / 1e6);
+    /* The vertex stage's storage buffer, if VSSBO=1. The store is checked for its
+     * exact value; the atomic is checked as "ran at least once and always in
+     * steps of three" rather than against a fixed count, because the number of
+     * vertex shader invocations is the hardware's business, not the test's. */
+    bool vssbo_ok = true;
+    if (vs_store) {
+        printf("vertex-stage SSBO: marker = 0x%08x (want 0xabcd1234), counter = %u "
+               "(want non-zero and a multiple of 3)\n",
+               vssbo_map[0], vssbo_map[1]);
+        vssbo_ok = vssbo_map[0] == 0xABCD1234u && vssbo_map[1] != 0 &&
+                   (vssbo_map[1] % 3) == 0;
+        printf("  %s  vertex-stage store and atomic\n", vssbo_ok ? "ok  " : "FAIL");
+    }
+
     if (bad) {
         printf("RESULT: FAIL - %llu/%u pixels wrong (first at %u,%u: want %d,%d,%d,%d got %d,%d,%d,%d)\n",
                (unsigned long long)bad, size * size, fx, fy, er, eg, eb, ea, gr, gg, gb, ga);
     } else {
         printf("RESULT: PASS - %u/%u pixels correct\n", size * size, size * size);
     }
-    printf("VERDICT: %s\n", bad ? "FAIL" : "PASS");
+    printf("VERDICT: %s\n", (bad || !vssbo_ok) ? "FAIL" : "PASS");
 
     return bad ? 1 : 0;
 }
