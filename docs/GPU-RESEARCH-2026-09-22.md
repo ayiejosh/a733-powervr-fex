@@ -2642,14 +2642,54 @@ regress       27 passed, 0 failed, 0 known-open
 | 8/16-bit storage group, all nine features | **closed** (§21.17, §21.18) |
 | cached memory type | correct, still opt-in (§21.16) |
 | `depthClamp` | **closed** (§21.19) |
-| `occlusionQueryPrecise` | open |
 | `vertexPipelineStoresAndAtomics` | **closed** (§21.20) |
+| `occlusionQueryPrecise` | open |
 | `variablePointers`, `variablePointersStorageBuffer` | open |
 | `drawIndirectCount` | open |
-| timestamps (`timestampPeriod = 0.0`) | open - the driver has no timestamp query path, so the value is honest |
 | `bufferDeviceAddressCaptureReplay` | open |
+| `vulkanMemoryModel`, `vulkanMemoryModelDeviceScope` | open |
+| subgroup properties | open - the vendor reports real subgroup support; `vkaudit`'s line is empty here |
+| timestamps (`timestampPeriod = 0.0`) | open - the driver has no timestamp query path, so the value is honest |
 
-**Remaining feature gap to the vendor: 11 device features.**
+### 21.20.1 The remaining gap, measured rather than counted
+
+The numbers in the two sections above (12, then 11) were arithmetic on the list, not measurements. The
+actual figure comes from running `vkaudit` on both drivers and diffing the feature lines - and the open
+side of that can now be produced with no GPU at all, through the drm-shim (§21.17.1), against the saved
+vendor audit:
+
+```
+vendor features that are 1 and open features that are 0:
+  core.occlusionQueryPrecise
+  vk11.variablePointers
+  vk11.variablePointersStorageBuffer
+  vk12.bufferDeviceAddressCaptureReplay
+  vk12.drawIndirectCount
+  vk12.vulkanMemoryModel
+  vk12.vulkanMemoryModelDeviceScope
+  subgroup properties (supportedStages=0x31 on the vendor, empty here)
+```
+
+**Seven device features plus subgroup properties.** Two corrections to the earlier list come out of doing
+it properly: `vulkanMemoryModel` and `vulkanMemoryModelDeviceScope` were **missed** entirely by the
+hand-written list (they are Vulkan 1.2 features the vendor advertises and pvr does not), and the
+"timestamps" row is not a device feature at all - it is `VkPhysicalDeviceLimits` - so it does not belong
+in a feature count even though the gap is real.
+
+Four things now close, in the order they were done, with how each was established:
+
+| gap | how it was closed |
+|---|---|
+| 8/16-bit storage, all nine features | two `nir_lower_mem_access_bit_sizes` calls - one after the buffer IO lowering, one after the push-constant lowering - plus `pco_nir_lower_16bit_io()` and three new `trans_alu` cases (§21.17, §21.18) |
+| `depthClamp` | the clip half was already implemented; `isp_position_depth_clamp_z` was the missing half (§21.19) |
+| `vertexPipelineStoresAndAtomics` | nothing was missing; pco's memory path is stage-agnostic (§21.20) |
+| API 1.3, `bufferDeviceAddress`, 2x MSAA, the 8192 extent, X11 WSI | §20, §21 |
+
+The three "nothing was missing" cases are worth stating plainly, because they are the shape of most of
+this work: a driver can have a complete implementation of a feature and still not advertise it, and the
+cost of finding out is a test, not an implementation. What that costs when it goes the other way is
+`storageInputOutput16`: nine features of storage work landed before the tenth turned out to be a
+half-scaffolded hardware path.
 
 ## 21.20 vertexPipelineStoresAndAtomics: nothing was missing but the advertisement
 
