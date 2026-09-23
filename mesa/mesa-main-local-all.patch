@@ -26,8 +26,32 @@ index ccf6c21..cd4724d 100644
  
  /**
   * struct drm_pvr_ioctl_create_bo_args - Arguments for %DRM_IOCTL_PVR_CREATE_BO
+diff --git a/src/imagination/pco/meson.build b/src/imagination/pco/meson.build
+index c902a17..0c48cfd 100644
+--- a/src/imagination/pco/meson.build
++++ b/src/imagination/pco/meson.build
+@@ -16,6 +16,7 @@ libpowervr_compiler_files = files(
+   'pco_ir.c',
+   'pco_legalize.c',
+   'pco_nir.c',
++  'pco_nir_16bit_io.c',
+   'pco_nir_alu.c',
+   'pco_nir_compute.c',
+   'pco_nir_io.c',
+diff --git a/src/imagination/pco/pco_internal.h b/src/imagination/pco/pco_internal.h
+index 326111b..d3e3318 100644
+--- a/src/imagination/pco/pco_internal.h
++++ b/src/imagination/pco/pco_internal.h
+@@ -1828,6 +1828,7 @@ bool pco_nir_lower_vs_intrinsics(nir_shader *shader);
+ bool pco_nir_lower_images(nir_shader *shader, pco_data *data, pco_ctx *ctx);
+ bool pco_nir_lower_interpolation(nir_shader *shader, pco_fs_data *fs);
+ bool pco_nir_lower_io(nir_shader *shader, pco_data *data);
++bool pco_nir_lower_16bit_io(nir_shader *shader);
+ bool pco_nir_lower_sample_mask_out(nir_shader *shader);
+ bool pco_nir_lower_shared_io_to_global(nir_shader *shader, unsigned usc_slots);
+ bool pco_nir_lower_subgroups(nir_shader *shader);
 diff --git a/src/imagination/pco/pco_nir.c b/src/imagination/pco/pco_nir.c
-index 2ef8106..223c018 100644
+index 2ef8106..d56ccc4 100644
 --- a/src/imagination/pco/pco_nir.c
 +++ b/src/imagination/pco/pco_nir.c
 @@ -68,8 +68,11 @@ static const nir_shader_compiler_options nir_options = {
@@ -157,7 +181,21 @@ index 2ef8106..223c018 100644
     if (data->common.robust_buffer_access) {
        NIR_PASS(_,
                 nir,
-@@ -1176,6 +1264,7 @@ remat_load_const(nir_builder *b, nir_instr *instr, UNUSED void *cb_data)
+@@ -1102,6 +1190,13 @@ void pco_lower_nir(pco_ctx *ctx, nir_shader *nir, pco_data *data)
+             NULL,
+             NULL);
+ 
++   /* VK_KHR_16bit_storage's storageInputOutput16, if the shader uses it. Runs
++    * here because nir_lower_io() and nir_lower_io_to_scalar() above are what turn
++    * the interface into per-component intrinsics, and before pco_nir_opt() so the
++    * conversions it inserts can be optimised away where they are redundant.
++    * Nothing happens unless a 16-bit type is actually in the interface. */
++   NIR_PASS(_, nir, pco_nir_lower_16bit_io);
++
+    NIR_PASS(_, nir, nir_lower_vars_to_ssa);
+    NIR_PASS(_, nir, nir_opt_copy_prop_vars);
+    NIR_PASS(_, nir, nir_opt_dead_write_vars);
+@@ -1176,6 +1271,7 @@ remat_load_const(nir_builder *b, nir_instr *instr, UNUSED void *cb_data)
  
     return true;
  }
@@ -165,8 +203,196 @@ index 2ef8106..223c018 100644
  /**
   * \brief Runs post-processing passes on a NIR shader.
   *
+diff --git a/src/imagination/pco/pco_nir_16bit_io.c b/src/imagination/pco/pco_nir_16bit_io.c
+new file mode 100644
+index 0000000..0a447d7
+--- /dev/null
++++ b/src/imagination/pco/pco_nir_16bit_io.c
+@@ -0,0 +1,182 @@
++/*
++ * Copyright © 2026 Imagination Technologies Ltd.
++ * SPDX-License-Identifier: MIT
++ */
++
++#include "pco_internal.h"
++#include "nir_builder.h"
++
++/**
++ * \file pco_nir_16bit_io.c
++ *
++ * \brief Lowers 16-bit shader inputs and outputs to 32 bits.
++ *
++ * VK_KHR_16bit_storage's `storageInputOutput16` allows 16-bit *types* in the
++ * shader input and output interfaces. pco has no 16-bit I/O: the two places that
++ * would have to know are `trans_load_input_vs()` and `trans_store_output_vs()`,
++ * both of which say "TODO: f16 support" and both of which assert the type is
++ * 32-bit - and both asserts are compiled out here, because this build is
++ * `buildtype=release`, so a 16-bit varying does not fail loudly, it translates as
++ * a whole 32-bit register.
++ *
++ * Rather than teach the translator a packing convention, this promotes the
++ * interface to 32 bits and converts at the boundary. That is exact: f16 -> f32 ->
++ * f16 and u16 -> u32 -> u16 round-trip without loss. It is also the cheaper of
++ * the two options, because it leaves every consumer of the interface alone - the
++ * varying allocation in `pvr_arch_pipeline.c`, the PPP/PDS varying state, and the
++ * VDM's attribute formats all then see the 32-bit types they already handle. The
++ * only interfaces that leave the driver are the vertex input and the framebuffer,
++ * and both are format-driven conversions the hardware does anyway.
++ *
++ * The two halves have to happen together. Rewriting the intrinsics without the
++ * variable types would leave the varying allocation sizing a f16vec2 as one dword
++ * (`glsl_count_dword_slots()` returns DIV_ROUND_UP(components, 2) for 16-bit
++ * types) while the shader now stores two f32 components into it.
++ *
++ * The intrinsics are rewritten *in place*, the way `nir_lower_mediump_io()` does
++ * it, rather than duplicated with a different width. That matters for
++ * `load_interpolated_input`, whose second source is a barycentric instruction
++ * rather than an SSA def: a naive copy of `src[i].ssa` there builds a load with a
++ * null source, and the NIR is invalid enough to crash `nir_opt_copy_prop()` a
++ * few passes later - which is exactly what happened the first time.
++ *
++ * This runs after `nir_lower_io()` and `nir_lower_io_to_scalar()`, so what it
++ * sees is one scalar intrinsic per component. It is a no-op for any shader that
++ * does not use 16-bit I/O, which is every shader until the feature is advertised.
++ */
++
++static enum glsl_base_type
++widen_16bit_base_type(enum glsl_base_type base_type)
++{
++   switch (base_type) {
++   case GLSL_TYPE_FLOAT16:
++      return GLSL_TYPE_FLOAT;
++   case GLSL_TYPE_UINT16:
++      return GLSL_TYPE_UINT;
++   case GLSL_TYPE_INT16:
++      return GLSL_TYPE_INT;
++   default:
++      return base_type;
++   }
++}
++
++static const glsl_type *
++widen_16bit_type(const glsl_type *type)
++{
++   if (glsl_type_is_array(type)) {
++      return glsl_array_type(widen_16bit_type(glsl_get_array_element(type)),
++                             glsl_get_length(type),
++                             glsl_get_explicit_stride(type));
++   }
++
++   if (glsl_type_is_matrix(type)) {
++      return glsl_matrix_type(widen_16bit_base_type(glsl_get_base_type(type)),
++                              glsl_get_matrix_columns(type),
++                              glsl_get_vector_elements(type));
++   }
++
++   if (glsl_type_is_vector_or_scalar(type)) {
++      return glsl_vector_type(widen_16bit_base_type(glsl_get_base_type(type)),
++                              glsl_get_components(type));
++   }
++
++   return type;
++}
++
++/** Widens a 16-bit value to 32 bits, preserving the base type. */
++static nir_def *
++widen_to_32(nir_builder *b, nir_def *value, nir_alu_type type)
++{
++   switch (nir_alu_type_get_base_type(type)) {
++   case nir_type_float:
++      return nir_f2f32(b, value);
++   case nir_type_int:
++      return nir_i2i32(b, value);
++   default:
++      return nir_u2u32(b, value);
++   }
++}
++
++/** Narrows a 32-bit value back to 16 bits, preserving the base type. */
++static nir_def *
++narrow_to_16(nir_builder *b, nir_def *value, nir_alu_type type)
++{
++   switch (nir_alu_type_get_base_type(type)) {
++   case nir_type_float:
++      return nir_f2f16(b, value);
++   case nir_type_int:
++      return nir_i2i16(b, value);
++   default:
++      return nir_u2u16(b, value);
++   }
++}
++
++/** Rewrites the interface type of a 16-bit value to its 32-bit equivalent. */
++static nir_alu_type
++widen_alu_type(nir_alu_type type)
++{
++   return (type & ~16) | 32;
++}
++
++static bool
++lower_16bit_io_instr(nir_builder *b, nir_intrinsic_instr *intr, UNUSED void *data)
++{
++   nir_variable_mode mode;
++   nir_intrinsic_instr *io =
++      nir_get_io_intrinsic(&intr->instr, nir_var_shader_in | nir_var_shader_out,
++                           &mode);
++   nir_alu_type type;
++
++   if (!io)
++      return false;
++
++   if (nir_intrinsic_has_src_type(io)) {
++      /* Stores: widen the value, then say so on the store. */
++      type = nir_intrinsic_src_type(io);
++      if (nir_alu_type_get_type_size(type) != 16)
++         return false;
++
++      b->cursor = nir_before_instr(&io->instr);
++      nir_src_rewrite(&io->src[0], widen_to_32(b, io->src[0].ssa, type));
++      nir_intrinsic_set_src_type(io, widen_alu_type(type));
++   } else if (nir_intrinsic_has_dest_type(io)) {
++      /* Loads: widen the result, then narrow it back for the shader's own use.
++       * The rewrite has to skip the conversion just inserted, which reads the
++       * wide def itself - hence _after and not nir_def_rewrite_uses(). */
++      type = nir_intrinsic_dest_type(io);
++      if (nir_alu_type_get_type_size(type) != 16)
++         return false;
++
++      b->cursor = nir_after_instr(&io->instr);
++      io->def.bit_size = 32;
++      nir_intrinsic_set_dest_type(io, widen_alu_type(type));
++      nir_def_rewrite_uses_after(&io->def, narrow_to_16(b, &io->def, type));
++   } else {
++      return false;
++   }
++
++   return true;
++}
++
++bool
++pco_nir_lower_16bit_io(nir_shader *nir)
++{
++   bool progress = false;
++
++   NIR_PASS(progress,
++            nir,
++            nir_shader_intrinsics_pass,
++            lower_16bit_io_instr,
++            nir_metadata_control_flow,
++            NULL);
++
++   nir_foreach_variable_with_modes (var, nir, nir_var_shader_in | nir_var_shader_out) {
++      if (!glsl_type_is_16bit(glsl_without_array_or_matrix(var->type)))
++         continue;
++
++      var->type = widen_16bit_type(var->type);
++      progress = true;
++   }
++
++   return progress;
++}
 diff --git a/src/imagination/pco/pco_trans_nir.c b/src/imagination/pco/pco_trans_nir.c
-index 6dde9d2..a23662d 100644
+index 6dde9d2..922bfd8 100644
 --- a/src/imagination/pco/pco_trans_nir.c
 +++ b/src/imagination/pco/pco_trans_nir.c
 @@ -80,7 +80,22 @@ static void split_dest_comps(trans_ctx *tctx, pco_instr *instr, pco_ref dest)
@@ -193,7 +419,7 @@ index 6dde9d2..a23662d 100644
  }
  
  /**
-@@ -4145,6 +4160,31 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
+@@ -4145,6 +4160,81 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
        instr = pco_mov(&tctx->b, dest, src[0]);
        break;
  
@@ -221,6 +447,56 @@ index 6dde9d2..a23662d 100644
 +   case nir_op_pack_64_2x32_split:
 +      instr = pco_trans_nir_vec(tctx, dest, 2, src);
 +      break;
++
++   /* The two 16-bit halves of a 32-bit register. This backend holds every value
++    * in a 32-bit register, so a 16-bit half is a mask and a shift rather than a
++    * reinterpretation - the same shape as the 64-bit handling above, one size
++    * down. Both operands are masked on the way in because a 16-bit NIR value's
++    * upper bits are only defined by whatever produced it: the narrowing
++    * conversions in trans_conv() are plain movs, so `b << 16` would otherwise OR
++    * the second operand's leftovers into the result.
++    *
++    * These arrive from two directions and neither can be lowered away earlier.
++    * nir_opt_algebraic() forms them from f2f16 and from pairs of shifts, and the
++    * push-constant half of the 8/16-bit storage work produces them directly when
++    * it widens a 16-bit load and narrows it back.
++    */
++   case nir_op_pack_32_2x16_split: {
++      pco_ref mask = pco_ref_new_ssa32(tctx->func);
++      pco_ref lo = pco_ref_new_ssa32(tctx->func);
++      pco_ref shift = pco_ref_new_ssa32(tctx->func);
++      pco_ref hi = pco_ref_new_ssa32(tctx->func);
++
++      pco_movi32(&tctx->b, mask, pco_ref_imm32(0xffff));
++      trans_logical(tctx, nir_op_iand, lo, src[0], mask);
++
++      pco_movi32(&tctx->b, shift, pco_ref_imm32(16));
++      trans_shift(tctx, nir_op_ishl, hi, src[1], shift);
++
++      dest = pco_ref_bits(dest, 32);
++      instr = trans_logical(tctx, nir_op_ior, dest, lo, hi);
++      break;
++   }
++
++   case nir_op_unpack_32_2x16_split_x: {
++      pco_ref mask = pco_ref_new_ssa32(tctx->func);
++
++      pco_movi32(&tctx->b, mask, pco_ref_imm32(0xffff));
++
++      dest = pco_ref_bits(dest, 32);
++      instr = trans_logical(tctx, nir_op_iand, dest, src[0], mask);
++      break;
++   }
++
++   case nir_op_unpack_32_2x16_split_y: {
++      pco_ref shift = pco_ref_new_ssa32(tctx->func);
++
++      pco_movi32(&tctx->b, shift, pco_ref_imm32(16));
++
++      dest = pco_ref_bits(dest, 32);
++      instr = trans_shift(tctx, nir_op_ushr, dest, src[0], shift);
++      break;
++   }
 +
     default:
        printf("Unsupported alu instruction: \"");
@@ -647,7 +923,7 @@ index 57d843b..8c5f8be 100644
                         VkBuffer _buffer,
                         const VkAllocationCallbacks *pAllocator)
 diff --git a/src/imagination/vulkan/pvr_physical_device.c b/src/imagination/vulkan/pvr_physical_device.c
-index 860f43d..2c8d937 100644
+index 860f43d..5e8c16b 100644
 --- a/src/imagination/vulkan/pvr_physical_device.c
 +++ b/src/imagination/vulkan/pvr_physical_device.c
 @@ -123,9 +123,20 @@ void pvr_physical_device_free_pipeline_cache(
@@ -680,13 +956,14 @@ index 860f43d..2c8d937 100644
        .EXT_color_write_enable = true,
        .EXT_custom_border_color = true,
        .EXT_debug_marker = true,
-@@ -298,9 +310,13 @@ static void pvr_physical_device_get_supported_features(
+@@ -298,10 +310,18 @@ static void pvr_physical_device_get_supported_features(
        .inheritedQueries = false,
  
        /* Vulkan 1.1 */
 -      .storageBuffer16BitAccess = false,
 -      .uniformAndStorageBuffer16BitAccess = false,
 -      .storagePushConstant16 = false,
+-      .storageInputOutput16 = false,
 +      .storageBuffer16BitAccess = true,
 +      .uniformAndStorageBuffer16BitAccess = true,
 +      /* Narrow push constants go through the same widening as the buffer
@@ -694,10 +971,15 @@ index 860f43d..2c8d937 100644
 +       * modes); verified with the alignment-covering probes in
 +       * bench/pvr-vulkan/bits_storage.comp. */
 +      .storagePushConstant16 = true,
-       .storageInputOutput16 = false,
++      /* 16-bit shader inputs and outputs, promoted to 32 bits at the interface
++       * boundary by pco_nir_lower_16bit_io() - see that file for why that is
++       * exact and why it is cheaper than teaching the translator a packing
++       * convention. Verified by bench/pvr-vulkan/vkrender with IO16=1. */
++      .storageInputOutput16 = true,
        .variablePointers = false,
        .protectedMemory = false,
-@@ -309,13 +325,16 @@ static void pvr_physical_device_get_supported_features(
+       .samplerYcbcrConversion = true,
+@@ -309,13 +329,16 @@ static void pvr_physical_device_get_supported_features(
        /* Vulkan 1.2 */
        .samplerMirrorClampToEdge = true,
        .drawIndirectCount = false,
@@ -719,7 +1001,7 @@ index 860f43d..2c8d937 100644
        .descriptorIndexing = false,
        .shaderInputAttachmentArrayDynamicIndexing = true,
        .shaderUniformTexelBufferArrayDynamicIndexing = true,
-@@ -488,8 +507,22 @@ static void pvr_physical_device_get_supported_features(
+@@ -488,8 +511,22 @@ static void pvr_physical_device_get_supported_features(
        /* Vulkan 1.3 / VK_EXT_texel_buffer_alignment */
        .texelBufferAlignment = true,
  
@@ -744,7 +1026,7 @@ index 860f43d..2c8d937 100644
        .bufferDeviceAddressCaptureReplay = false,
        .bufferDeviceAddressMultiDevice = false,
  
-@@ -535,8 +568,33 @@ static void pvr_physical_device_get_supported_features(
+@@ -535,8 +572,33 @@ static void pvr_physical_device_get_supported_features(
        .workgroupMemoryExplicitLayout8BitAccess = false,
        .workgroupMemoryExplicitLayout16BitAccess = false,
  
@@ -780,7 +1062,7 @@ index 860f43d..2c8d937 100644
  
        /* VK_EXT_border_color_swizzle */
        .borderColorSwizzle = true,
-@@ -580,7 +638,18 @@ static uint32_t get_api_version(void)
+@@ -580,7 +642,18 @@ static uint32_t get_api_version(void)
     if (version_override)
        return version_override;
  
@@ -800,7 +1082,7 @@ index 860f43d..2c8d937 100644
  }
  
  static unsigned
-@@ -601,7 +670,11 @@ static bool pvr_physical_device_get_properties(
+@@ -601,7 +674,11 @@ static bool pvr_physical_device_get_properties(
     UNUSED const uint32_t sub_pixel_precision =
        PVR_HAS_FEATURE(dev_info, simple_internal_parameter_format) ? 4U : 8U;
  
@@ -813,7 +1095,7 @@ index 860f43d..2c8d937 100644
  
     UNUSED const uint32_t max_sample_bits = ((max_multisample << 1) - 1);
  
-@@ -652,10 +725,10 @@ static bool pvr_physical_device_get_properties(
+@@ -652,10 +729,10 @@ static bool pvr_physical_device_get_properties(
        .deviceType = VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU,
        /* deviceName and pipelineCacheUUID are filled below .*/
  
@@ -827,7 +1109,7 @@ index 860f43d..2c8d937 100644
        .maxImageArrayLayers = rogue_get_render_size_max_z(dev_info),
        .maxTexelBufferElements = 64U * 1024U,
        .maxUniformBufferRange = 16U * 1024U,
-@@ -739,8 +812,8 @@ static bool pvr_physical_device_get_properties(
+@@ -739,8 +816,8 @@ static bool pvr_physical_device_get_properties(
        .maxSamplerAnisotropy = 16.0f, /* Requires samplerAnisotropy */
        .maxViewports = 1U, /* Requires multiViewport */
  
@@ -838,7 +1120,7 @@ index 860f43d..2c8d937 100644
        .viewportBoundsRange[0] = -8192.0f,
        .viewportBoundsRange[1] = 8191.0f,
  
-@@ -762,20 +835,32 @@ static bool pvr_physical_device_get_properties(
+@@ -762,20 +839,32 @@ static bool pvr_physical_device_get_properties(
        .maxInterpolationOffset = 0.5f,
        .subPixelInterpolationOffsetBits = 4U,
  
@@ -882,7 +1164,7 @@ index 860f43d..2c8d937 100644
        .storageImageSampleCounts = VK_SAMPLE_COUNT_1_BIT, /* Requires shaderStorageImageMultisample */
        .maxSampleMaskWords = 1U,
        .timestampComputeAndGraphics = false,
-@@ -1222,13 +1307,54 @@ VkResult pvr_physical_device_init(struct pvr_physical_device *pdevice,
+@@ -1222,13 +1311,54 @@ VkResult pvr_physical_device_init(struct pvr_physical_device *pdevice,
     pdevice->memory.memoryHeaps[0].size = pvr_compute_heap_size(instance);
     pdevice->memory.memoryHeaps[0].flags = VK_MEMORY_HEAP_DEVICE_LOCAL_BIT;
  

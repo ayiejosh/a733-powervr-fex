@@ -2493,3 +2493,96 @@ outputs, which is where the two `/* TODO: f16 support. */` comments in `pco_tran
 fail loudly, it translates as a whole 32-bit word, which is the same failure mode as `0x60204` one layer
 up. Two routes are written down in `mesa/mesa-main-narrow-storage-design.md`.
 
+## 21.18 storageInputOutput16, and the group at nine of nine
+
+The last of the nine. It is not a memory access at all: it is 16-bit *types* in the shader input and
+output interfaces.
+
+### 21.18.1 What was actually missing
+
+The two translation functions that would have to know (`trans_load_input_vs`, `trans_store_output_vs`)
+carry `/* TODO: f16 support. */` and assert a 32-bit type. This is a **release** build, so those asserts
+do not fire: a 16-bit varying does not fail, it silently translates as a whole 32-bit register - the same
+failure shape as the push constants in §21.17, one layer up.
+
+The hardware path for it exists and was never programmed. `glsl_count_dword_slots()` already packs 16-bit
+components two to a dword, `pco_data.h` already has `f16_smooth`/`f16_flat`/`f16_npc` counters, and
+`csbgen/rogue/ppp.xml` has the matching `f16_npc`/`f16_flat`/`f16_linear` fields with
+`csbgen/rogue/pds.xml` carrying `f16` and `f16_offset`. But the counters are incremented in
+`pvr_alloc_vs_varyings()` and **read by nothing**, and the fragment input descriptor sidesteps the whole
+question with `douti_src.f16_offset = douti_src.f32_offset`. So this is not one of the
+"already implemented, only the advertisement was missing" gaps that closed the others; it is
+half-scaffolded.
+
+### 21.18.2 The route taken: promote the interface to 32 bits
+
+Rather than finish the hardware path, the interface is promoted to 32 bits at the boundary and converted
+around it. That is exact - f16 -> f32 -> f16 and u16 -> u32 -> u16 round-trip without loss - and it is
+much the smaller change, because it leaves every consumer of the interface alone: the varying
+allocation, the PPP/PDS varying state and the VDM's attribute formats all then see the 32-bit types they
+already handle. The only interfaces that leave the driver are the vertex input and the framebuffer, and
+both are format-driven conversions the hardware already does.
+
+`pco_nir_lower_16bit_io()` (`src/imagination/pco/pco_nir_16bit_io.c`) does both halves, which have to
+happen together: rewrite each 16-bit `load_input`/`store_output` to its 32-bit type with a conversion on
+the shader's side of it, **and** widen the interface variable types. Widening the intrinsics alone would
+leave `pvr_alloc_vs_varyings()` sizing a `f16vec2` as one dword while the shader stores two f32
+components into it.
+
+It runs after `nir_lower_io()` and `nir_lower_io_to_scalar()`, so it sees one scalar intrinsic per
+component, and it is a no-op for any shader that does not use 16-bit I/O.
+
+### 21.18.3 Two things it took to get there
+
+**The intrinsics have to be rewritten in place.** The first version duplicated each intrinsic with a
+different width, copying `src[i].ssa` the way `dup_mem_intrinsic()` in
+`nir_lower_mem_access_bit_sizes.c` does. That is wrong for `load_interpolated_input`, whose second source
+is a *barycentric instruction* rather than an SSA def, so the copy built a load with a null source.
+Nothing complained at the time; the invalid NIR crashed `nir_opt_copy_prop()` a few passes later. The
+working version does what `nir_lower_mediump_io()` does - set `intr->def.bit_size`, call
+`nir_intrinsic_set_dest_type()`, insert the conversion, and `nir_def_rewrite_uses_after()` (the `_after`
+is load-bearing: plain `nir_def_rewrite_uses()` also rewrites the conversion's own use of the def).
+
+**pco had no 16-bit pack/unpack.** With the promotion working, translation then failed on
+`16 %8 = unpack_32_2x16_split_x %7` - `nir_opt_algebraic()` forms that from `f2f16`, and the narrowing
+half of the push-constant work produces the same shape. `pack_32_2x16_split`,
+`unpack_32_2x16_split_x` and `unpack_32_2x16_split_y` are now translated in `trans_alu()` as a mask and
+a shift (§21.17's push-constant work had already tripped over the `pack` half of this and worked around
+it; this is the actual fix). Both operands of `pack` are masked, because a 16-bit NIR value's upper bits
+are only defined by whatever produced it - the narrowing conversions in `trans_conv()` are plain movs.
+
+### 21.18.4 Verified
+
+`vkrender IO16=1` draws the same full-screen triangle, but the blue channel reaches the fragment stage
+through an `f16vec4` varying instead of being a constant, so **the expected image is unchanged and the
+existing 262144-pixel check applies as-is**. The value comes from a push constant, so it cannot be folded
+into the fragment shader, and it is the same at every vertex, so interpolation returns it exactly whatever
+the barycentrics are.
+
+```
+sudo ./open-run.sh bash -c '... vkrender 512 20; IO16=1 vkrender 512 20; regress.sh'
+  plain vkrender      RESULT: PASS - 262144/262144 pixels correct
+  vkrender IO16=1     RESULT: PASS - 262144/262144 pixels correct
+  regress             25 passed, 0 failed, 0 known-open
+```
+
+The suite grew the `IO16` case, so a regression in the promotion fails the build gate rather than going
+unnoticed.
+
+### 21.18.5 The nine, and what the test does not cover
+
+| feature | state |
+|---|---|
+| `shaderFloat16`, `shaderInt8` | advertised, `vk16` PASS |
+| `storageBuffer16BitAccess`, `uniformAndStorageBuffer16BitAccess` | advertised, `vkbits` PASS |
+| `storageBuffer8BitAccess`, `uniformAndStorageBuffer8BitAccess` | advertised, `vkbits` PASS |
+| `storagePushConstant8`, `storagePushConstant16` | advertised, `vkbits` PASS 15/15 |
+| `storageInputOutput16` | **advertised**, `vkrender IO16=1` PASS, in `regress.sh` |
+
+**Nine of nine.** One honest scope note: `vkrender` generates its triangle from `gl_VertexIndex` and has
+no vertex buffer, so the test covers the 16-bit *varying* (vertex output and fragment input) but not a
+16-bit *vertex input* attribute. That path is the same promotion - the attribute arrives as whatever the
+application's `VkVertexInputAttributeDescription` format converts to, which is what a 32-bit attribute
+already does today - but it is argued rather than measured, and the distinction is worth keeping.
+
+

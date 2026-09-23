@@ -34,6 +34,10 @@ glslangValidator -V --target-env vulkan1.1 -o robust_image.spv robust_image.comp
 # the SPIR-V 1.3 features glslang enables for this target.
 glslangValidator -V --target-env vulkan1.1 -o f16_alu.spv f16_alu.comp
 glslangValidator -V --target-env vulkan1.1 -o bits_storage.spv bits_storage.comp
+# io16: storageInputOutput16 - the same triangle, but the blue channel reaches the
+# fragment stage through a 16-bit varying, so the expected image is unchanged.
+glslangValidator -V --target-env vulkan1.1 -o io16.vert.spv io16.vert
+glslangValidator -V --target-env vulkan1.1 -o io16.frag.spv io16.frag
 
 python3 - <<'PY'
 import struct
@@ -61,6 +65,8 @@ emit('zero_shared.spv', 'zero_shared_spv', 'zero_shared_spv.h')
 emit('robust_image.spv', 'robust_image_spv', 'robust_image_spv.h')
 emit('f16_alu.spv', 'f16_alu_spv', 'f16_alu_spv.h')
 emit('bits_storage.spv', 'bits_storage_spv', 'bits_storage_spv.h')
+emit('io16.vert.spv', 'io16_vert_spv', 'io16_vert_spv.h')
+emit('io16.frag.spv', 'io16_frag_spv', 'io16_frag_spv.h')
 PY
 
 CC=${CC:-gcc}

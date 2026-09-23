@@ -120,6 +120,11 @@ run_case verdict "vk13 (zero-init shmem, cache control, robust image)" -- ./vk13
 run_case verdict "vk16 (shaderFloat16 + shaderInt8 arithmetic)" -- ./vk16
 run_case verdict "vkbits (8/16-bit storage, sentinel-checked)" -- ./vkbits
 
+# storageInputOutput16: the same triangle, but the blue channel reaches the
+# fragment stage through a 16-bit varying, so the pixel expectation - and
+# therefore the check - is render.frag's, unchanged.
+run_case verdict "vkrender IO16 (16-bit varying)" IO16=1 -- ./vkrender 512 4
+
 # GL/zink drives the same ICD through a second compiler path, so it is a real
 # regression target rather than an optional extra. It needs nullDescriptor from
 # VK_KHR_robustness2, which the vendor ICD does not expose, so skip it there

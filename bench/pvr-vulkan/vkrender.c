@@ -27,6 +27,8 @@
 
 #include "render_frag_spv.h"
 #include "render_vert_spv.h"
+#include "io16_vert_spv.h"
+#include "io16_frag_spv.h"
 
 #define DIE(...)                               \
     do {                                       \
@@ -83,6 +85,14 @@ int main(int argc, char **argv)
             api = VK_MAKE_VERSION(maj, min, 0);
     }
 
+    /* IO16 needs vkGetPhysicalDeviceFeatures2, which is core 1.1: with a 1.0
+     * instance the loader fills nothing and every feature reads back as zero,
+     * which looks exactly like the driver not advertising it. */
+    const char *io16_env = getenv("IO16");
+    bool io16 = io16_env && *io16_env;
+    if (io16 && api < VK_API_VERSION_1_1)
+        api = VK_API_VERSION_1_1;
+
     VkApplicationInfo app = {
         .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
         .pApplicationName = "pvr-vulkan-render-test",
@@ -135,8 +145,39 @@ int main(int argc, char **argv)
         .queueCount = 1,
         .pQueuePriorities = &prio,
     };
+    /* IO16=1 draws the same triangle, but the blue channel reaches the fragment
+     * stage through a 16-bit varying, so the image must come out identical. It
+     * needs storageInputOutput16 for the varying and storagePushConstant16 for
+     * the value the vertex stage forwards. (io16 is read above, because it
+     * forces the instance to 1.1.) */
+    VkPhysicalDeviceShaderFloat16Int8Features io_feat_f16 = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES,
+    };
+    VkPhysicalDevice8BitStorageFeatures io_feat8 = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_8BIT_STORAGE_FEATURES,
+        .pNext = &io_feat_f16,
+    };
+    VkPhysicalDevice16BitStorageFeatures io_feat16 = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_16BIT_STORAGE_FEATURES,
+        .pNext = &io_feat8,
+    };
+    VkPhysicalDeviceFeatures2 io_feat2 = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+        .pNext = &io_feat16,
+    };
+    if (io16) {
+        vkGetPhysicalDeviceFeatures2(phys, &io_feat2);
+        printf("storageInputOutput16 = %d, storagePushConstant16 = %d, shaderFloat16 = %d\n",
+               io_feat16.storageInputOutput16, io_feat16.storagePushConstant16,
+               io_feat_f16.shaderFloat16);
+        io_feat16.storageInputOutput16 = VK_TRUE;
+        io_feat16.storagePushConstant16 = VK_TRUE;
+        io_feat_f16.shaderFloat16 = VK_TRUE;
+    }
+
     VkDeviceCreateInfo dci = {
         .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+        .pNext = io16 ? &io_feat2 : NULL,
         .queueCreateInfoCount = 1,
         .pQueueCreateInfos = &qci,
     };
@@ -370,22 +411,29 @@ int main(int argc, char **argv)
     /* ---- pipeline ------------------------------------------------------ */
     VkShaderModuleCreateInfo vsci = {
         .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-        .codeSize = sizeof(render_vert_spv),
-        .pCode = render_vert_spv,
+        .codeSize = io16 ? sizeof(io16_vert_spv) : sizeof(render_vert_spv),
+        .pCode = io16 ? io16_vert_spv : render_vert_spv,
     };
     VkShaderModule vs;
     VKCHECK(vkCreateShaderModule(dev, &vsci, NULL, &vs));
 
     VkShaderModuleCreateInfo fsci = {
         .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-        .codeSize = sizeof(render_frag_spv),
-        .pCode = render_frag_spv,
+        .codeSize = io16 ? sizeof(io16_frag_spv) : sizeof(render_frag_spv),
+        .pCode = io16 ? io16_frag_spv : render_frag_spv,
     };
     VkShaderModule fs;
     VKCHECK(vkCreateShaderModule(dev, &fsci, NULL, &fs));
 
+    VkPushConstantRange io16_pcr = {
+        .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+        .offset = 0,
+        .size = 4,
+    };
     VkPipelineLayoutCreateInfo plci = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+        .pushConstantRangeCount = io16 ? 1 : 0,
+        .pPushConstantRanges = io16 ? &io16_pcr : NULL,
     };
     VkPipelineLayout pl;
     VKCHECK(vkCreatePipelineLayout(dev, &plci, NULL, &pl));
@@ -560,6 +608,12 @@ int main(int argc, char **argv)
             vkCmdBeginRenderPass(cmd, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
             if (!empty_pass) {
                 vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+                if (io16) {
+                    /* 0.25 as an IEEE half: 0x3400, in the low half of the dword. */
+                    const uint32_t half_quarter = 0x00003400u;
+                    vkCmdPushConstants(cmd, pl, VK_SHADER_STAGE_VERTEX_BIT, 0, 4,
+                                       &half_quarter);
+                }
                 vkCmdDraw(cmd, 3, 1, 0, 0);
             }
             vkCmdEndRenderPass(cmd);

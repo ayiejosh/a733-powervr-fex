@@ -1,7 +1,7 @@
 # 8/16-bit storage access for pco
 
-**Implemented.** Eight of the nine features in this group are advertised and verified on hardware;
-the ninth, `storageInputOutput16`, is 16-bit vertex I/O and is a different problem (below).
+**Implemented, all nine features.** The four buffer features, the two push-constant ones and
+`storageInputOutput16` are advertised and verified on hardware; the group is closed.
 
 Status:
 
@@ -11,7 +11,7 @@ Status:
 | `storageBuffer16BitAccess`, `uniformAndStorageBuffer16BitAccess` | **advertised**, `vkbits` PASS |
 | `storageBuffer8BitAccess`, `uniformAndStorageBuffer8BitAccess` | **advertised**, `vkbits` PASS |
 | `storagePushConstant8`, `storagePushConstant16` | **advertised**, `vkbits` PASS 15/15 on the open driver and the vendor |
-| `storageInputOutput16` | **not advertised** - 16-bit vertex I/O, where the `/* TODO: f16 support. */` comments in `pco_trans_nir.c` actually are |
+| `storageInputOutput16` | **advertised**, `vkrender IO16=1` PASS 262144/262144, a `regress.sh` case |
 
 ## The implementation
 
@@ -124,21 +124,51 @@ push constants: 32-bit = 0xcafef00d (want 0xcafef00d), 16-bit pair = 0x03040102
 pre = 0xdeadbeef, post = 0xdeadbeef     <- the store sentinels
 ```
 
-## `storageInputOutput16` is a separate problem
+## `storageInputOutput16`: done by promoting the interface
 
-It is not a memory access at all: it is 16-bit *types* in shader inputs and outputs, and the two
-`/* TODO: f16 support. */` comments in `pco_trans_nir.c` (`trans_load_input_vs`, `trans_store_output_vs`)
-are where it lives. Both assert that the type is 32-bit - and both asserts are compiled out, because
-this build is `buildtype=release`. A 16-bit varying therefore does not fail loudly today; it translates
-as a whole 32-bit word, the same failure mode as the push constants above.
+It is not a memory access at all - it is 16-bit *types* in shader inputs and outputs, which is where the
+two `/* TODO: f16 support. */` comments in `pco_trans_nir.c` live (`trans_load_input_vs`,
+`trans_store_output_vs`). Both assert the type is 32-bit, and **both asserts are compiled out** here
+(`buildtype=release`), so a 16-bit varying does not fail loudly; it translates as a whole 32-bit
+register, the same failure mode as the push constants above.
 
-Two ways to do it:
+The hardware path exists and was never programmed: `glsl_count_dword_slots()` already packs 16-bit
+components two to a dword, `pco_data.h` already has `f16_smooth`/`f16_flat`/`f16_npc`, and
+`csbgen/rogue/ppp.xml` has the matching fields (with `pds.xml` carrying `f16` and `f16_offset`) - but the
+counters are incremented and read by nothing, and the fragment input descriptor sidesteps it with
+`douti_src.f16_offset = douti_src.f32_offset`. It is half-scaffolded rather than "only the advertisement
+missing".
 
-1. **In pco**, as packed halves of a 32-bit register. `glsl_count_dword_slots(f16vec2)` is already 1, so
-   the varying and attribute allocation in `pvr_arch_pipeline.c` already agrees between the stages. What
-   is missing is the pack/unpack in the four translation functions, plus the fact that
-   `pco_ref_nir_def()` gives a 16-bit def a 16-bit ref, which the current `pco_mov` does not reconcile.
-2. **In NIR**, by promoting 16-bit shader I/O to 32-bit and converting around the loads and stores. The
-   only interfaces that leave the driver are the vertex input and the framebuffer, and both are
-   format-driven conversions the hardware already does, so this is sound - and it is far less invasive
-   than teaching four translation functions a packing convention.
+So the interface is **promoted to 32 bits** instead, and converted around. Exact (f16 -> f32 -> f16 and
+u16 -> u32 -> u16 round-trip without loss) and much smaller, because it leaves the varying allocation,
+the PPP/PDS varying state and the VDM attribute formats alone - they see the 32-bit types they already
+handle. The only interfaces that leave the driver are the vertex input and the framebuffer, and both are
+format-driven conversions the hardware does anyway.
+
+`pco_nir_lower_16bit_io()`, in `pco_nir_16bit_io.c`, does both halves together: rewrite each 16-bit IO
+intrinsic to its 32-bit type with a conversion on the shader's side of it, **and** widen the interface
+variable types. Widening the intrinsics alone would leave the allocation sizing a `f16vec2` as one dword
+while the shader stores two f32 components into it.
+
+Two things it took to get right, both worth keeping:
+
+1. **Rewrite the intrinsics in place, the way `nir_lower_mediump_io()` does.** The first version
+   duplicated each intrinsic with a different width, copying `src[i].ssa` as `dup_mem_intrinsic()` does.
+   That is wrong for `load_interpolated_input`, whose second source is a barycentric *instruction* rather
+   than an SSA def - the copy builds a null source, nothing complains, and `nir_opt_copy_prop()` crashes
+   on the invalid NIR a few passes later. The in-place form also needs
+   `nir_def_rewrite_uses_after()` rather than `nir_def_rewrite_uses()`, because the latter would rewrite
+   the conversion's own use of the def.
+2. **pco needed `pack_32_2x16_split` and `unpack_32_2x16_split_{x,y}`** in `trans_alu()`, as a mask and a
+   shift. `nir_opt_algebraic()` forms them from `f2f16`, and the push-constant narrowing produces the
+   same shape. Both operands of `pack` are masked: a 16-bit NIR value's upper bits are defined only by
+   whatever produced it, since the narrowing conversions in `trans_conv()` are plain movs.
+
+Verified by `vkrender IO16=1`: the same full-screen triangle, but the blue channel arrives through an
+`f16vec4` varying, so the expected image - and therefore the existing 262144-pixel check - is unchanged.
+The suite gained the case.
+
+**What the test does not cover:** `vkrender` builds its triangle from `gl_VertexIndex` and has no vertex
+buffer, so a 16-bit *vertex input* attribute is argued rather than measured. It is the same promotion
+(the attribute arrives as whatever the application's format converts to, exactly as a 32-bit attribute
+does today), but it is not exercised.
