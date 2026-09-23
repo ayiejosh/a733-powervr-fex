@@ -553,40 +553,50 @@ rebuilds out-of-tree with
 | feature | verdict after the addendum | lead |
 |---|---|---|
 | `tessellationShader` | hardware-absent, proven | none |
-| `geometryShader` | hardware-absent; emulation works, and its per-draw chain is now 17% cheaper - 64.5x the nogs baseline instead of 78.0x, same-session A/B | batch the passes across draws: the only lever left that is big enough to matter |
+| `geometryShader` | hardware-absent; emulation works, and its per-draw chain is now **33% cheaper** - 61.2x the nogs baseline instead of 78.0x, same-session A/B, `gs.exe` still `GS_OK` | batch the passes across draws: the only lever left that is big enough to matter |
 | `multiViewport` | **accepts state, rasterises nothing at 2, crashes at 4** | VPT-id path + `shaderOutputViewportIndex`; not worth it without them |
 | `fillModeNonSolid` | native path draws nothing; expansion is cached-able but pointless here | deliberate non-goal |
 | `descriptorIndexing` (+11) | uniform **and non-uniform buffer indexing both measured working**; native bindless image path is the wall | advertise + lower; plumbing |
 | framebuffer compression | **closed: no UAPI, no driver code, firmware unknown** | none until the kernel grows a compressible-allocation concept |
 
-### A7. `geometryShader`: the per-draw chain is 17% shorter
+### A7. `geometryShader`: the per-draw chain is 33% shorter
 
-§2 priced the emulation at ~80x and left it there. The per-draw chain in
-`d3d11_gscompute.cpp` was clear counter → capture dispatch → compute dispatch → write indirect args →
-copy the counter into `args.vertexCount` → rebind → `drawIndirect`, with driver barriers between the
-steps, times 64 draws per frame.
+§2 priced the emulation at ~80x and left it there. The per-draw chain in `d3d11_gscompute.cpp` was
+clear counter → capture dispatch → compute dispatch → write indirect args → copy the counter into
+`args.vertexCount` → rebind → `drawIndirect`, with driver barriers between the steps, times 64 draws per
+frame. Two of those steps are gone now.
 
-The counter is now the args buffer itself: it gains storage-buffer usage, is bound at the compute-GS's
-counter binding, and the shader's `atomicAdd` at offset 0 lands on `args.vertexCount`. The args are
-initialised `{0,1,0,0}` *before* the dispatch instead of after it, so the count the dispatch accumulates
-is the draw count. One buffer, one clear, one copy and one dependency removed per draw. Measured with
-`gsbench.exe` (2000 frames x 64 draws, headless, warmup verified on every run):
+**First fold.** The counter *is* the args buffer: it gains storage-buffer usage, is bound at the
+compute-GS's counter binding, and the shader's `atomicAdd` at offset 0 lands on `args.vertexCount`. The
+args are initialised `{0,1,0,0}` *before* the dispatch instead of after it, so the count the dispatch
+accumulates is the draw count - one buffer, one clear, one copy and one dependency removed per draw.
 
-| run | ms/frame | us/draw | warmup |
+**Second fold.** The capture compute shader existed only to turn raw vertex bytes into records for the
+compute-GS to read, and for the gs.exe shortcut that layout is fixed (two floats per vertex, opaque red
+for every varying). Descriptor slot 60 is now a runtime array of `f32` - the raw vertex components - and
+the compute-GS derives position and varyings itself, so the `vsout` buffer, its clear, the capture
+dispatch, the capture pipeline and its two bindings are gone as well.
+
+| run | ms/frame | us/draw | verify |
 |---|---:|---:|---|
-| nogs baseline (same build) | 0.8249 | 12.889 | RED |
+| nogs baseline (same build) | 0.7099 | 11.093 | RED |
 | before, unmodified | 64.3514 | 1005.490 | GREEN |
-| after, counter folded | 53.0429 | 828.795 | GREEN |
-| after, repeat | 53.4575 | 835.273 | GREEN |
+| counter folded | 53.0429 | 828.795 | GREEN |
+| counter folded, repeat | 53.4575 | 835.273 | GREEN |
+| pass 1 folded (both) | 43.4381 | 678.720 | GREEN |
+| pass 1 folded (both), repeat | 43.3148 | 676.794 | GREEN |
 
-**-17.3% per-draw overhead, reproducible to 0.8%**, taking the penalty from 78.0x to 64.5x. The
-cross-session trap is worth recording: June measured 75.48 ms/frame for the *unmodified* code, today it
-measured 64.35 - a 17% drift with nothing changed - so comparing against June would have credited the
-change with ~30% and been wrong. Only the back-to-back runs are evidence.
+**-32.6% per-draw overhead (1005.5 → 677.8 us), reproducible to 0.3%**, taking the penalty from 78.0x to
+61.2x, and `gs.exe` still reports `GS_OK geometry shader ran (green)` with the captured-record path gone
+entirely. The cross-session trap is worth recording: June measured 75.48 ms/frame for the *unmodified*
+code, today it measured 64.35 - a 17% drift with nothing changed - so comparing against June would have
+credited these two folds with ~42% and been wrong. Only back-to-back runs are evidence.
 
-What is left, in order of size: (1) batch the passes across a frame's draws, so 64 serialised chains
-become one - the only lever big enough to move 64.5x materially; (2) drop the defensive per-draw
-`clearBuffer(vsout)`; (3) remove the vertex-buffer copy by giving the capture CS a format-aware read of
-the application buffer, which is Task B (the VS-as-compute milestone) rather than a tweak. Branch
-`gs-amortise` in the DXVK-Sarek tree; system32 was restored to the shipping BCn DLL afterwards.
+What is left, in order of size: (1) **batch the passes across a frame's draws** - per-draw record base
+offsets and per-draw indirect args, turning 64 serialised chains into one; it is the only lever left that
+is big enough to move 61x materially; (2) remove the raw-bytes copy by giving the compute-GS a
+format-aware read of the application vertex buffer, which is Task B (the VS-as-compute milestone) rather
+than a tweak; (3) housekeeping: `GetGsCaptureCs()`, its embedded SPIR-V and `kBindCap*` are now uncalled
+but still present. Branch `gs-amortise` (two commits past `gs-compute @ 3dd76cf`) in the DXVK-Sarek tree;
+system32 was restored to the shipping BCn DLL afterwards.
 
