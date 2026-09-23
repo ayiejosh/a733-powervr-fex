@@ -43,6 +43,28 @@ RESTORED=0
 RESTORE_ONLY=0
 [ "${1:-}" = "--restore-only" ] && RESTORE_ONLY=1
 
+# The presentation tools hand the CRTC back before exiting (drmModeSetCrtc with no
+# framebuffer), because leaving it scanning a buffer this process owns means the
+# display engine faults on every scan once that buffer is freed:
+#   iommu_master de0_iommu ... 0x00000000fc000000 is not mapped!
+#   Bug is in DE0 module, invalid address: ...
+# That flooded the log with 16k messages and needed a forced reboot. Check for it
+# after the display phases so a regression is loud instead of silent.
+# Fault deltas per phase: the DE0/IOMMU warnings are worth attributing rather than
+# only counting, because one of them (the display engine scanning a freed buffer)
+# is a fault storm that kills the desktop, while others are transient power-up
+# noise from the BSP kernel's DE/IOMMU runtime PM.
+phase_faults() {
+    local label=$1 before=$2 after
+    after=$(de0_faults)
+    say "faults during $label: $((after - before))"
+    echo "$after"
+}
+
+de0_faults() {
+    dmesg 2>/dev/null | grep -cE 'DE0 module|is not mapped!|sunxi_iommu_irq|Runtime PM usage count underflow'
+}
+
 say() { echo "[stage4 $(date +%H:%M:%S)] $*" | tee -a "$LOG"; }
 
 restore() {
@@ -357,7 +379,8 @@ else
 fi
 
 if [ -x "$BENCH/pvrscanout" ]; then
-    say "--- render -> dma-buf -> sunxi-drm scanout (pattern on screen for 6 s) ---"
+    _f0=$(de0_faults)
+say "--- render -> dma-buf -> sunxi-drm scanout (pattern on screen for 6 s) ---"
     ( cd "$BENCH" && VK_ICD_FILENAMES="$MESA_ICD" VK_DRIVER_FILES="$MESA_ICD" \
         PVR_I_WANT_A_BROKEN_VULKAN_DRIVER=1 \
         timeout 300 ./pvrscanout 1280 720 6 2>&1 | sed 's/^/    /' | tee -a "$LOG" )
@@ -365,6 +388,7 @@ else
     say "no $BENCH/pvrscanout - skipping the scanout test"
 fi
 
+_f1=$(phase_faults "scanout" "$_f0")
 if [ -x "$BENCH/pvranimate" ]; then
     say "--- continuous presentation: page-flipped animation on screen ---"
     (
@@ -506,6 +530,13 @@ else
     say "no glheadless / GL build - skipping the GL test"
 fi
 
+_f2=$(phase_faults "animation" "$_f1")
+_faults_after=$_f2
+say "DE0/IOMMU faults so far this boot: $_faults_after"
+if [ "$((_faults_after - _faults_before))" -gt 100 ]; then
+    say "WARNING: the display phases caused an IOMMU fault storm - the display engine may be"
+    say "         scanning a buffer that no longer exists; a desktop restart may be needed"
+fi
 say "--- kernel log after the test ---"
 dmesg | grep -iE 'powervr|pvr' | tail -6 | sed 's/^/    /' | tee -a "$LOG"
 

@@ -1090,3 +1090,77 @@ Three separate causes, all found by reading kwin's own log rather than guessing:
 The useful side effect of (1): a KDE session on the open stack is *nearly* reachable - kwin got as
 far as creating a zink screen on pvr and printing its warning before failing. That is a much
 shorter path to a real desktop on the open driver than it looked.
+
+## 17. The reboots: our display tools pointed the CRTC at a freed framebuffer
+
+Both forced reboots had the same cause, and it was in the benchmark tools, not in Mesa, the
+kernel driver or the desktop.
+
+### What happened
+
+`pvrscanout` and `pvranimate` both finished with:
+
+```c
+if (old && old->buffer_id)
+    drmModeSetCrtc(dfd, old->crtc_id, old->buffer_id, old->x, old->y, &conn->connector_id, 1, &old->mode);
+```
+
+`old` is the CRTC state read at startup - and the swap stops the desktop *before* these tools run, so
+`old->buffer_id` is X's framebuffer, whose memory was freed when X exited. Pointing the CRTC at it
+makes the display engine scan unmapped memory, which faults on every scan:
+
+```
+iommu_master de0_iommu: Runtime PM usage count underflow!
+L1 PageTable Invalid
+0x0x00000000fc000000 is not mapped!
+Bug is in DE0 module, invalid address: 0xfc000000, data:0x0, id:0x4
+WARNING: CPU: 0 PID: 0 at bsp/drivers/iommu/sunxi-iommu-v2.c:405 sunxi_iommu_irq
+```
+
+The fault address stays constant because the engine keeps re-reading the same dead buffer. A second
+path had the same defect: `pvrscanout` re-execs itself at panel size with every fd `O_CLOEXEC`, so
+the exec freed the framebuffers while the CRTC was still scanning them.
+
+### Why it was a reboot and not a hang
+
+The storm (26,424 fault lines in one hour, 17,692 in the next, 786 in the last) saturates CPU 0 in
+the IRQ handler and floods the log - journald reported `Missed 16209 kernel messages`. This board
+runs `watchdog-pet`, a deliberately **health-gated** petter: a normal-priority canary must complete
+a trivial operation, and after 8 consecutive failures (~96 s wedged) it *withholds* pets on purpose so
+the 16 s `sunxi-wdt` hardware watchdog resets the box instead of leaving it hung. Timing fits exactly
+(storm from ~13:36:5x, canary failing from ~13:38:00, withhold ~13:39:36, reset ~16 s later). That is
+also why there is no shutdown sequence and no panic in the log - it was a hardware reset, by design.
+
+Ruled out with checks, not assumptions: a clean `reboot` (no systemd stop sequence, and the petter
+disarms on SIGTERM - it never got the signal), `panic_on_warn` (0, so the WARNINGs cannot panic),
+OOM/earlyoom (3.3-4.6 GB available, no kills), kernel stalls or panics (kernel-only search: 0 lines).
+And a control run - stopping and starting the desktop session alone, with no module swap and no
+benchmark - produced **0 faults**, which is what pinned this on the tools rather than on X.
+
+### The fix
+
+* `release_display()`: switch the CRTC **off** (`drmModeSetCrtc` with no framebuffer), then *confirm*
+  it is off by polling `drmModeGetCrtc` until `buffer_id == 0`, then let three vblanks pass before any
+  fd can close. Idempotent, and used by `atexit`, by the SIGINT/SIGTERM handlers, at the end of the
+  run, and before `pvrscanout`'s self-rerun `exec`.
+* Never restore the old CRTC state: a framebuffer that belonged to a stopped desktop must not be put
+  back on screen.
+* The harness now counts faults per phase and trips if a phase adds more than 20, so a regression
+  aborts the run instead of storming.
+
+### Verification
+
+`display-fix-test.sh` runs the shortest possible display work with a tripwire after every step and an
+armed restore:
+
+```
+step 1 faults: 0        (scanout, with the self-rerun exec)
+step 2 faults: 0        (60-frame animation at 1080p)
+step 3 faults: 0        (two 4K animations back to back)
+RESULT: faults scanout=0 animation=0 repeated=0 (limit 20 each)
+PASS - the display hand-back leaves no faults behind
+desktop: X=1 kwin=1 plasmashell=1 ; idle fault rate after restore (10s): 0
+```
+
+Where the same work previously added 128+ fault lines per run - and thousands when the restore failed
+and nothing re-modeset the display.

@@ -33,6 +33,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <math.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -134,6 +135,87 @@ static int probe(VkPhysicalDevice phys, VkFormat fmt, VkImageTiling tiling,
         *feats_out = (r == VK_SUCCESS) ? ext_props.externalMemoryProperties.externalMemoryFeatures
                                        : 0;
     return r == VK_SUCCESS;
+}
+
+/* The display engine keeps scanning whatever framebuffer the CRTC was last given.
+ * If this process exits while its own buffer is still being scanned, the buffer is
+ * freed underneath the display engine, which then faults on every scanout:
+
+ *   iommu_master de0_iommu: ... 0x00000000fc000000 is not mapped!
+ *   Bug is in DE0 module, invalid address: ...
+ *
+ * That floods the kernel log (16k messages seen), the desktop cannot come back, and
+ * it took a forced reboot to clear. So hand the CRTC back before exiting: disable it
+ * and let X / the next user set their own mode. Both the normal exit and a signal
+ * (timeout, Ctrl-C) go through here.
+ */
+static int g_restore_fd = -1;
+static uint32_t g_restore_crtc = 0;
+static uint32_t g_restore_crtc_confirm = 0;
+
+/* Hand the display back safely. Idempotent, and safe to call from a signal handler,
+ * from atexit, or before an exec that will close every fd.
+ *
+ * The bug this replaces: both tools used to finish with
+ *     if (old && old->buffer_id) drmModeSetCrtc(fd, crtc, old->buffer_id, ...);
+ * The desktop is stopped before these tools run, so old->buffer_id is X's
+ * framebuffer, whose memory was freed when X exited. Pointing the CRTC at it makes
+ * the display engine scan unmapped memory, which faults on every scan:
+ *     iommu_master de0_iommu ... 0x0x00000000fc000000 is not mapped!
+ *     Bug is in DE0 module, invalid address: 0xfc000000
+ * That is a storm (26k+ messages seen), it saturates CPU 0 in the IRQ handler and
+ * wedges the box until the hardware watchdog resets it. So: never point the CRTC at
+ * a buffer we do not own - switch the CRTC off, *confirm* it is off, give the
+ * display engine a few vblanks, and only then let the fds close.
+ */
+static void release_display(void)
+{
+    if (g_restore_fd < 0 || g_restore_crtc == 0)
+        return;
+
+    if (drmModeSetCrtc(g_restore_fd, g_restore_crtc, 0, 0, 0, NULL, 0, NULL) == 0) {
+        fprintf(stderr, "display released: CRTC %u off (nothing of ours left being scanned)\n",
+                g_restore_crtc);
+    } else {
+        fprintf(stderr, "warning: could not switch CRTC %u off: %s\n", g_restore_crtc,
+                strerror(errno));
+    }
+    g_restore_crtc = 0;
+
+    /* Confirm it really is off before the process can free anything. */
+    for (int i = 0; i < 50; i++) {
+        drmModeCrtc *c = drmModeGetCrtc(g_restore_fd, g_restore_crtc_confirm);
+        if (!c)
+            break;
+        int off = (c->buffer_id == 0);
+        drmModeFreeCrtc(c);
+        if (off)
+            break;
+        usleep(20000);
+    }
+    usleep(50000);
+}
+
+
+static void restore_crtc(void)
+{
+    release_display();
+}
+
+static void restore_crtc_on_signal(int sig)
+{
+    release_display();
+    _exit(128 + sig);
+}
+
+static void arm_crtc_restore(int fd, uint32_t crtc)
+{
+    g_restore_fd = fd;
+    g_restore_crtc = crtc;
+    g_restore_crtc_confirm = crtc;
+    atexit(restore_crtc);
+    signal(SIGINT, restore_crtc_on_signal);
+    signal(SIGTERM, restore_crtc_on_signal);
 }
 
 int main(int argc, char **argv)
@@ -818,6 +900,7 @@ int main(int argc, char **argv)
     if (!crtc_id)
         DIE("no CRTC available");
     drmModeCrtc *old = drmModeGetCrtc(dfd, crtc_id);
+    arm_crtc_restore(dfd, crtc_id);
 
     /* Use the mode the panel is already running, so the only thing that changes
      * on screen is the content. */
@@ -840,6 +923,11 @@ int main(int argc, char **argv)
         snprintf(hbuf2, sizeof(hbuf2), "%d", hold);
         printf("   panel is %ux%u, re-running at that size\n", mode.hdisplay, mode.vdisplay);
         fflush(stdout);
+        /* The exec closes every fd we hold (they are all O_CLOEXEC), which frees the
+         * framebuffers - so the CRTC must not still be scanning ours when it happens,
+         * or the display engine faults on the freed memory. Hand the display back
+         * first; the re-executed process sets it up again from scratch. */
+        release_display();
         execl("/proc/self/exe", "pvrscanout", wbuf, hbuf, hbuf2, display_card, (char *)NULL);
         DIE("execl failed: %s", strerror(errno));
     }
@@ -876,9 +964,10 @@ int main(int argc, char **argv)
         sleep(hold);
     }
 
-    if (old && old->buffer_id)
-        drmModeSetCrtc(dfd, old->crtc_id, old->buffer_id, old->x, old->y, &conn->connector_id, 1,
-                       &old->mode);
+    /* The old CRTC state belongs to a desktop that is no longer running, so its
+     * framebuffer memory is gone: switch the CRTC off instead of pointing it at a
+     * buffer that no longer exists. */
+    release_display();
     if (now)
         drmModeFreeCrtc(now);
     if (old)
