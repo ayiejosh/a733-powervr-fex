@@ -53,10 +53,21 @@ m icd.apiVersion "$(printf '%s' "$AUD" | num 'apiVersion[ ]+[0-9.]+' | head -1)"
 m icd.maxImageDimension2D "$(printf '%s' "$AUD" | tailnum 'maxImageDimension2D[ \t]+[0-9]+')"
 m icd.bufferDeviceAddress "$(printf '%s' "$AUD" | grep -oE 'vk12.bufferDeviceAddress=[01]' | head -1 | cut -d= -f2)"
 m icd.colorSampleCounts "$(printf '%s' "$AUD" | hexval 'framebufferColorSampleCounts[ \t]+0x[0-9a-f]+')"
+m icd.deviceExtCount "$(printf '%s' "$AUD" | awk '/-- device extensions --/{f=1;next} /^-- |^== /{f=0} f' | grep -c '^  VK_')"
+m icd.featuresOn "$(printf '%s' "$AUD" | awk '/-- features --/{f=1} f' | grep -c '=1')"
 
 # --- compatibility: the things that used to not work --------------------------
 printf 'compat.bda: %s\n' "$(timeout 300 ./bda 2>&1 | verdict)"
 printf 'compat.pctest: %s\n' "$(timeout 300 ./pctest 2>&1 | verdict)"
+
+# The four cases the 8/16-bit storage, depthClamp and vertexPipelineStoresAndAtomics
+# work added. On the vendor they were already expected to pass, which is the point
+# of the comparison: these lines are the "the open driver caught up" evidence.
+printf 'compat.vkbits: %s\n' "$(timeout 300 ./vkbits 2>&1 | verdict)"
+printf 'compat.io16: %s\n' "$(IO16=1 timeout 300 ./vkrender 512 4 2>&1 | verdict)"
+printf 'compat.depthclamp: %s\n' "$(DEPTHCLAMP=1 timeout 300 ./vkrender 512 4 2>&1 | verdict)"
+printf 'compat.depthclamp_clipped: %s\n' "$(DEPTHCLAMP=0 timeout 300 ./vkrender 512 4 2>&1 | verdict)"
+printf 'compat.vsstore: %s\n' "$(VSSBO=1 timeout 300 ./vkrender 512 4 2>&1 | verdict)"
 
 # --- compute ----------------------------------------------------------------
 VK=$(timeout 600 ./vktest 5 262144 2>&1)
