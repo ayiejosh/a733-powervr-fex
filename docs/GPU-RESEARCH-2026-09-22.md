@@ -933,3 +933,89 @@ version the DRI screen failed to derive. The test keeps a GLES 2 shader path (ve
 So GL on the open driver works at the same API level as the vendor stack and is **~4.9x slower**.
 That gap lines up with the render-path measurement in §14 (158 vs 395 Mpix/s) plus zink's own
 overhead; it is a performance question now, not a correctness or capability one.
+
+## 16. Performance: where the time actually goes, and two real wins
+
+The open stack works (§15), so the remaining question is speed. The harness now reports a
+per-stage split (record / submit / GPU wait / flip wait) and can vary the workload, which turned a
+vague "it is slower" into attributable numbers. **All measurements below are on the same board, same
+boot, same workload, with the vendor stack (libVK_IMG 24.2 + pvrsrvkm) as the reference.**
+
+### 16.1 Two presentation wins
+
+Presentation was serialising every frame behind its own flip: at 1080p the GPU work was only 6.6 ms
+against a 16.7 ms vblank, yet the loop spent 10 ms waiting and lost ~11% of vblanks.
+
+| case | before | after | change |
+|---|---|---|---|
+| 1080p page-flipped animation | 53.5 fps | **59.6 fps** | +11%, now at panel refresh |
+| 4K page-flipped animation | 27.8 fps | **40.0 fps** | **+44%** |
+
+Two changes did it: three buffers with the wait moved to "this buffer's own flip" (so rendering
+runs back to back instead of render->flip->wait), and issuing each flip as soon as its frame is
+rendered rather than gating on the previous flip's event, using a retry on `EBUSY` to align to the
+next vblank. The 4K case gains most because its 20.6 ms of GPU work now overlaps the vblank instead
+of adding to it. Both runs report 0 flip timeouts.
+
+### 16.2 What is still slower, and exactly where
+
+Per-frame split, 1024x1024, single full-screen triangle plus an image-to-buffer copy:
+
+| | record | submit | GPU wait |
+|---|---|---|---|
+| vendor | 0.174 ms | 0.190 ms | 1.706 ms |
+| open (25.3 / main) | 0.859 / 0.971 ms | 0.270 / 0.355 ms | 3.603 / 3.451 ms |
+
+Splitting the workload (`MODE=render` vs `MODE=copy`) shows the gap is **the draw, not the copy**:
+
+| GPU ms/frame | vendor | open | ratio |
+|---|---|---|---|
+| 512x512 render | 0.397 | 0.883 | 2.2x |
+| 1024x1024 render | 0.772 | 2.555 | **3.3x** |
+| 1024x1024 copy | 0.728 | 1.023 | 1.4x |
+
+And compute is close (2.833 ms vs 2.497 ms for 1M elements, §14), so this is specific to the
+graphics path.
+
+### 16.3 The mechanism: per-frame work proportional to the surface, not to what is drawn
+
+Varying one thing at a time, all at 1024x1024:
+
+| variable | vendor GPU | open GPU | reading |
+|---|---|---|---|
+| full render area | 0.731 ms | 2.604 ms | baseline |
+| quarter render area (16x fewer pixels drawn) | 0.596 ms | 2.542 ms | open is **insensitive to coverage** |
+| `LOAD_OP_LOAD` instead of `CLEAR` | 1.554 ms | 4.439 ms | not the clear (and worse for open) |
+| `LOAD_OP_DONT_CARE` | 1.598 ms | 3.420 ms | not the clear |
+| `STORE_OP_DONT_CARE` | 0.547 ms | 2.506 ms | not the store |
+
+So the open driver's per-draw cost follows the *surface* size but ignores how much of it is drawn,
+and ignores the attachment load and store operations. It is also not:
+
+- **the GPU clock** - both stacks run `gpu0`/`pll-gpu` at 1,104,000,000 Hz under load (sampled from
+  `clk_summary` during the runs);
+- **runtime power management** - pinning the GPU awake (`power/control=on`) changes nothing
+  (53.3 vs 52.8 fps, identical stage timings), and the suspended time seen per run is process-start
+  firmware boot, not per-frame;
+- **submit overhead** - BATCH=8 recovers only ~11-20%, so it is not per-submission cost;
+- **the copy path** - 1.4x, while the draw is 2.2-3.3x.
+
+That leaves internal per-frame work over the whole surface in the graphics job path (tile buffer /
+parameter buffer handling sized by the surface), which is a Mesa pvr matter rather than something
+the harness can configure away. For a compositor the practical consequence is that the cost is per
+frame *per surface*, so it does not amortise with frame size - which is exactly why small frames
+look disproportionately slow on this driver.
+
+### 16.4 Harness bugs found while measuring (again mine, not the driver's)
+
+- The animation phase's `grep` filter **hid a fatal error**: 1080p was dying with `EBUSY` from
+  triple buffering and the log showed nothing. Filters now include `fail|busy|error`.
+- The perf phase referenced `$GL_ICD` before it was assigned; with `set -u` the subshell aborted
+  silently into `/dev/null`. The ICD resolution now happens before any phase uses it.
+- `MODE=render`/`copy` returned before printing timings, because the early-exit for
+  "cannot verify" was placed above the report. Timings now print first.
+- **The swap left a dead desktop**: the open driver's remove path trips a warning in
+  `pvr_context_device_fini` (`pvr_remove`), and afterwards the vendor module can load *without*
+  creating `/dev/dri/card1`, so X cannot start at all. The restore path now checks for `card1`,
+  reloads the vendor module cleanly if it is missing, and retries X once after a clean reload - no
+  reboot needed (recovering this way is how it was diagnosed).

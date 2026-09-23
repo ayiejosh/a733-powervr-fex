@@ -50,9 +50,21 @@
             DIE("%s -> VkResult %d", #expr, (int)r_); \
     } while (0)
 
-#define NBUF 2
+/* Three buffers: with two, a frame must wait for its own flip before it can render
+ * into the other buffer, which serialises render and vblank and costs ~11% of the
+ * frames at 1080p. With three, the wait is for a flip two periods old, which has
+ * usually already completed, so rendering runs back to back. */
+#define NBUF 3
 
 static volatile int flip_done = 0;
+/* flips_issued[i] - flips_completed[i]: how many flips of buffer i are still in
+ * flight; the buffer cannot be rendered into while that is non-zero. */
+static volatile int flips_issued[NBUF];
+static volatile int flips_completed[NBUF];
+/* DRM allows one flip in flight per CRTC; issuing another before the previous
+ * completed returns EBUSY. Keeping at most one pending also paces the loop to the
+ * panel refresh, which is what a compositor would do. */
+static volatile int flips_pending = 0;
 
 static void page_flip_handler(int fd, unsigned int frame, unsigned int sec, unsigned int usec,
                               void *data)
@@ -62,8 +74,19 @@ static void page_flip_handler(int fd, unsigned int frame, unsigned int sec, unsi
     (void)sec;
     (void)usec;
     (void)data;
+    int idx = (int)(intptr_t)data;
+    if (idx >= 0 && idx < NBUF)
+        flips_completed[idx]++;
+    if (flips_pending > 0)
+        flips_pending--;
     flip_done = 1;
 }
+
+/* Per-stage timing, enabled with PVR_TIMING=1: tells us whether a frame is
+ * limited by command recording, submission, GPU execution or the flip wait. */
+static double g_record_ms, g_submit_ms, g_wait_ms, g_flip_ms;
+static int g_pace_retry = 1; /* default: see PACE below */
+static int g_timing;
 
 static double now_ms(void)
 {
@@ -167,6 +190,7 @@ static void render_frame(VkDevice dev, VkQueue queue, VkCommandBuffer cmd, VkFen
                          VkPipelineLayout pl, VkImage *imgs, VkBuffer buf, uint32_t width,
                          uint32_t height, int idx, float phase, int copy_out, int push_first)
 {
+    double _t0 = now_ms();
     VkCommandBufferBeginInfo cbbi = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
         .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
@@ -208,6 +232,7 @@ static void render_frame(VkDevice dev, VkQueue queue, VkCommandBuffer cmd, VkFen
                              &b, 0, NULL, 0, NULL);
     }
     VKCHECK(vkEndCommandBuffer(cmd));
+    double _t1 = now_ms();
     VkSubmitInfo si = {
         .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
         .commandBufferCount = 1,
@@ -215,8 +240,15 @@ static void render_frame(VkDevice dev, VkQueue queue, VkCommandBuffer cmd, VkFen
     };
     VKCHECK(vkResetFences(dev, 1, &fence));
     VKCHECK(vkQueueSubmit(queue, 1, &si, fence));
+    double _t2 = now_ms();
     if (vkWaitForFences(dev, 1, &fence, VK_TRUE, 10ull * 1000 * 1000 * 1000) != VK_SUCCESS)
         DIE("the GPU never finished a frame");
+    double _t3 = now_ms();
+    if (g_timing) {
+        g_record_ms += _t1 - _t0;
+        g_submit_ms += _t2 - _t1;
+        g_wait_ms += _t3 - _t2;
+    }
 }
 
 int main(int argc, char **argv)
@@ -572,6 +604,16 @@ int main(int argc, char **argv)
     unsigned char frame_px[6] = { 0 };
     float phase = 0.0f;
     const float phase_step = 4.0f; /* pixels per frame */
+    g_timing = getenv("PVR_TIMING") != NULL;
+    {
+        /* Default pacing: issue each flip as soon as its frame is rendered and let
+         * the EBUSY retry align it to the next vblank. Gating on the previous flip
+         * first (PACE=gate) serialises the loop and loses ~11% of the frames at
+         * 1080p (53.5 fps instead of 59.6). */
+        const char *pace = getenv("PACE");
+        if (pace)
+            g_pace_retry = strcmp(pace, "retry") == 0;
+    }
     double t0 = now_ms();
 
     /* First frame goes up with SetCrtc; page flips need a CRTC already active
@@ -581,25 +623,68 @@ int main(int argc, char **argv)
 
     for (int frame = 0; frame < frames; frame++) {
         int cur = frame % NBUF;
+
+        /* Wait only until this buffer is free again (its previous flip done). */
+        while (flips_issued[cur] > flips_completed[cur]) {
+            struct pollfd wpfd = { .fd = dfd, .events = POLLIN };
+            if (poll(&wpfd, 1, 1000) > 0) {
+                drmEventContext wevctx = {
+                    .version = DRM_EVENT_CONTEXT_VERSION,
+                    .page_flip_handler = page_flip_handler,
+                };
+                drmHandleEvent(dfd, &wevctx);
+            } else {
+                flip_timeouts++;
+                break;
+            }
+        }
+
         render_frame(dev, queue, cmd, fence, rpass, framebuffers, pipe, pl, imgs, buf, width,
                      height, cur, phase, frame < 6 ? 1 : 0, 0);
         if (frame < 6)
             frame_px[frame] = ((const unsigned char *)mapped)[0];
         if (frame > 0) {
+            double _f0 = now_ms();
             flip_done = 0;
-            if (drmModePageFlip(dfd, crtc_id, fbs[cur], DRM_MODE_PAGE_FLIP_EVENT, NULL) != 0)
-                DIE("frame %d: drmModePageFlip failed: %s", frame, strerror(errno));
-            struct pollfd pfd = { .fd = dfd, .events = POLLIN };
-            int pr = poll(&pfd, 1, 1000);
-            if (pr > 0) {
-                drmEventContext evctx = {
+            /* PACE=retry skips the one-flip-in-flight gate and relies on the EBUSY
+             * retry below instead: the flip is issued as soon as the frame is
+             * rendered, which is what a compositor does. */
+            while (!g_pace_retry && flips_pending > 0) {
+                struct pollfd ppfd = { .fd = dfd, .events = POLLIN };
+                if (poll(&ppfd, 1, 1000) <= 0) {
+                    flip_timeouts++;
+                    break;
+                }
+                drmEventContext pevctx = {
                     .version = DRM_EVENT_CONTEXT_VERSION,
                     .page_flip_handler = page_flip_handler,
                 };
-                drmHandleEvent(dfd, &evctx);
+                drmHandleEvent(dfd, &pevctx);
             }
-            if (!flip_done)
-                flip_timeouts++;
+            int fr = drmModePageFlip(dfd, crtc_id, fbs[cur], DRM_MODE_PAGE_FLIP_EVENT,
+                                     (void *)(intptr_t)cur);
+            if (fr == -EBUSY) {
+                /* Should not happen with the gate above, but a busy CRTC is a
+                 * retry, not a fatal error. */
+                struct pollfd bpfd = { .fd = dfd, .events = POLLIN };
+                if (poll(&bpfd, 1, 1000) > 0) {
+                    drmEventContext bevctx = {
+                        .version = DRM_EVENT_CONTEXT_VERSION,
+                        .page_flip_handler = page_flip_handler,
+                    };
+                    drmHandleEvent(dfd, &bevctx);
+                }
+                fr = drmModePageFlip(dfd, crtc_id, fbs[cur], DRM_MODE_PAGE_FLIP_EVENT,
+                                     (void *)(intptr_t)cur);
+            }
+            if (fr != 0)
+                DIE("frame %d: drmModePageFlip failed: %s", frame, strerror(errno));
+            flips_issued[cur]++;
+            flips_pending++;
+            /* No wait here on purpose: the next frame renders immediately and only
+             * waits if it needs a buffer whose flip is still in flight. */
+            if (g_timing)
+                g_flip_ms += now_ms() - _f0;
         }
         presented++;
         last_idx = cur;
@@ -608,11 +693,35 @@ int main(int argc, char **argv)
         if (phase >= 64.0f)
             phase -= 64.0f;
     }
+    /* Let the flips still in flight land, otherwise the totals under-report. */
+    for (int i = 0; i < NBUF; i++) {
+        while (flips_issued[i] > flips_completed[i]) {
+            struct pollfd dpfd = { .fd = dfd, .events = POLLIN };
+            if (poll(&dpfd, 1, 1000) <= 0) {
+                flip_timeouts++;
+                break;
+            }
+            drmEventContext devctx = {
+                .version = DRM_EVENT_CONTEXT_VERSION,
+                .page_flip_handler = page_flip_handler,
+            };
+            drmHandleEvent(dfd, &devctx);
+        }
+    }
     double t1 = now_ms();
     double ms = t1 - t0;
 
-    printf("presented %d frames in %.1f ms: %.1f fps (%d buffers, %d flip timeouts)\n", presented,
-           ms, presented / (ms / 1000.0), NBUF, flip_timeouts);
+    printf("presented %d frames in %.1f ms: %.1f fps (%d buffers, %d flip timeouts, pace=%s)\n",
+           presented,
+           ms, presented / (ms / 1000.0), NBUF, flip_timeouts,
+           g_pace_retry ? "retry" : "gate");
+    if (g_timing) {
+        double n = presented > 0 ? presented : 1;
+        printf("timing ms/frame: record=%.2f submit=%.2f gpu_wait=%.2f flip_wait=%.2f "
+               "(sum=%.2f of %.2f wall)\n",
+               g_record_ms / n, g_submit_ms / n, g_wait_ms / n, g_flip_ms / n,
+               (g_record_ms + g_submit_ms + g_wait_ms + g_flip_ms) / n, ms / n);
+    }
 
     /* ---- does the phase actually reach the shader? -----------------------
      * The animation is only an animation if consecutive frames differ, and that

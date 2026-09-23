@@ -44,6 +44,9 @@
 /* Unorm conversion is round(f * 255), so the host can predict stored bytes. */
 static int expect_r(int x) { return (int)lroundf(fminf(fmaxf((float)((x + 0.5) / 64.0 - floor((x + 0.5) / 64.0)), 0.0f), 1.0f) * 255.0f); }
 
+static double g_record_ms, g_submit_ms, g_wait_ms;
+static int g_timing;
+
 static double now_ms(void)
 {
     struct timespec ts;
@@ -187,11 +190,27 @@ int main(int argc, char **argv)
     VKCHECK(vkCreateImageView(dev, &ivci, NULL, &view));
 
     /* ---- render pass --------------------------------------------------- */
+    /* LOADOP selects the attachment load operation: if the driver's per-draw cost
+     * is a full-surface clear, VK_ATTACHMENT_LOAD_OP_LOAD removes it. */
+    const char *loadop_env = getenv("LOADOP");
+    VkAttachmentLoadOp loadop = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    if (loadop_env && strcmp(loadop_env, "load") == 0)
+        loadop = VK_ATTACHMENT_LOAD_OP_LOAD;
+    else if (loadop_env && strcmp(loadop_env, "dontcare") == 0)
+        loadop = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+
+    /* STOREOP=dontcare drops the attachment store, which tests whether the
+     * per-frame cost is the driver writing the whole surface back. */
+    const char *storeop_env = getenv("STOREOP");
+    VkAttachmentStoreOp storeop = VK_ATTACHMENT_STORE_OP_STORE;
+    if (storeop_env && strcmp(storeop_env, "dontcare") == 0)
+        storeop = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+
     VkAttachmentDescription att = {
         .format = VK_FORMAT_R8G8B8A8_UNORM,
         .samples = VK_SAMPLE_COUNT_1_BIT,
-        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
-        .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+        .loadOp = loadop,
+        .storeOp = storeop,
         .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
         .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
         .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
@@ -397,13 +416,34 @@ int main(int argc, char **argv)
             batch = iters;
     }
 
-    printf("rendering %d x %ux%u offscreen frames (BATCH=%d)...\n", iters, size, size, batch);
+    /* MODE splits the two halves of the workload so a gap can be attributed: the
+     * draw itself, or the image->buffer copy that follows it. */
+    /* AREA shrinks the render area without changing the surface, which separates
+     * "the driver's cost follows the pixels it actually covers" (fill-bound) from
+     * "it does full-surface work regardless" (an extra internal pass). */
+    uint32_t area_div = 1;
+    const char *area_env = getenv("AREA");
+    if (area_env && strcmp(area_env, "half") == 0)
+        area_div = 2;
+    else if (area_env && strcmp(area_env, "quarter") == 0)
+        area_div = 4;
+
+    const char *mode_env = getenv("MODE");
+    int do_render = 1, do_copy = 1;
+    if (mode_env && strcmp(mode_env, "render") == 0)
+        do_copy = 0;
+    else if (mode_env && strcmp(mode_env, "copy") == 0)
+        do_render = 0;
+    printf("rendering %d x %ux%u offscreen frames (BATCH=%d, MODE=%s)...\n", iters, size, size,
+           batch, do_render ? (do_copy ? "both" : "render") : "copy");
+    g_timing = getenv("PVR_TIMING") != NULL;
     double t0 = now_ms();
     int done = 0;
     while (done < iters) {
         int n = iters - done;
         if (n > batch)
             n = batch;
+        double _r0 = now_ms();
         VkCommandBufferBeginInfo cbbi = {
             .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
             .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
@@ -416,14 +456,19 @@ int main(int argc, char **argv)
             .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
             .renderPass = rpass,
             .framebuffer = fb,
-            .renderArea = { { 0, 0 }, { size, size } },
+            .renderArea = { { 0, 0 }, { size / area_div, size / area_div } },
             .clearValueCount = 1,
             .pClearValues = &clear,
         };
-        vkCmdBeginRenderPass(cmd, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
-        vkCmdDraw(cmd, 3, 1, 0, 0);
-        vkCmdEndRenderPass(cmd);
+        if (do_render) {
+            vkCmdBeginRenderPass(cmd, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+            vkCmdDraw(cmd, 3, 1, 0, 0);
+            vkCmdEndRenderPass(cmd);
+        }
+
+        if (!do_copy)
+            continue;
 
         VkBufferImageCopy region = {
             .bufferOffset = 0,
@@ -437,10 +482,17 @@ int main(int argc, char **argv)
                                &region);
         }
         VKCHECK(vkEndCommandBuffer(cmd));
+        double _r1 = now_ms();
 
         VKCHECK(vkResetFences(dev, 1, &fence));
         VKCHECK(vkQueueSubmit(queue, 1, &si, fence));
+        double _s1 = now_ms();
         VkResult w = vkWaitForFences(dev, 1, &fence, VK_TRUE, 10ull * 1000 * 1000 * 1000);
+        if (g_timing) {
+            g_record_ms += _r1 - _r0;
+            g_submit_ms += _s1 - _r1;
+            g_wait_ms += now_ms() - _s1;
+        }
         if (w != VK_SUCCESS)
             DIE("vkWaitForFences after %d frame(s) -> %d (GPU never signalled)", done + n,
                 (int)w);
@@ -448,7 +500,19 @@ int main(int argc, char **argv)
     }
     double t1 = now_ms();
 
+    if (g_timing) {
+        double n = iters > 0 ? iters : 1;
+        double batches = (double)iters / (batch > 0 ? batch : 1);
+        printf("timing per frame: record=%.3f ms, submit=%.3f ms, gpu_wait=%.3f ms (%.0f batches)\n",
+               g_record_ms / n, g_submit_ms / batches, g_wait_ms / batches, batches);
+    }
+
     /* ---- verify -------------------------------------------------------- */
+    if (!(do_render && do_copy)) {
+        printf("verification skipped: MODE=%s only exercises part of the frame\n",
+               do_render ? "render" : "copy");
+        return 0;
+    }
     const unsigned char *px = mapped;
     uint64_t bad = 0;
     uint32_t fx = 0, fy = 0;

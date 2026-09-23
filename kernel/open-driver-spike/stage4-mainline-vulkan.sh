@@ -61,6 +61,23 @@ restore() {
     fi
     if grep -q '^pvrsrvkm ' /proc/modules; then
         say "vendor module back (refs $(awk '$1=="pvrsrvkm"{print $3}' /proc/modules))"
+
+        # The open driver's remove path trips a warning in pvr_context_device_fini
+        # (pvr_remove), and after that the vendor module can load *without* creating
+        # its DRM device - /dev/dri/card1 stays missing and X then cannot start at
+        # all. Detect it and reload the vendor module cleanly rather than leaving a
+        # dead desktop behind.
+        if [ ! -e /dev/dri/card1 ]; then
+            say "card1 is missing after the swap - reloading the vendor module cleanly"
+            rmmod pvrsrvkm 2>/dev/null
+            sleep 2
+            modprobe pvrsrvkm
+            for _ in $(seq 1 15); do
+                sleep 2
+                [ -e /dev/dri/card1 ] && break
+            done
+            say "after reload: /dev/dri has $(ls /dev/dri | tr '\n' ' ')"
+        fi
         if ! pgrep -x X >/dev/null; then
             say "starting display-manager"
             systemctl start display-manager 2>&1 | sed 's/^/    /' | tee -a "$LOG"
@@ -84,7 +101,15 @@ restore() {
                 say "after restart: kwin=$(pgrep -c kwin_x11) plasmashell=$(pgrep -c plasmashell)"
             fi
         else
-            say "X did NOT come back - reboot needed"
+            say "X did NOT come back - retrying after a clean driver reload"
+            rmmod pvrsrvkm 2>/dev/null; sleep 2; modprobe pvrsrvkm; sleep 5
+            systemctl restart display-manager
+            for _ in $(seq 1 20); do sleep 2; pgrep -x X >/dev/null && break; done
+            if pgrep -x X >/dev/null; then
+                say "recovered: X=$(pgrep -c -x X) kwin=$(pgrep -c kwin_x11)"
+            else
+                say "X did NOT come back - reboot needed"
+            fi
         fi
     else
         say "CRITICAL: pvrsrvkm did not load - a reboot is needed"
@@ -114,10 +139,120 @@ for m in "$SPIKE/mod/drm_gpuvm.ko" "$SPIKE/img/powervr.ko"; do
 done
 
 say "log: $LOG"
+# Sample the GPU core clock while a render is running: the vendor driver runs
+# gpu0/pll-gpu at 1104000000 Hz, and if the open driver leaves it lower the GPU is
+# proportionally slower, which is what the throughput gap looked like.
+gpu_clocks() {
+    grep -E '^ *(pll-gpu|gpu0[^ ]*) ' /sys/kernel/debug/clk/clk_summary 2>/dev/null \
+        | awk '{printf "%s=%s ", $1, $5}'
+    echo
+}
+sample_clocks_during() {
+    local label=$1 icd=$2 size=$3 iters=$4
+    ( for _ in $(seq 1 6); do gpu_clocks | sed "s/^/    [$label] /" | tee -a "$LOG"; sleep 1; done ) &
+    local sampler=$!
+    VK_ICD_FILENAMES="$icd" VK_DRIVER_FILES="$icd" PVR_TIMING=1 \
+        PVR_I_WANT_A_BROKEN_VULKAN_DRIVER=1 timeout 300 "$BENCH/vkrender" "$size" "$iters" 2>&1 \
+        | grep -E 'timing|frame\(s\)' | sed "s/^/    [$label] /" | tee -a "$LOG"
+    kill $sampler 2>/dev/null
+    wait $sampler 2>/dev/null
+}
+
+# Per-frame cost suite: splits the workload (draw vs image->buffer copy) so a
+# throughput gap can be attributed instead of guessed at.
+vkrender_suite() {
+    local label=$1 icd=$2
+    [ -f "$icd" ] || return 0
+    for _m in both render copy; do
+        for _c in "512 300" "1024 150"; do
+            MODE=$_m VK_ICD_FILENAMES="$icd" VK_DRIVER_FILES="$icd" PVR_TIMING=1 \
+                PVR_I_WANT_A_BROKEN_VULKAN_DRIVER=1 timeout 200 "$BENCH/vkrender" $_c 2>&1 \
+                | grep -E 'timing|frame\(s\)' | sed "s/^/    [$label $_m $_c] /" | tee -a "$LOG"
+        done
+    done
+}
+
+# Render-area sweep: separates fill-proportional cost from full-surface cost.
+area_sweep() {
+    local label=$1 icd=$2 size=$3 iters=$4
+    [ -f "$icd" ] || return 0
+    for _a in "" half quarter; do
+        AREA=$_a MODE=render VK_ICD_FILENAMES="$icd" VK_DRIVER_FILES="$icd" PVR_TIMING=1 \
+            PVR_I_WANT_A_BROKEN_VULKAN_DRIVER=1 timeout 200 "$BENCH/vkrender" "$size" "$iters" 2>&1 \
+            | grep -E 'timing' | sed "s/^/    [$label area=${_a:-full} $size] /" | tee -a "$LOG"
+    done
+}
+
+# Attachment load-op sweep: if a driver's per-draw cost is a full-surface clear,
+# VK_ATTACHMENT_LOAD_OP_LOAD removes it while the covered pixels are unchanged.
+loadop_sweep() {
+    local label=$1 icd=$2 size=$3 iters=$4
+    [ -f "$icd" ] || return 0
+    for _l in clear load dontcare; do
+        LOADOP=$_l VK_ICD_FILENAMES="$icd" VK_DRIVER_FILES="$icd" PVR_TIMING=1 \
+            PVR_I_WANT_A_BROKEN_VULKAN_DRIVER=1 timeout 200 "$BENCH/vkrender" "$size" "$iters" 2>&1 \
+            | grep -E 'timing' | sed "s/^/    [$label loadop=$_l $size] /" | tee -a "$LOG"
+    done
+    # and the same with the copy removed, to see the draw in isolation
+    for _l in clear load; do
+        LOADOP=$_l MODE=render VK_ICD_FILENAMES="$icd" VK_DRIVER_FILES="$icd" PVR_TIMING=1 \
+            PVR_I_WANT_A_BROKEN_VULKAN_DRIVER=1 timeout 200 "$BENCH/vkrender" "$size" "$iters" 2>&1 \
+            | grep -E 'timing' | sed "s/^/    [$label loadop=$_l render-only $size] /" | tee -a "$LOG"
+    done
+}
+
+# Attachment store-op sweep: tests whether the per-frame cost is the driver writing
+# the whole surface back, independent of how much was drawn.
+storeop_sweep() {
+    local label=$1 icd=$2 size=$3 iters=$4
+    [ -f "$icd" ] || return 0
+    for _s in store dontcare; do
+        STOREOP=$_s MODE=render VK_ICD_FILENAMES="$icd" VK_DRIVER_FILES="$icd" PVR_TIMING=1 \
+            PVR_I_WANT_A_BROKEN_VULKAN_DRIVER=1 timeout 200 "$BENCH/vkrender" "$size" "$iters" 2>&1 \
+            | grep -E 'timing' | sed "s/^/    [$label storeop=$_s render-only $size] /" | tee -a "$LOG"
+    done
+}
+
+# What does the driver ask the kernel for, per frame? Counts by ioctl request.
+ioctl_profile() {
+    local label=$1 icd=$2 size=$3 iters=$4 out=$5
+    [ -f "$icd" ] || return 0
+    VK_ICD_FILENAMES="$icd" VK_DRIVER_FILES="$icd" PVR_I_WANT_A_BROKEN_VULKAN_DRIVER=1 \
+        timeout 300 strace -f -e trace=ioctl -o "$out" "$BENCH/vkrender" "$size" "$iters" >/dev/null 2>&1
+    echo "    [$label ioctls for $iters frame(s) at $size]" | tee -a "$LOG"
+    # raw request numbers: strace's name tables do not know the PVR ioctls and
+    # mislabels them as other drivers' commands, but the numbers are exact
+    sed -E 's/.*ioctl\([0-9]+, (0x[0-9a-f]+|[A-Za-z_0-9]+).*/\1/' "$out" 2>/dev/null \
+        | sort | uniq -c | sort -rn | head -8 \
+        | awk '{printf "      %6d  %s\n", $1, $2}' | tee -a "$LOG"
+}
+
 say "Mesa ICD: $MESA_ICD"
+
+# The GL phase needs a pvr ICD whose driver advertises VK_KHR_dynamic_rendering:
+# zink requires it, 25.3.0's pvr does not have it (which is why GL failed for so
+# long - zink rejects the device with a message compiled out of release builds),
+# and Mesa main's pvr does. Fall back to $MESA_ICD if main is not built.
+GL_ICD=${GL_ICD:-}
+if [ -z "$GL_ICD" ]; then
+    for _c in /home/radxa/mesa/mesa-main/build/src/imagination/vulkan/powervr_mesa_devenv_icd.aarch64.json; do
+        [ -f "$_c" ] && { GL_ICD=$_c; break; }
+    done
+fi
+[ -z "$GL_ICD" ] && GL_ICD=$MESA_ICD
+say "GL ICD:   $GL_ICD"
 say "pre-state: pvrsrvkm refs=$(awk '$1=="pvrsrvkm"{print $3}' /proc/modules) X=$(pgrep -c -x X)"
 
 say "--- baseline: vendor ICD + vendor module (before the swap) ---"
+if [ -x "$BENCH/vkrender" ]; then
+    say "--- vendor baseline: per-frame cost suite ---"
+    area_sweep "vendor" /usr/share/vulkan/icd.d/img_icd.json 1024 150
+    loadop_sweep "vendor" /usr/share/vulkan/icd.d/img_icd.json 1024 150
+    storeop_sweep "vendor" /usr/share/vulkan/icd.d/img_icd.json 1024 150
+    ioctl_profile "vendor" /usr/share/vulkan/icd.d/img_icd.json 1024 10 /tmp/ioctl-vendor.txt
+    vkrender_suite "vendor" /usr/share/vulkan/icd.d/img_icd.json
+    sample_clocks_during "vendor-clock" /usr/share/vulkan/icd.d/img_icd.json 1024 4000
+fi
 ( cd "$BENCH" && timeout 300 ./vktest 10 1048576 2>&1 | tail -5 | sed 's/^/    /' | tee -a "$LOG" )
 
 say "arming watchdog (auto-restore in 8 minutes)"
@@ -217,29 +352,90 @@ if [ -x "$BENCH/pvranimate" ]; then
     say "--- continuous presentation: page-flipped animation on screen ---"
     (
         cd "$BENCH" || exit 1
+        PWR=/sys/bus/platform/devices/1800000.gpu/power
+        read -r _st0 < "$PWR/runtime_status" 2>/dev/null
+        read -r _act0 < "$PWR/runtime_active_time" 2>/dev/null
+        read -r _sus0 < "$PWR/runtime_suspended_time" 2>/dev/null
+        # A/B: the driver uses a 50 ms autosuspend delay, so if the idle timer is
+        # never refreshed per job the GPU can power down in the middle of a
+        # rendering session and pay a resume per frame. Pin it awake to measure.
+        _ctrl=$(cat "$PWR/control" 2>/dev/null)
         for _res in "1920 1080 240" "3840 2160 120"; do
             VK_ICD_FILENAMES="$MESA_ICD" VK_DRIVER_FILES="$MESA_ICD" \
-                PVR_I_WANT_A_BROKEN_VULKAN_DRIVER=1 \
+                PVR_I_WANT_A_BROKEN_VULKAN_DRIVER=1 PVR_TIMING=1 \
                 timeout 300 ./pvranimate $_res 2>&1 \
-                | grep -E 'display:|presented|phase|pushed twice|first 6|animation|push constant|VERDICT' \
+                | grep -E 'display:|presented|phase|pushed twice|first 6|animation|push constant|VERDICT|timing|fail|FAIL|busy|error|pace=' \
                 | sed "s/^/    [$_res] /" | tee -a "$LOG"
+            read -r _act1 < "$PWR/runtime_active_time" 2>/dev/null
+            read -r _sus1 < "$PWR/runtime_suspended_time" 2>/dev/null
+            echo "    [$_res] pm: status $_st0->$(cat $PWR/runtime_status 2>/dev/null) active +$((_act1-_act0))ms suspended +$((_sus1-_sus0))ms" \
+                | tee -a "$LOG"
+            _act0=$_act1; _sus0=$_sus1
         done
+        # Pacing comparison at 1080p: gate on the previous flip, or issue as soon as
+        # the frame is rendered and let the EBUSY retry pace it.
+        say "--- 1080p pacing comparison ---"
+        for _pace in gate retry; do
+            PACE=$_pace VK_ICD_FILENAMES="$MESA_ICD" VK_DRIVER_FILES="$MESA_ICD" \
+                PVR_I_WANT_A_BROKEN_VULKAN_DRIVER=1 PVR_TIMING=1 \
+                timeout 300 ./pvranimate 1920 1080 240 2>&1 \
+                | grep -E 'presented|timing' | sed "s/^/    [pace=$_pace] /" | tee -a "$LOG"
+        done
+
+        if [ "$_ctrl" = "auto" ]; then
+            say "--- same 1080p test with the GPU pinned awake (power/control=on) ---"
+            echo on > "$PWR/control"
+            read -r _a0 < "$PWR/runtime_active_time"; read -r _s0 < "$PWR/runtime_suspended_time"
+            VK_ICD_FILENAMES="$MESA_ICD" VK_DRIVER_FILES="$MESA_ICD" \
+                PVR_I_WANT_A_BROKEN_VULKAN_DRIVER=1 PVR_TIMING=1 \
+                timeout 300 ./pvranimate 1920 1080 240 2>&1 \
+                | grep -E 'presented|timing|VERDICT' | sed 's/^/    [pinned] /' | tee -a "$LOG"
+            read -r _a1 < "$PWR/runtime_active_time"; read -r _s1 < "$PWR/runtime_suspended_time"
+            echo "    [pinned] pm: active +$((_a1-_a0))ms suspended +$((_s1-_s0))ms" | tee -a "$LOG"
+            echo "$_ctrl" > "$PWR/control"
+        fi
     )
 else
     say "no $BENCH/pvranimate - skipping the presentation test"
 fi
 
-# The GL phase needs a pvr ICD whose driver advertises VK_KHR_dynamic_rendering:
-# zink requires it, 25.3.0's pvr does not have it (which is why GL failed for so
-# long - zink rejects the device with a message compiled out of release builds),
-# and Mesa main's pvr does. Fall back to $MESA_ICD if main is not built.
-GL_ICD=${GL_ICD:-}
-if [ -z "$GL_ICD" ]; then
-    for _c in /home/radxa/mesa/mesa-main/build/src/imagination/vulkan/powervr_mesa_devenv_icd.aarch64.json; do
-        [ -f "$_c" ] && { GL_ICD=$_c; break; }
-    done
+# ---- performance profile: where does a frame's time go? ----------------------
+# Vendor reference on this board, never over 4 s of stderr in one line item:
+#   512x512 : record 0.037 ms, submit 0.067 ms, gpu 0.615 ms  (365 Mpix/s)
+#   4096x4096: record 0.202 ms, submit 0.168 ms, gpu 23.509 ms (703 Mpix/s)
+if [ -x "$BENCH/vkrender" ]; then
+    say "--- performance profile: per-frame cost on the open stack ---"
+    area_sweep "open-main" "$GL_ICD" 1024 150
+    loadop_sweep "open-main" "$GL_ICD" 1024 150
+    storeop_sweep "open-main" "$GL_ICD" 1024 150
+    ioctl_profile "open-main" "$GL_ICD" 1024 10 /tmp/ioctl-open.txt
+    vkrender_suite "open-25.3" "$MESA_ICD"
+    vkrender_suite "open-main" "$GL_ICD"
+    sample_clocks_during "open-clock" "$MESA_ICD" 1024 4000
+    (
+        cd "$BENCH" || exit 1
+        for _icd in "25.3:$MESA_ICD" "main:$GL_ICD"; do
+            _name=${_icd%%:*}; _path=${_icd#*:}
+            [ -f "$_path" ] || continue
+            for _case in "512 200" "4096 20"; do
+                VK_ICD_FILENAMES="$_path" VK_DRIVER_FILES="$_path" PVR_TIMING=1 \
+                    PVR_I_WANT_A_BROKEN_VULKAN_DRIVER=1 timeout 300 ./vkrender $_case 2>&1 \
+                    | grep -E 'timing|frame\(s\)' | sed "s/^/    [$_name $_case] /" | tee -a "$LOG"
+            done
+            VK_ICD_FILENAMES="$_path" VK_DRIVER_FILES="$_path" PVR_TIMING=1 BATCH=8 \
+                PVR_I_WANT_A_BROKEN_VULKAN_DRIVER=1 timeout 300 ./vkrender 512 200 2>&1 \
+                | grep -E 'timing|frame\(s\)' | sed "s/^/    [$_name 512 BATCH=8] /" | tee -a "$LOG"
+        done
+
+        # Which kernel calls does a frame make? Counts, not timings: strace adds its
+        # own overhead but the histogram shows what the driver asks the kernel for.
+        say "--- ioctl histogram for 20 frames at 512x512 (main ICD) ---"
+        VK_ICD_FILENAMES="$GL_ICD" VK_DRIVER_FILES="$GL_ICD" PVR_I_WANT_A_BROKEN_VULKAN_DRIVER=1 \
+            timeout 300 strace -f -c -e trace=ioctl,mmap,munmap,openat ./vkrender 512 20 2>&1 \
+            | tail -20 | sed 's/^/    /' | tee -a "$LOG"
+    )
 fi
-[ -z "$GL_ICD" ] && GL_ICD=$MESA_ICD
+
 GL_PREFIX=/home/radxa/mesa/inst-gl/usr/local/lib/aarch64-linux-gnu
 if [ -x "$BENCH/glheadless" ] && [ -d /home/radxa/mesa/gldri ]; then
     say "--- zink GL (Mesa 25.3) over Mesa pvr + mainline driver ---"
