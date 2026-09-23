@@ -154,7 +154,7 @@ index 57d843b..558a29e 100644
        if (result != VK_SUCCESS)
           goto err_vk_device_memory_destroy;
 diff --git a/src/imagination/vulkan/pvr_physical_device.c b/src/imagination/vulkan/pvr_physical_device.c
-index 860f43d..ffe2a7e 100644
+index 860f43d..687eaeb 100644
 --- a/src/imagination/vulkan/pvr_physical_device.c
 +++ b/src/imagination/vulkan/pvr_physical_device.c
 @@ -601,7 +601,11 @@ static bool pvr_physical_device_get_properties(
@@ -195,7 +195,7 @@ index 860f43d..ffe2a7e 100644
        .viewportBoundsRange[0] = -8192.0f,
        .viewportBoundsRange[1] = 8191.0f,
  
-@@ -762,8 +766,8 @@ static bool pvr_physical_device_get_properties(
+@@ -762,20 +766,32 @@ static bool pvr_physical_device_get_properties(
        .maxInterpolationOffset = 0.5f,
        .subPixelInterpolationOffsetBits = 4U,
  
@@ -205,8 +205,41 @@ index 860f43d..ffe2a7e 100644
 +      .maxFramebufferHeight = max_render_size,
        .maxFramebufferLayers = 256U,
  
-       /* Note: update nir_shader_compiler_options.max_samples when changing this. */
-@@ -1222,12 +1226,33 @@ VkResult pvr_physical_device_init(struct pvr_physical_device *pdevice,
+-      /* Note: update nir_shader_compiler_options.max_samples when changing this. */
+-      .framebufferColorSampleCounts = VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_4_BIT,
+-      .framebufferDepthSampleCounts = VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_4_BIT,
+-      .framebufferStencilSampleCounts = VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_4_BIT,
+-      .framebufferNoAttachmentsSampleCounts = VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_4_BIT,
++      /* Note: update nir_shader_compiler_options.max_samples when changing this.
++       * 2x is included because the driver implements it: pvr_cr_isp_aa_mode_type()
++       * maps 2 samples to ROGUE_CR_ISP_AA_MODE_TYPE_AA_2X and the ISP partition
++       * sizing handles that case (pvr_arch_job_common.c), so the mask was simply
++       * narrower than the implementation - the vendor driver advertises 1|2|4 too. */
++      .framebufferColorSampleCounts =
++         VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_2_BIT | VK_SAMPLE_COUNT_4_BIT,
++      .framebufferDepthSampleCounts =
++         VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_2_BIT | VK_SAMPLE_COUNT_4_BIT,
++      .framebufferStencilSampleCounts =
++         VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_2_BIT | VK_SAMPLE_COUNT_4_BIT,
++      .framebufferNoAttachmentsSampleCounts =
++         VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_2_BIT | VK_SAMPLE_COUNT_4_BIT,
+       .maxColorAttachments = 4U,
+-      .sampledImageColorSampleCounts = VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_4_BIT,
+-      .sampledImageIntegerSampleCounts = VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_4_BIT,
+-      .sampledImageDepthSampleCounts = VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_4_BIT,
+-      .sampledImageStencilSampleCounts = VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_4_BIT,
++      .sampledImageColorSampleCounts =
++         VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_2_BIT | VK_SAMPLE_COUNT_4_BIT,
++      .sampledImageIntegerSampleCounts =
++         VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_2_BIT | VK_SAMPLE_COUNT_4_BIT,
++      .sampledImageDepthSampleCounts =
++         VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_2_BIT | VK_SAMPLE_COUNT_4_BIT,
++      .sampledImageStencilSampleCounts =
++         VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_2_BIT | VK_SAMPLE_COUNT_4_BIT,
+       .storageImageSampleCounts = VK_SAMPLE_COUNT_1_BIT, /* Requires shaderStorageImageMultisample */
+       .maxSampleMaskWords = 1U,
+       .timestampComputeAndGraphics = false,
+@@ -1222,12 +1238,33 @@ VkResult pvr_physical_device_init(struct pvr_physical_device *pdevice,
     pdevice->memory.memoryHeaps[0].size = pvr_compute_heap_size(instance);
     pdevice->memory.memoryHeaps[0].flags = VK_MEMORY_HEAP_DEVICE_LOCAL_BIT;
  

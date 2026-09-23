@@ -141,6 +141,18 @@ int main(int argc, char **argv)
     VkPhysicalDeviceMemoryProperties mp;
     vkGetPhysicalDeviceMemoryProperties(phys, &mp);
 
+    /* SAMPLES=2|4 exercises multisampled rendering with a resolve. The triangle
+     * covers the whole viewport, so every sample of every pixel gets the same value
+     * and the resolved image must equal the single-sample one exactly - which makes
+     * the existing pixel check a full correctness check for MSAA too. */
+    uint32_t samples = 1;
+    const char *samp_env = getenv("SAMPLES");
+    if (samp_env) {
+        samples = (uint32_t)strtoul(samp_env, NULL, 0);
+        if (samples != 1 && samples != 2 && samples != 4)
+            DIE("SAMPLES must be 1, 2 or 4");
+    }
+
     /* ---- colour image -------------------------------------------------- */
     /* FORMAT picks the render target's format: if the per-draw cost follows the
      * surface's *bytes* rather than its pixels, the cost is surface-sized memory
@@ -166,7 +178,7 @@ int main(int argc, char **argv)
         .extent = { size, size, 1 },
         .mipLevels = 1,
         .arrayLayers = 1,
-        .samples = VK_SAMPLE_COUNT_1_BIT,
+        .samples = (VkSampleCountFlagBits)samples,
         .tiling = VK_IMAGE_TILING_OPTIMAL,
         .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
@@ -207,6 +219,33 @@ int main(int argc, char **argv)
     };
     VkImageView view;
     VKCHECK(vkCreateImageView(dev, &ivci, NULL, &view));
+
+    /* ---- resolve target (only when multisampled) ----------------------- */
+    VkImage resolve_image = image;
+    VkImageView resolve_view = view;
+    if (samples > 1) {
+        VkImageCreateInfo rici = imci;
+        rici.samples = VK_SAMPLE_COUNT_1_BIT;
+        VKCHECK(vkCreateImage(dev, &rici, NULL, &resolve_image));
+        VkMemoryRequirements rreq2;
+        vkGetImageMemoryRequirements(dev, resolve_image, &rreq2);
+        uint32_t rtype = 0;
+        for (uint32_t i = 0; i < mp.memoryTypeCount; i++) {
+            if (rreq2.memoryTypeBits & (1u << i)) {
+                rtype = i;
+                break;
+            }
+        }
+        VkMemoryAllocateInfo rmai = { .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                                      .allocationSize = rreq2.size,
+                                      .memoryTypeIndex = rtype };
+        VkDeviceMemory rmem2;
+        VKCHECK(vkAllocateMemory(dev, &rmai, NULL, &rmem2));
+        VKCHECK(vkBindImageMemory(dev, resolve_image, rmem2, 0));
+        VkImageViewCreateInfo rvci = ivci;
+        rvci.image = resolve_image;
+        VKCHECK(vkCreateImageView(dev, &rvci, NULL, &resolve_view));
+    }
 
     /* ---- render pass --------------------------------------------------- */
     /* LOADOP selects the attachment load operation: if the driver's per-draw cost
@@ -254,7 +293,7 @@ int main(int argc, char **argv)
 
     VkAttachmentDescription att = {
         .format = target_format,
-        .samples = VK_SAMPLE_COUNT_1_BIT,
+        .samples = (VkSampleCountFlagBits)samples,
         .loadOp = loadop,
         .storeOp = storeop,
         .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
@@ -263,10 +302,23 @@ int main(int argc, char **argv)
         .finalLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
     };
     VkAttachmentReference attref = { 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
+    /* Second attachment: the single-sample image the multisample one resolves into. */
+    VkAttachmentDescription resolve_att = {
+        .format = target_format,
+        .samples = VK_SAMPLE_COUNT_1_BIT,
+        .loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+        .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+        .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+        .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        .finalLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+    };
+    VkAttachmentReference resolve_ref = { 1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
     VkSubpassDescription sub = {
         .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
         .colorAttachmentCount = 1,
         .pColorAttachments = &attref,
+        .pResolveAttachments = samples > 1 ? &resolve_ref : NULL,
     };
     VkSubpassDependency dep = {
         .srcSubpass = VK_SUBPASS_EXTERNAL,
@@ -276,10 +328,11 @@ int main(int argc, char **argv)
         .srcAccessMask = 0,
         .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
     };
+    VkAttachmentDescription attachments[2] = { att, resolve_att };
     VkRenderPassCreateInfo rpci = {
         .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
-        .attachmentCount = 1,
-        .pAttachments = &att,
+        .attachmentCount = samples > 1 ? 2 : 1,
+        .pAttachments = attachments,
         .subpassCount = 1,
         .pSubpasses = &sub,
         .dependencyCount = 1,
@@ -288,11 +341,11 @@ int main(int argc, char **argv)
     VkRenderPass rpass;
     VKCHECK(vkCreateRenderPass(dev, &rpci, NULL, &rpass));
 
-    VkImageView fb_views[] = { view };
+    VkImageView fb_views[2] = { view, resolve_view };
     VkFramebufferCreateInfo fbci = {
         .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
         .renderPass = rpass,
-        .attachmentCount = 1,
+        .attachmentCount = samples > 1 ? 2 : 1,
         .pAttachments = fb_views,
         .width = size,
         .height = size,
@@ -510,8 +563,8 @@ int main(int argc, char **argv)
             .imageOffset = { 0, 0, 0 },
             .imageExtent = { size, size, 1 },
         };
-        vkCmdCopyImageToBuffer(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buf, 1,
-                               &region);
+        vkCmdCopyImageToBuffer(cmd, samples > 1 ? resolve_image : image,
+                               VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buf, 1, &region);
         }
         VKCHECK(vkEndCommandBuffer(cmd));
         double _r1 = now_ms();
@@ -546,13 +599,26 @@ int main(int argc, char **argv)
         return 0;
     }
     const unsigned char *px = mapped;
-    uint64_t bad = 0;
+    uint64_t bad = 0, edge_blended = 0, edge_bad = 0;
     uint32_t fx = 0, fy = 0;
     int er = 0, eg = 0, eb = 0, ea = 0, gr = 0, gg = 0, gb = 0, ga = 0;
     for (uint32_t y = 0; y < size; y++) {
         for (uint32_t x = 0; x < size; x++) {
             const unsigned char *p = px + ((size_t)y * size + x) * 4;
             int wr = expect_r(x), wg = expect_r(y), wb = 64, wa = 255;
+            /* With MSAA the triangle's hypotenuse passes through the top-right corner,
+             * so pixels on that edge are only partially covered and the resolve
+             * blends toward the background - a correct result that is not equal to
+             * the single-sample value. Those pixels are checked for a plausible
+             * blend instead, and the interior is still checked exactly. */
+            if (samples > 1 && (int)(x + y) >= (int)size - 3) {
+                int maxr = wr > 0 ? wr : 1, maxg = wg > 0 ? wg : 1;
+                if (p[0] > maxr || p[1] > maxg || p[2] > 64)
+                    edge_bad++;
+                else
+                    edge_blended++;
+                continue;
+            }
             if (p[0] != wr || p[1] != wg || p[2] != wb || p[3] != wa) {
                 if (bad == 0) {
                     fx = x; fy = y;

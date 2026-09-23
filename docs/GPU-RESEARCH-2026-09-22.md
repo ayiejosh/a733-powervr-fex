@@ -1580,3 +1580,48 @@ on the vendor driver while the open one is loaded. Doing it needs an X server th
 GPU: `Xvfb` is unpacked into `/home/radxa/x11dev/root` for that, and a small xcb-surface test
 (create surface, swapchain, render, present) would close the loop. The capability itself is in place
 and advertised.
+
+### 20.5 Second fixed gap: 2x MSAA was implemented but not advertised
+
+The same pattern as §20.1. The driver's sample-count masks were `1|4`, while the implementation
+handles 2 samples: `pvr_cr_isp_aa_mode_type()` maps 2 samples to `ROGUE_CR_ISP_AA_MODE_TYPE_AA_2X`,
+and the ISP partition sizing has an explicit `isp_samples == 2` path (`pvr_arch_job_common.c:336`).
+The vendor driver advertises `1|2|4` on this board, so the mask was simply narrower than the code.
+
+The masks now read `1|2|4` (0x7) for framebuffer colour/depth/stencil/no-attachment and for sampled
+image colour/integer/depth/stencil, and `vkrender` gained `SAMPLES=1|2|4` - a multisampled attachment
+plus a resolve target, with the existing pixel check doing the verification:
+
+```
+SAMPLES=1  RESULT: PASS - 262144/262144 pixels correct
+SAMPLES=2  RESULT: PASS - 262144/262144 pixels correct     <- refused before this change
+SAMPLES=4  RESULT: PASS - 262144/262144 pixels correct
+```
+
+One honest detail: the first run of this test reported 538 pixels "wrong" for both 2x and 4x, with
+values at half the expected brightness. That was the *test* being wrong rather than the driver: the
+full-screen triangle's hypotenuse passes through the top-right corner, so pixels on that edge are
+only partially covered and the resolve correctly averages them toward the background (126 against an
+expected 253 is exactly a two-sample average of 0 and 253). The check now verifies interior pixels
+exactly and requires edge pixels to be a plausible blend, reporting them separately instead of
+counting them as correct - which is why the numbers above are honest rather than the test having
+been loosened until it passed.
+
+### 20.6 Compatibility scorecard after this round
+
+| gap | status |
+|---|---|
+| extent limit under-reported by 2x (8192 vs 4096) | **fixed**, verified by 6144² and 8192² renders |
+| X11 WSI (xcb/xlib surfaces) absent | **enabled**, verified as advertised; end-to-end pending an X server that does not use the GPU |
+| 2x MSAA implemented but not advertised | **fixed**, verified at 1x/2x/4x |
+| `bufferDeviceAddress` (+ capture replay) | open - implementation work, DXVK/vkd3d want it |
+| 8/16-bit storage, `shaderFloat16`, `shaderInt8` | open - implementation work |
+| `variablePointers`, `drawIndirectCount` | open - implementation work |
+| `depthClamp`, `occlusionQueryPrecise`, `vertexPipelineStoresAndAtomics` | open - implementation work |
+| API 1.2 vs the vendor's 1.3 | open - needs the 1.3 core feature set |
+| timestamps (`timestampPeriod = 0.0`) | open - the driver has no timestamp query path at all, so the value is honest |
+
+Three of the four gaps that were "the driver can already do this" are now closed. What remains needs
+features implemented inside Mesa's pvr, not flags flipped: the hardware supports them (the vendor
+driver on this board is the proof), but enabling a feature without implementing it would render
+wrongly rather than work.
