@@ -2292,3 +2292,17 @@ module on card1, and `x11present` on `:0`. That is a different and riskier seque
 `open-run.sh`'s stop-the-desktop flow (the module cannot be unloaded while the console and desktop
 hold 189 references to it), so it was not attempted here - it is the one open item with a known,
 written-down method rather than an unknown.
+
+## 21.15 Where this leaves the three stacks
+
+The numbers in 21.13 and 21.14 all describe one stack - the open driver. The question "was this
+worth doing, and what should someone actually run" needs the vendor stack and the published repo in
+the same table, and that is a separate document:
+[`GPU-STACK-COMPARISON-2026-09-23.md`](GPU-STACK-COMPARISON-2026-09-23.md).
+
+Its short version: the published repo (`origin/trixie`) contains the clock overlays, the FEX/box64
+tuning and the zink recipe, but **none of the work in this document** - 52 commits and 19 464 lines
+are local-only. Measured on one board, the vendor driver plus the repo's overlays is still the faster
+and more compatible choice (~2.3x on draw, 21 more device features); what the open-driver work
+bought is that the open stack now *works* - BDA advertised, 64-bit push constants no longer
+segfaulting, 8192 renders, X11 surfaces, one honest memory type - not that it is quick.

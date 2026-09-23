@@ -1,0 +1,48 @@
+########## 1. the compatibility tests on the pre-change driver ##########
+--- bda, pre-change ICD ---
+    exit=1  (last 4 lines)
+      BufferDeviceAddressFeatures.bufferDeviceAddress = 0 (captureReplay=0)
+      ...FeaturesEXT.bufferDeviceAddress      = 0
+      Vulkan12Features.bufferDeviceAddress           FAIL
+    FAIL: vkCreateDevice(phys, &dci, NULL, &dev) -> -7
+--- pctest, pre-change ICD ---
+/home/radxa/trixie-prep/bench/pvr-vulkan/stackdetail.sh: line 20: 378132 Segmentation fault      VK_ICD_FILENAMES=$OLD VK_DRIVER_FILES=$OLD PVR_I_WANT_A_BROKEN_VULKAN_DRIVER=1 timeout 120 ./$t > /tmp/detail-$t.log 2>&1
+    exit=139  (last 4 lines)
+    WARNING! Infinite opt loop!
+    WARNING! Infinite opt loop!
+    WARNING! Infinite opt loop!
+    Unsupported alu instruction: "32    %12 = unpack_64_2x32_split_x %11"
+
+########## 2. memtypes raw, both open ICDs ##########
+--- prechange ---
+
+allocation cost (1024 KiB buffers)
+  type 0: allocate+bind  0.862 ms | map+touch(4K)  0.030 ms
+  type 1: allocate+bind  0.823 ms | map+touch(4K)  0.029 ms
+
+readback 512x512 (1024 KiB) - image copy, fence wait and CPU read
+  type 0: record  0.013 | fence wait  0.342 | cpu read  3.091 | total  3.446 ms
+  type 1: record  0.012 | fence wait  0.323 | cpu read  0.376 | total  0.711 ms
+--- current ---
+      cpu read (1024KB)  :   2.952 ms  (339 MB/s)
+      cpu write        :   0.193 ms
+
+allocation cost (1024 KiB buffers)
+  type 0: allocate+bind  0.844 ms | map+touch(4K)  0.024 ms
+
+readback 512x512 (1024 KiB) - image copy, fence wait and CPU read
+  type 0: record  0.014 | fence wait  0.363 | cpu read  2.998 | total  3.376 ms
+
+########## 3. GL through zink over the OPEN driver, surfaceless ##########
+gl.zink-pvr loop4    GL_RENDERER : zink Vulkan 1.2(PowerVR B-Series BXM-4-64 MC1 (IMAGINATION_OPEN_SOURCE_MESA)) RESULT: 1280x720  shaderLoop=4  60 frames in 0.546s -> 110.0 fps, 101 Mpix/s 
+gl.zink-pvr loop16   GL_RENDERER : zink Vulkan 1.2(PowerVR B-Series BXM-4-64 MC1 (IMAGINATION_OPEN_SOURCE_MESA)) RESULT: 1280x720  shaderLoop=16  40 frames in 0.902s -> 44.4 fps, 41 Mpix/s 
+gl.zink-pvr loop64   GL_RENDERER : zink Vulkan 1.2(PowerVR B-Series BXM-4-64 MC1 (IMAGINATION_OPEN_SOURCE_MESA)) RESULT: 1280x720  shaderLoop=64  20 frames in 2.998s -> 6.7 fps, 6 Mpix/s 
+gl.zink-pvr loop256  GL_RENDERER : zink Vulkan 1.2(PowerVR B-Series BXM-4-64 MC1 (IMAGINATION_OPEN_SOURCE_MESA)) RESULT: 1280x720  shaderLoop=256  8 frames in 4.679s -> 1.7 fps, 2 Mpix/s 
+
+########## 4. vkrender 512, 60 frames, twice each ##########
+render512.prechange  #1  60 frame(s) in 119.192 ms (1.987 ms/frame, 132.0 Mpix/s)
+render512.prechange  #2  60 frame(s) in 119.180 ms (1.986 ms/frame, 132.0 Mpix/s)
+render512.current    #1  60 frame(s) in 130.494 ms (2.175 ms/frame, 120.5 Mpix/s)
+render512.current    #2  60 frame(s) in 114.961 ms (1.916 ms/frame, 136.8 Mpix/s)
+
+########## done ##########
