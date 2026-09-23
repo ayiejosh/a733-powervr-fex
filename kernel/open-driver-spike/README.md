@@ -59,3 +59,49 @@ failure, not a crash, and would mean a DT overlay is the next step.
 
 Userspace: Mesa with `-Dvulkan-drivers=imagination` — Debian ships no pvr Vulkan ICD, and our BVNC
 entry exists only in Mesa main. Then the payoff: Wayland and possibly KWin compositing.
+
+---
+
+## STAGE 3: **PASSED** — the open driver runs on this board
+
+```
+powervr 1800000.gpu: ks-bringup: clk_bus enabled
+powervr 1800000.gpu: ks-bringup: reset_bus deasserted
+powervr 1800000.gpu: [drm] loaded firmware powervr/rogue_36.56.104.183_v1.fw
+powervr 1800000.gpu: [drm] FW version v1.1 (build 6976702 OS)
+[drm] Initialized powervr 1.0.0 20230904 for 1800000.gpu on minor 1
+```
+
+Kernel log clean, no crash. That is the mainline driver, our backported `drm_gpuvm`, the v6.8 driver
+adapted to this 6.6 scheduler, the open-ABI firmware for our exact BVNC — and **no vendor DDK**.
+
+### What actually had to be fixed to get there (in order)
+
+1. **module names/deps.** `drm_exec`, `drm_shmem_helper` are modules, and the scheduler module is
+   named **`gpu-sched`**, not `drm_sched` (`modprobe drm_sched` says "not found" even though
+   `CONFIG_DRM_SCHED=m`). Load order: `drm_exec gpu-sched drm_shmem_helper drm_gpuvm powervr`.
+2. **clock name mapping.** The vendor node names its clocks `clk_parent clk clk_bus clk_800 …`; the
+   mainline driver asks for `core`. Falling back to the *unnamed* clock picks `clk_parent` — the GPU
+   stays dark and **the BVNC reads as 0.0.0.0**, which makes the driver request
+   `rogue_0.0.0.0_v1.fw`. Mapping `core -> clk` fixes it.
+3. **bus clock + reset.** The vendor node has a separate `clk_bus` and a `reset_bus` reset that the
+   mainline driver knows nothing about. Until both are handled the control registers read zero.
+   `pvr_power-busclock-reset.patch` enables/deasserts them.
+4. **(for the whole build)** the `drm_gpuvm` backport, the 6.6 `drm_sched` call-site adaptation, the
+   `img,gpu` match entry, the UAPI include paths.
+
+### What this does and does not prove
+
+Proves: the driver binds, the DT glue works, the firmware is accepted (BVNC matched — `pvr_fw_validate()`
+compares the packed BVNC against the hardware), and the GPUVA manager backport is functional.
+
+Does **not** prove rendering: no userspace has talked to the driver yet. That needs Mesa built with
+`-Dvulkan-drivers=imagination` (stage 4) — Debian ships no pvr Vulkan ICD. Only after that can
+option (a) (a real multi-ring `drm_sched` port) be compared against option (b) under load; (b) has
+now been shown *sufficient to bind*, which is the first half of that answer.
+
+### Operational note
+
+The vendor Xorg cannot start without the vendor GPU module (it dies in glamor init with no software
+fallback), so any test that frees the GPU node takes the desktop down for its duration. Recovery:
+remove `/etc/modprobe.d/blacklist-pvrsrvkm.conf`, re-enable `pvrsrvkm-load.service`, reboot.

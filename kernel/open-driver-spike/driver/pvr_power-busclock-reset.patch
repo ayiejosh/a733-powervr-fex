@@ -1,0 +1,42 @@
+--- linux/drivers/gpu/drm/imagination/pvr_power.c	2026-09-23 07:19:10.171424507 +0800
++++ img/pvr_power.c	2026-09-23 08:09:00.999217246 +0800
+@@ -11,6 +11,7 @@
+ #include <drm/drm_drv.h>
+ #include <drm/drm_managed.h>
+ #include <linux/clk.h>
++#include <linux/reset.h>
+ #include <linux/interrupt.h>
+ #include <linux/mutex.h>
+ #include <linux/platform_device.h>
+@@ -270,6 +271,31 @@
+ 	if (!drm_dev_enter(drm_dev, &idx))
+ 		return -EIO;
+ 
++	/*
++	 * Bring-up shim for the vendor A733 node: it exposes the functional clock as
++	 * "clk" (mapped in pvr_device.c) plus a separate bus clock "clk_bus" and a
++	 * "reset_bus" reset, neither of which the mainline driver knows about. Without
++	 * them the GPU block does not respond and the BVNC reads as 0.0.0.0.
++	 */
++	{
++		struct clk *bus_clk = devm_clk_get(pvr_dev->base.dev, "clk_bus");
++		struct reset_control *bus_rst =
++			devm_reset_control_get_optional_exclusive(pvr_dev->base.dev, "reset_bus");
++
++		if (!IS_ERR(bus_clk)) {
++			clk_prepare_enable(bus_clk);
++			dev_info(pvr_dev->base.dev, "ks-bringup: clk_bus enabled\n");
++		} else {
++			dev_warn(pvr_dev->base.dev, "ks-bringup: no clk_bus (%ld)\n", PTR_ERR(bus_clk));
++		}
++		if (!IS_ERR(bus_rst)) {
++			reset_control_deassert(bus_rst);
++			dev_info(pvr_dev->base.dev, "ks-bringup: reset_bus deasserted\n");
++		} else {
++			dev_warn(pvr_dev->base.dev, "ks-bringup: no reset_bus (%ld)\n", PTR_ERR(bus_rst));
++		}
++	}
++
+ 	err = clk_prepare_enable(pvr_dev->core_clk);
+ 	if (err)
+ 		goto err_drm_dev_exit;
