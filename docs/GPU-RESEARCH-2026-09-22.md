@@ -538,3 +538,86 @@ this kernel's UAPI header in both 25.0.7 and 25.3.0.
   platform device is left runtime-PM-enabled by the vendor driver; it does not appear on a boot
   where only one driver was ever loaded), and `kmsconvt@tty1.service` takes a SEGV because its
   DRM console disappears underneath it (`systemctl restart kmsconvt@tty1` clears it).
+
+## 11. Stage 4 continued: rendering, the submit cost, and a real bug in our own glue
+
+### Rendering works, and it is not submit-bound
+
+`bench/pvr-vulkan/vkrender.c` draws a full-screen triangle offscreen with a fragment shader the
+host can predict pixel for pixel, resolves it, copies it out and compares all 262144 pixels. It was
+validated against the vendor ICD first, so a failure on the open driver means the driver, not the
+test.
+
+| test | vendor ICD + pvrsrvkm | Mesa pvr + mainline powervr |
+|---|---|---|
+| compute, 1M elements | 2.497 ms/dispatch, 3.36 GB/s | 2.833 ms/dispatch, **2.96 GB/s** |
+| offscreen 512x512, one submit per frame | 0.663 ms/frame, 395.2 Mpix/s | 1.658 ms/frame, **158.1 Mpix/s** |
+| offscreen 512x512, 8 frames per submit | — | 1.365 ms/frame, 192.0 Mpix/s |
+| offscreen 512x512, 32 frames per submit | — | 1.297 ms/frame, 202.0 Mpix/s |
+
+Compute is within 12% of the vendor stack; graphics is correct but about 2.5x slower. Batching
+recovers only ~19%, so **the gap is not per-submit overhead** — it is in the render path itself
+(tiling, state setup, or how Mesa's pvr driver sequences passes) rather than in the queue
+arbitration that option (b) degraded. That matters for sequencing: option (a), a real multi-ring
+`drm_sched` port, is not the lever for this number.
+
+### A bug in the bring-up glue, found by the backtrace it caused
+
+Repeated run/resume cycles produced a kernel warning:
+
+```
+CPU: 5 PID: 91212 Comm: pvr-queue Tainted: G W O
+ pvr_power_device_resume+0x7c/0x248 [powervr]
+ pvr_queue_run_job+0x108/0x340 [powervr]
+powervr 1800000.gpu: ks-bringup: no reset_bus (-16)
+```
+
+The `clk_bus` / `reset_bus` shim (§10) sat in `pvr_power_device_resume()`, which runs on **every**
+runtime-PM resume, so it called `devm_clk_get()` and
+`devm_reset_control_get_optional_exclusive()` each time. Two consequences: a devres allocation
+leaked per resume, and because the reset is exclusive the second acquisition failed with `-EBUSY`.
+The state is now acquired once and cached in `struct pvr_device`
+(`ks_bus_clk`, `ks_bus_rst`, `ks_bringup_done`); enabling the clock stays per-resume, because the
+mainline driver disables its clocks when it suspends. After the fix the log is one line
+(`ks-bringup: clk_bus found, reset_bus found`) and the warning is gone; compute and all three
+render batches still pass.
+
+Rebuild recipe, including the part that is easy to get wrong:
+```sh
+cd /home/radxa/kspike/img
+sudo make -C /lib/modules/$(uname -r)/build M=$PWD \
+     KBUILD_EXTRA_SYMBOLS=/home/radxa/kspike/mod/Module.symvers modules
+```
+Without `KBUILD_EXTRA_SYMBOLS` modpost fails on the `drm_gpuvm` symbols that the backport module
+provides.
+
+### GL over the open driver: not yet, and the blocker is not the driver
+
+The goal was zink (GL -> Vulkan) over the pvr ICD, headless via `EGL_MESA_platform_surfaceless`,
+rendering the same predictable pattern. What is established:
+
+- **Mesa's pvr driver advertises `VK_EXT_robustness2` with `nullDescriptor = true`**
+  (`pvr_device.c`), which is what Mesa 25.3's zink requires. The vendor ICD does **not** have it —
+  zink refuses it with *"Zink requires the nullDescriptor feature of KHR/EXT robustness2"*. So on
+  paper the open driver is the better Vulkan substrate for GL, not the worse one.
+- zink does reach the pvr device: the run shows pvr's device being created twice
+  (`Core count fetching is unimplemented` + the conformance warning, twice), so device selection
+  succeeds.
+- EGL then fails: `libEGL warning: egl: failed to create dri2 screen` /
+  `DRI2: failed to create screen` -> `eglInitialize failed (0x3001)`, identically with a
+  surfaceless-only build and after adding Mesa's DRM platform (`-Dgbm=enabled`), and with the
+  system GL stack it fails differently (`did not find extension DRI_Mesa version 1`).
+
+This board has **three Mesa generations** in play: the vendor stack's GL in `/usr/local/lib` (Mesa
+24.0.1-based, on the loader path via
+`/etc/ld.so.conf.d/00_xserver-xorg-img-bxm.conf`), Debian's 25.0.7, and our 25.3 builds. That is
+almost certainly the EGL/DRI confusion. The next step is to pin one coherent set (our own libEGL +
+libgallium + `LIBGL_DRIVERS_PATH`, with the vendor `/usr/local/lib` kept out of the search path)
+rather than to change anything in the driver.
+
+### Environment the open path now needs (all reproducible, all recorded)
+
+`bison` 3.8.2, `flex` 2.6.4 and `m4` 1.4.19 in `/home/radxa/gltools` (Debian packages unpacked
+there, since apt cannot install on this image), with `BISON_PKGDATADIR` and `M4` pointing into it;
+`wayland-protocols` 1.44 and `libwayland-dev` headers; `libclc.pc` written by hand; LLVMSPIRVLib
+19.1.15 built from source. See `mesa/README.md`.

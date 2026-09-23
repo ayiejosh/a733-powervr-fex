@@ -383,15 +383,34 @@ int main(int argc, char **argv)
         .pCommandBuffers = &cmd,
     };
 
-    printf("rendering %d x %ux%u offscreen frames...\n", iters, size, size);
+    /* BATCH=n records n frames into one command buffer and submits once. With
+     * BATCH=1 every frame is its own submit+fence wait, which is how a compositor
+     * or a game actually behaves; the difference between the two is what a
+     * submit path costs on this driver. */
+    int batch = 1;
+    const char *batch_env = getenv("BATCH");
+    if (batch_env) {
+        batch = atoi(batch_env);
+        if (batch < 1)
+            batch = 1;
+        if (batch > iters)
+            batch = iters;
+    }
+
+    printf("rendering %d x %ux%u offscreen frames (BATCH=%d)...\n", iters, size, size, batch);
     double t0 = now_ms();
-    for (int it = 0; it < iters; it++) {
+    int done = 0;
+    while (done < iters) {
+        int n = iters - done;
+        if (n > batch)
+            n = batch;
         VkCommandBufferBeginInfo cbbi = {
             .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
             .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
         };
         VKCHECK(vkBeginCommandBuffer(cmd, &cbbi));
 
+        for (int k = 0; k < n; k++) {
         VkClearValue clear = { .color = { { 0.0f, 0.0f, 0.0f, 1.0f } } };
         VkRenderPassBeginInfo rpbi = {
             .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
@@ -416,14 +435,16 @@ int main(int argc, char **argv)
         };
         vkCmdCopyImageToBuffer(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buf, 1,
                                &region);
+        }
         VKCHECK(vkEndCommandBuffer(cmd));
 
         VKCHECK(vkResetFences(dev, 1, &fence));
         VKCHECK(vkQueueSubmit(queue, 1, &si, fence));
         VkResult w = vkWaitForFences(dev, 1, &fence, VK_TRUE, 10ull * 1000 * 1000 * 1000);
         if (w != VK_SUCCESS)
-            DIE("vkWaitForFences after %d frame(s) -> %d (GPU never signalled)", it + 1,
+            DIE("vkWaitForFences after %d frame(s) -> %d (GPU never signalled)", done + n,
                 (int)w);
+        done += n;
     }
     double t1 = now_ms();
 

@@ -8,6 +8,7 @@
 # Two binaries:
 #   vktest    compute execution + readback verification + throughput
 #   vkrender  offscreen graphics: render pass, draw, resolve, copy, pixel check
+#   glheadless  EGL surfaceless + zink: desktop GL (or GLES3) over the Vulkan ICD
 #
 # The Vulkan loader is linked directly; on this board the arm64 loader has no .so
 # symlink in the default path, so fall back to linking the versioned library.
@@ -52,4 +53,9 @@ link() {
 link vktest vktest.c
 link vkrender vkrender.c
 
-echo "built: $(pwd)/vktest and $(pwd)/vkrender"
+# glheadless links EGL + GLES2; the Mesa build that provides zink is separate
+# (mesa/build-gl) and is selected at run time with LD_LIBRARY_PATH.
+$CC $CFLAGS -o glheadless glheadless.c -lEGL -lGLESv2 -lm || \
+  $CC $CFLAGS -o glheadless glheadless.c -l:libEGL.so.1 -l:libGLESv2.so.2 -lm
+
+echo "built: $(pwd)/vktest, $(pwd)/vkrender and $(pwd)/glheadless"

@@ -147,11 +147,29 @@ say "--- Mesa pvr ICD + mainline powervr driver: compute ---"
 
 if [ -x "$BENCH/vkrender" ]; then
     say "--- Mesa pvr ICD + mainline powervr driver: offscreen render ---"
-    ( cd "$BENCH" && VK_ICD_FILENAMES="$MESA_ICD" VK_DRIVER_FILES="$MESA_ICD" \
-        PVR_I_WANT_A_BROKEN_VULKAN_DRIVER=1 \
-        timeout 300 ./vkrender 512 40 2>&1 | sed 's/^/    /' | tee -a "$LOG" )
+    # BATCH=n records n frames per command buffer: BATCH=1 is submit+fence per
+    # frame (what a compositor does), the larger values show what the submit path
+    # itself costs on this driver.
+    for _b in 1 8 32; do
+        ( cd "$BENCH" && BATCH=$_b VK_ICD_FILENAMES="$MESA_ICD" VK_DRIVER_FILES="$MESA_ICD" \
+            PVR_I_WANT_A_BROKEN_VULKAN_DRIVER=1 \
+            timeout 300 ./vkrender 512 32 2>&1 | grep -E 'frame\(s\) in|RESULT|VERDICT' \
+            | sed "s/^/    BATCH=$_b /" | tee -a "$LOG" )
+    done
 else
     say "no $BENCH/vkrender - skipping the graphics test"
+fi
+
+GL_PREFIX=/home/radxa/mesa/inst-gl/usr/local/lib/aarch64-linux-gnu
+if [ -x "$BENCH/glheadless" ] && [ -d /home/radxa/mesa/gldri ]; then
+    say "--- zink GL (Mesa 25.3) over Mesa pvr + mainline driver ---"
+    ( cd "$BENCH" && LD_LIBRARY_PATH="$GL_PREFIX" LIBGL_DRIVERS_PATH=/home/radxa/mesa/gldri \
+        MESA_LOADER_DRIVER_OVERRIDE=zink EGL_PLATFORM=surfaceless \
+        VK_ICD_FILENAMES="$MESA_ICD" VK_DRIVER_FILES="$MESA_ICD" \
+        PVR_I_WANT_A_BROKEN_VULKAN_DRIVER=1 \
+        timeout 300 ./glheadless 512 20 2>&1 | sed 's/^/    /' | tee -a "$LOG" )
+else
+    say "no glheadless / GL build - skipping the GL test"
 fi
 
 say "--- kernel log after the test ---"
