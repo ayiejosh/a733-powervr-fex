@@ -11,7 +11,7 @@ set -u
 
 SPIKE=/home/radxa/kspike
 LOG=$SPIKE/open-run-$(date +%Y%m%d-%H%M%S).log
-MESA_ICD=${MESA_ICD:-/home/radxa/mesa/mesa-main/build/src/imagination/vulkan/powervr_mesa_devenv_icd.aarch64.json}
+MESA_ICD=${MESA_ICD:-/home/radxa/mesa/mesa-main/build-x11/src/imagination/vulkan/powervr_mesa_devenv_icd.aarch64.json}
 
 say() { echo "[open-run $(date +%H:%M:%S)] $*" | tee -a "$LOG"; }
 

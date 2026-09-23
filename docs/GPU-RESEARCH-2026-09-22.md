@@ -1547,3 +1547,36 @@ the open driver and the vendor module claim the same GPU device - only one can b
 Testing it therefore needs an X server that does not touch the GPU; `Xvfb` has been unpacked into the
 same prefix for exactly that purpose (Xephyr, which is installed, needs a parent display and so is no
 use while the desktop's X has been stopped for the swap).
+
+### 20.4 X11 WSI verified
+
+The rebuilt ICD (`build-x11`, `-Dplatforms=x11,wayland`) advertises what the application-facing side
+needs, which the previous build did not have at all:
+
+```
+VK_KHR_surface
+VK_KHR_xcb_surface        <- new
+VK_KHR_xlib_surface       <- new
+VK_KHR_display            <- new
+VK_EXT_acquire_drm_display <- new
+VK_EXT_direct_mode_display <- new
+VK_EXT_headless_surface
+VK_KHR_get_surface_capabilities2
+```
+
+and the regressions still pass with it: render `1048576/1048576 pixels correct`, compute
+`1048576/1048576 elements correct`. The ICD in `build-x11` is now the default the swap script and the
+open-run helper use, since it is a superset of the wayland-only build.
+
+So of the eight compatibility gaps in §20.2, two are closed: the under-reported extent limit (§20.1,
+verified by 6144² and 8192² renders) and X11 WSI (here). What remains is the feature list in
+§20.2 items 1-7, which needs implementation inside Mesa's pvr rather than configuration - the
+hardware supports all of it (the vendor driver on this board proves it), and the flagship item is
+`bufferDeviceAddress`, which DXVK and vkd3d want.
+
+**Next step for X11, and its one caveat**: end-to-end presentation through an X server has not been
+run, because the open driver and the vendor module claim the same GPU device, so X cannot be running
+on the vendor driver while the open one is loaded. Doing it needs an X server that never touches the
+GPU: `Xvfb` is unpacked into `/home/radxa/x11dev/root` for that, and a small xcb-surface test
+(create surface, swapchain, render, present) would close the loop. The capability itself is in place
+and advertised.

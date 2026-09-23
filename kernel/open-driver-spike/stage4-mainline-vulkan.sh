@@ -257,7 +257,7 @@ say "Mesa ICD: $MESA_ICD"
 # and Mesa main's pvr does. Fall back to $MESA_ICD if main is not built.
 GL_ICD=${GL_ICD:-}
 if [ -z "$GL_ICD" ]; then
-    for _c in /home/radxa/mesa/mesa-main/build/src/imagination/vulkan/powervr_mesa_devenv_icd.aarch64.json; do
+    for _c in /home/radxa/mesa/mesa-main/build-x11/src/imagination/vulkan/powervr_mesa_devenv_icd.aarch64.json; do
         [ -f "$_c" ] && { GL_ICD=$_c; break; }
     done
 fi
