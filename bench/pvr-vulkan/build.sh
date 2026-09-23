@@ -45,12 +45,19 @@ PY
 CC=${CC:-gcc}
 CFLAGS="-O2 -Wall -Wextra -Wno-unused-parameter"
 
+# Compile, then fall back to the versioned loader only if the *link* failed.
+# Errors must be visible: a swallowed compile error leaves a stale binary behind,
+# which silently invalidates whatever test run follows.
 link() {
   local out=$1 src=$2
-  if $CC $CFLAGS -o "$out" "$src" -lvulkan -lm 2>/dev/null; then
-    :
-  else
-    $CC $CFLAGS -o "$out" "$src" -l:libvulkan.so.1 -lm
+  if ! $CC $CFLAGS -o "$out" "$src" -lvulkan -lm 2>/tmp/link.err; then
+    if grep -q 'cannot find -lvulkan' /tmp/link.err; then
+      $CC $CFLAGS -o "$out" "$src" -l:libvulkan.so.1 -lm
+    else
+      cat /tmp/link.err >&2
+      echo "build.sh: $src failed to compile" >&2
+      exit 1
+    fi
   fi
 }
 
@@ -67,7 +74,17 @@ $CC $CFLAGS -I/usr/include/libdrm -o pvranimate pvranimate.c -lvulkan -ldrm -lm 
 
 # glheadless links EGL + GLES2; the Mesa build that provides zink is separate
 # (mesa/build-gl) and is selected at run time with LD_LIBRARY_PATH.
-$CC $CFLAGS -o glheadless glheadless.c -lEGL -lGLESv2 -lgbm -lm || \
-  $CC $CFLAGS -o glheadless glheadless.c -l:libEGL.so.1 -l:libGLESv2.so.2 -l:libgbm.so.1 -lm
+glheadless_link() {
+  if ! $CC $CFLAGS -o glheadless glheadless.c -lEGL -lGLESv2 -lgbm -lm 2>/tmp/link.err; then
+    if grep -q 'cannot find -l' /tmp/link.err; then
+      $CC $CFLAGS -o glheadless glheadless.c -l:libEGL.so.1 -l:libGLESv2.so.2 -l:libgbm.so.1 -lm
+    else
+      cat /tmp/link.err >&2
+      echo "build.sh: glheadless.c failed to compile" >&2
+      exit 1
+    fi
+  fi
+}
+glheadless_link
 
 echo "built: $(pwd)/vktest, $(pwd)/vkrender and $(pwd)/glheadless"

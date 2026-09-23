@@ -185,6 +185,17 @@ else
     say "no $BENCH/pvranimate - skipping the presentation test"
 fi
 
+# The GL phase needs a pvr ICD whose driver advertises VK_KHR_dynamic_rendering:
+# zink requires it, 25.3.0's pvr does not have it (which is why GL failed for so
+# long - zink rejects the device with a message compiled out of release builds),
+# and Mesa main's pvr does. Fall back to $MESA_ICD if main is not built.
+GL_ICD=${GL_ICD:-}
+if [ -z "$GL_ICD" ]; then
+    for _c in /home/radxa/mesa/mesa-main/build/src/imagination/vulkan/powervr_mesa_devenv_icd.aarch64.json; do
+        [ -f "$_c" ] && { GL_ICD=$_c; break; }
+    done
+fi
+[ -z "$GL_ICD" ] && GL_ICD=$MESA_ICD
 GL_PREFIX=/home/radxa/mesa/inst-gl/usr/local/lib/aarch64-linux-gnu
 if [ -x "$BENCH/glheadless" ] && [ -d /home/radxa/mesa/gldri ]; then
     say "--- zink GL (Mesa 25.3) over Mesa pvr + mainline driver ---"
@@ -198,8 +209,8 @@ if [ -x "$BENCH/glheadless" ] && [ -d /home/radxa/mesa/gldri ]; then
         GBM_BACKENDS_PATH="$GL_PREFIX/gbm" \
         MESA_LOADER_DRIVER_OVERRIDE=zink EGL_PLATFORM=gbm \
         DRM_RENDER_NODE=/dev/dri/renderD128 \
-        EGL_LOG_LEVEL=debug LIBGL_DEBUG=verbose \
-        VK_ICD_FILENAMES="$MESA_ICD" VK_DRIVER_FILES="$MESA_ICD" \
+        EGL_LOG_LEVEL=debug LIBGL_DEBUG=verbose ZINK_TRACE=1 \
+        VK_ICD_FILENAMES="$GL_ICD" VK_DRIVER_FILES="$GL_ICD" \
         PVR_I_WANT_A_BROKEN_VULKAN_DRIVER=1 \
         timeout 300 ./glheadless 512 20 2>&1 | sed 's/^/    /' | tee -a "$LOG" )
 else

@@ -60,6 +60,20 @@ static const char *FRAG_GL =
     "    color = vec4(r, g, 0.25, 1.0);\n"
     "}\n";
 
+static const char *VERT_ES2 =
+    "#version 100\n"
+    "attribute vec2 pos;\n"
+    "void main() { gl_Position = vec4(pos, 0.0, 1.0); }\n";
+
+static const char *FRAG_ES2 =
+    "#version 100\n"
+    "precision mediump float;\n"
+    "void main() {\n"
+    "    float r = fract(gl_FragCoord.x / 64.0);\n"
+    "    float g = fract(gl_FragCoord.y / 64.0);\n"
+    "    gl_FragColor = vec4(r, g, 0.25, 1.0);\n"
+    "}\n";
+
 static const char *VERT_ES =
     "#version 300 es\n"
     "void main() {\n"
@@ -89,6 +103,35 @@ static double now_ms(void)
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1e6;
+}
+
+
+/* EGL config selection that tolerates platforms which do not expose
+ * pbuffer-renderable configs (GBM, surfaceless) and drivers that differ on alpha. */
+static int pick_config(EGLDisplay d, EGLint renderable_bit, const char *what, EGLConfig *out)
+{
+    const EGLint surface_types[3] = { EGL_PBUFFER_BIT, EGL_WINDOW_BIT, 0 };
+    const char *surface_names[3] = { "pbuffer", "window", "none" };
+
+    for (int st = 0; st < 3; st++) {
+        for (int alpha = 8; alpha >= 0; alpha -= 8) {
+            EGLint attrs[] = {
+                EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8,
+                EGL_ALPHA_SIZE, alpha,
+                EGL_RENDERABLE_TYPE, renderable_bit,
+                EGL_SURFACE_TYPE, surface_types[st],
+                EGL_NONE,
+            };
+            EGLint n = 0;
+            if (eglChooseConfig(d, attrs, out, 1, &n) && n > 0) {
+                printf("%s: config found (surface=%s alpha=%d)\n", what, surface_names[st],
+                       alpha);
+                return 1;
+            }
+        }
+    }
+    printf("%s: no config\n", what);
+    return 0;
 }
 
 static GLuint compile(GLenum type, const char *src)
@@ -180,57 +223,60 @@ int main(int argc, char **argv)
     }
     printf("EGL %d.%d  vendor=%s\n", major, minor, eglQueryString(dpy, EGL_VENDOR));
 
-    /* Desktop GL first, GLES 3 as the fallback: a zink build may be either. */
-    int use_es = 0;
-    EGLint cfg_attrs[] = { EGL_SURFACE_TYPE, EGL_PBUFFER_BIT,
-                           EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8,
-                           EGL_ALPHA_SIZE, 8, EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT,
-                           EGL_NONE };
-    if (!eglBindAPI(EGL_OPENGL_API)) {
-        use_es = 1;
-    } else {
-        EGLConfig cfg;
-        EGLint n = 0;
-        if (!eglChooseConfig(dpy, cfg_attrs, &cfg, 1, &n) || n == 0)
-            use_es = 1;
-    }
+    /* GLES, not desktop GL: this binary links libGLESv2, so the entry points it
+     * calls are the ES ones. The vendor baseline (231.7 Mpix/s) was measured the
+     * same way, which also makes the two comparable. */
+    static EGLConfig cfg;
+    int use_es = 1;
+    if (!eglBindAPI(EGL_OPENGL_ES_API))
+        DIE("eglBindAPI(GLES) failed");
+    if (!pick_config(dpy, EGL_OPENGL_ES2_BIT, "GLES", &cfg))
+        DIE("no EGL config - zink initialised but EGL cannot offer one");
 
-    EGLConfig cfg;
-    EGLint n = 0;
-    if (use_es) {
-        printf("desktop GL unavailable, using GLES 3\n");
-        if (!eglBindAPI(EGL_OPENGL_ES_API))
-            DIE("eglBindAPI(GLES) failed");
-        EGLint es_attrs[] = { EGL_SURFACE_TYPE, EGL_PBUFFER_BIT,
-                              EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8,
-                              EGL_ALPHA_SIZE, 8, EGL_RENDERABLE_TYPE,
-                              EGL_OPENGL_ES2_BIT, EGL_NONE };
-        if (!eglChooseConfig(dpy, es_attrs, &cfg, 1, &n) || n == 0)
-            DIE("no EGL config for GLES 3 either");
-    } else {
-        if (!eglChooseConfig(dpy, cfg_attrs, &cfg, 1, &n) || n == 0)
-            DIE("no EGL config for desktop GL");
-    }
+    EGLint chosen_rt = 0;
+    eglGetConfigAttrib(dpy, cfg, EGL_RENDERABLE_TYPE, &chosen_rt);
+    printf("config renderable=0x%x (GL=%d ES2=%d)\n", chosen_rt,
+           !!(chosen_rt & EGL_OPENGL_BIT), !!(chosen_rt & EGL_OPENGL_ES2_BIT));
 
-    EGLint ctx_attrs[5];
-    int i = 0;
-    if (use_es) {
-        ctx_attrs[i++] = EGL_CONTEXT_CLIENT_VERSION;
-        ctx_attrs[i++] = 3;
-    } else {
-        ctx_attrs[i++] = EGL_CONTEXT_MAJOR_VERSION;
-        ctx_attrs[i++] = 3;
-        ctx_attrs[i++] = EGL_CONTEXT_MINOR_VERSION;
-        ctx_attrs[i++] = 3;
-    }
-    ctx_attrs[i] = EGL_NONE;
+    /* Context creation is fussy about which attribute set a driver accepts, and
+     * the reason for a rejection is not observable, so try the plausible sets in
+     * order and report which one worked. */
+    EGLint es3[] = { EGL_CONTEXT_CLIENT_VERSION, 3, EGL_NONE };
+    EGLint es3_alt[] = { EGL_CONTEXT_MAJOR_VERSION, 3, EGL_CONTEXT_MINOR_VERSION, 0, EGL_NONE };
+    EGLint es2[] = { EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE };
+    struct {
+        const char *name;
+        EGLint *attrs;
+        int es_version;
+    } tries[] = { { "GLES 3 (client version)", es3, 3 },
+                  { "GLES 3 (major/minor)", es3_alt, 3 },
+                  { "GLES 2", es2, 2 } };
 
-    EGLContext ctx = eglCreateContext(dpy, cfg, EGL_NO_CONTEXT, ctx_attrs);
+    EGLContext ctx = EGL_NO_CONTEXT;
+    int ctx_es_version = 0;
+    for (unsigned i = 0; i < sizeof(tries) / sizeof(tries[0]) && ctx == EGL_NO_CONTEXT; i++) {
+        /* Bind per attempt: EGL's "current API" decides which renderable bit the
+         * context is checked against, and a stale OpenGL binding makes an
+         * ES-only config reject the context (or worse, accept it as GL). */
+        eglBindAPI(EGL_OPENGL_ES_API);
+        printf("  pre-create: eglQueryAPI=0x%x (ES=0x%x, GL=0x%x)\n", eglQueryAPI(),
+               EGL_OPENGL_ES_API, EGL_OPENGL_API);
+        ctx = eglCreateContext(dpy, cfg, EGL_NO_CONTEXT, tries[i].attrs);
+        printf("  context %-24s -> %s (egl error 0x%x)\n", tries[i].name,
+               ctx != EGL_NO_CONTEXT ? "OK" : "rejected", eglGetError());
+        if (ctx != EGL_NO_CONTEXT)
+            ctx_es_version = tries[i].es_version;
+    }
     if (ctx == EGL_NO_CONTEXT)
-        DIE("eglCreateContext failed (0x%x)", eglGetError());
+        DIE("no context attribute set was accepted (last error 0x%x)", eglGetError());
     if (!eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, ctx))
         DIE("eglMakeCurrent(surfaceless) failed (0x%x)", eglGetError());
-
+    /* GLES 2 is fine: it needs a vertex buffer and gl_FragColor, nothing else. */
+    int use_es2 = (ctx_es_version < 3);
+    if (use_es2)
+        printf("using the GLES 2 shader path\n");
+    printf("EGL_CLIENT_APIS=%s current_api=0x%x ctx=%p\n",
+           eglQueryString(dpy, EGL_CLIENT_APIS), eglQueryAPI(), (void *)eglGetCurrentContext());
     printf("GL_VENDOR:   %s\n", glGetString(GL_VENDOR));
     printf("GL_RENDERER: %s\n", glGetString(GL_RENDERER));
     printf("GL_VERSION:  %s\n", glGetString(GL_VERSION));
@@ -247,11 +293,13 @@ int main(int argc, char **argv)
     if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
         DIE("FBO incomplete (0x%x)", glCheckFramebufferStatus(GL_FRAMEBUFFER));
 
-    GLuint vs = compile(GL_VERTEX_SHADER, use_es ? VERT_ES : VERT_GL);
-    GLuint fs = compile(GL_FRAGMENT_SHADER, use_es ? FRAG_ES : FRAG_GL);
+    GLuint vs = compile(GL_VERTEX_SHADER, use_es2 ? VERT_ES2 : VERT_ES);
+    GLuint fs = compile(GL_FRAGMENT_SHADER, use_es2 ? FRAG_ES2 : FRAG_ES);
     GLuint prog = glCreateProgram();
     glAttachShader(prog, vs);
     glAttachShader(prog, fs);
+    if (use_es2)
+        glBindAttribLocation(prog, 0, "pos");
     glLinkProgram(prog);
     GLint linked = 0;
     glGetProgramiv(prog, GL_LINK_STATUS, &linked);
@@ -259,6 +307,18 @@ int main(int argc, char **argv)
         DIE("program link failed");
     glUseProgram(prog);
     glViewport(0, 0, size, size);
+
+    if (use_es2) {
+        /* Full-screen triangle, same positions the ES3 shader derives from
+         * gl_VertexID, so the expected pixels are identical. */
+        static const float verts[6] = { -1.0f, -1.0f, 3.0f, -1.0f, -1.0f, 3.0f };
+        GLuint vbo = 0;
+        glGenBuffers(1, &vbo);
+        glBindBuffer(GL_ARRAY_BUFFER, vbo);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(verts), verts, GL_STATIC_DRAW);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, 0);
+    }
 
     unsigned char *px = malloc((size_t)size * size * 4);
     if (!px)

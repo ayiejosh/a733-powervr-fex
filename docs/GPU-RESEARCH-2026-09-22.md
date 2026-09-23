@@ -812,3 +812,56 @@ modifier extension). Reading `zink_screen.c:3593` does not support that: only th
 
 The next concrete step is instrumentation, not another guess: zink creates a pvr device and then
 fails without logging anything, so the failure is between device selection and screen completion.
+
+## 15. GL works on the open driver: the blocker was Mesa's pvr missing dynamic rendering
+
+The GL failure that resisted several rounds of investigation has one cause, and it is not a
+harness problem, not the kernel driver and not zink doing something odd:
+
+**zink requires `VK_KHR_dynamic_rendering` (or a Vulkan 1.3 device). Mesa's pvr driver in 25.0-25.3
+does not implement it.** `get_api_version()` returns 1.2 and the extension table has no
+`KHR_dynamic_rendering`, so `zink_get_physical_device_info()` returns false, `driCreateNewScreen3()`
+returns NULL, and EGL reports `egl: failed to create dri2 screen`. The reason was invisible because
+that particular rejection is reported with `debug_printf()`, which is compiled out of release
+builds - every other zink failure logs through `mesa_loge` and would have been visible.
+
+Mesa **main** has it: `pvr_physical_device.c` carries `.KHR_dynamic_rendering = true` alongside
+`.robustness2 = true, .nullDescriptor = true`, claims 1.2 + the extension, and its vendored
+`pvr_drm.h` is byte-identical to this kernel's UAPI header. Building main's pvr ICD needed no
+patches at all: main's enumeration is capability-based (DRM driver name plus dumb-buffer and PRIME
+caps), so the `img,gpu` device-tree entry that 25.x requires does not exist there.
+
+```
+GL_RENDERER: zink Vulkan 1.2(PowerVR B-Series BXM-4-64 MC1 (IMAGINATION_OPEN_SOURCE_MESA))
+GL_VERSION:  OpenGL ES 2.0 Mesa 25.3.0
+20 frame(s) in 109.015 ms (5.451 ms/frame, 48.1 Mpix/s)
+RESULT: PASS - 262144/262144 pixels correct
+```
+
+So the full open stack now goes: **kernel `powervr` -> Mesa pvr (Vulkan) -> zink -> GLES -> FBO,
+with every pixel verified**, and it runs from a plain `stage4-mainline-vulkan.sh` with no
+environment overrides. The `GL_RENDERER` string naming `IMAGINATION_OPEN_SOURCE_MESA` is the open
+driver's own driver id, not the vendor blob's.
+
+### Honest numbers and limits
+
+- **48.1 Mpix/s against the vendor stack's 231.7 Mpix/s** for the same 512x512 offscreen pattern:
+  GL through zink is ~4.8x slower here. Some of that is zink's nature, some is the render-path gap
+  measured in §14 (158 vs 395 Mpix/s), and the ES2 context this ends up using is not the vendor's
+  ES 3.2.
+- **Only a GLES 2 context was accepted.** Requests for a GLES 3 context come back
+  `EGL_BAD_CONFIG` (0x3005) with Mesa's own note `context api is 0x40 while config supports 0xd` -
+  Mesa appears to evaluate the ES3 request against the OpenGL renderable bit. That is unexplained
+  and is the next thing to look at; the test falls back to a GLES 2 shader path (vertex buffer plus
+  `gl_FragColor`) which produces the identical pattern.
+- This is offscreen GL. There is still no surface/swapchain path that a compositor could use on the
+  open driver, so the desktop keeps running the vendor stack.
+
+### Method note: two runs of this investigation were invalid
+
+A compile error (`eglGetCurrentAPI` is not a function; it is `eglQueryAPI`) left a **stale
+`glheadless` binary** in place, and the build script's `command || fallback` pattern hid it, so two
+consecutive "results" were produced by the previous binary and were meaningless. The build script
+now distinguishes a link failure from a compile failure and aborts loudly on the latter. The same
+class of mistake - also mine, not Mesa's - was a missing `eglMakeCurrent()` that had been dropped by
+an earlier edit, which made every GL call return NULL.
