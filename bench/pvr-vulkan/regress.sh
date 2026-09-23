@@ -24,7 +24,7 @@
 set -u
 cd "$(dirname "$0")"
 
-for t in vktest vkrender vkaudit memtypes bda pctest vk13 vk16 vkbits; do
+for t in vktest vkrender vkaudit memtypes bda pctest vk13 vk16 vkbits vkdescidx; do
   [ -x "./$t" ] || { echo "regress.sh: ./$t missing - run ./build.sh"; exit 2; }
 done
 
@@ -136,6 +136,12 @@ run_case verdict "vkrender depthClamp on (triangle must be clamped, not clipped)
 # and an atomic add from the vertex stage. The image is unchanged, so the pixel
 # check still applies; the buffer is checked after the draw.
 run_case verdict "vkrender vertex-stage SSBO store + atomic" VSSBO=1 -- ./vkrender 512 4
+
+# Descriptor array indexed by a dynamically-uniform value. The core-1.0
+# *ArrayDynamicIndexing features were already advertised but had never been
+# exercised; this is what shows the runtime descriptor offset is real, and it is
+# the ground the 1.2-level descriptor-indexing work would stand on.
+run_case verdict "vkdescidx (uniform dynamic descriptor index)" -- ./vkdescidx
 
 # GL/zink drives the same ICD through a second compiler path, so it is a real
 # regression target rather than an optional extra. It needs nullDescriptor from

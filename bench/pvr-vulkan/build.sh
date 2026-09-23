@@ -38,6 +38,7 @@ glslangValidator -V --target-env vulkan1.1 -o bits_storage.spv bits_storage.comp
 # fragment stage through a 16-bit varying, so the expected image is unchanged.
 glslangValidator -V --target-env vulkan1.1 -o io16.vert.spv io16.vert
 glslangValidator -V --target-env vulkan1.1 -o io16.frag.spv io16.frag
+glslangValidator -V --target-env vulkan1.1 -o desc_idx.spv desc_idx.comp
 # dc.vert: the depth clamp probe - render.vert's triangle at z outside the clip
 # volume, so the fragment is either clipped or clamped depending on the state.
 glslangValidator -V --target-env vulkan1.1 -o dc.vert.spv dc.vert
@@ -73,6 +74,7 @@ emit('f16_alu.spv', 'f16_alu_spv', 'f16_alu_spv.h')
 emit('bits_storage.spv', 'bits_storage_spv', 'bits_storage_spv.h')
 emit('io16.vert.spv', 'io16_vert_spv', 'io16_vert_spv.h')
 emit('io16.frag.spv', 'io16_frag_spv', 'io16_frag_spv.h')
+emit('desc_idx.spv', 'desc_idx_spv', 'desc_idx_spv.h')
 emit('dc.vert.spv', 'dc_vert_spv', 'dc_vert_spv.h')
 emit('vsstore.vert.spv', 'vsstore_vert_spv', 'vsstore_vert_spv.h')
 PY
@@ -121,6 +123,9 @@ link vk16 vk16.c
 # vkbits: 8/16-bit storage access, with sentinels that catch a store that
 # clobbers its neighbours.
 link vkbits vkbits.c
+
+# vkdescidx: descriptor array indexed by a dynamically-uniform value.
+link vkdescidx vkdescidx.c
 
 # x11present: X11 WSI end to end - xcb surface, swapchain, present, then ask the X
 # server what it is displaying. Needs libxcb and a DRI3-capable X server; exits 3

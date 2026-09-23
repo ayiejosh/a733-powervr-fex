@@ -284,6 +284,32 @@ core-1.0 features `shaderUniformBufferArrayDynamicIndexing`, `shaderSampledImage
 advertised** (`pvr_physical_device.c:289-292`). What is false is the 1.2-level set. So the uniform path
 may already work today and has simply never been tested - which is the top lead below.
 
+### 5.2.1 It works. Measured, on both drivers.
+
+The top lead was to prove the uniform path on hardware rather than trusting the
+source reading, because everything in §5.2 rests on the assumption that the
+hardware honours a runtime descriptor index. `bench/pvr-vulkan/vkdescidx` does
+that: two storage buffers bound as one descriptor array of two, and the shader
+reads `b[pc.idx].v` with `idx` pushed as 0 and then 1. Both a fixed `marker` and
+a distinct value per buffer are written, so "nothing ran", "it ran and always
+read descriptor 0" and "it worked" are three distinguishable outcomes.
+
+```
+open driver:     pushed idx=0 -> 0xaaaa0001, idx=1 -> 0xbbbb0002, marker=0xdeadbeef
+                 VERDICT: PASS (5 ok, 0 failed)
+vendor driver:   pushed idx=0 -> 0xaaaa0001, idx=1 -> 0xbbbb0002, marker=0xdeadbeef
+                 VERDICT: PASS (5 ok, 0 failed)
+```
+
+**The dynamic descriptor offset is real on this silicon, on both drivers.** So
+the uniform half of descriptor indexing is not "the compiler path exists and
+might work" - it is measured working end to end through `pco_dynidx`, and
+`shaderStorageBufferArrayDynamicIndexing` is already advertised and now shown to
+be honest. What remains for the 1.2-level features is Vulkan plumbing and
+descriptor budget, with no hardware or compiler unknown in the way.
+
+The test is in `regress.sh`, so this cannot silently regress.
+
 **And on part of it the open driver is already ahead of the vendor.** Measured from the two audits, three
 of the 1.2-level dynamic-indexing features are `1` here and `0` on the vendor:
 
