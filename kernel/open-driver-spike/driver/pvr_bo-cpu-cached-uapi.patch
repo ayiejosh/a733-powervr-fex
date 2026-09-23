@@ -18,6 +18,9 @@ cacheable mapping. The vendor driver offers both kinds of memory type.
 +	 * Write-combined makes CPU writes fast and CPU reads very slow (330 MB/s
 +	 * measured); cacheable is the other way round and is what a readback needs.
 +	 */
++	if (flags & DRM_PVR_BO_CPU_CACHED)
++		flags |= PVR_BO_CPU_CACHED;
++
 +	shmem_obj->map_wc = !(flags & (PVR_BO_CPU_CACHED | DRM_PVR_BO_CPU_CACHED));
  	pvr_obj = shmem_gem_to_pvr_gem(shmem_obj);
  	pvr_obj->flags = flags;
@@ -44,3 +47,47 @@ cacheable mapping. The vendor driver offers both kinds of memory type.
  #define PVR_BO_UNDEFINED_MASK ~(PVR_BO_KERNEL_FLAGS_MASK | DRM_PVR_BO_FLAGS_MASK)
  
  /*
+
+# ---- follow-up: the userspace flag must imply the kernel one -----------------
+#
+# The hunk above makes the mapping cacheable for either spelling of the flag, but
+# the cache maintenance in pvr_gem_object_vmap()/vunmap() is keyed on the
+# kernel-only flag, and userspace cannot set bit 63 (pvr_drv.c rejects anything
+# outside DRM_PVR_BO_FLAGS_MASK). So a userspace-created cached BO was mapped
+# cacheable and never synchronised: the CPU read stale data after a GPU write and
+# the GPU could miss CPU writes. Measured on the Cubie A7A: GL through zink with
+# this memory type enabled was wrong by 59408 and 73952 of 262144 pixels; after
+# this hunk, 8032, 528 and 2144 - much better, still not correct.
+#
+# What remains is Vulkan's per-submit flush/invalidate: pvr_Flush and
+# InvalidateMappedMemoryRanges are still no-ops in the Mesa driver, and the type
+# still advertises HOST_COHERENT when it is not. Doing this at map/unmap only
+# covers the map-write-unmap-submit pattern, not map-once-then-submit-repeatedly.
+# Until a flush/invalidate UAPI exists, Mesa keeps this memory type opt-in
+# (PVR_ENABLE_CACHED_MEMORY_TYPE=1).
+@@ -337,6 +337,18 @@
+ 	struct sg_table *sgt;
+ 	int err;
+ 
+ 	/* Verify @size and @flags before continuing. */
+ 	if (size == 0 || !pvr_gem_object_flags_validate(flags))
+ 		return ERR_PTR(-EINVAL);
+ 
+ 	shmem_obj = drm_gem_shmem_create(from_pvr_device(pvr_dev), size);
+ 	if (IS_ERR(shmem_obj))
+ 		return ERR_CAST(shmem_obj);
+ 
+ 	shmem_obj->pages_mark_dirty_on_put = true;
++
++	/* A request for a CPU-cacheable mapping must set the kernel-only flag as
++	 * well. map_wc below is cleared for either spelling, but the cache
++	 * maintenance in pvr_gem_object_vmap()/vunmap() is keyed on the kernel flag,
++	 * so without this the object is mapped cacheable and never synchronised.
++	 */
++	if (flags & DRM_PVR_BO_CPU_CACHED)
++		flags |= PVR_BO_CPU_CACHED;
++
+ 	/* Write-combined unless the caller asked for a CPU-cacheable mapping, either
+ 	 * through the kernel-only flag or the userspace one (DRM_PVR_BO_CPU_CACHED).
+ 	 */
+ 	shmem_obj->map_wc = !(flags & (PVR_BO_CPU_CACHED | DRM_PVR_BO_CPU_CACHED));

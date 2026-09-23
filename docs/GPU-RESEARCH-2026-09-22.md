@@ -1783,7 +1783,7 @@ run in the same boot; in another, 4096 passed once and failed 3/3 in a fresh boo
 | `bufferDeviceAddressCaptureReplay` | open by choice - needs application-directed placement in the winsys |
 | compiler segfault on `PhysicalStorageBuffer` shaders | **fixed** (`pco_nir.c`) |
 | 64-bit push constants | **fixed** (§21.8) - `pctest` 6/6, `bda` push-constant delivery 9/9 |
-| cached host-visible memory type (section 18) | **opt-in** (`PVR_ENABLE_CACHED_MEMORY_TYPE=1`) - it was advertised coherent but cannot keep that; GL corrupts once zink makes many such allocations (§21.10) |
+| cached host-visible memory type (section 18) | **opt-in** (`PVR_ENABLE_CACHED_MEMORY_TYPE=1`) - the kernel half of the missing cache maintenance is **fixed** (§21.12, corruption down 30x); per-submit flush/invalidate and a truthful coherency flag still to do |
 | large render targets / reliability within a boot | **open** - pre-existing, not a regression; earlier "verified" claim withdrawn |
 | 8/16-bit storage, `shaderFloat16`, `shaderInt8`, `variablePointers`, `drawIndirectCount` | open - implementation work |
 | `depthClamp`, `occlusionQueryPrecise`, `vertexPipelineStoresAndAtomics` | open - implementation work |
@@ -2048,3 +2048,68 @@ was the clear colour rather than the draw, and pointed at the copy rather than t
 better shape than sections 20-21 said: it passes everything the vendor passes on this suite, plus
 buffer device addresses and 64-bit push constants. The failures that were attributed to it at large
 sizes were the harness's.
+
+### 21.12 Follow-up: the cached memory type's missing half was in the kernel
+
+21.10 blamed the cached host-visible type on the missing cache maintenance and gated it off. Half of
+that was fixable, and the fix is one place in the open `powervr` module.
+
+**The gap.** `pvr_bo-cpu-cached-uapi.patch` taught the kernel to map a BO cacheable when userspace
+passes `DRM_PVR_BO_CPU_CACHED`:
+
+```c
+	shmem_obj->map_wc = !(flags & (PVR_BO_CPU_CACHED | DRM_PVR_BO_CPU_CACHED));
+```
+
+but the maintenance that makes a cacheable mapping usable is keyed on the **kernel-only** flag,
+bit 63:
+
+```c
+	if (pvr_obj->flags & PVR_BO_CPU_CACHED) {
+		if (shmem_obj->sgt)
+			dma_sync_sgtable_for_cpu(dev, shmem_obj->sgt, DMA_BIDIRECTIONAL);
+	}
+```
+
+and userspace cannot set bit 63 (`pvr_drv.c` rejects anything outside `DRM_PVR_BO_FLAGS_MASK`). So a
+userspace-created cached BO was mapped cacheable and **never synchronised at all**: the CPU read
+stale data after a GPU write, and the GPU could miss CPU writes. That is the whole of the GL
+corruption in 21.10, and it was our patch's omission rather than anything zink did.
+
+**The fix**, in `pvr_gem_object_create()`:
+
+```c
+	/* A request for a CPU-cacheable mapping must set the kernel-only flag as
+	 * well. map_wc below is cleared for either spelling, but the cache
+	 * maintenance in pvr_gem_object_vmap()/vunmap() is keyed on the kernel flag,
+	 * so without this the object is mapped cacheable and never synchronised.
+	 */
+	if (flags & DRM_PVR_BO_CPU_CACHED)
+		flags |= PVR_BO_CPU_CACHED;
+```
+
+`pvr_gem_object_flags_validate()` explicitly allows kernel-only flags, so this is safe, and
+`pvr_drv.c` still refuses to accept bit 63 from userspace.
+
+**Measured** - GL through zink, cached type enabled, BDA advertised, three runs:
+
+| | pixels wrong (of 262144) |
+|---|---|
+| before the kernel fix | 59408, 73952 |
+| after | 8032, 528, 2144 |
+
+A thirty-fold improvement is not a fix. What remains is Vulkan's **per-submit** flush/invalidate:
+`pvr_FlushMappedMemoryRanges`/`pvr_InvalidateMappedMemoryRanges` are still no-ops in the Mesa
+driver, and the type still advertises `HOST_COHERENT` when it is not. Synchronising at map/unmap
+covers *map, write, unmap, submit* - the pattern a staging upload uses - but not *map once, then
+submit repeatedly*, which is what a buffer pool does. Completing this needs a flush/invalidate UAPI
+(a PVR ioctl wrapping `dma_sync_sgtable_for_device/for_cpu` over a range) plus dropping the coherent
+claim so applications know to call them.
+
+The kernel maintenance also costs something, which is worth knowing before finishing the job: cached
+readback measures **1212 MB/s against 304 MB/s** for the write-combined type, where the same test
+measured 2624 MB/s before the sync was added. Still four times faster, and now for a defensible
+reason.
+
+The type therefore stays opt-in (`PVR_ENABLE_CACHED_MEMORY_TYPE=1`), and the default configuration
+was re-verified on the rebuilt module: **20 passed, 0 failed, 0 known-open**.
