@@ -140,10 +140,19 @@ dmesg | grep -iE 'powervr|pvr' | tail -12 | sed 's/^/    /' | tee -a "$LOG"
 say "--- DRM devices as Mesa sees them ---"
 "$BENCH/drmdevs" 2>&1 | sed 's/^/    /' | tee -a "$LOG"
 
-say "--- Mesa pvr ICD + mainline powervr driver ---"
+say "--- Mesa pvr ICD + mainline powervr driver: compute ---"
 ( cd "$BENCH" && VK_ICD_FILENAMES="$MESA_ICD" VK_DRIVER_FILES="$MESA_ICD" \
     PVR_I_WANT_A_BROKEN_VULKAN_DRIVER=1 PVR_TRACE=1 \
     timeout 300 ./vktest 10 1048576 2>&1 | sed 's/^/    /' | tee -a "$LOG" )
+
+if [ -x "$BENCH/vkrender" ]; then
+    say "--- Mesa pvr ICD + mainline powervr driver: offscreen render ---"
+    ( cd "$BENCH" && VK_ICD_FILENAMES="$MESA_ICD" VK_DRIVER_FILES="$MESA_ICD" \
+        PVR_I_WANT_A_BROKEN_VULKAN_DRIVER=1 \
+        timeout 300 ./vkrender 512 40 2>&1 | sed 's/^/    /' | tee -a "$LOG" )
+else
+    say "no $BENCH/vkrender - skipping the graphics test"
+fi
 
 say "--- kernel log after the test ---"
 dmesg | grep -iE 'powervr|pvr' | tail -6 | sed 's/^/    /' | tee -a "$LOG"
