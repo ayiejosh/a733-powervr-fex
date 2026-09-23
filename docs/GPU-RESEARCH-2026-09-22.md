@@ -2364,3 +2364,28 @@ What that leaves, in order of promise:
    the measurement (0.37 ms + 0.556 us/tile against the vendor's 0.26 + 0.101).
 3. Everything in 19.1's list stays refuted: it is not allocation, not region-header re-initialisation
    (`skip_init_hdrs` is already taken), not empty-tile processing, not load/store ops, not clocks.
+
+
+## 21.16 The Vulkan 1.3 features, the cached memory type, and narrow types
+
+Three items from the "what to implement next" list, in one pass. The measurements and the two
+corrections that came out of it are in `mesa/mesa-main-vulkan-1.3.md`,
+`mesa/mesa-main-cached-memory-flush.md` and `mesa/mesa-main-narrow-types.md`; the short version:
+
+| item | status |
+|---|---|
+| `pipelineCreationCacheControl` | **implemented** - the create paths return `VK_PIPELINE_COMPILE_REQUIRED`; `vk13` checks it on both drivers |
+| `robustImageAccess` | **advertised, behaviour measured on the vendor first** - out-of-bounds `imageLoad` returns zero on this silicon |
+| `shaderZeroInitializeWorkgroupMemory` | **advertised** - the implementation was already in the driver (`data->cs.zero_shmem`, a USC zero-init shader) and had simply never been advertised |
+| API version | **1.3.363**, up from 1.2.363 - these three flags were the entire gap |
+| cached memory type | **correct now**: `vkFlush`/`vkInvalidateMappedMemoryRanges` are real (dma-buf sync), `HOST_COHERENT` dropped, GL through zink with the type on is 262144/262144 correct at 2613 MB/s |
+| `shaderFloat16`, `shaderInt8` | **advertised** - needed no implementation, only a test; 8/16-bit *storage* is still open |
+
+`regress.sh` grew two cases (`vk13`, `vk16`) and now stands at **23 passed, 0 failed, 0 known-open**.
+
+Two things this pass corrected in the record rather than the driver. First, the zero-init feature's
+first implementation ran the generic NIR pass after pco's barrier lowering, so its barrier reached the
+translator unsupported and segfaulted - and it was unnecessary, because the driver already did the
+work a different way. Second, the first version of that feature's *test* asserted implicit zeroing,
+which the feature does not promise; the vendor failed it too, which is what sent me back to the
+specification.

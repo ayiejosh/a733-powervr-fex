@@ -30,6 +30,9 @@ glslangValidator -V --target-env vulkan1.2 -o bda_ubo.spv bda_ubo.comp
 # uninitialised shared variable, which needs no special environment).
 glslangValidator -V --target-env vulkan1.1 -o zero_shared.spv zero_shared.comp
 glslangValidator -V --target-env vulkan1.1 -o robust_image.spv robust_image.comp
+# f16_alu needs the explicit narrow arithmetic types, which are Vulkan 1.1 +
+# the SPIR-V 1.3 features glslang enables for this target.
+glslangValidator -V --target-env vulkan1.1 -o f16_alu.spv f16_alu.comp
 
 python3 - <<'PY'
 import struct
@@ -55,6 +58,7 @@ emit('bda_pc.spv', 'bda_pc_spv', 'bda_pc_spv.h')
 emit('bda_ubo.spv', 'bda_ubo_spv', 'bda_ubo_spv.h')
 emit('zero_shared.spv', 'zero_shared_spv', 'zero_shared_spv.h')
 emit('robust_image.spv', 'robust_image_spv', 'robust_image_spv.h')
+emit('f16_alu.spv', 'f16_alu_spv', 'f16_alu_spv.h')
 PY
 
 CC=${CC:-gcc}
@@ -94,6 +98,9 @@ link pctest pctest.c
 
 # vk13: the three Vulkan 1.3 features section 21.16 implements.
 link vk13 vk13.c
+
+# vk16: narrow-type (f16/i8) arithmetic probe.
+link vk16 vk16.c
 
 # x11present: X11 WSI end to end - xcb surface, swapchain, present, then ask the X
 # server what it is displaying. Needs libxcb and a DRI3-capable X server; exits 3

@@ -24,7 +24,7 @@
 set -u
 cd "$(dirname "$0")"
 
-for t in vktest vkrender vkaudit memtypes bda pctest vk13; do
+for t in vktest vkrender vkaudit memtypes bda pctest vk13 vk16; do
   [ -x "./$t" ] || { echo "regress.sh: ./$t missing - run ./build.sh"; exit 2; }
 done
 
@@ -117,6 +117,7 @@ run_case verdict "pctest (vkCmdPushConstants)" -- ./pctest
 
 # --- Vulkan 1.3: the three features the driver used to be missing ------------
 run_case verdict "vk13 (zero-init shmem, cache control, robust image)" -- ./vk13
+run_case verdict "vk16 (shaderFloat16 + shaderInt8 arithmetic)" -- ./vk16
 
 # GL/zink drives the same ICD through a second compiler path, so it is a real
 # regression target rather than an optional extra. It needs nullDescriptor from
