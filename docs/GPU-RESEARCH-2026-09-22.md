@@ -1783,9 +1783,79 @@ run in the same boot; in another, 4096 passed once and failed 3/3 in a fresh boo
 | `bufferDeviceAddress` (KHR + EXT, DXVK/vkd3d's requirement) | **implemented and verified** (descriptor delivery: store, load+store, atomic) |
 | `bufferDeviceAddressCaptureReplay` | open by choice - needs application-directed placement in the winsys |
 | compiler segfault on `PhysicalStorageBuffer` shaders | **fixed** (`pco_nir.c`) |
-| 64-bit push constants | **open** - high half lost; minimal reproducer is `pctest` |
+| 64-bit push constants | **open** - high half lost; diagnosis and the three ruled-out causes in §21.7, reproducer is `pctest` |
 | large render targets / reliability within a boot | **open** - pre-existing, not a regression; earlier "verified" claim withdrawn |
 | 8/16-bit storage, `shaderFloat16`, `shaderInt8`, `variablePointers`, `drawIndirectCount` | open - implementation work |
 | `depthClamp`, `occlusionQueryPrecise`, `vertexPipelineStoresAndAtomics` | open - implementation work |
 | API 1.2 vs the vendor's 1.3 | open - needs the 1.3 core feature set |
 | timestamps (`timestampPeriod = 0.0`) | open - no timestamp query path exists, so the value is honest |
+
+### 21.7 The 64-bit push constant bug: diagnosis, and three fixes that did not work
+
+Recorded because the negative results are the useful part - each one rules out a plausible cause.
+
+**What the compiler is actually given.** `PCO_DEBUG_PRINT=nir` dumps the final NIR, and for the
+`uint64_t` push constant block it is:
+
+```
+64    %11 = @load_push_constant (%10 (0x0)) (base=0, range=16, align_mul=256, align_offset=0)
+32    %12 = unpack_64_2x32_split_x %11
+32    %13 = unpack_64_2x32_split_y %11
+64    %15 = @load_push_constant (%14 (0x2)) (base=0, range=16, align_mul=256, align_offset=8)
+32    %16 = unpack_64_2x32_split_x %15
+32    %17 = unpack_64_2x32_split_y %15
+```
+
+Note that a 64-bit push constant is **not** scalarised the way a `uvec4` block is (whose four
+dwords become four separate 32-bit loads). The 64-bit load survives to the backend as one
+instruction.
+
+**What the backend does with it.** `trans_load_common_store()` reads `chans` from the destination
+reference and loads that many consecutive 32-bit registers from `range->start + offset`:
+
+```c
+   unsigned chans = pco_ref_get_chans(dest);
+   ASSERTED unsigned bits = pco_ref_get_bits(dest);
+   assert(bits == 32);                    /* compiled out in a release build */
+   ...
+   pco_ref src = pco_ref_hwreg_vec(range->start + offset, reg_class, chans);
+   return pco_mbyp(&tctx->b, dest, src, .rpt = chans);
+```
+
+`pco_ref_nir_def()` maps every NIR value to a reference as
+`pco_ref_ssa(def->index, def->bit_size, def->num_components)`, so a 64-bit scalar becomes
+**bits = 64, chans = 1** - one channel. Instrumenting the translator confirmed what that produces
+downstream:
+
+```
+[lc64]   chans=2 ref_bits=64 comps=1        <- the load, after forcing two channels
+[unpack] x src_bits=64 src_chans=1          <- what unpack_64_2x32_split_x sees
+[unpack] y src_bits=64 src_chans=1          <- and _y sees exactly the same reference
+```
+
+Both halves therefore select the same thing, which is the observed symptom: the high 32 bits of
+each 64-bit value come back as a copy of the low 32 bits.
+
+**Three attempts, all with byte-identical results.**
+
+| attempt | outcome |
+|---|---|
+| translate `pack/unpack_64_2x32_split` natively and turn off `lower_pack_64_2x32_split`/`lower_unpack_64_2x32_split` | removed the crash and the `WARNING! Infinite opt loop!` (the `nir_lower_int64`/`nir_opt_algebraic` cycle), but the value was unchanged |
+| additionally widen the value in `trans_load_common_store` | unchanged |
+| additionally model 64-bit values as 2x32 channels in `pco_ref_nir_def()` (the single point every NIR value is mapped) | unchanged |
+
+All three were reverted. The reason is in the table: a change that cannot be observed to do
+anything is not a fix, and the third one is a foundational representation change for every 64-bit
+value in every shader - not something to leave in the tree on the strength of "it should work".
+The committed state (21.2) was restored and re-verified afterwards: `bda --bda-only` PASS,
+`pctest` uvec4 3/3 PASS, `vktest` PASS, `vkrender 512` PASS.
+
+**Where the next attempt should look.** Scalar 32-bit push constant loads are correct at *every*
+dword offset - the `uvec4` probes read dwords 0, 1, 2 and 3 each correctly, including offsets 8 and
+12. A two-channel read from that same range returns the low dword twice. So the range, the layout
+and the offsets are all fine; what is unverified is a multi-channel read of the constant/shared
+register file (`pco_ref_hwreg_vec(..., chans)` plus `pco_mbyp(..., .rpt = chans)`). That is a much
+narrower question than "64-bit is broken in pco", and it is where the evidence points.
+
+Reproducer: `bench/pvr-vulkan/pctest.c` (no buffer device address involved - the `uint64_t` block
+alone fails, with the `uvec4` block passing in the same run).
