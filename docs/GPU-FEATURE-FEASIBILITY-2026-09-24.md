@@ -284,6 +284,20 @@ core-1.0 features `shaderUniformBufferArrayDynamicIndexing`, `shaderSampledImage
 advertised** (`pvr_physical_device.c:289-292`). What is false is the 1.2-level set. So the uniform path
 may already work today and has simply never been tested - which is the top lead below.
 
+**And on part of it the open driver is already ahead of the vendor.** Measured from the two audits, three
+of the 1.2-level dynamic-indexing features are `1` here and `0` on the vendor:
+
+```
+vk12.shaderInputAttachmentArrayDynamicIndexing        open=1  vendor=0
+vk12.shaderUniformTexelBufferArrayDynamicIndexing     open=1  vendor=0
+vk12.shaderStorageTexelBufferArrayDynamicIndexing     open=1  vendor=0
+```
+
+Those are three of the four features the open driver has that the vendor does not (the fourth is
+`vk13.descriptorBindingInlineUniformBlockUpdateAfterBind`). So on the dynamic-indexing axis this is not
+a catch-up story at all - the open driver is past the vendor, and the question is how much further the
+same mechanism can be pushed.
+
 ### 5.3 Undetermined: non-uniform (per-lane divergent) indexing
 
 One `smp` instruction carries exactly one texture descriptor, so expressing per-lane divergent image
