@@ -2383,6 +2383,11 @@ corrections that came out of it are in `mesa/mesa-main-vulkan-1.3.md`,
 
 `regress.sh` grew two cases (`vk13`, `vk16`) and now stands at **23 passed, 0 failed, 0 known-open**.
 
+The storage half of the 16-bit group was not landed in this pass. Its design, the two hazards that
+make it more than a wiring job (a widened load can read past the end of a buffer; a widened store
+clobbers its neighbours *silently*), and the sentinel test that catches the second one are written
+down in `mesa/mesa-main-narrow-storage-design.md` rather than half-implemented here.
+
 Two things this pass corrected in the record rather than the driver. First, the zero-init feature's
 first implementation ran the generic NIR pass after pco's barrier lowering, so its barrier reached the
 translator unsupported and segfaulted - and it was unnecessary, because the driver already did the
