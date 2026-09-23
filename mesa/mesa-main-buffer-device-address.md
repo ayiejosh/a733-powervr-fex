@@ -25,16 +25,10 @@ compiler saw it.
 The extension and the feature are gated together - a feature advertised without its
 extension is a broken device.
 
-**Why opt-in.** With the extension advertised, zink changes behaviour and GL renders
-wrongly (glheadless 512x20: 9504-62320 of 262144 pixels incorrect; the same build with the
-feature off passes 262144/262144 twice). zink keys off
-`screen->info.have_KHR_buffer_device_address` in four places: `zink_resource.c:325` (adds
-`VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT` to every buffer), `zink_bo.c:235`
-(`VkMemoryAllocateFlagsInfo` on every allocation), `zink_context.c:5942`
-(`set_global_binding`), `zink_resource.c:3596` (`resource_get_address`). The pvr driver
-looks innocent - it never reads the usage bit, and `pvr_AllocateMemory()` explicitly
-ignores `VK_MEMORY_ALLOCATE_FLAGS_INFO` - and the zink in this stack is built from a
-different tree (`mesa-25.3.0/build-gl`), so that is where to isolate it.
+**Advertised by default.** It was briefly opt-in, because advertising it appeared to break GL
+through zink. It did not: zink reacts to the extension by giving each buffer its own
+`VkDeviceMemory` instead of suballocating (5 allocations become 23, 20 of them the cached
+host-visible type), which exposed a latent coherency bug in that type. See section two.
 
 `src/imagination/vulkan/pvr_device.c` publishes `vk_buffer::device_address` at bind,
 returns it from `pvr_GetBufferDeviceAddress()`, and defines the KHR/EXT entry point
@@ -107,3 +101,27 @@ is independent of the feature flag and is active in both configurations.
 
 Known gap this does **not** cover: capture replay, and whatever makes zink render wrongly
 when the extension is advertised (section 1).
+
+## 3. `pvr_physical_device.c`: the cached host-visible memory type is opt-in
+
+The second memory type added in section 18 is cacheable and was advertised
+`HOST_COHERENT`, which this driver cannot keep: `pvr_Flush/InvalidateMappedMemoryRanges`
+are no-ops and the kernel's shmem dma-buf has no `begin/end_cpu_access`, so a CPU upload
+can stay in cache while the GPU reads stale DRAM. It went unnoticed because only two such
+BOs were live at a time. zink's reaction to buffer device addresses made it twenty, and GL
+rendered visibly wrong.
+
+```c
+   const bool cached_type =
+      os_get_option("PVR_ENABLE_CACHED_MEMORY_TYPE") != NULL;
+
+   pdevice->memory.memoryTypeCount = cached_type ? 2 : 1;
+```
+
+Measured, same build and boot: BDA on with the cached type off passes twice
+(262144/262144); with it on, fails twice (59408, 73952). The readback throughput it bought
+(~6.6 GB/s against ~330 MB/s) is still available behind the variable, but the real fix is
+cache maintenance in the kernel module.
+
+Also in this file: `PVR_API_TRACE=1` logs each buffer and allocation, which is how the
+allocation-pattern change above was found.

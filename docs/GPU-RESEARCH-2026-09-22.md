@@ -1780,11 +1780,11 @@ run in the same boot; in another, 4096 passed once and failed 3/3 in a fresh boo
 
 | gap | status |
 |---|---|
-| `bufferDeviceAddress` (KHR + EXT, DXVK/vkd3d's requirement) | **implemented and verified** 9/9 - descriptor *and* push-constant delivery, store, load+store, atomic; opt-in until the zink interaction in §21.9 is fixed |
+| `bufferDeviceAddress` (KHR + EXT, DXVK/vkd3d's requirement) | **implemented, verified and advertised by default** 9/9 - descriptor *and* push-constant delivery, store, load+store, atomic |
 | `bufferDeviceAddressCaptureReplay` | open by choice - needs application-directed placement in the winsys |
 | compiler segfault on `PhysicalStorageBuffer` shaders | **fixed** (`pco_nir.c`) |
 | 64-bit push constants | **fixed** (§21.8) - `pctest` 6/6, `bda` push-constant delivery 9/9 |
-| BDA advertisement | **opt-in** (`PVR_ENABLE_BUFFER_DEVICE_ADDRESS=1`) - advertising it makes zink render GL wrongly (§21.9) |
+| cached host-visible memory type (section 18) | **opt-in** (`PVR_ENABLE_CACHED_MEMORY_TYPE=1`) - it was advertised coherent but cannot keep that; GL corrupts once zink makes many such allocations (§21.10) |
 | large render targets / reliability within a boot | **open** - pre-existing, not a regression; earlier "verified" claim withdrawn |
 | 8/16-bit storage, `shaderFloat16`, `shaderInt8`, `variablePointers`, `drawIndirectCount` | open - implementation work |
 | `depthClamp`, `occlusionQueryPrecise`, `vertexPipelineStoresAndAtomics` | open - implementation work |
@@ -1892,7 +1892,7 @@ Attempt 1 fixed (1) and hit (2). Attempt 3 fixed the representation that (2) nee
 descriptor, for a plain store, a load+store and a global atomic. The `WARNING! Infinite opt loop!`
 also disappears: the cycle is gone rather than merely survived.
 
-### 21.9 The catch: advertising the feature breaks GL through zink, so it is opt-in
+### 21.9 The catch: it looked like advertising the feature broke GL - resolved in 21.10
 
 Chasing the push constant bug turned up something worse about the feature advertisement itself.
 With `VK_KHR_buffer_device_address` advertised, GL rendered through zink comes back wrong.
@@ -1917,16 +1917,9 @@ The pvr driver is not obviously the trigger: it ignores the usage bit (nothing i
 zink in this stack comes from a different tree (`mesa-25.3.0/build-gl`), so the next step is to
 isolate which of those four paths does it, in that tree.
 
-Until then the advertisement is behind an environment variable, following the driver's existing
-`PVR_I_WANT_A_BROKEN_VULKAN_DRIVER` precedent:
-
-```
-PVR_ENABLE_BUFFER_DEVICE_ADDRESS=1
-```
-
-The extension and the feature are gated together (a feature without its extension is a broken
-device). The default configuration therefore does not regress GL, and the capability is one variable
-away for D3D work.
+**This was the wrong conclusion, and 21.10 has the right one: the trigger is not zink and not the
+advertisement but the cached memory type. Nothing is gated any more** - the feature is advertised by
+default. The reduction above is kept because it is what made the rest of the investigation possible.
 
 **Verified in both configurations, one boot:**
 
@@ -1939,3 +1932,75 @@ away for D3D work.
 | bda (9 probes) | - (feature absent) | **PASS** |
 
 The push constant fix in 21.8 is independent of the feature and is on in both columns.
+
+### 21.10 Root cause of the GL corruption: the cached memory type could not keep its promise
+
+Advertising the extension was never the fault. Chasing it produced the actual cause, and it is a bug
+this project introduced earlier and then trusted because the tests that covered it happened to run in
+a configuration where it could not show.
+
+**The measurement that pointed at it.** `PVR_API_TRACE=1` (added to the driver for this) logs the
+buffers and allocations an application asks for, so two runs can be diffed. Same test, same 44
+buffers, `VK_EXT_buffer_device_address` off versus on:
+
+| | allocations | memory types used |
+|---|---|---|
+| extension **off** | 5 | 3x type 0 (write-combined), 2x type 1 (cached) |
+| extension **on** | 23 | 3x type 0, **20x type 1 (cached)** |
+
+zink stops suballocating once it sees the extension - each buffer gets its own `VkDeviceMemory`, with
+`VkMemoryAllocateFlagsInfo{DEVICE_ADDRESS}` on each - so the number of live allocations of the
+cached type goes from 2 to 20. Nothing else about the API stream changes: 44 buffers either way.
+
+**Type 1 is the cached host-visible type added in section 18.** Its own comment already said the
+sound model would be cached-but-not-coherent plus real flush/invalidate, that
+`pvr_Flush/InvalidateMappedMemoryRanges` are no-ops here (the kernel's shmem dma-buf has no
+`begin/end_cpu_access`), and that its correctness "is verified by pixel-exact tests rather than
+assumed". Those tests passed because with two long-lived cached BOs the missing cache maintenance did
+not bite. With twenty freshly mapped ones - CPU writes an upload, GPU reads stale DRAM - draws come
+back missing, which is exactly the symptom (`want r=66 g=2 got r=0 g=0`).
+
+**A/B, same build, same boot:**
+
+| configuration | glheadless 512x20 |
+|---|---|
+| BDA on, cached type **off** | **PASS**, **PASS** |
+| BDA on, cached type on | FAIL 59408, FAIL 73952 |
+| BDA off, cached type off | PASS |
+
+And a repeatability check first, because the failure magnitude varies (48 to 85664 across runs):
+BDA off passed 5/5, BDA on failed 5/5 - a reliable trigger, not noise.
+
+**Two things were ruled out on the way**, and they are why the search went the right direction:
+
+- zink's four `have_KHR_buffer_device_address` paths are *not* the trigger. Instrumenting the running
+  zink (`mesa-25.3.0/build-gl`, gated by `ZINK_BDA_MASK`, bit per path: buffer usage bit, allocate
+  flags, `set_global_binding`, `resource_get_address`) and disabling **all four** still failed
+  (12064 wrong). Also note this stack's zink is built from a different tree than the ICD.
+- the driver ignoring `VkMemoryAllocateFlagsInfo` and never reading
+  `VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT` is genuinely harmless: the difference is *where the
+  memory came from*, not what the flags said.
+
+Independent confirmation from the vendor driver, whose four types are: `DEVICE_LOCAL`; `DEVICE_LOCAL
+LAZILY_ALLOCATED`; `DEVICE_LOCAL HOST_VISIBLE HOST_COHERENT` (write-combined); and `DEVICE_LOCAL
+HOST_VISIBLE HOST_CACHED` - **cached without coherent**, which is exactly the sound model. Ours was the
+odd one out in claiming both.
+
+**Fix.** The cached type is now opt-in, off by default, under `PVR_ENABLE_CACHED_MEMORY_TYPE=1`, with
+the numbers and the reason in the comment. The default configuration advertises only the
+write-combined coherent type, like the vendor driver's coherent type. Buffer device addresses are
+advertised **by default** again - the gate from 21.9 is gone.
+
+**Final suite, default configuration, nothing set:**
+
+```
+regress: 14 passed, 0 failed, 5 known-open
+  bda (descriptor + push constant)             PASS
+  pctest (vkCmdPushConstants)                  PASS
+  glheadless 512x20                            PASS
+  known-open: vkrender 512 r8, r16, 4096, 6144, 8192 (all pre-existing)
+```
+
+The readback throughput that the cached type bought (~6.6 GB/s against ~330 MB/s, section 18) is
+still available behind the variable, and worth revisiting once the kernel can do the cache
+maintenance - that is the real fix, and it is on the kernel side, not here.

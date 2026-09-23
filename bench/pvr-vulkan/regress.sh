@@ -105,15 +105,11 @@ echo "== capabilities =="
 run_case clean "vkaudit" -- ./vkaudit
 
 echo "== buffer device address =="
-# The feature under test. --bda-only leaves out the push-constant probes, which
-# depend on a separate open bug in 64-bit push constants, so this verdict is
-# about buffer device addresses themselves.
-run_case verdict "bda descriptor-delivered address" -- ./bda --bda-only
+# Advertised by default now: both delivery mechanisms, all three access modes.
+run_case verdict "bda (descriptor + push constant)" -- ./bda
 
 echo "== push constants =="
-# uvec4 blocks pass; uint64_t blocks do not (see the per-probe lines). Open
-# issue, and the reason "bda" without --bda-only fails.
-run_case known "pctest (vkCmdPushConstants)" -- ./pctest
+run_case verdict "pctest (vkCmdPushConstants)" -- ./pctest
 
 # GL/zink drives the same ICD through a second compiler path, so it is a real
 # regression target rather than an optional extra. It needs nullDescriptor from
