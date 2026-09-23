@@ -86,6 +86,15 @@ link bda bda.c
 # pctest: minimal vkCmdPushConstants probe, with no buffer device address in it.
 link pctest pctest.c
 
+# x11present: X11 WSI end to end - xcb surface, swapchain, present, then ask the X
+# server what it is displaying. Needs libxcb and a DRI3-capable X server; exits 3
+# (SKIP) with the surface facts when the server has no DRI3, as Xvfb does not.
+if ! $CC $CFLAGS -o x11present x11present.c -lvulkan -lxcb 2>/tmp/link.err; then
+  cat /tmp/link.err >&2
+  echo "build.sh: x11present.c failed to compile" >&2
+  exit 1
+fi
+
 # pvrscanout also needs libdrm for the KMS/PRIME half.
 $CC $CFLAGS -I/usr/include/libdrm -o pvrscanout pvrscanout.c -lvulkan -ldrm -lm 2>/dev/null || \
   $CC $CFLAGS -I/usr/include/libdrm -o pvrscanout pvrscanout.c -l:libvulkan.so.1 -ldrm -lm

@@ -2240,10 +2240,55 @@ question: DXVK-Sarek and vkd3d-proton ask for 1.1 and work today at 1.2.
   (§21.12); the type stays opt-in until then;
 - the §16 push-constant "one submission late" result was measured on mesa-25.3.0 with
   `0003-pvr-implement-core-CmdPushConstants.patch`; it has not been re-measured on mesa-main;
-- X11 WSI is advertised, but end-to-end presentation has never been exercised - it needs an X server
-  that does not touch the GPU, since only one driver can own the device at a time;
+- X11 WSI: surface half now verified against the vendor, present half blocked by the X server rather
+  than the driver - see §21.14;
 - the DXVK/vkd3d path has not been re-run since `bufferDeviceAddress` and the 64-bit push-constant fix
   landed, so the real-application effect of both is unverified;
 - performance is a separate axis from compatibility and is still the widest gap: draw is 2.2-3.3x the
   vendor's and the whole difference is per-tile cost (§19), with the tiling work blocked on the
   hardware programming guide.
+
+## 21.14 X11 WSI: the surface half is verified against the vendor, the present half is the X server
+
+§20.6 left "end-to-end pending an X server that does not use the GPU". `bench/pvr-vulkan/x11present.c`
+was written for that: connect over xcb, create the Vulkan surface, create a swapchain, render a known
+clear colour, present, then read the **root window** back with `xcb_get_image` over a *second*
+connection - the far end of the path, which the driver cannot fake. A separate connection is
+deliberate: a present error leaves the WSI's connection in a state that fails unrelated requests
+afterwards, and the readback must not be collateral damage from the thing being measured.
+
+Xvfb is available here (`/home/radxa/x11dev/root/usr/bin/Xvfb :99 -screen 0 800x600x24`, X.Org
+21.1.16, 0 libs missing), so both drivers were run against it:
+
+| | vendor 1.3.277 | open 1.2.363 |
+|---|---|---|
+| `vkCreateXcbSurfaceKHR` | ok | ok |
+| surface extent / minImageCount | 800x600 / 3 | 800x600 / 3 |
+| surface formats | 2, chose 44 (`B8G8R8A8_UNORM`) | 2, chose 44 |
+| `vkGetPhysicalDeviceSurfaceSupportKHR` | **false** | **false** |
+| `vkCreateDevice` + `VK_KHR_swapchain` | ok | ok |
+| `vkCreateSwapchainKHR` | ok, 4 images | ok, 4 images |
+| first `vkAcquireNextImageKHR` | `VK_ERROR_SURFACE_LOST_KHR` (-1000000000) | not reached |
+| `xcb_get_image` on the root window | black (nothing was presented) | black |
+
+**The open driver's X11 surface path is identical to the vendor's, fact for fact.** What stops both is
+the X server: presentation over xcb needs DRI3, Xvfb reports `DRI3=0 Present=1 MIT-SHM=1 SYNC=1`, the
+acquire fails with a surface-lost error on the vendor, and Mesa says why in as many words ("No DRI3
+support detected - required for presentation"). Mesa's MIT-SHM fallback cannot help a hardware
+driver: `wsi_common_x11.c` gates it on `wants_shm = wsi_dev->sw && ...`, and pvr initialises with
+`.sw_device = false`. The tool therefore exits **SKIP** here rather than reporting a driver failure.
+
+So the untested part is no longer "does the ICD advertise X11" - it does, and its surface facts match
+the vendor's exactly. It is "can this board's X server consume a GPU-rendered buffer", and the
+evidence says that is plausible rather than blocked: §13 already drove
+**pvr dma-buf -> `drmPrimeFDToHandle` on card0 -> `drmModeAddFB2` -> scanout, with no vendor module
+loaded** (fb 163 committed on crtc 99), and the desktop's X is modesetting on that same card0 with
+DRI3 initialised. `pvr_can_present_on_device()` would also allow it - it returns true for any
+`DRM_BUS_PLATFORM` device, which this board's display engine is, so the X server's DRI3 fd passes the
+driver's device check even though it is not the GPU.
+
+The remaining step is therefore a swap that **keeps a display server running**: X on card0, the open
+module on card1, and `x11present` on `:0`. That is a different and riskier sequence than
+`open-run.sh`'s stop-the-desktop flow (the module cannot be unloaded while the console and desktop
+hold 189 references to it), so it was not attempted here - it is the one open item with a known,
+written-down method rather than an unknown.
