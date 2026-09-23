@@ -33,6 +33,7 @@ glslangValidator -V --target-env vulkan1.1 -o robust_image.spv robust_image.comp
 # f16_alu needs the explicit narrow arithmetic types, which are Vulkan 1.1 +
 # the SPIR-V 1.3 features glslang enables for this target.
 glslangValidator -V --target-env vulkan1.1 -o f16_alu.spv f16_alu.comp
+glslangValidator -V --target-env vulkan1.1 -o bits_storage.spv bits_storage.comp
 
 python3 - <<'PY'
 import struct
@@ -59,6 +60,7 @@ emit('bda_ubo.spv', 'bda_ubo_spv', 'bda_ubo_spv.h')
 emit('zero_shared.spv', 'zero_shared_spv', 'zero_shared_spv.h')
 emit('robust_image.spv', 'robust_image_spv', 'robust_image_spv.h')
 emit('f16_alu.spv', 'f16_alu_spv', 'f16_alu_spv.h')
+emit('bits_storage.spv', 'bits_storage_spv', 'bits_storage_spv.h')
 PY
 
 CC=${CC:-gcc}
@@ -101,6 +103,10 @@ link vk13 vk13.c
 
 # vk16: narrow-type (f16/i8) arithmetic probe.
 link vk16 vk16.c
+
+# vkbits: 8/16-bit storage access, with sentinels that catch a store that
+# clobbers its neighbours.
+link vkbits vkbits.c
 
 # x11present: X11 WSI end to end - xcb surface, swapchain, present, then ask the X
 # server what it is displaying. Needs libxcb and a DRI3-capable X server; exits 3

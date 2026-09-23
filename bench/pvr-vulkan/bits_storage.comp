@@ -1,0 +1,37 @@
+#version 450
+#extension GL_EXT_shader_16bit_storage : require
+#extension GL_EXT_shader_8bit_storage : require
+/* 8- and 16-bit storage access, with sentinels on both sides.
+ *
+ * The store is the dangerous half: a 16-bit store lowered to a 32-bit store
+ * clobbers the two bytes next to it, silently. `pre` and `post` are the trip
+ * wires, and the packed words after the dispatch say whether the values landed
+ * where they should. */
+layout(local_size_x = 1) in;
+
+layout(std430, binding = 0) buffer Buf {
+    uint     pre;   /* offset 0  - sentinel */
+    uint16_t h0;    /* offset 4  - 4-aligned */
+    uint16_t h1;    /* offset 6  - only 2-aligned */
+    uint8_t  b0;    /* offset 8 */
+    uint8_t  b1;
+    uint8_t  b2;
+    uint8_t  b3;    /* offset 11 */
+    uint     pcsum; /* offset 12 - push-constant result */
+    uint     post;  /* offset 16 - sentinel */
+} b;
+
+layout(push_constant) uniform PC {
+    uint pc32;   /* deliberately 32-bit: see the report - narrow push-constant
+                  * loads are the one part of this group still open */
+} pc;
+
+void main() {
+    b.h0 = uint16_t(0x1234);
+    b.h1 = uint16_t(0xABCD);
+    b.b0 = uint8_t(0x11);
+    b.b1 = uint8_t(0x22);
+    b.b2 = uint8_t(0x33);
+    b.b3 = uint8_t(0x44);
+    b.pcsum = pc.pc32;
+}

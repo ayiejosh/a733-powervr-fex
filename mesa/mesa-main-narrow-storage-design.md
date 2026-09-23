@@ -1,8 +1,33 @@
-# Design: 8/16-bit storage access for pco (the last seven of the nine features)
+# 8/16-bit storage access for pco
 
-Not implemented - this is the design, so the next attempt starts from the two hazards rather than
-from the top. The other two features of the group (`shaderFloat16`, `shaderInt8`) are landed; see
-[`mesa-main-narrow-types.md`](mesa-main-narrow-types.md).
+**Implemented for buffers and UBOs; push constants are still open.** The four buffer features are
+advertised and verified. What is left is `storagePushConstant8`/`16` (measured wrong, below) and
+`storageInputOutput16` (16-bit vertex I/O, a separate problem). The design reasoning below is kept
+because it is what the implementation follows.
+
+Status:
+
+| feature | state |
+|---|---|
+| `shaderFloat16`, `shaderInt8` | advertised, `vk16` PASS 9/9 on both drivers |
+| `storageBuffer16BitAccess`, `uniformAndStorageBuffer16BitAccess` | **advertised**, `vkbits` PASS |
+| `storageBuffer8BitAccess`, `uniformAndStorageBuffer8BitAccess` | **advertised**, `vkbits` PASS |
+| `storagePushConstant8`, `storagePushConstant16` | **not advertised** - a 16-bit push-constant load returns `0x60204` where `0x105` is expected, so the pass leaves `load_push_constant` alone |
+| `storageInputOutput16` | not advertised - 16-bit vertex I/O, where the `/* TODO: f16 support. */` comments in `pco_trans_nir.c` actually are |
+
+The implementation is the pass below with
+`modes = nir_var_mem_ssbo | nir_var_mem_ubo` and `may_lower_unaligned_stores_to_atomics = true`,
+wired into `pco_lower_nir()` immediately after the UBO/SSBO and global explicit-IO lowering, with a
+callback that widens anything narrower than 32 bits to one 32-bit channel.
+
+**What made it safe, and the correction to this note's first draft.** The draft assumed a widened
+store would need hand-written read-modify-write. It does not: `lower_mem_store()` in
+`nir_lower_mem_access_bit_sizes.c` tracks a byte mask and, when a chunk cannot be done at the
+requested size and alignment, writes it as *a pair of 32-bit atomics* - but only if
+`may_lower_unaligned_stores_to_atomics` is set, and it asserts otherwise. Setting that flag is what
+turns the silent-corruption hazard into correct code, and the sentinel test is what proves it:
+`pre` and `post` around the written values are unchanged after the dispatch.
+
 
 ## What has to happen
 
