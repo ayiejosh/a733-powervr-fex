@@ -27,7 +27,7 @@ index ccf6c21..cd4724d 100644
  /**
   * struct drm_pvr_ioctl_create_bo_args - Arguments for %DRM_IOCTL_PVR_CREATE_BO
 diff --git a/src/imagination/pco/pco_nir.c b/src/imagination/pco/pco_nir.c
-index 2ef8106..7a302b2 100644
+index 2ef8106..223c018 100644
 --- a/src/imagination/pco/pco_nir.c
 +++ b/src/imagination/pco/pco_nir.c
 @@ -68,8 +68,11 @@ static const nir_shader_compiler_options nir_options = {
@@ -97,7 +97,7 @@ index 2ef8106..7a302b2 100644
  void pco_lower_nir(pco_ctx *ctx, nir_shader *nir, pco_data *data)
  {
     bool internal = nir->info.internal;
-@@ -940,6 +982,21 @@ void pco_lower_nir(pco_ctx *ctx, nir_shader *nir, pco_data *data)
+@@ -940,6 +982,25 @@ void pco_lower_nir(pco_ctx *ctx, nir_shader *nir, pco_data *data)
              nir_var_mem_global,
              nir_address_format_2x32bit_global);
  
@@ -108,6 +108,10 @@ index 2ef8106..7a302b2 100644
 +    * read-modify-write path (a pair of 32-bit atomics over the byte mask), which
 +    * is why may_lower_unaligned_stores_to_atomics is set - without it a widened
 +    * store would silently clobber the bytes next to it.
++    *
++    * This runs after the ssbo/ubo explicit-IO lowering above, so those are
++    * already intrinsics; push constants are not, which is why they get their own
++    * pass further down.
 +    */
 +   const nir_lower_mem_access_bit_sizes_options mem_access_options = {
 +      .modes = nir_var_mem_ssbo | nir_var_mem_ubo,
@@ -119,15 +123,41 @@ index 2ef8106..7a302b2 100644
     nir_move_options move_options = nir_move_load_global | nir_move_load_ubo |
                                     nir_move_load_ssbo | nir_move_load_input |
                                     nir_move_load_frag_coord | nir_move_alu |
-@@ -966,6 +1023,7 @@ void pco_lower_nir(pco_ctx *ctx, nir_shader *nir, pco_data *data)
+@@ -966,6 +1027,33 @@ void pco_lower_nir(pco_ctx *ctx, nir_shader *nir, pco_data *data)
              NULL,
              NULL);
  
++   /* 8- and 16-bit *push constant* accesses, which need the same widening as the
++    * buffer ones. They get their own pass because the nir_lower_explicit_io()
++    * call above is what turns a push constant into a load_push_constant
++    * intrinsic - before it, a push constant is still a variable and its load is
++    * a load_deref, which this pass does not match, so folding push constants in
++    * with the buffer pass above silently does nothing.
++    *
++    * Two things make this more than a copy of the buffer case. The pass's
++    * default answer for a narrow access is "a 32-bit load of the containing
++    * word", which is fine for a buffer because the word is inside it, and fine
++    * here because the pass also reports the wider range it needs through
++    * push_consts.used (see gather_common_store_data). And the offset is still in
++    * bytes at this point: pco_nir_lower_io() divides it by four afterwards, so
++    * the widened load this produces has to be dword-aligned, which it is - the
++    * pass rounds the offset down to `requested.align`.
++    */
++   const nir_lower_mem_access_bit_sizes_options push_const_access_options = {
++      .modes = nir_var_mem_push_const,
++      .may_lower_unaligned_stores_to_atomics = true,
++      .callback = pco_mem_access_size_align_cb,
++   };
++   NIR_PASS(_,
++            nir,
++            nir_lower_mem_access_bit_sizes,
++            &push_const_access_options);
++
 +
     if (data->common.robust_buffer_access) {
        NIR_PASS(_,
                 nir,
-@@ -1176,6 +1234,7 @@ remat_load_const(nir_builder *b, nir_instr *instr, UNUSED void *cb_data)
+@@ -1176,6 +1264,7 @@ remat_load_const(nir_builder *b, nir_instr *instr, UNUSED void *cb_data)
  
     return true;
  }
@@ -617,7 +647,7 @@ index 57d843b..8c5f8be 100644
                         VkBuffer _buffer,
                         const VkAllocationCallbacks *pAllocator)
 diff --git a/src/imagination/vulkan/pvr_physical_device.c b/src/imagination/vulkan/pvr_physical_device.c
-index 860f43d..7006fce 100644
+index 860f43d..2c8d937 100644
 --- a/src/imagination/vulkan/pvr_physical_device.c
 +++ b/src/imagination/vulkan/pvr_physical_device.c
 @@ -123,9 +123,20 @@ void pvr_physical_device_free_pipeline_cache(
@@ -650,30 +680,33 @@ index 860f43d..7006fce 100644
        .EXT_color_write_enable = true,
        .EXT_custom_border_color = true,
        .EXT_debug_marker = true,
-@@ -298,8 +310,12 @@ static void pvr_physical_device_get_supported_features(
+@@ -298,9 +310,13 @@ static void pvr_physical_device_get_supported_features(
        .inheritedQueries = false,
  
        /* Vulkan 1.1 */
 -      .storageBuffer16BitAccess = false,
 -      .uniformAndStorageBuffer16BitAccess = false,
+-      .storagePushConstant16 = false,
 +      .storageBuffer16BitAccess = true,
 +      .uniformAndStorageBuffer16BitAccess = true,
-+      /* Not advertised: a 16-bit push-constant load comes back wrong
-+       * (0x60204 against an expected 0x105 with the lowering applied to
-+       * load_push_constant), so the pass deliberately leaves push constants
-+       * alone and the feature stays off until that path is fixed. */
-       .storagePushConstant16 = false,
++      /* Narrow push constants go through the same widening as the buffer
++       * accesses (nir_lower_mem_access_bit_sizes, with push constants in its
++       * modes); verified with the alignment-covering probes in
++       * bench/pvr-vulkan/bits_storage.comp. */
++      .storagePushConstant16 = true,
        .storageInputOutput16 = false,
        .variablePointers = false,
+       .protectedMemory = false,
 @@ -309,13 +325,16 @@ static void pvr_physical_device_get_supported_features(
        /* Vulkan 1.2 */
        .samplerMirrorClampToEdge = true,
        .drawIndirectCount = false,
 -      .storageBuffer8BitAccess = false,
 -      .uniformAndStorageBuffer8BitAccess = false,
+-      .storagePushConstant8 = false,
 +      .storageBuffer8BitAccess = true,
 +      .uniformAndStorageBuffer8BitAccess = true,
-       .storagePushConstant8 = false,
++      .storagePushConstant8 = true,
        .shaderBufferInt64Atomics = false,
        .shaderSharedInt64Atomics = false,
 -      .shaderFloat16 = false,

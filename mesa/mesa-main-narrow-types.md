@@ -42,8 +42,14 @@ rather than leaving the impression that it is.
 
 ## Still open in the group
 
-The seven storage and push-constant features (`storageBuffer8/16BitAccess`,
-`uniformAndStorageBuffer8/16BitAccess`, `storagePushConstant8/16`, `storageInputOutput16`) need the
-memory-access half: `nir_lower_mem_access_bit_sizes` with a pvr callback that rounds sub-32-bit
-accesses up to a channel, and the store side of that (read-modify-write) checked by hand. That is the
-next increment, and it is the bigger one.
+Six of the seven storage and push-constant features are now done: the four buffer ones and the two
+push-constant ones, via `nir_lower_mem_access_bit_sizes` with a pvr callback that rounds sub-32-bit
+accesses up to a channel. Two things about that are worth carrying forward. The store side needed no
+hand-written read-modify-write after all - the pass does it with a pair of 32-bit atomics when
+`may_lower_unaligned_stores_to_atomics` is set. And push constants needed a **second** call to the pass,
+placed after `nir_lower_explicit_io` has turned them into intrinsics; adding
+`nir_var_mem_push_const` to the buffer call, as the first draft of the design did, compiles, runs, and
+silently changes nothing. See `mesa-main-narrow-storage-design.md`.
+
+`storageInputOutput16` (16-bit shader inputs and outputs) is the one left, and it is not a memory access:
+it is where the two `/* TODO: f16 support. */` comments in `pco_trans_nir.c` actually are.

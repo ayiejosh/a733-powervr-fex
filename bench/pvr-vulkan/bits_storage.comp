@@ -6,7 +6,12 @@
  * The store is the dangerous half: a 16-bit store lowered to a 32-bit store
  * clobbers the two bytes next to it, silently. `pre` and `post` are the trip
  * wires, and the packed words after the dispatch say whether the values landed
- * where they should. */
+ * where they should.
+ *
+ * The push-constant half covers both alignments on purpose. `pch_a` sits in the
+ * low half of a word (byte 4) and `pch_b` in the high half (byte 6), so a
+ * widening that forgets to shift shows pch_b reading pch_a's value rather than
+ * crashing. Same for the two bytes of `pcb`. */
 layout(local_size_x = 1) in;
 
 layout(std430, binding = 0) buffer Buf {
@@ -17,13 +22,18 @@ layout(std430, binding = 0) buffer Buf {
     uint8_t  b1;
     uint8_t  b2;
     uint8_t  b3;    /* offset 11 */
-    uint     pcsum; /* offset 12 - push-constant result */
-    uint     post;  /* offset 16 - sentinel */
+    uint     pc32;  /* offset 12 - the 32-bit push constant */
+    uint     pch;   /* offset 16 - the two 16-bit push constants */
+    uint     pcb;   /* offset 20 - the two 8-bit push constants */
+    uint     post;  /* offset 24 - sentinel */
 } b;
 
 layout(push_constant) uniform PC {
-    uint pc32;   /* deliberately 32-bit: see the report - narrow push-constant
-                  * loads are the one part of this group still open */
+    uint     pc32;   /* byte 0 */
+    uint16_t pch_a;  /* byte 4 - low half of the word */
+    uint16_t pch_b;  /* byte 6 - high half, needs the shift */
+    uint8_t  pcb_a;  /* byte 8 */
+    uint8_t  pcb_b;  /* byte 9 - second byte of the word, needs the shift */
 } pc;
 
 void main() {
@@ -33,5 +43,7 @@ void main() {
     b.b1 = uint8_t(0x22);
     b.b2 = uint8_t(0x33);
     b.b3 = uint8_t(0x44);
-    b.pcsum = pc.pc32;
+    b.pc32 = pc.pc32;
+    b.pch = uint(pc.pch_a) | (uint(pc.pch_b) << 16);
+    b.pcb = uint(pc.pcb_a) | (uint(pc.pcb_b) << 8);
 }

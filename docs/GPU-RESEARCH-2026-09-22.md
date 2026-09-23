@@ -2394,3 +2394,102 @@ translator unsupported and segfaulted - and it was unnecessary, because the driv
 work a different way. Second, the first version of that feature's *test* asserted implicit zeroing,
 which the feature does not promise; the vendor failed it too, which is what sent me back to the
 specification.
+
+## 21.17 The push-constant half, and pco without a GPU
+
+The two push-constant features were the item §21.16 left as "measured wrong": a 16-bit push-constant load
+returning `0x60204` where `0x105` was expected. Both are now advertised and verified, and the wrong value
+turned out to be fully explicable rather than mysterious.
+
+### 21.17.1 A pco compile loop with no GPU at all
+
+The reason this took one pass instead of a dozen board swaps: Mesa ships a DRM shim for pvr
+(`src/imagination/drm-shim/pvr_noop.c`), and it works on this board.
+
+```
+meson configure build-x11 -Dtools=drm-shim
+ninja -C build-x11 src/imagination/drm-shim/libpowervr_noop_drm_shim.so
+
+LD_PRELOAD=.../libpowervr_noop_drm_shim.so \
+PVR_SHIM_DEVICE_BVNC=36.56.104.183 \
+PVR_I_WANT_A_BROKEN_VULKAN_DRIVER=1 \
+VK_ICD_FILENAMES=.../powervr_mesa_devenv_icd.aarch64.json \
+PCO_DEBUG_PRINT=nir,cs ./vkbits
+```
+
+That fabricates a platform DRM device with this board's BVNC, so the driver enumerates, creates a device
+and **compiles shaders** with no GPU present. Execution obviously does not happen - the shim's
+`SUBMIT_JOBS` is a no-op - but everything up to the compiled binary does, and `PCO_DEBUG_PRINT=nir,cs`
+dumps the NIR the translator is about to consume. Debugging a compiler against a one-minute module swap
+would have been the slowest possible way to do this; this made it a sub-second edit/run loop.
+
+`PVR_SHIM_DEVICE_BVNC` matters: the shim defaults to `36.53.104.796`, which is not this part.
+`PVR_I_WANT_A_BROKEN_VULKAN_DRIVER=1` matters too - without it the driver returns
+`VK_ERROR_INCOMPATIBLE_DRIVER` and enumeration yields no device at all, which reads as a shim failure.
+
+### 21.17.2 The bug was a pass-ordering mistake in our own change
+
+`nir_lower_mem_access_bit_sizes()` matches `nir_intrinsic_load_push_constant`, whose variable mode is
+`nir_var_mem_push_const`. Adding that mode to the buffer pass, as the design note's first draft did,
+compiles, runs, and **silently does nothing** - because at that point in `pco_lower_nir()` a push constant
+is still a `nir_var_mem_push_const` *variable* and its load is a `load_deref`, which the pass does not
+match. The intrinsic only appears after `nir_lower_explicit_io(push_const, ...)`, several passes later.
+The narrow loads reached the translator untouched.
+
+The fix is a second call to the same pass, after that lowering, with `modes = nir_var_mem_push_const`. The
+NIR now collapses the two 16-bit members into one 32-bit load of their containing word and the two 8-bit
+members into one load plus two field extracts.
+
+### 21.17.3 What `0x60204` was
+
+With the lowering not running, both narrow loads arrived at `trans_load_common_store()` unchanged, which
+moves a whole 32-bit channel out of the constant word at the dword index pco derived - no mask to the
+field width and no shift down out of the containing word. For a test block holding `0x0102` at byte 0 and
+`0x03` at byte 2, followed by `0x03` and a zero byte, each load returned the entire word `0x00030102`. The
+test summed them: `0x30102 + 0x30102 = 0x60204`.
+
+So the previous entry's "the pass deliberately leaves push constants alone" was accurate about the
+*effect* and wrong about the cause: nothing was deliberately excluded, the pass simply never saw them.
+The design note is corrected in place.
+
+### 21.17.4 Verified on hardware
+
+The test block now covers both alignments, so a widening that forgets the shift fails loudly instead of
+crashing:
+
+```glsl
+layout(push_constant) uniform PC {
+    uint     pc32;   /* byte 0 */
+    uint16_t pch_a;  /* byte 4 - low half of the word */
+    uint16_t pch_b;  /* byte 6 - high half, needs the shift */
+    uint8_t  pcb_a;  /* byte 8 */
+    uint8_t  pcb_b;  /* byte 9 - second byte of the word, needs the shift */
+} pc;
+```
+
+```
+sudo ./open-run.sh bench/pvr-vulkan/vkbits
+  push constants: 32-bit = 0xcafef00d (want 0xcafef00d)
+                  16-bit pair = 0x03040102 (want 0x03040102)
+                   8-bit pair = 0x00000605 (want 0x00000605)
+  pre = 0xdeadbeef, post = 0xdeadbeef        (the store sentinels)
+  VERDICT: PASS (15 ok, 0 failed)
+```
+
+### 21.17.5 Where the group stands
+
+| feature | state |
+|---|---|
+| `shaderFloat16`, `shaderInt8` | advertised, `vk16` PASS 9/9 both drivers |
+| `storageBuffer16BitAccess`, `uniformAndStorageBuffer16BitAccess` | advertised, `vkbits` PASS |
+| `storageBuffer8BitAccess`, `uniformAndStorageBuffer8BitAccess` | advertised, `vkbits` PASS |
+| `storagePushConstant8`, `storagePushConstant16` | **advertised**, `vkbits` PASS 15/15 on the open driver |
+| `storageInputOutput16` | open - 16-bit vertex I/O, a different problem |
+
+**Eight of the nine.** The ninth is not a memory access: it is 16-bit *types* in shader inputs and
+outputs, which is where the two `/* TODO: f16 support. */` comments in `pco_trans_nir.c` live
+(`trans_load_input_vs`, `trans_store_output_vs`). Both of those functions assert the type is 32-bit, and
+**both asserts are compiled out** - this build is `buildtype=release` - so a 16-bit varying today does not
+fail loudly, it translates as a whole 32-bit word, which is the same failure mode as `0x60204` one layer
+up. Two routes are written down in `mesa/mesa-main-narrow-storage-design.md`.
+

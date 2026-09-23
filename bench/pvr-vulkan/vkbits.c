@@ -85,13 +85,17 @@ int main(void)
     check(s8.storageBuffer8BitAccess, "storageBuffer8BitAccess = %d", s8.storageBuffer8BitAccess);
     check(s8.uniformAndStorageBuffer8BitAccess, "uniformAndStorageBuffer8BitAccess = %d",
           s8.uniformAndStorageBuffer8BitAccess);
+    check(s16.storagePushConstant16, "storagePushConstant16 = %d", s16.storagePushConstant16);
+    check(s8.storagePushConstant8, "storagePushConstant8 = %d", s8.storagePushConstant8);
 
 
     /* Enable them; 8-bit first in the chain. */
     s16.storageBuffer16BitAccess = VK_TRUE;
     s16.uniformAndStorageBuffer16BitAccess = VK_TRUE;
+    s16.storagePushConstant16 = VK_TRUE;
     s8.storageBuffer8BitAccess = VK_TRUE;
     s8.uniformAndStorageBuffer8BitAccess = VK_TRUE;
+    s8.storagePushConstant8 = VK_TRUE;
 
     float prio = 1.0f;
     VkDevice dev;
@@ -154,7 +158,7 @@ int main(void)
      * never meaningful. */
     memset(mapped, 0xEE, 4096);
     ((uint32_t *)mapped)[0] = 0xDEADBEEFu;  /* pre,  at offset 0  */
-    ((uint32_t *)mapped)[4] = 0xDEADBEEFu;  /* post, at offset 16 */
+    ((uint32_t *)mapped)[6] = 0xDEADBEEFu;  /* post, at offset 24 */
 
     VkDescriptorSetLayoutBinding bind = { .binding = 0,
                                           .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
@@ -176,7 +180,7 @@ int main(void)
                                       .pushConstantRangeCount = 1,
                                       .pPushConstantRanges = &(VkPushConstantRange){
                                          .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
-                                         .size = 4 } },
+                                         .size = 12 } },
                                    NULL, &layout));
 
     VkShaderModule sm;
@@ -244,10 +248,18 @@ int main(void)
                                     .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT }));
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipe);
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &ds, 0, NULL);
-    /* pc16 = 0x0102 at offset 0, pc8 = 0x03 at offset 2; the shader stores their
-     * sum (0x105) in b.out. */
-    const uint32_t pc_value = 0xCAFEF00Du;
-    vkCmdPushConstants(cb, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc_value), &pc_value);
+    /* The push constant block is 12 bytes: a 32-bit member, two 16-bit members
+     * (byte 4 in the low half of its word, byte 6 in the high half) and two
+     * 8-bit members (byte 8, and byte 9 which also needs the shift down). */
+    const uint8_t pc_bytes[12] = {
+        0x0D, 0xF0, 0xFE, 0xCA,  /* pc32 = 0xCAFEF00D */
+        0x02, 0x01,              /* pch_a = 0x0102 */
+        0x04, 0x03,              /* pch_b = 0x0304 */
+        0x05,                    /* pcb_a = 0x05 */
+        0x06,                    /* pcb_b = 0x06 */
+        0x00, 0x00,
+    };
+    vkCmdPushConstants(cb, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc_bytes), pc_bytes);
     vkCmdDispatch(cb, 1, 1, 1);
     VKCHECK(vkEndCommandBuffer(cb));
 
@@ -263,15 +275,22 @@ int main(void)
     VKCHECK(vkQueueWaitIdle(queue));
 
     uint32_t *v = mapped;
-    printf("  pre = 0x%08x (want 0xdeadbeef), post = 0x%08x (want 0xdeadbeef)\n", v[0], v[4]);
-    printf("  h0|h1<<16 = 0x%08x (want 0xabcd1234), b0..b3 = 0x%08x (want 0x44332211), "
-           "push constant = 0x%x (want 0xcafef00d)\n", v[1], v[2], v[3]);
+    printf("  pre = 0x%08x (want 0xdeadbeef), post = 0x%08x (want 0xdeadbeef)\n", v[0], v[6]);
+    printf("  h0|h1<<16 = 0x%08x (want 0xabcd1234), b0..b3 = 0x%08x (want 0x44332211)\n",
+           v[1], v[2]);
+    printf("  push constants: 32-bit = 0x%08x (want 0xcafef00d), "
+           "16-bit pair = 0x%08x (want 0x03040102), 8-bit pair = 0x%08x (want 0x00000605)\n",
+           v[3], v[4], v[5]);
 
     check(v[0] == 0xDEADBEEFu, "the sentinel before the values survived (0x%08x)", v[0]);
     check(v[1] == 0xABCD1234u, "the two 16-bit stores landed in one word (0x%08x)", v[1]);
     check(v[2] == 0x44332211u, "the four 8-bit stores landed in one word (0x%08x)", v[2]);
-    check(v[3] == 0xCAFEF00Du, "the push constant survived the lowering (0x%x)", v[3]);
-    check(v[4] == 0xDEADBEEFu, "the sentinel after the values survived (0x%08x)", v[4]);
+    check(v[3] == 0xCAFEF00Du, "the 32-bit push constant survived (0x%08x)", v[3]);
+    check(v[4] == 0x03040102u,
+          "both 16-bit push constants loaded, including the high half (0x%08x)", v[4]);
+    check(v[5] == 0x00000605u,
+          "both 8-bit push constants loaded, including the shifted byte (0x%08x)", v[5]);
+    check(v[6] == 0xDEADBEEFu, "the sentinel after the values survived (0x%08x)", v[6]);
 
     /* What is NOT covered: per-operation f16 rounding. A probe summing
      * 1.0 + 0.0005 twice returns the same constant-folded value on this driver
