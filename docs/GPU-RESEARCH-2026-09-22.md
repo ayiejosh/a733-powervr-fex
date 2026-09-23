@@ -431,3 +431,110 @@ What it changes for the user, honestly: nothing visible *yet*. The consumers of 
 import (kmsro, wlroots, a compositor that scans out its own GPU buffers) are blocked elsewhere — no
 Wayland surface extensions in this DDK (§3.3), KWin blocked in Mesa's kopper integration (§8). It
 closes *this* gap so those paths are not additionally blocked by the driver.
+
+## 10. Stage 4: Mesa pvr — the open driver now executes GPU work here
+
+Stage 3 proved the mainline driver binds and accepts firmware. It did not prove anything
+executes. This stage closes that: a userspace Vulkan driver talks to the open driver, submits a
+compute shader, and the results come back correct.
+
+### The three answers, separately
+
+"Does this board have Vulkan?" turned out to be three different questions, and they have three
+different answers. The measurement is the same binary in every case
+(`bench/pvr-vulkan/vktest.c`: 1M-element xorshift, every element verified, 10 dispatches).
+
+| path | ICD | kernel driver | result |
+|---|---|---|---|
+| vendor | `/usr/lib/libVK_IMG.so` (DDK `24.2@6603887`, Vulkan 1.3.277) | `pvrsrvkm` | **PASS**, 2.497 ms/dispatch, 3.36 GB/s |
+| Mesa pvr "srv" | Mesa `pvrsrvkm` winsys | `pvrsrvkm` | **refused by design** |
+| Mesa pvr "drm" | Mesa `powervr` winsys | **mainline `powervr`** | **PASS**, 2.880 ms/dispatch, 2.91 GB/s |
+
+The vendor ICD is the surprise: the GPU already had working Vulkan 1.3 through Allwinner's DDK,
+and nobody had measured it. That is the baseline the open path is now within 13% of, on a
+bandwidth-bound compute kernel.
+
+The middle row is closed by an explicit version gate, not by a bug of ours:
+`pvr_srv_winsys_create()` calls `pvr_is_driver_compatible()`, which accepts **only downstream
+driver version 1.17** (`PVR_SRV_VERSION_MAJ/MIN` in `winsys/pvrsrvkm/pvr_srv_bridge.h`). This
+board's vendor module reports `24.2.6603887` through `drmGetVersion`, so Mesa returns
+`VK_ERROR_INCOMPATIBLE_DRIVER` before issuing a single ioctl. Mesa's srv backend and this DDK are
+not version-compatible, and no amount of local work changes that.
+
+### What the open path needed
+
+Two gates, both found by instrumenting Mesa rather than guessing:
+
+1. **Enumeration is a device-tree whitelist.** `pvr_drm_configs[]` in
+   `src/imagination/vulkan/pvr_device.c` maps a render node's `compatible` to a display node's
+   `compatible`, and on this board the names are `img,gpu` (GPU) and `allwinner,sunxi-drm`
+   (display engine) — neither is in the table (mediatek and TI parts are). With no match the
+   driver enumerates **zero** devices, and Mesa 25.x does not accept a display compatible of
+   `NULL` either, so both entries are required.
+   `mesa/0001-pvr-add-A733-img-gpu-platform.patch`.
+2. **Device info for the BVNC.** After that, `pvr_physical_device_init()` fails with
+   `-9 VK_ERROR_INCOMPATIBLE_DRIVER` at its first step, `pvr_device_info_init(dev_info, bvnc)`,
+   because the driver only supports BVNCs it ships feature/quirk tables for. Mesa 25.0.7–25.2
+   ship `axe-1-16m`, `bxs-4-64`, `gx6250` — **not `bxm-4-64`**. Mesa 25.3.0 ships
+   `device_info/bxm-4-64.h` containing `PVR_DEVICE_IDENT_36_V_104_183`, which is this GPU.
+
+`struct pvr_device_info` is byte-identical between 25.0.7 and 25.3.0, so the blob can be
+backported to an older Mesa (`mesa/0002-...patch`) — but that is a dead end worth recording:
+25.0.7's pvr also has a **stub shader compiler** (`pco_nir.c` carries four `finishme`s and
+`pvr_hardcode.c` returns empty programs), so it cannot compile a pipeline even with correct
+device info. 25.3.0 has no `finishme` in `pco_nir.c` and no hard-coded-program path at all: it
+compiles at runtime.
+
+That gives a hard dependency chain for the working build: pvr → CLC → LLVM + **LLVMSPIRVLib
+19.1.x** + **libclc** + SPIRV-Tools ≥ 2024.1. On this board LLVM 19.1.7 and SPIRV-Tools 2025.1.1
+were already present; LLVMSPIRVLib was built from source (v19.1.15) and libclc came from
+Debian's `libclc-19` package plus a hand-written `libclc.pc`. Recipe in `mesa/README.md`.
+
+### The result
+
+```
+WARNING: powervr is not a conformant Vulkan implementation, testing use only.
+device[0] name="PowerVR B-Series BXM-4-64 MC1" api=1.2.328 driver=0x06403000 vendor=0x1010 device=0x36104183
+queue family 0: flags=0x7 count=2
+memory: type 0, heap 0 (4436 MB)
+dispatching 10 x 1048576 elements (4 MiB per dispatch)...
+submit+wait: 28.797 ms total, 2.880 ms/dispatch
+throughput:  2.91 GB/s (read+write)
+RESULT: PASS - 1048576/1048576 elements correct
+```
+
+with, on the kernel side, the same bring-up as stage 3 — `clk_bus enabled`, `reset_bus
+deasserted`, firmware `rogue_36.56.104.183_v1.fw` loaded, `powervr 1.0.0 20230904` on minor 1.
+
+Also worth recording: the kernel was never the problem. `pvr_dev_query_gpu_info_get()` fills
+`gpu_id` from `pvr_gpu_id_to_packed_bvnc(&pvr_dev->gpu_id)`, and that is read from the hardware
+control registers by `pvr_load_gpu_id()`; Mesa's trace showed it receiving
+`0x240038006800b7` → `36.56.104.183` correctly. Mesa's vendored `pvr_drm.h` is byte-identical to
+this kernel's UAPI header in both 25.0.7 and 25.3.0.
+
+### What this does not show
+
+- It is a **compute** test. A device, a queue, a pipeline, a fence and a readback — no window, no
+  presentation, no WSI: this build has `-Dplatforms=` (no X11/Wayland platform), so nothing here
+  says anything about scanout, vsync, or the compositor.
+- `WARNING: powervr is not a conformant Vulkan implementation` is the driver's own words; the
+  build sets `PVR_I_WANT_A_BROKEN_VULKAN_DRIVER=1`, which Mesa requires for a non-conformance-listed
+  BVNC. This is not a CTS pass, and no CTS was run.
+- ~2.91 GB/s vs the vendor's 3.36 GB/s on this kernel: one kernel, one size, 10 dispatches. It is
+  a first number, not a benchmark suite.
+- The kernel driver is the v6.8 source adapted to this 6.6 BSP kernel, with local bring-up glue
+  for the vendor device tree (`clk_bus`, `reset_bus`, `core` ← `clk`). Upstream-quality support
+  still means a device-tree overlay and real clock/power-domain modelling.
+
+### Operating facts worth keeping
+
+- The desktop is `display-manager.service` (a system unit); stopping it frees the vendor module in
+  under a second (188 refs → 0). Restarting it brings X, KWin, plasmashell and picom back in about
+  ten seconds — **no reboot needed**, which retires the "reboot to recover" flow used in stage 3.
+- This session's own harness runs in `user@1000.service/app.slice/dsh-web.service`, not in the
+  graphical session, so it survives the swap. Verified rather than assumed.
+- Two side effects of a swap, both harmless and both now known: `powervr` logs
+  `Unbalanced pm_runtime_enable!` when loaded right after the vendor module is unloaded (the
+  platform device is left runtime-PM-enabled by the vendor driver; it does not appear on a boot
+  where only one driver was ever loaded), and `kmsconvt@tty1.service` takes a SEGV because its
+  DRM console disappears underneath it (`systemctl restart kmsconvt@tty1` clears it).
