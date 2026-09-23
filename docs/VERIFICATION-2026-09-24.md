@@ -73,6 +73,11 @@ nogs on four different dlls in the same session: 0.7677 (shipping deployed), 0.8
 0.7519 (gs-compute), 0.7024 (shipping rebuilt today) — ±9%, so the *ratio* only spans 53–97×;
 the per-draw absolutes are the stable evidence.
 
+**Method note:** the first nogs run after a dll swap is ~20% slow (cold shader cache). An
+interleaved repeat settles it — amortised 0.8896 then **0.7230** ms/frame, shipping **0.7181**
+then **0.7136**: the folded build does not regress the non-GS path (≤1.3% once warm). The
+0.8281/0.8896 figures are cold-start artifacts, not a slowdown.
+
 ## 3. The blocker found: the GS branch is 4830 commits behind the shipping branch
 
 `cube.exe` — no geometry shader, plain conf — **page-faults** on the GS dlls:
