@@ -1224,3 +1224,26 @@ readback path's cost is not the CPU read of the staging buffer. Since the image-
 measured at only 1.4x the vendor's (§16.2), the remaining suspect is the synchronisation around the
 copy on the readback path, which is the next thing to measure (an image-to-host-buffer variant of
 `memtypes` would separate copy, sync and CPU read).
+
+### 18.1 The readback path is now faster than the vendor's
+
+`memtypes` grew a readback section that mirrors what a GL driver does - copy a 512x512 render target
+into a host-visible buffer, wait for the fence, read it on the CPU - and reports the three parts
+separately. Same board, same boot, 1 MB:
+
+| stack / memory type | record | fence wait | cpu read | **total** |
+|---|---|---|---|---|
+| open, write-combined (before) | 0.008 | 0.339 | 3.000 | 3.347 ms |
+| **open, cached (after the fix)** | 0.010 | 0.340 | 0.380 | **0.729 ms** |
+| vendor, coherent (type 2) | 0.103 | 0.442 | 3.035 | 3.580 ms |
+| vendor, cached (type 3) | 0.118 | 0.440 | 0.276 | 0.834 ms |
+
+So on the readback path the open driver now beats the vendor stack: **0.729 ms against 0.834 ms**
+(13% faster), and 4.9x faster than the vendor's coherent type. The win comes from two things - the
+cached type the fix adds, and the fact that Mesa records this copy far more cheaply than the vendor
+(0.010 ms against 0.118 ms), which more than covers the vendor's slightly faster CPU read.
+
+The GL number is the remaining puzzle: `glReadPixels` moved only 5.5 -> 4.48 ms even though the
+underlying readback is now 0.73 ms, so most of zink's readback cost is in zink's own path (staging
+choice, an extra copy, or per-call synchronisation) rather than in the driver. That is the next thing
+to instrument, and it is a zink/GL question rather than a kernel-driver one.

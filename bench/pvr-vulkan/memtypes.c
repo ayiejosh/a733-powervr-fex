@@ -193,6 +193,126 @@ int main(int argc, char **argv)
         vkFreeMemory(dev, dmem, NULL);
     }
 
+    /* The readback shape a GL driver uses: render target -> host buffer -> CPU read.
+     * Splitting the three parts says which one dominates, which the buffer-to-buffer
+     * numbers above cannot, because a readback also pays for the image copy and for
+     * waiting on the fence. */
+    {
+        uint32_t w = 512, h = 512;
+        const char *sz = getenv("READBACK_SIZE");
+        if (sz) {
+            w = h = (uint32_t)strtoul(sz, NULL, 0);
+            if (w < 16 || w > 4096)
+                DIE("READBACK_SIZE out of range");
+        }
+        size_t img_bytes = (size_t)w * h * 4;
+
+        VkImageCreateInfo ici2 = { .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                                   .imageType = VK_IMAGE_TYPE_2D,
+                                   .format = VK_FORMAT_R8G8B8A8_UNORM,
+                                   .extent = { w, h, 1 }, .mipLevels = 1, .arrayLayers = 1,
+                                   .samples = VK_SAMPLE_COUNT_1_BIT,
+                                   .tiling = VK_IMAGE_TILING_LINEAR,
+                                   .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                                            VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                                   .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+                                   .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED };
+        VkImage img;
+        VKCHECK(vkCreateImage(dev, &ici2, NULL, &img));
+        VkMemoryRequirements ireq;
+        vkGetImageMemoryRequirements(dev, img, &ireq);
+        uint32_t itype = ~0u;
+        for (uint32_t i = 0; i < mem.memoryTypeCount && itype == ~0u; i++)
+            if (ireq.memoryTypeBits & (1u << i))
+                itype = i;
+        mai.allocationSize = ireq.size;
+        mai.memoryTypeIndex = itype;
+        VkDeviceMemory imem;
+        VKCHECK(vkAllocateMemory(dev, &mai, NULL, &imem));
+        VKCHECK(vkBindImageMemory(dev, img, imem, 0));
+
+        printf("\nreadback %ux%u (%.0f KiB) - image copy, fence wait and CPU read\n", w, h,
+               img_bytes / 1024.0);
+        for (uint32_t t = 0; t < mem.memoryTypeCount; t++) {
+            if (!(mem.memoryTypes[t].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT))
+                continue;
+
+            VkBufferCreateInfo rbci = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                                        .size = img_bytes,
+                                        .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                        .sharingMode = VK_SHARING_MODE_EXCLUSIVE };
+            VkBuffer rbuf;
+            VKCHECK(vkCreateBuffer(dev, &rbci, NULL, &rbuf));
+            VkMemoryRequirements rreq;
+            vkGetBufferMemoryRequirements(dev, rbuf, &rreq);
+            mai.allocationSize = rreq.size;
+            mai.memoryTypeIndex = t;
+            VkDeviceMemory rmem;
+            if (vkAllocateMemory(dev, &mai, NULL, &rmem) != VK_SUCCESS) {
+                vkDestroyBuffer(dev, rbuf, NULL);
+                continue;
+            }
+            VKCHECK(vkBindBufferMemory(dev, rbuf, rmem, 0));
+
+            VkCommandPool cp;
+            VkCommandPoolCreateInfo cpci = { .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+                                             .queueFamilyIndex = 0 };
+            VKCHECK(vkCreateCommandPool(dev, &cpci, NULL, &cp));
+            VkCommandBuffer cb;
+            VkCommandBufferAllocateInfo cbai = {
+                .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .commandPool = cp,
+                .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1 };
+            VKCHECK(vkAllocateCommandBuffers(dev, &cbai, &cb));
+            VkFenceCreateInfo fci = { .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
+            VkFence fence;
+            VKCHECK(vkCreateFence(dev, &fci, NULL, &fence));
+
+            double t_rec = 0, t_wait = 0, t_cpu = 0;
+            for (int it = 0; it < iters; it++) {
+                VkCommandBufferBeginInfo cbbi = {
+                    .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                    .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT };
+                double a = now_ms();
+                VKCHECK(vkResetCommandBuffer(cb, 0));
+                VKCHECK(vkBeginCommandBuffer(cb, &cbbi));
+                VkBufferImageCopy region = {
+                    .imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
+                    .imageExtent = { w, h, 1 } };
+                vkCmdCopyImageToBuffer(cb, img, VK_IMAGE_LAYOUT_GENERAL, rbuf, 1, &region);
+                VKCHECK(vkEndCommandBuffer(cb));
+                t_rec += now_ms() - a;
+
+                VkSubmitInfo si = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                                    .commandBufferCount = 1, .pCommandBuffers = &cb };
+                VKCHECK(vkResetFences(dev, 1, &fence));
+                VKCHECK(vkQueueSubmit(q, 1, &si, fence));
+                a = now_ms();
+                VKCHECK(vkWaitForFences(dev, 1, &fence, VK_TRUE, 5000000000ull));
+                t_wait += now_ms() - a;
+
+                void *map = NULL;
+                VKCHECK(vkMapMemory(dev, rmem, 0, VK_WHOLE_SIZE, 0, &map));
+                volatile uint64_t sum = 0;
+                const uint8_t *p = map;
+                a = now_ms();
+                for (size_t i = 0; i < img_bytes; i += 64)
+                    sum += p[i];
+                t_cpu += now_ms() - a;
+                vkUnmapMemory(dev, rmem);
+            }
+            printf("  type %u: record %6.3f | fence wait %6.3f | cpu read %6.3f | total %6.3f ms\n",
+                   t, t_rec / iters, t_wait / iters, t_cpu / iters,
+                   (t_rec + t_wait + t_cpu) / iters);
+            vkDestroyFence(dev, fence, NULL);
+            vkDestroyCommandPool(dev, cp, NULL);
+            vkDestroyBuffer(dev, rbuf, NULL);
+            vkFreeMemory(dev, rmem, NULL);
+        }
+
+        vkDestroyImage(dev, img, NULL);
+        vkFreeMemory(dev, imem, NULL);
+    }
+
     vkDestroyBuffer(dev, src, NULL);
     vkFreeMemory(dev, smem, NULL);
     vkDestroyDevice(dev, NULL);
