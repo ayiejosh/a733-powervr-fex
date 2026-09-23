@@ -1780,19 +1780,21 @@ run in the same boot; in another, 4096 passed once and failed 3/3 in a fresh boo
 
 | gap | status |
 |---|---|
-| `bufferDeviceAddress` (KHR + EXT, DXVK/vkd3d's requirement) | **implemented and verified** (descriptor delivery: store, load+store, atomic) |
+| `bufferDeviceAddress` (KHR + EXT, DXVK/vkd3d's requirement) | **implemented and verified** 9/9 - descriptor *and* push-constant delivery, store, load+store, atomic; opt-in until the zink interaction in §21.9 is fixed |
 | `bufferDeviceAddressCaptureReplay` | open by choice - needs application-directed placement in the winsys |
 | compiler segfault on `PhysicalStorageBuffer` shaders | **fixed** (`pco_nir.c`) |
-| 64-bit push constants | **open** - high half lost; diagnosis and the three ruled-out causes in §21.7, reproducer is `pctest` |
+| 64-bit push constants | **fixed** (§21.8) - `pctest` 6/6, `bda` push-constant delivery 9/9 |
+| BDA advertisement | **opt-in** (`PVR_ENABLE_BUFFER_DEVICE_ADDRESS=1`) - advertising it makes zink render GL wrongly (§21.9) |
 | large render targets / reliability within a boot | **open** - pre-existing, not a regression; earlier "verified" claim withdrawn |
 | 8/16-bit storage, `shaderFloat16`, `shaderInt8`, `variablePointers`, `drawIndirectCount` | open - implementation work |
 | `depthClamp`, `occlusionQueryPrecise`, `vertexPipelineStoresAndAtomics` | open - implementation work |
 | API 1.2 vs the vendor's 1.3 | open - needs the 1.3 core feature set |
 | timestamps (`timestampPeriod = 0.0`) | open - no timestamp query path exists, so the value is honest |
 
-### 21.7 The 64-bit push constant bug: diagnosis, and three fixes that did not work
+### 21.7 The 64-bit push constant bug: diagnosis
 
-Recorded because the negative results are the useful part - each one rules out a plausible cause.
+**Resolved in 21.8 - this section is kept because the negative results are what identified the
+cause, but its conclusion (that the fix was still unknown) is superseded.**
 
 **What the compiler is actually given.** `PCO_DEBUG_PRINT=nir` dumps the final NIR, and for the
 `uint64_t` push constant block it is:
@@ -1859,3 +1861,81 @@ narrower question than "64-bit is broken in pco", and it is where the evidence p
 
 Reproducer: `bench/pvr-vulkan/pctest.c` (no buffer device address involved - the `uint64_t` block
 alone fails, with the `uvec4` block passing in the same run).
+
+### 21.8 Resolved: the component was being selected with the wrong instruction
+
+The three attempts in 21.7 each moved the failure without changing it, and that was the clue. There
+were **two** independent ways to get the low half twice, and each attempt only addressed one of them:
+
+1. with the split intrinsics lowered away (the committed state), the NIR that reaches the translator
+   is `u2u32(ushr(%11, 32))` - confirmed by dumping it - and that 64-bit `ushr` is never lowered,
+   because `nir_opt_algebraic()` rebuilds it from `unpack_64_2x32_split_y` while `nir_lower_int64()`
+   rebuilds that from the shift. `trans_shift()` asserts `bits == 32`, which is compiled out in a
+   release build, so the shift is translated as though its operand were a single 32-bit value;
+2. with the intrinsics translated directly (attempts 1 and 3), the component was taken with
+   `pco_mov` carrying an element modifier - **and that does not select a channel**. Every other place
+   in the driver that takes a component apart uses `pco_comp` (`split_dest_comps` is built on it,
+   `pco_trans_nir.c:69`), which is what the attempt should have used.
+
+Attempt 1 fixed (1) and hit (2). Attempt 3 fixed the representation that (2) needed and still hit
+(2). The fix is all of it together:
+
+| change | why |
+|---|---|
+| `pco_ref_nir_def()` maps a 64-bit value to 2x32 channels | it is the one place every NIR value becomes a reference, so producers and consumers agree on the shape |
+| `lower_pack_64_2x32_split` / `lower_unpack_64_2x32_split` off | stops `nir_opt_algebraic()` rewriting the intrinsics into 64-bit shifts, which is what made it fight `nir_lower_int64()` and never converge |
+| `unpack_64_2x32_split_x/_y` translated with `pco_comp`, `pack_64_2x32_split` with `pco_trans_nir_vec` | takes the halves apart correctly |
+| `gather_common_store_data()` counts a 64-bit value as two dwords | the range was under-sized, so the second dword of the last 64-bit push constant fell outside it |
+
+**Verified:** `pctest` 6/6 - `uvec4` and `uint64_t` blocks, identical bytes, all offsets - and `bda`
+9/9, which means a buffer device address now works when delivered by a push constant as well as by a
+descriptor, for a plain store, a load+store and a global atomic. The `WARNING! Infinite opt loop!`
+also disappears: the cycle is gone rather than merely survived.
+
+### 21.9 The catch: advertising the feature breaks GL through zink, so it is opt-in
+
+Chasing the push constant bug turned up something worse about the feature advertisement itself.
+With `VK_KHR_buffer_device_address` advertised, GL rendered through zink comes back wrong.
+Isolated in one boot, same build except for the flags:
+
+| `build-x11`, BDA advertised | glheadless 512x20 |
+|---|---|
+| yes | FAIL - 9504, 11616, 52416, 59040, 62320 of 262144 pixels wrong |
+| no | **PASS 262144/262144, twice** |
+
+The trigger is zink changing behaviour once it sees the extension (`have_KHR_buffer_device_address`):
+
+- `zink_resource.c:325` marks every buffer `VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT`;
+- `zink_bo.c:235` puts `VkMemoryAllocateFlagsInfo{VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT}` on every
+  memory allocation;
+- `zink_context.c:5942` installs `set_global_binding`;
+- `zink_resource.c:3596` enables `resource_get_address`.
+
+The pvr driver is not obviously the trigger: it ignores the usage bit (nothing in the driver reads
+`VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT`) and `pvr_AllocateMemory()` explicitly ignores
+`VK_MEMORY_ALLOCATE_FLAGS_INFO` ("We're not yet using any of the flags provided"). Note also that the
+zink in this stack comes from a different tree (`mesa-25.3.0/build-gl`), so the next step is to
+isolate which of those four paths does it, in that tree.
+
+Until then the advertisement is behind an environment variable, following the driver's existing
+`PVR_I_WANT_A_BROKEN_VULKAN_DRIVER` precedent:
+
+```
+PVR_ENABLE_BUFFER_DEVICE_ADDRESS=1
+```
+
+The extension and the feature are gated together (a feature without its extension is a broken
+device). The default configuration therefore does not regress GL, and the capability is one variable
+away for D3D work.
+
+**Verified in both configurations, one boot:**
+
+| case | default (BDA off) | `PVR_ENABLE_BUFFER_DEVICE_ADDRESS=1` |
+|---|---|---|
+| glheadless 512x20 | **PASS 262144/262144** | FAIL (expected - see above) |
+| pctest (6 push constant probes) | **PASS** | **PASS** |
+| vktest compute | PASS | - |
+| vkrender 512, samples=4 | PASS | PASS |
+| bda (9 probes) | - (feature absent) | **PASS** |
+
+The push constant fix in 21.8 is independent of the feature and is on in both columns.
