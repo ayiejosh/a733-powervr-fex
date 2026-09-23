@@ -1336,3 +1336,31 @@ where no render area exists yet, so they would need a per-render-area variant or
 scheme. That is the next real piece of driver work, and it is worth more than the remaining
 per-tile efficiency difference measured at full extent (2.5 ms against the vendor's 0.69 ms at
 1024x1024, §18.2).
+
+### 18.4 Mechanism: the tile grid is the framebuffer's, and empty tiles are walked
+
+The code path behind §18.3, for whoever picks this up:
+
+* At job setup the tiling parameters are built from the **render target dataset**, not from the render
+  area: `pvr_arch_rt_mtile_info_init(dev_info, &tiling_info, rt_dataset->width, rt_dataset->height,
+  rt_dataset->samples)` (`pvr_arch_job_render.c:1138`). `rt_dataset` is created per framebuffer
+  (`pvr_arch_job_render.c:634`, from `pvr_arch_render_target_dataset_create`), and `rstate->width/height`
+  come from the framebuffer too (`pvr_arch_framebuffer.c:265-267`). The render area never enters it.
+* `CR_ISP_CTL.process_empty_tiles` (`pvr_arch_job_render.c:1145`) is set from
+  `job->process_empty_tiles`, which the driver raises when a subpass has load ops that must apply to
+  every tile - `"Empty tiles need to be cleared too."` (`pvr_arch_cmd_buffer.c:9446-9452`), and per
+  the comment there, the optimised version of this ("selectively enable empty tile processing")
+  is explicitly called out as a larger change.
+* So a render pass over a 1024x1024 framebuffer walks its whole tile grid whether the render area is
+  all of it or a quarter of it, and whether the draw covers everything or one triangle. That is what
+  all the measurements show: cost follows the surface (5.1x sensitivity against the vendor's 1.9x),
+  ignores the render area, ignores coverage, and barely moves with format or load/store op.
+
+**Fix sketch** (not landed - it needs hardware-semantics care, and the pixel-exact tests are the
+safety net): derive the job's tiling from the render area instead of the dataset, and offset the
+region-header base by the tile origin so the smaller grid still indexes correctly. The region-header
+*size* can stay framebuffer-sized (it is allocated once per framebuffer, and the allocation trace in
+§18.3 shows that is not the cost); what needs to shrink is the grid the ISP is told to walk.
+
+Worth doing because it is exactly a compositor's workload - a partial render into a full-size target -
+and because the same grid also feeds the clear path, so the win applies to clears as well.
