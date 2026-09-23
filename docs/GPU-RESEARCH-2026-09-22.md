@@ -1019,3 +1019,54 @@ look disproportionately slow on this driver.
   creating `/dev/dri/card1`, so X cannot start at all. The restore path now checks for `card1`,
   reloads the vendor module cleanly if it is missing, and retries X once after a clean reload - no
   reboot needed (recovering this way is how it was diagnosed).
+
+### 16.5 The GL gap is a readback cost, not a submission cost
+
+Splitting the GL frame the same way (512x512, 30 frames, `PVR_TIMING=1`):
+
+| stage, ms/frame | vendor (libGLESv2_PVR_MESA) | open (zink -> pvr) |
+|---|---|---|
+| GL calls (clear + draw) | 0.116 | **0.064** |
+| `glReadPixels` | 0.852 | **5.516** |
+| `glFinish` | 0.004 | 0.039 |
+| total | 0.972 | 5.620 |
+
+**zink's submission path is faster than the vendor's** (0.064 ms against 0.116 ms per frame of GL
+calls). The entire 5x difference in this benchmark is `glReadPixels`, i.e. the image-to-host
+readback, which is not something a game, a compositor or any normal renderer does per frame. The
+"GL is 5x slower" statement in §15 is therefore true of *this test* and misleading about real
+workloads; the parts of GL that a real workload uses are competitive.
+
+Readback scaling, which separates a fixed cost from bandwidth:
+
+| size | vendor | open |
+|---|---|---|
+| 128x128 (64 KB) | 0.702 ms | 3.038 ms |
+| 256x256 (256 KB) | 0.755 ms | 3.369 ms |
+| 512x512 (1 MB) | 1.424 ms | 5.287 ms |
+
+So the open path pays roughly **2.9 ms fixed plus 2.3 ms/MB**, against the vendor's ~0.65 ms plus
+~0.77 ms/MB - a large per-readback cost that looks like a sync/flush or staging allocation rather
+than bandwidth. That is the next concrete thing to look at on the driver side, and it is what
+zink's `glReadPixels` (and anything else that needs pixels on the host) is paying for.
+
+Also tried, for completeness, on the GL path: `ZINK_DESCRIPTOR_MODE=cached` is *worse* (6.371 vs
+5.895 ms/frame), `MESA_GLTHREAD=true` is slightly better (5.507) and the combination is neutral.
+
+### 16.6 Summary of the performance position
+
+| workload | vendor | open | ratio |
+|---|---|---|---|
+| page-flipped 1080p animation | - | **59.6 fps** | at panel refresh |
+| page-flipped 4K animation | - | **40.0 fps** (was 27.8) | +44% this session |
+| compute, 1M elements | 2.497 ms | 2.833 ms | 1.13x |
+| Vulkan draw, 512 / 1024 | 0.397 / 0.772 ms | 0.883 / 2.555 ms | 2.2x / 3.3x |
+| Vulkan image->buffer copy, 1024 | 0.728 ms | 1.023 ms | 1.4x |
+| GL submission (GL calls) | 0.116 ms | 0.064 ms | **0.55x (faster)** |
+| GL readback, 512 | 0.852 ms | 5.516 ms | 6.5x |
+
+What remains is two driver-internal items - the graphics job path costing time proportional to the
+surface regardless of what is drawn (§16.3), and the fixed per-readback cost (§16.5). Neither is
+reachable from the harness or from a configuration knob: the levers a test can pull (render area,
+load/store ops, batching, tiling, queue priority, power state, DVFS) have all been tried and
+measured here.

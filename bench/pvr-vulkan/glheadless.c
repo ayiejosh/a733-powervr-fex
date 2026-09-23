@@ -329,13 +329,26 @@ int main(int argc, char **argv)
         DIE("out of memory for readback");
 
     printf("rendering %d x %ux%u frames (FBO + glReadPixels)...\n", iters, size, size);
+    /* Split the frame: how much is the draw being submitted, how much is the
+     * readback, how much is the implicit flush. */
+    int timing = getenv("PVR_TIMING") != NULL;
+    double t_draw = 0, t_read = 0, t_finish = 0;
     double t0 = now_ms();
     for (int it = 0; it < iters; it++) {
+        double _a = now_ms();
         glClearColor(0.f, 0.f, 0.f, 1.f);
         glClear(GL_COLOR_BUFFER_BIT);
         glDrawArrays(GL_TRIANGLES, 0, 3);
+        double _b = now_ms();
         glReadPixels(0, 0, size, size, GL_RGBA, GL_UNSIGNED_BYTE, px);
+        double _c = now_ms();
         glFinish();
+        double _d = now_ms();
+        if (timing) {
+            t_draw += _b - _a;
+            t_read += _c - _b;
+            t_finish += _d - _c;
+        }
     }
     double t1 = now_ms();
 
@@ -358,6 +371,11 @@ int main(int argc, char **argv)
     }
 
     double ms = t1 - t0;
+    if (timing) {
+        double n = iters > 0 ? iters : 1;
+        printf("timing ms/frame: gl_calls=%.3f readpixels=%.3f glFinish=%.3f (sum=%.3f of %.3f)\n",
+               t_draw / n, t_read / n, t_finish / n, (t_draw + t_read + t_finish) / n, ms / n);
+    }
     printf("%d frame(s) in %.3f ms (%.3f ms/frame, %.1f Mpix/s)\n", iters, ms, ms / iters,
            (double)size * size * iters / (ms / 1000.0) / 1e6);
     if (bad)

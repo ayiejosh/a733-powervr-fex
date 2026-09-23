@@ -452,8 +452,39 @@ if [ -x "$BENCH/glheadless" ] && [ -d /home/radxa/mesa/gldri ]; then
         EGL_LOG_LEVEL=debug LIBGL_DEBUG=verbose ZINK_TRACE=1 \
         MESA_GLES_VERSION_OVERRIDE=3.2 \
         VK_ICD_FILENAMES="$GL_ICD" VK_DRIVER_FILES="$GL_ICD" \
-        PVR_I_WANT_A_BROKEN_VULKAN_DRIVER=1 \
-        timeout 300 ./glheadless 512 20 2>&1 | sed 's/^/    /' | tee -a "$LOG" )
+        PVR_I_WANT_A_BROKEN_VULKAN_DRIVER=1 PVR_TIMING=1 \
+        timeout 300 ./glheadless 512 20 2>&1 | sed 's/^/    /' | tee -a "$LOG"
+
+        # Readback scaling: is glReadPixels slow because of bytes moved, or because
+        # of a fixed per-readback cost (cache flush / sync / staging allocation)?
+        say "  --- GL readback scaling (128/256/512) ---"
+        for _sz in 128 256 512; do
+            ( cd "$BENCH" && runuser -u radxa -- env HOME=/home/radxa \
+                LD_LIBRARY_PATH="$GL_PREFIX" LIBGL_DRIVERS_PATH=/home/radxa/mesa/gldri \
+                GBM_BACKENDS_PATH="$GL_PREFIX/gbm" \
+                MESA_LOADER_DRIVER_OVERRIDE=zink EGL_PLATFORM=gbm \
+                DRM_RENDER_NODE=/dev/dri/renderD128 PVR_TIMING=1 \
+                MESA_GLES_VERSION_OVERRIDE=3.2 \
+                VK_ICD_FILENAMES="$GL_ICD" VK_DRIVER_FILES="$GL_ICD" \
+                PVR_I_WANT_A_BROKEN_VULKAN_DRIVER=1 \
+                timeout 300 ./glheadless $_sz 30 2>&1 \
+                | grep -E 'timing ms/frame|frame\(s\)' | sed "s/^/    [size=$_sz] /" | tee -a "$LOG" )
+        done
+
+        # Variants: zink's descriptor mode and GL threading both affect per-draw cost.
+        for _v in "ZINK_DESCRIPTOR_MODE=cached" "MESA_GLTHREAD=true" "ZINK_DESCRIPTOR_MODE=cached MESA_GLTHREAD=true"; do
+            say "  --- GL variant: $_v ---"
+            ( cd "$BENCH" && runuser -u radxa -- env HOME=/home/radxa \
+                LD_LIBRARY_PATH="$GL_PREFIX" LIBGL_DRIVERS_PATH=/home/radxa/mesa/gldri \
+                GBM_BACKENDS_PATH="$GL_PREFIX/gbm" \
+                MESA_LOADER_DRIVER_OVERRIDE=zink EGL_PLATFORM=gbm \
+                DRM_RENDER_NODE=/dev/dri/renderD128 MESA_GLES_VERSION_OVERRIDE=3.2 \
+                VK_ICD_FILENAMES="$GL_ICD" VK_DRIVER_FILES="$GL_ICD" \
+                PVR_I_WANT_A_BROKEN_VULKAN_DRIVER=1 $_v \
+                timeout 300 ./glheadless 512 20 2>&1 \
+                | grep -E 'GL_RENDERER|GL_VERSION|frame\(s\)|timing|RESULT|VERDICT|FAIL' \
+                | sed "s/^/    [$_v] /" | tee -a "$LOG" )
+        done )
 else
     say "no glheadless / GL build - skipping the GL test"
 fi
