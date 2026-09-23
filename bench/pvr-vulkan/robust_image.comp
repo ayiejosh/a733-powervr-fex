@@ -1,0 +1,16 @@
+#version 450
+/* One in-bounds and one far out-of-bounds image read.
+ *
+ * VK_EXT_image_robustness / Vulkan 1.3's robustImageAccess says an out-of-bounds
+ * read returns zero rather than undefined data, so v[1] must come back with
+ * zero RGB. v[0] proves the image really contains the cleared colour. */
+layout(local_size_x = 1) in;
+
+layout(rgba8ui, binding = 0) uniform uimage2D img;
+
+layout(std430, binding = 1) buffer Out { uvec4 v[]; } outbuf;
+
+void main() {
+    outbuf.v[0] = imageLoad(img, ivec2(0, 0));
+    outbuf.v[1] = imageLoad(img, ivec2(4096, 4096));
+}

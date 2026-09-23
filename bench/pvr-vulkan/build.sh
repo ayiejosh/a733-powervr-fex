@@ -26,6 +26,10 @@ glslangValidator -V --target-env vulkan1.1 -o pc64.spv pc64.comp
 # bda_*.comp need SPIR-V 1.3 + PhysicalStorageBufferAddresses, so vulkan1.2.
 glslangValidator -V --target-env vulkan1.2 -o bda_pc.spv bda_pc.comp
 glslangValidator -V --target-env vulkan1.2 -o bda_ubo.spv bda_ubo.comp
+# vk13 tests the Vulkan 1.3 features (zero-init workgroup memory keeps its
+# uninitialised shared variable, which needs no special environment).
+glslangValidator -V --target-env vulkan1.1 -o zero_shared.spv zero_shared.comp
+glslangValidator -V --target-env vulkan1.1 -o robust_image.spv robust_image.comp
 
 python3 - <<'PY'
 import struct
@@ -49,6 +53,8 @@ emit('pc.spv', 'pc_spv', 'pc_spv.h')
 emit('pc64.spv', 'pc64_spv', 'pc64_spv.h')
 emit('bda_pc.spv', 'bda_pc_spv', 'bda_pc_spv.h')
 emit('bda_ubo.spv', 'bda_ubo_spv', 'bda_ubo_spv.h')
+emit('zero_shared.spv', 'zero_shared_spv', 'zero_shared_spv.h')
+emit('robust_image.spv', 'robust_image_spv', 'robust_image_spv.h')
 PY
 
 CC=${CC:-gcc}
@@ -85,6 +91,9 @@ link bda bda.c
 
 # pctest: minimal vkCmdPushConstants probe, with no buffer device address in it.
 link pctest pctest.c
+
+# vk13: the three Vulkan 1.3 features section 21.16 implements.
+link vk13 vk13.c
 
 # x11present: X11 WSI end to end - xcb surface, swapchain, present, then ask the X
 # server what it is displaying. Needs libxcb and a DRI3-capable X server; exits 3

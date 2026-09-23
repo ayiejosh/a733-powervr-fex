@@ -1,0 +1,742 @@
+diff --git a/include/drm-uapi/pvr_drm.h b/include/drm-uapi/pvr_drm.h
+index ccf6c21..cd4724d 100644
+--- a/include/drm-uapi/pvr_drm.h
++++ b/include/drm-uapi/pvr_drm.h
+@@ -536,10 +536,21 @@ struct drm_pvr_ioctl_dev_query_args {
+ #define DRM_PVR_BO_BYPASS_DEVICE_CACHE _BITULL(0)
+ #define DRM_PVR_BO_PM_FW_PROTECT _BITULL(1)
+ #define DRM_PVR_BO_ALLOW_CPU_USERSPACE_ACCESS _BITULL(2)
+-/* Bits 3..63 are reserved. */
++
++/**
++ * :DRM_PVR_BO_CPU_CACHED: Map this buffer cacheable from the CPU instead of
++ *     write-combined. Reads are then around 20x faster on this SoC (6.6 GB/s
++ *     against 330 MB/s measured on a BXM-4-64), which is what a readback wants.
++ *     The buffer is not coherent: userspace must do cache maintenance around GPU
++ *     access (in Vulkan, vkFlushMappedMemoryRanges / vkInvalidateMappedMemoryRanges).
++ *     Cannot be combined with DRM_PVR_BO_PM_FW_PROTECT.
++ */
++#define DRM_PVR_BO_CPU_CACHED _BITULL(3)
++/* Bits 4..63 are reserved. */
+ 
+ #define DRM_PVR_BO_FLAGS_MASK (DRM_PVR_BO_BYPASS_DEVICE_CACHE | DRM_PVR_BO_PM_FW_PROTECT | \
+-			       DRM_PVR_BO_ALLOW_CPU_USERSPACE_ACCESS)
++			       DRM_PVR_BO_ALLOW_CPU_USERSPACE_ACCESS | \
++			       DRM_PVR_BO_CPU_CACHED)
+ 
+ /**
+  * struct drm_pvr_ioctl_create_bo_args - Arguments for %DRM_IOCTL_PVR_CREATE_BO
+diff --git a/src/imagination/pco/pco_nir.c b/src/imagination/pco/pco_nir.c
+index 2ef8106..02ad973 100644
+--- a/src/imagination/pco/pco_nir.c
++++ b/src/imagination/pco/pco_nir.c
+@@ -68,8 +68,11 @@ static const nir_shader_compiler_options nir_options = {
+ 
+    .lower_int64_options = ~0U,
+    .lower_pack_64_2x32 = true,
+-   .lower_pack_64_2x32_split = true,
+-   .lower_unpack_64_2x32_split = true,
++   /* Kept and translated directly (see trans_alu) instead of being rewritten
++    * into 64-bit shifts, because nir_lower_int64() rebuilds them from those
++    * shifts and the pair never converges. */
++   .lower_pack_64_2x32_split = false,
++   .lower_unpack_64_2x32_split = false,
+ 
+    .lower_interpolate_at = true,
+ 
+@@ -357,6 +360,13 @@ static void gather_common_store_data(nir_intrinsic_instr *intr,
+ 
+    if (nir_src_is_const(*offset_src) && common->push_consts.used != ~0U) {
+       unsigned offset = nir_src_as_uint(*offset_src);
++
++      /* This range is counted in 32-bit dwords and a 64-bit value occupies two
++       * of them. Counting a uint64_t as one dword under-sized the range, so the
++       * second dword of the last 64-bit push constant fell outside it. */
++      if (intr->def.bit_size == 64)
++         num_components *= 2;
++
+       common->push_consts.used =
+          MAX2(common->push_consts.used, offset + num_components);
+    } else {
+@@ -966,6 +976,7 @@ void pco_lower_nir(pco_ctx *ctx, nir_shader *nir, pco_data *data)
+             NULL,
+             NULL);
+ 
++
+    if (data->common.robust_buffer_access) {
+       NIR_PASS(_,
+                nir,
+@@ -1176,6 +1187,7 @@ remat_load_const(nir_builder *b, nir_instr *instr, UNUSED void *cb_data)
+ 
+    return true;
+ }
++
+ /**
+  * \brief Runs post-processing passes on a NIR shader.
+  *
+diff --git a/src/imagination/pco/pco_trans_nir.c b/src/imagination/pco/pco_trans_nir.c
+index 6dde9d2..a23662d 100644
+--- a/src/imagination/pco/pco_trans_nir.c
++++ b/src/imagination/pco/pco_trans_nir.c
+@@ -80,7 +80,22 @@ static void split_dest_comps(trans_ctx *tctx, pco_instr *instr, pco_ref dest)
+  */
+ static inline pco_ref pco_ref_nir_def(const nir_def *def)
+ {
+-   return pco_ref_ssa(def->index, def->bit_size, def->num_components);
++   unsigned bits = def->bit_size;
++   unsigned chans = def->num_components;
++
++   /* A 64-bit component is two 32-bit channels in this backend - see the 64-bit
++    * multiply cases, which build their result as a vector of two 32-bit
++    * registers - and this is the one place every NIR value is mapped to a
++    * reference, so doing it here is what keeps producers and consumers agreeing.
++    * Without it a 64-bit value stays one channel wide, so both halves of it
++    * resolve to the same dword.
++    */
++   if (bits == 64) {
++      bits = 32;
++      chans *= 2;
++   }
++
++   return pco_ref_ssa(def->index, bits, chans);
+ }
+ 
+ /**
+@@ -4145,6 +4160,31 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
+       instr = pco_mov(&tctx->b, dest, src[0]);
+       break;
+ 
++   /* The two halves of a 64-bit value, which this backend holds as a pair of
++    * 32-bit channels (see pco_ref_nir_def). The component must be taken with
++    * pco_comp: a mov carrying an element modifier does not select a channel, so
++    * reading the high half that way returns the low half again - which is what
++    * a uint64_t push constant used to do.
++    *
++    * These are translated here rather than lowered away because the rewrite
++    * nir_opt_algebraic() applies instead - u2u32(ushr(a, 32)) - leaves a 64-bit
++    * shift behind, and nir_lower_int64() turns that straight back into this
++    * intrinsic. The two passes never converge (pco_nir_opt() gives up after 1000
++    * iterations), and the 64-bit shift then reaches trans_shift(), whose
++    * bits == 32 assert is compiled out in a release build.
++    */
++   case nir_op_unpack_64_2x32_split_x:
++      instr = pco_comp(&tctx->b, dest, src[0], pco_ref_val16(0));
++      break;
++
++   case nir_op_unpack_64_2x32_split_y:
++      instr = pco_comp(&tctx->b, dest, src[0], pco_ref_val16(1));
++      break;
++
++   case nir_op_pack_64_2x32_split:
++      instr = pco_trans_nir_vec(tctx, dest, 2, src);
++      break;
++
+    default:
+       printf("Unsupported alu instruction: \"");
+       nir_print_instr(&alu->instr, stdout);
+diff --git a/src/imagination/vulkan/pvr_arch_cmd_buffer.c b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
+index f21b320..3692b56 100644
+--- a/src/imagination/vulkan/pvr_arch_cmd_buffer.c
++++ b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
+@@ -9939,8 +9939,28 @@ void PVR_PER_ARCH(CmdWriteTimestamp2)(VkCommandBuffer commandBuffer,
+    UNREACHABLE("Timestamp queries are not supported.");
+ }
+ 
++extern uint64_t pvr_alloc_count, pvr_alloc_bytes;
++
+ VkResult PVR_PER_ARCH(EndCommandBuffer)(VkCommandBuffer commandBuffer)
+ {
++   /* Report what this command buffer allocated, for PVR_ALLOC_TRACE=1. A driver that
++    * allocates buffers per command buffer pays for them every frame. */
++   {
++      static uint64_t last_count, last_bytes;
++      static int last_frames;
++      extern uint64_t pvr_alloc_count, pvr_alloc_bytes;
++
++      if (getenv("PVR_ALLOC_TRACE")) {
++         uint64_t dcount = pvr_alloc_count - last_count;
++         uint64_t dbytes = pvr_alloc_bytes - last_bytes;
++         last_count = pvr_alloc_count;
++         last_bytes = pvr_alloc_bytes;
++         if (++last_frames <= 5 || last_frames % 50 == 0)
++            fprintf(stderr, "[alloc] command buffer %d: %llu bo(s), %llu KiB\n", last_frames,
++                    (unsigned long long)dcount, (unsigned long long)(dbytes / 1024));
++      }
++   }
++
+    VK_FROM_HANDLE(pvr_cmd_buffer, cmd_buffer, commandBuffer);
+    struct pvr_cmd_buffer_state *state = &cmd_buffer->state;
+    VkResult result;
+diff --git a/src/imagination/vulkan/pvr_arch_job_render.c b/src/imagination/vulkan/pvr_arch_job_render.c
+index bf96f55..025a05b 100644
+--- a/src/imagination/vulkan/pvr_arch_job_render.c
++++ b/src/imagination/vulkan/pvr_arch_job_render.c
+@@ -1140,6 +1140,29 @@ static void pvr_frag_state_stream_init(struct pvr_render_ctx *ctx,
+                                rt_dataset->width,
+                                rt_dataset->height,
+                                rt_dataset->samples);
++   /* PVR_TILE_TRACE=1: what tiling does this job actually use, and does it take the
++    * skip_init_hdrs path? One line, so the numbers can be checked against the
++    * timing rather than inferred. */
++   if (getenv("PVR_TILE_TRACE")) {
++      static bool traced;
++      if (!traced) {
++         traced = true;
++         fprintf(stderr,
++                 "[tile] rt %ux%u samples=%u -> tiles %ux%u mtiles %ux%u tiles_per_mtile "
++                 "%ux%u x_tile_max=%u y_tile_max=%u\n",
++                 rt_dataset->width, rt_dataset->height, rt_dataset->samples,
++                 tiling_info.num_tiles_x, tiling_info.num_tiles_y, tiling_info.mtiles_x,
++                 tiling_info.mtiles_y, tiling_info.tiles_per_mtile_x,
++                 tiling_info.tiles_per_mtile_y, tiling_info.x_tile_max, tiling_info.y_tile_max);
++         fprintf(stderr,
++                 "[tile] features: simple_internal_parameter_format=%d gpu_multicore_support=%d "
++                 "process_empty_tiles=%d -> skip_init_hdrs=%d\n",
++                 PVR_HAS_FEATURE(dev_info, simple_internal_parameter_format),
++                 PVR_HAS_FEATURE(dev_info, gpu_multicore_support), job->process_empty_tiles,
++                 (PVR_HAS_FEATURE(dev_info, gpu_multicore_support) &&
++                  PVR_HAS_FEATURE(dev_info, simple_internal_parameter_format)));
++      }
++   }
+    pvr_csb_pack (stream_ptr, CR_ISP_CTL, value) {
+       value.sample_pos = true;
+       value.process_empty_tiles = job->process_empty_tiles;
+diff --git a/src/imagination/vulkan/pvr_arch_pipeline.c b/src/imagination/vulkan/pvr_arch_pipeline.c
+index d7a37a6..98416ef 100644
+--- a/src/imagination/vulkan/pvr_arch_pipeline.c
++++ b/src/imagination/vulkan/pvr_arch_pipeline.c
+@@ -1168,6 +1168,28 @@ pvr_compute_pipeline_init(struct pvr_device *device,
+    return VK_SUCCESS;
+ }
+ 
++/* VkPipelineCreationFeedback (Vulkan 1.3 core / VK_EXT_pipeline_creation_feedback).
++ *
++ * pvr has no pipeline cache and does not time compilation, so it has no feedback
++ * to report. Leaving VK_PIPELINE_CREATION_FEEDBACK_VALID_BIT clear is allowed,
++ * but the structures still have to be written: the application allocated them
++ * uninitialised and asked the driver to fill them in.
++ */
++static void
++pvr_pipeline_creation_feedback_init(const void *pNext)
++{
++   const VkPipelineCreationFeedbackCreateInfo *ci =
++      vk_find_struct_const(pNext, PIPELINE_CREATION_FEEDBACK_CREATE_INFO);
++
++   if (!ci)
++      return;
++
++   *ci->pPipelineCreationFeedback = (VkPipelineCreationFeedback){ 0 };
++
++   for (uint32_t i = 0; i < ci->pipelineStageCreationFeedbackCount; i++)
++      ci->pPipelineStageCreationFeedbacks[i] = (VkPipelineCreationFeedback){ 0 };
++}
++
+ static VkResult
+ pvr_compute_pipeline_create(struct pvr_device *device,
+                             struct vk_pipeline_cache *cache,
+@@ -1178,6 +1200,13 @@ pvr_compute_pipeline_create(struct pvr_device *device,
+    struct pvr_compute_pipeline *compute_pipeline;
+    VkResult result;
+ 
++   /* See pvr_graphics_pipeline_create(): no pipeline cache, so any creation is a
++    * compile and the flag is answered honestly. */
++   if (pCreateInfo->flags & VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT)
++      return VK_PIPELINE_COMPILE_REQUIRED;
++
++   pvr_pipeline_creation_feedback_init(pCreateInfo->pNext);
++
+    compute_pipeline = vk_zalloc2(&device->vk.alloc,
+                                  allocator,
+                                  sizeof(*compute_pipeline),
+@@ -2793,6 +2822,20 @@ static void pvr_early_init_shader_data(pco_data *data,
+    data->common.image_2d_view_of_3d =
+       device->vk.enabled_features.image2DViewOf3D;
+ 
++   /* VK_KHR_zero_initialize_workgroup_memory / Vulkan 1.3 is *not* set here.
++    *
++    * The feature means "the implementation supports initializing a variable in
++    * Workgroup storage class", i.e. it honours an explicit zero initializer on a
++    * Workgroup variable - not that all workgroup memory is zeroed for free. The
++    * SPIR-V front end already sets nir->info.zero_initialize_shared_memory when a
++    * shader declares such an initializer, and pco_lower_nir() runs the generic
++    * nir_zero_initialize_shared_memory() pass for it. Forcing the flag on every
++    * compute shader would zero workgroup memory the application never asked to
++    * have zeroed, which the specification does not require and the vendor driver
++    * does not do either (measured: a shader without an initializer reads back
++    * whatever was there).
++    */
++
+    switch (nir->info.stage) {
+    case MESA_SHADER_VERTEX:
+    case MESA_SHADER_FRAGMENT: {
+@@ -3387,6 +3430,19 @@ pvr_graphics_pipeline_create(struct pvr_device *device,
+    struct pvr_graphics_pipeline *gfx_pipeline;
+    VkResult result;
+ 
++   /* VK_EXT_pipeline_creation_cache_control / Vulkan 1.3.
++    *
++    * The application asked not to block on compilation. pvr's pipeline cache is
++    * a stub - nothing is ever looked up or inserted - so every creation would
++    * compile, and the honest answer is VK_PIPELINE_COMPILE_REQUIRED. The
++    * application then creates the pipeline without the flag, which is the
++    * retry loop the extension is designed around.
++    */
++   if (pCreateInfo->flags & VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT)
++      return VK_PIPELINE_COMPILE_REQUIRED;
++
++   pvr_pipeline_creation_feedback_init(pCreateInfo->pNext);
++
+    gfx_pipeline = vk_zalloc2(&device->vk.alloc,
+                              allocator,
+                              sizeof(*gfx_pipeline),
+diff --git a/src/imagination/vulkan/pvr_bo.c b/src/imagination/vulkan/pvr_bo.c
+index 629c4f8..1f0537f 100644
+--- a/src/imagination/vulkan/pvr_bo.c
++++ b/src/imagination/vulkan/pvr_bo.c
+@@ -338,6 +338,11 @@ static inline void pvr_bo_free_bo(const struct pvr_device *const device,
+  *
+  * \sa #pvr_bo_free()
+  */
++/* Allocation counters, for finding per-frame work. Enabled with PVR_ALLOC_TRACE=1:
++ * a compositor or game records a fresh command buffer per frame, so any buffer the
++ * driver creates per command buffer is per-frame cost. */
++uint64_t pvr_alloc_count, pvr_alloc_bytes;
++
+ VkResult pvr_bo_alloc(struct pvr_device *device,
+                       struct pvr_winsys_heap *heap,
+                       uint64_t size,
+@@ -356,6 +361,9 @@ VkResult pvr_bo_alloc(struct pvr_device *device,
+ 
+    pvr_bo->ref_count = 1;
+ 
++   pvr_alloc_count++;
++   pvr_alloc_bytes += size;
++
+    result = device->ws->ops->buffer_create(device->ws,
+                                            size,
+                                            alignment,
+diff --git a/src/imagination/vulkan/pvr_device.c b/src/imagination/vulkan/pvr_device.c
+index 57d843b..6063dbf 100644
+--- a/src/imagination/vulkan/pvr_device.c
++++ b/src/imagination/vulkan/pvr_device.c
+@@ -247,6 +247,18 @@ VkResult pvr_AllocateMemory(VkDevice _device,
+    assert(pAllocateInfo->sType == VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO);
+    assert(pAllocateInfo->allocationSize > 0);
+ 
++   if (getenv("PVR_API_TRACE")) {
++      static unsigned n;
++      const char *pnext = "none";
++      vk_foreach_struct_const (sType, ext, pAllocateInfo->pNext) {
++         if ((unsigned)sType == VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO)
++            pnext = "allocate_flags";
++      }
++      fprintf(stderr, "[api] alloc %u size=%llu type=%u pNext=%s\n", n++,
++              (unsigned long long)pAllocateInfo->allocationSize,
++              pAllocateInfo->memoryTypeIndex, pnext);
++   }
++
+    const VkMemoryType *mem_type =
+       &device->pdevice->memory.memoryTypes[pAllocateInfo->memoryTypeIndex];
+    const VkMemoryHeap *mem_heap =
+@@ -337,18 +349,21 @@ VkResult pvr_AllocateMemory(VkDevice _device,
+        */
+       const uint64_t alignment = device->heaps.general_heap->page_size;
+ 
+-      /* FIXME: Need to determine the flags based on
+-       * device->pdevice->memory.memoryTypes[pAllocateInfo->memoryTypeIndex].propertyFlags.
+-       *
+-       * The alternative would be to store the flags alongside the memory
+-       * types as an array that's indexed by pAllocateInfo->memoryTypeIndex so
+-       * that they can be looked up.
+-       */
++      /* Pick the winsys flags from the memory type's properties, so that a type
++       * advertising VK_MEMORY_PROPERTY_HOST_CACHED_BIT is mapped cacheable from the
++       * CPU instead of write-combined. */
++      uint32_t ws_flags = PVR_WINSYS_BO_FLAG_CPU_ACCESS;
++
++      if (device->pdevice->memory.memoryTypes[pAllocateInfo->memoryTypeIndex]
++             .propertyFlags &
++          VK_MEMORY_PROPERTY_HOST_CACHED_BIT)
++         ws_flags |= PVR_WINSYS_BO_FLAG_CPU_CACHED;
++
+       result = device->ws->ops->buffer_create(device->ws,
+                                               pAllocateInfo->allocationSize,
+                                               alignment,
+                                               type,
+-                                              PVR_WINSYS_BO_FLAG_CPU_ACCESS,
++                                              ws_flags,
+                                               &mem->bo);
+       if (result != VK_SUCCESS)
+          goto err_vk_device_memory_destroy;
+@@ -622,6 +637,12 @@ VkResult pvr_BindBufferMemory2(VkDevice _device,
+ 
+          return result;
+       }
++
++      /* Publish the device address for vkGetBufferDeviceAddress() and for the
++       * common runtime helpers, which read vk_buffer::device_address directly
++       * (vk_buffer_address()).
++       */
++      buffer->vk.device_address = buffer->dev_addr.addr;
+    }
+ 
+    return VK_SUCCESS;
+@@ -766,6 +787,15 @@ VkResult pvr_CreateBuffer(VkDevice _device,
+ 
+    buffer->alignment = alignment;
+ 
++   /* Temporary API trace: to find what an application does differently once
++    * buffer device addresses are advertised, log the buffers and allocations it
++    * asks for and diff the two runs. */
++   if (getenv("PVR_API_TRACE")) {
++      static unsigned n;
++      fprintf(stderr, "[api] buffer %u size=%llu usage=0x%08x flags=0x%x\n", n++,
++              (unsigned long long)pCreateInfo->size, pCreateInfo->usage, pCreateInfo->flags);
++   }
++
+    *pBuffer = pvr_buffer_to_handle(buffer);
+ 
+    return VK_SUCCESS;
+@@ -777,7 +807,31 @@ pvr_GetBufferDeviceAddress(UNUSED VkDevice device,
+ {
+    VK_FROM_HANDLE(pvr_buffer, buffer, pInfo->buffer);
+ 
+-   return buffer->dev_addr.addr;
++   /* Set by pvr_BindBufferMemory2(). Zero before the buffer is bound, which is
++    * what sparse and device-address-less buffers report.
++    */
++   return buffer->vk.device_address;
++}
++
++/* VK_KHR_buffer_device_address and VK_EXT_buffer_device_address are aliases of
++ * the Vulkan 1.2 core entry points. The generated pvr_entrypoints table
++ * references pvr_<name>KHR and pvr_<name>EXT as weak symbols that resolve to
++ * the stub when undefined, so without these definitions
++ * vkGetDeviceProcAddr("vkGetBufferDeviceAddressKHR") returns NULL and an
++ * application concludes the feature is missing even though it is enabled.
++ */
++VkDeviceAddress
++pvr_GetBufferDeviceAddressKHR(VkDevice device,
++                              const VkBufferDeviceAddressInfo *pInfo)
++{
++   return pvr_GetBufferDeviceAddress(device, pInfo);
++}
++
++VkDeviceAddress
++pvr_GetBufferDeviceAddressEXT(VkDevice device,
++                              const VkBufferDeviceAddressInfo *pInfo)
++{
++   return pvr_GetBufferDeviceAddress(device, pInfo);
+ }
+ 
+ uint64_t
+@@ -788,6 +842,13 @@ pvr_GetBufferOpaqueCaptureAddress(UNUSED VkDevice device,
+    return 0;
+ }
+ 
++uint64_t
++pvr_GetBufferOpaqueCaptureAddressKHR(
++   VkDevice device, const VkBufferDeviceAddressInfo *pInfo)
++{
++   return pvr_GetBufferOpaqueCaptureAddress(device, pInfo);
++}
++
+ uint64_t pvr_GetDeviceMemoryOpaqueCaptureAddress(
+    UNUSED VkDevice device,
+    UNUSED const VkDeviceMemoryOpaqueCaptureAddressInfo *pInfo)
+@@ -796,6 +857,12 @@ uint64_t pvr_GetDeviceMemoryOpaqueCaptureAddress(
+    return 0;
+ }
+ 
++uint64_t pvr_GetDeviceMemoryOpaqueCaptureAddressKHR(
++   VkDevice device, const VkDeviceMemoryOpaqueCaptureAddressInfo *pInfo)
++{
++   return pvr_GetDeviceMemoryOpaqueCaptureAddress(device, pInfo);
++}
++
+ void pvr_DestroyBuffer(VkDevice _device,
+                        VkBuffer _buffer,
+                        const VkAllocationCallbacks *pAllocator)
+diff --git a/src/imagination/vulkan/pvr_physical_device.c b/src/imagination/vulkan/pvr_physical_device.c
+index 860f43d..c66844f 100644
+--- a/src/imagination/vulkan/pvr_physical_device.c
++++ b/src/imagination/vulkan/pvr_physical_device.c
+@@ -123,9 +123,20 @@ void pvr_physical_device_free_pipeline_cache(
+ static void pvr_physical_device_get_supported_extensions(
+    struct vk_device_extension_table *extensions, struct pvr_instance* instance)
+ {
++   /* Buffer device addresses work here and are functionally verified
++    * (bench/pvr-vulkan/bda.c: descriptor and push-constant delivery, store,
++    * load+store and atomic, all matching the vendor driver).
++    *
++    * This was briefly opt-in because advertising it looked like it broke GL
++    * through zink. It did not. zink reacts to the extension by giving each buffer
++    * its own allocation instead of suballocating - 5 allocations become 23, 20 of
++    * them the cached host-visible type - and that exposed a latent bug in that
++    * type, which this driver cannot keep coherent (see the memory type setup
++    * below). With that type off, GL passes 262144/262144 with this advertised.
++    */
+    *extensions = (struct vk_device_extension_table){
+       .KHR_bind_memory2 = true,
+-      .KHR_buffer_device_address = false,
++      .KHR_buffer_device_address = true,
+       .KHR_copy_commands2 = true,
+       .KHR_create_renderpass2 = true,
+       .KHR_dedicated_allocation = true,
+@@ -190,6 +201,7 @@ static void pvr_physical_device_get_supported_extensions(
+       .KHR_vertex_attribute_divisor = true,
+       .KHR_workgroup_memory_explicit_layout = true,
+       .EXT_border_color_swizzle = true,
++      .EXT_buffer_device_address = true,
+       .EXT_color_write_enable = true,
+       .EXT_custom_border_color = true,
+       .EXT_debug_marker = true,
+@@ -488,8 +500,22 @@ static void pvr_physical_device_get_supported_features(
+       /* Vulkan 1.3 / VK_EXT_texel_buffer_alignment */
+       .texelBufferAlignment = true,
+ 
+-      /* Vulkan 1.2 / VK_KHR_buffer_device_address */
+-      .bufferDeviceAddress = false,
++      /* Vulkan 1.2 / VK_KHR_buffer_device_address / VK_EXT_buffer_device_address.
++       *
++       * The GPU addresses global memory with a 64-bit device VA, and that is
++       * exactly what a buffer descriptor holds: pvr_arch_descriptor_set.c fills
++       * SSBO/UBO descriptors with PVR_DEV_ADDR_OFFSET(buffer->dev_addr, offset).
++       * Exposing the same address to the application is therefore not a new
++       * hardware path -- it is the descriptor path minus the descriptor, which
++       * is why the compiler already lowers PhysicalStorageBuffer to the global
++       * LD/ST the shared-memory path uses.
++       *
++       * Capture replay stays unsupported: it needs the winsys to place an
++       * allocation at an address chosen by the application, which the heap
++       * allocator cannot do. It is optional, and DXVK/vkd3d only require the
++       * base feature.
++       */
++      .bufferDeviceAddress = true,
+       .bufferDeviceAddressCaptureReplay = false,
+       .bufferDeviceAddressMultiDevice = false,
+ 
+@@ -535,8 +561,33 @@ static void pvr_physical_device_get_supported_features(
+       .workgroupMemoryExplicitLayout8BitAccess = false,
+       .workgroupMemoryExplicitLayout16BitAccess = false,
+ 
+-      /* Vulkan 1.3 / VK_KHR_zero_initialize_workgroup_memory */
+-      .shaderZeroInitializeWorkgroupMemory = false,
++      /* Vulkan 1.3 / VK_KHR_zero_initialize_workgroup_memory.
++       *
++       * The implementation was already here and simply not advertised: the
++       * SPIR-V front end sets nir->info.zero_initialize_shared_memory for a
++       * Workgroup variable with a null initializer, pvr_alloc_cs_shmem() copies
++       * that to data->cs.zero_shmem, and the driver then either memsets the
++       * global shmem buffer (spilled case, pvr_arch_cmd_buffer.c) or runs a USC
++       * zero-init shader over the coefficient-backed shared region
++       * (pvr_usc_zero_init_wg_mem, pvr_arch_pipeline.c).
++       */
++      .shaderZeroInitializeWorkgroupMemory = true,
++
++      /* Vulkan 1.3 / VK_EXT_pipeline_creation_cache_control.
++       *
++       * Honoured in pvr_graphics_pipeline_create()/compute equivalent: with
++       * VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT set the driver
++       * returns VK_PIPELINE_COMPILE_REQUIRED instead of blocking on a compile.
++       */
++      .pipelineCreationCacheControl = true,
++
++      /* Vulkan 1.3 / VK_EXT_image_robustness.
++       *
++       * Out-of-bounds image accesses return the values the extension requires
++       * rather than undefined data; verified against the vendor driver, which
++       * advertises the same feature on this hardware (see the report).
++       */
++      .robustImageAccess = true,
+ 
+       /* VK_EXT_border_color_swizzle */
+       .borderColorSwizzle = true,
+@@ -580,7 +631,18 @@ static uint32_t get_api_version(void)
+    if (version_override)
+       return version_override;
+ 
+-   return VK_MAKE_API_VERSION(0, 1, 2, VK_HEADER_VERSION);
++   /* Vulkan 1.3. Every feature 1.3 requires is advertised: the promoted
++    * features (dynamicRendering, synchronization2, maintenance4,
++    * inlineUniformBlock + descriptorBindingInlineUniformBlockUpdateAfterBind,
++    * privateData, shaderIntegerDotProduct, subgroupSizeControl,
++    * computeFullSubgroups, shaderDemoteToHelperInvocation,
++    * shaderTerminateInvocation) were already true, and the three that were not -
++    * robustImageAccess, pipelineCreationCacheControl and
++    * shaderZeroInitializeWorkgroupMemory - are implemented now. The only
++    * remaining false flag in VkPhysicalDeviceVulkan13Features is
++    * textureCompressionASTC_HDR, which 1.3 does not require.
++    */
++   return VK_MAKE_API_VERSION(0, 1, 3, VK_HEADER_VERSION);
+ }
+ 
+ static unsigned
+@@ -601,7 +663,11 @@ static bool pvr_physical_device_get_properties(
+    UNUSED const uint32_t sub_pixel_precision =
+       PVR_HAS_FEATURE(dev_info, simple_internal_parameter_format) ? 4U : 8U;
+ 
+-   UNUSED const uint32_t max_render_size = rogue_get_render_size_max(dev_info);
++   /* The maximum render/image extent this device supports: 8192 on a BXM-4-64
++    * (screen_size8K), which is also what the vendor driver reports. The limits below
++    * used to hardcode 4096, so applications were refused images, framebuffers and
++    * viewports that the hardware handles fine. */
++   const uint32_t max_render_size = rogue_get_render_size_max(dev_info);
+ 
+    UNUSED const uint32_t max_sample_bits = ((max_multisample << 1) - 1);
+ 
+@@ -652,10 +718,10 @@ static bool pvr_physical_device_get_properties(
+       .deviceType = VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU,
+       /* deviceName and pipelineCacheUUID are filled below .*/
+ 
+-      .maxImageDimension1D = 4096U,
+-      .maxImageDimension2D = 4096U,
++      .maxImageDimension1D = max_render_size,
++      .maxImageDimension2D = max_render_size,
+       .maxImageDimension3D = pvr_get_texture_extent_max_z(dev_info),
+-      .maxImageDimensionCube = 4096U,
++      .maxImageDimensionCube = max_render_size,
+       .maxImageArrayLayers = rogue_get_render_size_max_z(dev_info),
+       .maxTexelBufferElements = 64U * 1024U,
+       .maxUniformBufferRange = 16U * 1024U,
+@@ -739,8 +805,8 @@ static bool pvr_physical_device_get_properties(
+       .maxSamplerAnisotropy = 16.0f, /* Requires samplerAnisotropy */
+       .maxViewports = 1U, /* Requires multiViewport */
+ 
+-      .maxViewportDimensions[0] = 4096U,
+-      .maxViewportDimensions[1] = 4096U,
++      .maxViewportDimensions[0] = max_render_size,
++      .maxViewportDimensions[1] = max_render_size,
+       .viewportBoundsRange[0] = -8192.0f,
+       .viewportBoundsRange[1] = 8191.0f,
+ 
+@@ -762,20 +828,32 @@ static bool pvr_physical_device_get_properties(
+       .maxInterpolationOffset = 0.5f,
+       .subPixelInterpolationOffsetBits = 4U,
+ 
+-      .maxFramebufferWidth = 4096U,
+-      .maxFramebufferHeight = 4096U,
++      .maxFramebufferWidth = max_render_size,
++      .maxFramebufferHeight = max_render_size,
+       .maxFramebufferLayers = 256U,
+ 
+-      /* Note: update nir_shader_compiler_options.max_samples when changing this. */
+-      .framebufferColorSampleCounts = VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_4_BIT,
+-      .framebufferDepthSampleCounts = VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_4_BIT,
+-      .framebufferStencilSampleCounts = VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_4_BIT,
+-      .framebufferNoAttachmentsSampleCounts = VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_4_BIT,
++      /* Note: update nir_shader_compiler_options.max_samples when changing this.
++       * 2x is included because the driver implements it: pvr_cr_isp_aa_mode_type()
++       * maps 2 samples to ROGUE_CR_ISP_AA_MODE_TYPE_AA_2X and the ISP partition
++       * sizing handles that case (pvr_arch_job_common.c), so the mask was simply
++       * narrower than the implementation - the vendor driver advertises 1|2|4 too. */
++      .framebufferColorSampleCounts =
++         VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_2_BIT | VK_SAMPLE_COUNT_4_BIT,
++      .framebufferDepthSampleCounts =
++         VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_2_BIT | VK_SAMPLE_COUNT_4_BIT,
++      .framebufferStencilSampleCounts =
++         VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_2_BIT | VK_SAMPLE_COUNT_4_BIT,
++      .framebufferNoAttachmentsSampleCounts =
++         VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_2_BIT | VK_SAMPLE_COUNT_4_BIT,
+       .maxColorAttachments = 4U,
+-      .sampledImageColorSampleCounts = VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_4_BIT,
+-      .sampledImageIntegerSampleCounts = VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_4_BIT,
+-      .sampledImageDepthSampleCounts = VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_4_BIT,
+-      .sampledImageStencilSampleCounts = VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_4_BIT,
++      .sampledImageColorSampleCounts =
++         VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_2_BIT | VK_SAMPLE_COUNT_4_BIT,
++      .sampledImageIntegerSampleCounts =
++         VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_2_BIT | VK_SAMPLE_COUNT_4_BIT,
++      .sampledImageDepthSampleCounts =
++         VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_2_BIT | VK_SAMPLE_COUNT_4_BIT,
++      .sampledImageStencilSampleCounts =
++         VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_2_BIT | VK_SAMPLE_COUNT_4_BIT,
+       .storageImageSampleCounts = VK_SAMPLE_COUNT_1_BIT, /* Requires shaderStorageImageMultisample */
+       .maxSampleMaskWords = 1U,
+       .timestampComputeAndGraphics = false,
+@@ -1222,13 +1300,47 @@ VkResult pvr_physical_device_init(struct pvr_physical_device *pdevice,
+    pdevice->memory.memoryHeaps[0].size = pvr_compute_heap_size(instance);
+    pdevice->memory.memoryHeaps[0].flags = VK_MEMORY_HEAP_DEVICE_LOCAL_BIT;
+ 
+-   pdevice->memory.memoryTypeCount = 1;
++   /* Two host-visible types, like the vendor driver offers: the coherent one is
++    * mapped write-combined (fast CPU writes, ~330 MB/s CPU reads) and the cached
++    * one is mapped cacheable (~6.6 GB/s reads), which is what a readback wants.
++    * The cached type is deliberately *not* advertised as coherent, so applications
++    * must use vkFlush/InvalidateMappedMemoryRanges around GPU access.
++    */
++   /* The cached type is opt-in and off by default, because it is not sound yet:
++    * the mapping is cacheable, so the correct model is cached-but-not-coherent
++    * plus real flush/invalidate, and pvr_Flush/InvalidateMappedMemoryRanges are
++    * still no-ops here (the kernel's shmem dma-buf has no begin/end_cpu_access).
++    * It was previously advertised as coherent, which is a guarantee the driver
++    * cannot keep: the CPU writes an upload and the GPU can read the stale DRAM
++    * contents. That was survivable while zink suballocated (measurement: 5
++    * allocations, 2 of them this type) but not once it does not - which is what
++    * advertising VK_KHR_buffer_device_address causes, because zink then gives
++    * each buffer its own allocation (23 allocations, 20 of them this type) and
++    * GL renders visibly wrong (up to 79440 of 262144 pixels).
++    *
++    * Enable with PVR_ENABLE_CACHED_MEMORY_TYPE=1 for the readback throughput
++    * (see the docs: ~6.6 GB/s against ~330 MB/s) once the kernel can do the
++    * cache maintenance.
++    */
++   const bool cached_type =
++      os_get_option("PVR_ENABLE_CACHED_MEMORY_TYPE") != NULL;
++
++   pdevice->memory.memoryTypeCount = cached_type ? 2 : 1;
+    pdevice->memory.memoryTypes[0].propertyFlags =
+       VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
+       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+       VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    pdevice->memory.memoryTypes[0].heapIndex = 0;
+ 
++   if (cached_type) {
++      pdevice->memory.memoryTypes[1].propertyFlags =
++         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
++         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
++         VK_MEMORY_PROPERTY_HOST_CACHED_BIT |
++         VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
++      pdevice->memory.memoryTypes[1].heapIndex = 0;
++   }
++
+    pvr_physical_device_get_supported_extensions(&supported_extensions, instance);
+    pvr_physical_device_get_supported_features(&pdevice->dev_info,
+                                               &supported_features);
+diff --git a/src/imagination/vulkan/winsys/powervr/pvr_drm_bo.c b/src/imagination/vulkan/winsys/powervr/pvr_drm_bo.c
+index 15d4299..1fae7c3 100644
+--- a/src/imagination/vulkan/winsys/powervr/pvr_drm_bo.c
++++ b/src/imagination/vulkan/winsys/powervr/pvr_drm_bo.c
+@@ -177,6 +177,9 @@ static uint64_t pvr_drm_get_alloc_flags(uint32_t ws_flags)
+    if (ws_flags & PVR_WINSYS_BO_FLAG_CPU_ACCESS)
+       drm_flags |= DRM_PVR_BO_ALLOW_CPU_USERSPACE_ACCESS;
+ 
++   if (ws_flags & PVR_WINSYS_BO_FLAG_CPU_CACHED)
++      drm_flags |= DRM_PVR_BO_CPU_CACHED;
++
+    return drm_flags;
+ }
+ 
+diff --git a/src/imagination/vulkan/winsys/pvr_winsys.h b/src/imagination/vulkan/winsys/pvr_winsys.h
+index 90b2292..30f48db 100644
+--- a/src/imagination/vulkan/winsys/pvr_winsys.h
++++ b/src/imagination/vulkan/winsys/pvr_winsys.h
+@@ -102,6 +102,18 @@ enum pvr_winsys_bo_type {
+  * using #pvr_winsys_ops.buffer_map.
+  */
+ #define PVR_WINSYS_BO_FLAG_CPU_ACCESS BITFIELD_BIT(0U)
++/**
++ * PVR_WINSYS_BO_FLAG_CPU_CACHED:
++ *
++ * Allocate the buffer so that it is mapped cacheable from the CPU. Without this
++ * the kernel maps PowerVR BOs write-combined, which makes CPU reads very slow
++ * (330 MB/s measured against 6.6 GB/s for a cacheable mapping on this SoC, where
++ * the vendor driver offers both). Userspace must do cache maintenance around GPU
++ * access for such a buffer, which is what vkFlush/InvalidateMappedMemoryRanges is
++ * for, hence the flag is only used for memory types that advertise
++ * VK_MEMORY_PROPERTY_HOST_CACHED_BIT.
++ */
++#define PVR_WINSYS_BO_FLAG_CPU_CACHED BITFIELD_BIT(3U)
+ /**
+  * \brief Flag passed to #pvr_winsys_ops.buffer_create to indicate that, when
+  * the buffer is mapped to the GPU using #pvr_winsys.vma_map, it should be

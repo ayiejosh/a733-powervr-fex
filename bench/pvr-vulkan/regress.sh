@@ -12,6 +12,8 @@
 #   memtypes   the memory types and readback behaviour
 #   bda        buffer device addresses (descriptor and push-constant delivery)
 #   pctest     minimal vkCmdPushConstants probe, independent of buffer addresses
+#   vk13       the Vulkan 1.3 features (zero-init workgroup memory,
+#              pipelineCreationCacheControl, robustImageAccess) + the version
 #   glheadless zink GL over the same ICD, when a GL stack is present
 #
 # Usage:
@@ -22,7 +24,7 @@
 set -u
 cd "$(dirname "$0")"
 
-for t in vktest vkrender vkaudit memtypes bda pctest; do
+for t in vktest vkrender vkaudit memtypes bda pctest vk13; do
   [ -x "./$t" ] || { echo "regress.sh: ./$t missing - run ./build.sh"; exit 2; }
 done
 
@@ -112,6 +114,9 @@ run_case verdict "bda (descriptor + push constant)" -- ./bda
 
 echo "== push constants =="
 run_case verdict "pctest (vkCmdPushConstants)" -- ./pctest
+
+# --- Vulkan 1.3: the three features the driver used to be missing ------------
+run_case verdict "vk13 (zero-init shmem, cache control, robust image)" -- ./vk13
 
 # GL/zink drives the same ICD through a second compiler path, so it is a real
 # regression target rather than an optional extra. It needs nullDescriptor from

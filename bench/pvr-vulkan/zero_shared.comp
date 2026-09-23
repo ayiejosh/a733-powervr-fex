@@ -1,0 +1,30 @@
+#version 450
+#extension GL_EXT_null_initializer : require
+/* Workgroup memory with an explicit null initializer.
+ *
+ * VK_KHR_zero_initialize_workgroup_memory is about *honouring* that initializer
+ * ("whether the implementation supports initializing a variable in Workgroup
+ * storage class"), not about zeroing workgroup memory in general - a variable
+ * with no initializer stays undefined. GL_EXT_null_initializer is the GLSL
+ * spelling of the SPIR-V OpConstantNull initializer this needs.
+ *
+ * mode 1 writes a sentinel first, so a run that reports zeros cannot be a broken
+ * harness quietly reading nothing. */
+layout(local_size_x = 64) in;
+
+layout(push_constant) uniform PC { uint mode; } pc;
+
+layout(std430, binding = 0) buffer Out { uint v[]; } outbuf;
+
+shared uint s[64] = {};
+
+void main() {
+    uint i = gl_LocalInvocationIndex;
+
+    if (pc.mode == 1u)
+        s[i] = 0xDEADBEEFu;
+
+    barrier();
+
+    outbuf.v[i] = s[i];
+}
