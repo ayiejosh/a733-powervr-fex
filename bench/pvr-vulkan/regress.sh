@@ -137,6 +137,22 @@ elif [ -x ./glheadless ] && [ -d /home/radxa/mesa/gldri ]; then
     DRM_RENDER_NODE=/dev/dri/renderD128 \
     MESA_GLES_VERSION_OVERRIDE=3.2 \
     -- ./glheadless 512 20
+
+  # The CPU-cacheable memory type is not coherent, so this exercises
+  # vkFlush/InvalidateMappedMemoryRanges for real (they go through
+  # DMA_BUF_IOCTL_SYNC on the BO's dma-buf). Before those were implemented this
+  # run rendered visibly wrong - 59408 then 8032 wrong pixels of 262144 - which
+  # is why the type used to be advertised as coherent, which was the actual bug.
+  run_case verdict "glheadless 512x20, cached memory type" \
+    LD_LIBRARY_PATH="$GL_PREFIX" \
+    LIBGL_DRIVERS_PATH=/home/radxa/mesa/gldri \
+    GBM_BACKENDS_PATH="$GL_PREFIX/gbm" \
+    MESA_LOADER_DRIVER_OVERRIDE=zink \
+    EGL_PLATFORM=gbm \
+    DRM_RENDER_NODE=/dev/dri/renderD128 \
+    MESA_GLES_VERSION_OVERRIDE=3.2 \
+    PVR_ENABLE_CACHED_MEMORY_TYPE=1 \
+    -- ./glheadless 512 20
 fi
 
 # These used to fail intermittently and were blamed on the driver. They were a
