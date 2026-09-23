@@ -119,7 +119,24 @@ int main(int argc, char **argv)
             DIE("POLYGONMODE must be line or point");
     }
 
-    const bool use_feat2 = io16 || depth_clamp >= 0 || vs_store || polygon_mode >= 0;
+    /* VIEWPORTS=n asks for n viewports and n scissors in the viewport state.
+     * multiViewport requires more than one to be accepted, but with
+     * shaderOutputViewportIndex unadvertised every primitive is assigned
+     * viewport index 0, so the rendered image must be bit-identical to the
+     * single-viewport result. The extra viewports exist to prove the state is
+     * accepted and programmed rather than rejected or overflowing the driver's
+     * per-viewport arrays. */
+    const char *vp_env = getenv("VIEWPORTS");
+    uint32_t viewport_count = 1;
+    if (vp_env) {
+        long v = strtol(vp_env, NULL, 10);
+        if (v < 1 || v > 16)
+            DIE("VIEWPORTS must be 1..16");
+        viewport_count = (uint32_t)v;
+    }
+
+    const bool use_feat2 = io16 || depth_clamp >= 0 || vs_store || polygon_mode >= 0 ||
+                           vp_env != NULL;
 
     if (use_feat2 && api < VK_API_VERSION_1_1)
         api = VK_API_VERSION_1_1;
@@ -224,6 +241,16 @@ int main(int argc, char **argv)
         printf("fillModeNonSolid = %d (asked for %s fill)\n",
                io_feat2.features.fillModeNonSolid, polygon_mode == 0 ? "line" : "point");
         io_feat2.features.fillModeNonSolid = VK_TRUE;
+    }
+
+    if (vp_env) {
+        VkPhysicalDeviceProperties props;
+        vkGetPhysicalDeviceProperties(phys, &props);
+        vkGetPhysicalDeviceFeatures2(phys, &io_feat2);
+        printf("multiViewport = %d, maxViewports = %u (asked for %u viewports)\n",
+               io_feat2.features.multiViewport, props.limits.maxViewports,
+               viewport_count);
+        io_feat2.features.multiViewport = VK_TRUE;
     }
 
     VkDeviceCreateInfo dci = {
@@ -587,14 +614,30 @@ int main(int argc, char **argv)
         .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
         .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
     };
-    VkViewport vp = { 0, 0, (float)size, (float)size, 0.0f, 1.0f };
-    VkRect2D scissor = { { 0, 0 }, { size, size } };
+    /* One viewport by default, byte-identical to the original test. With
+     * VIEWPORTS=n the state carries n entries, and viewport/scissor are made
+     * dynamic so the vkCmdSetViewport/vkCmdSetScissor path with a count above
+     * one is exercised too (that is how real multiViewport applications set
+     * it up). */
+    VkViewport vp_arr[16];
+    VkRect2D sc_arr[16];
+    for (uint32_t i = 0; i < viewport_count; i++) {
+        vp_arr[i] = (VkViewport){ 0, 0, (float)size, (float)size, 0.0f, 1.0f };
+        sc_arr[i] = (VkRect2D){ { 0, 0 }, { size, size } };
+    }
     VkPipelineViewportStateCreateInfo vps = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
-        .viewportCount = 1,
-        .pViewports = &vp,
-        .scissorCount = 1,
-        .pScissors = &scissor,
+        .viewportCount = viewport_count,
+        .pViewports = vp_arr,
+        .scissorCount = viewport_count,
+        .pScissors = sc_arr,
+    };
+    VkDynamicState dyn_states[2] = { VK_DYNAMIC_STATE_VIEWPORT,
+                                     VK_DYNAMIC_STATE_SCISSOR };
+    VkPipelineDynamicStateCreateInfo dyn = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+        .dynamicStateCount = vp_env ? 2 : 0,
+        .pDynamicStates = vp_env ? dyn_states : NULL,
     };
     VkPipelineRasterizationStateCreateInfo rs = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
@@ -626,6 +669,7 @@ int main(int argc, char **argv)
         .pVertexInputState = &vi,
         .pInputAssemblyState = &ia,
         .pViewportState = &vps,
+        .pDynamicState = &dyn,
         .pRasterizationState = &rs,
         .pMultisampleState = &ms_state,
         .pColorBlendState = &cb,
@@ -747,6 +791,10 @@ int main(int argc, char **argv)
             vkCmdBeginRenderPass(cmd, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
             if (!empty_pass) {
                 vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+                if (vp_env) {
+                    vkCmdSetViewport(cmd, 0, viewport_count, vp_arr);
+                    vkCmdSetScissor(cmd, 0, viewport_count, sc_arr);
+                }
                 if (vs_store) {
                     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pl, 0, 1,
                                             &vssbo_set, 0, NULL);
@@ -952,6 +1000,11 @@ int main(int argc, char **argv)
                    (vssbo_map[1] % 3) == 0;
         printf("  %s  vertex-stage store and atomic\n", vssbo_ok ? "ok  " : "FAIL");
     }
+
+    if (viewport_count > 1)
+        printf("multiViewport: %u viewports and %u scissors accepted; viewport 0 drives "
+               "rasterisation, so the image above must be unchanged\n",
+               viewport_count, viewport_count);
 
     if (bad) {
         printf("RESULT: FAIL - %llu/%u pixels wrong (first at %u,%u: want %d,%d,%d,%d got %d,%d,%d,%d)\n",

@@ -39,6 +39,9 @@ glslangValidator -V --target-env vulkan1.1 -o bits_storage.spv bits_storage.comp
 glslangValidator -V --target-env vulkan1.1 -o io16.vert.spv io16.vert
 glslangValidator -V --target-env vulkan1.1 -o io16.frag.spv io16.frag
 glslangValidator -V --target-env vulkan1.1 -o desc_idx.spv desc_idx.comp
+# desc_nonuniform: the same descriptor array as desc_idx, but indexed by a value
+# that diverges between lanes of one wave (uniform control in the same binary).
+glslangValidator -V --target-env vulkan1.1 -o desc_nonuniform.spv desc_nonuniform.comp
 # dc.vert: the depth clamp probe - render.vert's triangle at z outside the clip
 # volume, so the fragment is either clipped or clamped depending on the state.
 glslangValidator -V --target-env vulkan1.1 -o dc.vert.spv dc.vert
@@ -75,6 +78,7 @@ emit('bits_storage.spv', 'bits_storage_spv', 'bits_storage_spv.h')
 emit('io16.vert.spv', 'io16_vert_spv', 'io16_vert_spv.h')
 emit('io16.frag.spv', 'io16_frag_spv', 'io16_frag_spv.h')
 emit('desc_idx.spv', 'desc_idx_spv', 'desc_idx_spv.h')
+emit('desc_nonuniform.spv', 'desc_nonuniform_spv', 'desc_nonuniform_spv.h')
 emit('dc.vert.spv', 'dc_vert_spv', 'dc_vert_spv.h')
 emit('vsstore.vert.spv', 'vsstore_vert_spv', 'vsstore_vert_spv.h')
 PY
@@ -126,6 +130,10 @@ link vkbits vkbits.c
 
 # vkdescidx: descriptor array indexed by a dynamically-uniform value.
 link vkdescidx vkdescidx.c
+
+# vkdescnon: the same array indexed by a per-lane DIVERGENT value, with the
+# dynamically-uniform case as an in-binary control so a failure is unambiguous.
+link vkdescnon vkdescnon.c
 
 # x11present: X11 WSI end to end - xcb surface, swapchain, present, then ask the X
 # server what it is displaying. Needs libxcb and a DRI3-capable X server; exits 3

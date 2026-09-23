@@ -324,13 +324,38 @@ Those are three of the four features the open driver has that the vendor does no
 a catch-up story at all - the open driver is past the vendor, and the question is how much further the
 same mechanism can be pushed.
 
-### 5.3 Undetermined: non-uniform (per-lane divergent) indexing
+### 5.3 Measured: non-uniform (per-lane divergent) indexing works for buffers
 
 One `smp` instruction carries exactly one texture descriptor, so expressing per-lane divergent image
 descriptors needs either divergent `IDX0`/`IDX1` values that the TPU can service, or a compiler
-emulation that makes the index dynamically uniform per iteration. **No source in either tree answers the
-divergence question**, and there is no `nir_lower_non_uniform_access`-style pass in the driver. This is
-the one thing that separates "non-uniform is a wall" from "non-uniform needs emulation".
+emulation that makes the index dynamically uniform per iteration. No source in either tree answered the
+divergence question, and there is no `nir_lower_non_uniform_access`-style pass in the driver.
+
+**It was measured on 2026-09-24, and the hardware does it.** `vkdescnon` binds one storage-buffer
+descriptor array of two and runs the same shader, pipeline and descriptor set three times: twice with a
+pushed (dynamically uniform) index as an in-binary control, once with `gl_LocalInvocationID.x & 1` so
+that adjacent lanes of one wave select different descriptors. The shader uses `nonuniformEXT`, so the
+SPIR-V carries `NonUniform` and `StorageBufferArrayNonUniformIndexing` - deliberately out of spec, since
+the driver does not advertise the feature. The point is to measure capability, not to claim conformance.
+
+```
+  advertised: descriptorIndexing.shaderStorageBufferArrayNonUniformIndexing = 0,
+              core.shaderStorageBufferArrayDynamicIndexing = 1
+  ok    the non-uniform-index shader compiled -> 0
+  ok    uniform index 0 selected descriptor 0 for every lane (0/64 wrong, 0xaaaa0001)
+  ok    uniform index 1 selected descriptor 1 for every lane (0/64 wrong, 0xbbbb0002)
+  divergent index (lane & 1): 0/64 lanes wrong
+    lanes that read descriptor 0: 32, descriptor 1: 32, neither: 0
+  VERDICT: PASS (4 ok, 0 failed)
+```
+
+Half a wave read descriptor 0 and half read descriptor 1 with no lane wrong. The control passing in the
+same binary is what makes it unambiguous: the descriptor set, the array write, the readback and the
+pipeline are all known good, so the diverging case can only be testing the index itself.
+
+**So the buffer half of non-uniform indexing is not a hardware wall.** The image/texel half may still be
+one (§5.1), but for buffers the remaining work on the 11 sub-features is plumbing: advertise the
+features, honour update-after-bind, and use the lowerings the compiler path already has.
 
 ### 5.4 The buffer half is emulatable
 
@@ -436,3 +461,101 @@ implements `view_port_count > 1` and object types 5/6; the width and encoding of
 ID; and whether `PPP_CTRL.vpt_scissor` inserts viewport transforms as well as scissor/depth-bias. The
 vendor's user-space capability table would answer several of these and is a stripped binary, so it cannot
 be read.
+
+## Addendum (later the same day): four of those questions answered on silicon
+
+Everything below is a measurement on this board, through Mesa's pvr ICD and the mainline `powervr`
+module, with `regress.sh` at **29 passed, 0 failed** after each change that was kept.
+
+### A1. Non-uniform descriptor indexing: the buffer half works
+
+§5.3 was the one place the report said "undetermined". `vkdescnon` now answers it: a storage-buffer
+descriptor array of two, indexed by `gl_LocalInvocationID.x & 1`, with the same shader and pipeline run
+three times - twice with a pushed uniform index as an in-binary control, once diverging. Result: **32
+lanes read descriptor 0, 32 read descriptor 1, 0/64 wrong, control clean.** The SPIR-V carries
+`NonUniform` and `StorageBufferArrayNonUniformIndexing` on purpose, because the point is to measure
+capability rather than claim conformance.
+
+So the buffer half of the remaining 11 sub-features is plumbing, not a wall. The image/texel half is
+still bounded by §5.1 (no native bindless).
+
+### A2. `multiViewport`: measured, and the answer is no - for now
+
+§3 called this "the strongest lead of the five" because `TA_STATE_HEADER::view_port_count` is 4 bits and
+both `pvr_setup_viewport()` and `pvr_emit_ppp_state()` already loop over the count. Raising
+`PVR_MAX_VIEWPORTS` to 16, relaxing the two asserts and advertising the feature was tried:
+
+```
+VIEWPORTS=1   1 frame(s) in  2.072 ms   RESULT: PASS - 262144/262144 pixels correct
+VIEWPORTS=2   1 frame(s) in 30.871 ms   RESULT: FAIL - 262144/262144 pixels wrong (all clear)
+VIEWPORTS=4   SIGSEGV (rc=139), backtrace shows a corrupted stack
+```
+
+Two viewports **rasterise nothing at all** and four corrupt the driver. Accepting the state is not the
+feature: without `shaderOutputViewportIndex` no primitive can select a viewport, and the hardware
+clearly needs the VPT-id path to be driven properly rather than merely having `view_port_count > 0`
+programmed. Reverted: `PVR_MAX_VIEWPORTS` is back to 1, `multiViewport = false`, `maxViewports = 1`, the
+asserts are back, and the reason is recorded next to the macro so nobody re-tries it blind. The
+`vkrender VIEWPORTS=n` probe is kept (it is what produced the numbers) and is deliberately **not** in
+`regress.sh`.
+
+### A3. Framebuffer compression: closed as a wall, with evidence
+
+§6 named this the highest-value lead and left one question unchecked. It is checked now, and the answer
+is no:
+
+* `grep -i compress /usr/include/drm/pvr_drm.h` returns **nothing**, and the BO flags are documented as
+  `DRM_PVR_BO_BYPASS_DEVICE_CACHE | DRM_PVR_BO_PM_FW_PROTECT | DRM_PVR_BO_ALLOW_CPU_USERSPACE_ACCESS`
+  with **"Bits 3..63 are reserved"** - there is no way to ask the kernel for a compressible allocation.
+* No C code in the driver programs the compressor: `cr.xml`'s `compression`/`compress_size` and
+  `pbestate.xml`'s `COMPRESS_SIZE` are parsed and never written.
+* The open stack runs mainline firmware `v1.1 (build 6976702 OS)`; whether that firmware implements
+  FBCDC is not determinable from this board.
+
+It needs kernel *and* firmware support before it is even testable, so it stops being the lead and goes
+back to being a wish.
+
+### A4. `fillModeNonSolid`: the remaining route, priced
+
+The fallback in §4.2 is triangle-to-line index expansion in `pvr_emit_vdm_index_list`
+(`pvr_arch_cmd_buffer.c:8688`), which hands the hardware a raw index address and count. The useful
+observation is that expansion depends only on the index buffer contents and the topology - **not on the
+draw** - so it can be cached per index buffer at 2x the index memory (a triangle list of 3N indices
+becomes 3N lines = 6N indices) and cost nothing after the first draw. Even so, nothing in the
+DXVK/Wine path ever sets `POLYGON_MODE_LINE`, so the payoff is a checkbox and the price is a caching
+subsystem plus three documented spec deviations. **Recorded as a deliberate non-goal**, not an unknown.
+
+### A5. Two traps worth more than the features, both hit while verifying A1-A2
+
+**A missing ICD manifest looks exactly like a broken driver.** The pvr ICD manifest is a generated file
+inside the Mesa build tree, and it was observed to vanish: every process in a swap window got `ENOENT`,
+and it was present again afterwards with its mtime unchanged. With no manifest the loader logs
+`Found no drivers` and *every* test fails with `VkResult -9` from `vkCreateInstance` - which read as a
+driver bring-up failure and cost a long detour through permissions, UAPI headers, kernel modules and
+quirks. `VK_LOADER_DEBUG=all` found it in one line. `open-run.sh` now prefers a copy kept outside the
+build tree (`/home/radxa/kspike/open-icd.json`), and the same script gained three fixes it needed:
+`/usr/sbin` on `PATH` (otherwise `rmmod`/`modprobe` are "command not found" *after* the desktop is
+already down), `sudo` for the root-owned X/sddm teardown, and `restart` rather than `start` on restore
+(a teardown can leave sddm on a bare greeter, where `start` is a no-op and the user gets no session).
+
+**A latent quirk gate.** The kernel enforces `umd_quirks_musthave = {47217, 49927, 62269}` in
+`pvr_drv.c` by refusing the device with `VK_ERROR_INCOMPATIBLE_DRIVER`, and Mesa can only represent
+`{48545, 49927, 51764, 62269}` - `struct pvr_device_quirks` has `has_brn47217` nowhere (it has
+`has_brn47727`). A/B says this board's firmware does not report BRN47217, so the gate does not fire
+today: the original module and a patched one both initialise the device and render correctly. If a
+firmware bump ever reports it, the open driver will refuse the device with a bare `-9` and this is why.
+The fix, when needed, is to move 47217 from the must-have list to the advisory list; the kernel module
+rebuilds out-of-tree with
+`make -C /lib/modules/$(uname -r)/build M=/home/radxa/kspike/img KBUILD_EXTRA_SYMBOLS=/home/radxa/kspike/mod/Module.symvers modules`.
+
+### A6. Revised bottom line
+
+| feature | verdict after the addendum | lead |
+|---|---|---|
+| `tessellationShader` | hardware-absent, proven | none |
+| `geometryShader` | hardware-absent; emulation works and costs ~80x per small draw | amortise the per-draw chain (the one item not finished) |
+| `multiViewport` | **accepts state, rasterises nothing at 2, crashes at 4** | VPT-id path + `shaderOutputViewportIndex`; not worth it without them |
+| `fillModeNonSolid` | native path draws nothing; expansion is cached-able but pointless here | deliberate non-goal |
+| `descriptorIndexing` (+11) | uniform **and non-uniform buffer indexing both measured working**; native bindless image path is the wall | advertise + lower; plumbing |
+| framebuffer compression | **closed: no UAPI, no driver code, firmware unknown** | none until the kernel grows a compressible-allocation concept |
+

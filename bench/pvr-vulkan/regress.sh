@@ -143,6 +143,11 @@ run_case verdict "vkrender vertex-stage SSBO store + atomic" VSSBO=1 -- ./vkrend
 # the ground the 1.2-level descriptor-indexing work would stand on.
 run_case verdict "vkdescidx (uniform dynamic descriptor index)" -- ./vkdescidx
 
+# multiViewport is NOT in the suite: accepting more than one viewport was tried
+# and measured on this hardware, and it rasterises nothing at two viewports while
+# corrupting the driver at four (see PVR_MAX_VIEWPORTS in Mesa's pvr_limits.h).
+# `vkrender` keeps the VIEWPORTS=n probe that produced that measurement.
+
 # GL/zink drives the same ICD through a second compiler path, so it is a real
 # regression target rather than an optional extra. It needs nullDescriptor from
 # VK_KHR_robustness2, which the vendor ICD does not expose, so skip it there
