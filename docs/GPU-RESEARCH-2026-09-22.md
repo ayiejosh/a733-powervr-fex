@@ -1518,3 +1518,32 @@ proves it on this very board), but the driver does not implement them yet, so en
 alone would produce wrong rendering rather than working features. Items 6-8 are smaller: 2x MSAA
 needs the two-sample position setup, timestamps need the query path, and X11 needs a rebuild with
 the xcb headers present.
+
+### 20.3 Closing the X11 WSI gap (item 8 of the list)
+
+The open ICD we had been testing was configured `-Dplatforms=wayland` only, so an X11 application had
+no surface path at all on the open stack - `VK_KHR_xcb_surface` and `VK_KHR_xlib_surface` were simply
+not in the driver. That is our build configuration rather than a driver limitation, and it is the
+cheapest of the eight gaps to close.
+
+What it took on this board:
+
+* the XCB development packages (`libxcb-randr0-dev`, `libx11-xcb-dev`, `libxcb-dri3-dev`,
+  `libxcb-present-dev`, `libxcb-sync-dev`, `libxcb-shm0-dev`, `libxcb-shape0-dev`,
+  `libxcb-glx0-dev`, `libxcb-render0-dev`, `libxxf86vm-dev`, `libxshmfence-dev`,
+  `libwayland-egl-backend-dev`, and friends). The board's apt is dependency-broken, so they were
+  fetched with `apt-get download` and unpacked with `dpkg-deb -x` into `/home/radxa/x11dev/root`,
+  the same workflow used for bison earlier in this project;
+* `PKG_CONFIG_PATH` pointing at the unpacked `.pc` files **and** `C_INCLUDE_PATH` at the unpacked
+  headers - meson finds a dependency through its `.pc` file but that file points at `/usr/include`,
+  where the headers are not, so the first build failed on `xcb/dri3.h: No such file or directory`;
+* a **separate build directory** (`build-x11`, `-Dplatforms=x11,wayland`) so the working ICD in
+  `build/` stays usable while the new one is built and validated.
+
+Status: configuration succeeded and the build is running; verification follows once it links -
+`vkaudit` should then list the xcb and xlib surface extensions. One caveat worth stating up front:
+end-to-end X11 presentation cannot be tested on this board while X runs on the vendor driver, because
+the open driver and the vendor module claim the same GPU device - only one can be bound at a time.
+Testing it therefore needs an X server that does not touch the GPU; `Xvfb` has been unpacked into the
+same prefix for exactly that purpose (Xephyr, which is installed, needs a parent display and so is no
+use while the desktop's X has been stopped for the swap).
