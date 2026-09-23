@@ -865,3 +865,36 @@ consecutive "results" were produced by the previous binary and were meaningless.
 now distinguishes a link failure from a compile failure and aborts loudly on the latter. The same
 class of mistake - also mine, not Mesa's - was a missing `eglMakeCurrent()` that had been dropped by
 an earlier edit, which made every GL call return NULL.
+
+### §15 addendum: why the swaps started failing, and what the GL level is
+
+Two more of the same kind of problem - mine, in the harness - surfaced while re-running:
+
+1. **`kmsconvt@tty1` was holding the GPU.** The tty1 console renders through the vendor GL stack,
+   and stopping it released **154 of 172** `pvrsrvkm` references (measured directly). Once it was
+   running, stopping the desktop no longer dropped the module to zero and the swap aborted safely
+   ("something still holds the vendor module") instead of unloading. The irony is that this was
+   self-inflicted: kmscon had SEGV'd during an earlier swap, and restarting it to tidy up is what
+   broke the following runs. The swap script now stops it for the duration and restarts it in the
+   restore path.
+2. **A degraded session poisoned the next swap.** With X up but no window manager, stopping
+   `display-manager` does not free everything. The script now repairs an unhealthy session *before*
+   taking the GPU, and re-checks afterwards (one `display-manager` restart recovered the desktop in
+   the run where the autologin session did not come up).
+
+With those fixed, one `stage4-mainline-vulkan.sh` run passes every phase on the open stack:
+
+| phase | result |
+|---|---|
+| compute, 1M elements | PASS |
+| offscreen render, BATCH 1/8/32 | PASS (262144/262144 pixels each) |
+| render -> dma-buf -> sunxi-drm scanout | PASS (fb 162 committed on crtc 99) |
+| page-flipped presentation 1080p / 4K | PASS (52.7 fps / 27.8 fps, 0 flip timeouts) |
+| zink GL over pvr | PASS (262144/262144 pixels, 48.6 Mpix/s) |
+
+**GL level: ES 2.0, not ES 3.x.** The EGL configs this path offers advertise `RenderableType =
+0xd` (`EGL_OPENGL_ES_BIT | EGL_OPENGL_ES2_BIT | EGL_OPENVG_BIT`) and not `0x40`
+(`EGL_OPENGL_ES3_BIT`), so an ES3 context request is refused with `EGL_BAD_CONFIG`. Mesa only sets
+`disp->ClientAPIs |= EGL_OPENGL_ES3_BIT_KHR` when the driver's config carries `__DRI_API_GLES3`
+(`egl_dri2.c:626`), so the question is why zink's configs do not - that is the next thing to look
+at, and it is a quality gap rather than a blocker, since ES2 renders correctly here.

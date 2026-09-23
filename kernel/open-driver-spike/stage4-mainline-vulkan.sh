@@ -38,7 +38,7 @@ if [ -z "$MESA_ICD" ]; then
     done
 fi
 LOG=/home/radxa/kspike/stage4-$(date +%Y%m%d-%H%M%S).log
-WATCHDOG_UNIT=stage4-restore-watchdog
+WATCHDOG_UNIT=stage4-restore-watchdog-$$
 RESTORED=0
 RESTORE_ONLY=0
 [ "${1:-}" = "--restore-only" ] && RESTORE_ONLY=1
@@ -71,11 +71,26 @@ restore() {
         fi
         if pgrep -x X >/dev/null; then
             say "X is up; kwin=$(pgrep -c kwin_x11) plasmashell=$(pgrep -c plasmashell) picom=$(pgrep -c picom)"
+            # The autologin session occasionally does not come up on the first try
+            # (seen once in ~20 swaps), leaving X with no window manager. One
+            # restart of the display manager fixes it.
+            if ! pgrep -x kwin_x11 >/dev/null; then
+                say "no window manager - restarting display-manager once"
+                systemctl restart display-manager
+                for _ in $(seq 1 20); do
+                    sleep 2
+                    pgrep -x kwin_x11 >/dev/null && break
+                done
+                say "after restart: kwin=$(pgrep -c kwin_x11) plasmashell=$(pgrep -c plasmashell)"
+            fi
         else
             say "X did NOT come back - reboot needed"
         fi
     else
         say "CRITICAL: pvrsrvkm did not load - a reboot is needed"
+    fi
+    if ! systemctl is-active --quiet kmsconvt@tty1; then
+        systemctl start kmsconvt@tty1 2>/dev/null
     fi
     if [ "$RESTORE_ONLY" != 1 ]; then
         systemctl stop "$WATCHDOG_UNIT" 2>/dev/null
@@ -109,6 +124,25 @@ say "arming watchdog (auto-restore in 8 minutes)"
 systemd-run --unit="$WATCHDOG_UNIT" --on-active=8min "$0" --restore-only >>"$LOG" 2>&1 \
     || say "WARNING: watchdog could not be armed"
 
+# A degraded previous session (X up, no window manager) leaves clients holding the
+# vendor module, and then stopping display-manager does not free it. Repair first.
+if ! pgrep -x kwin_x11 >/dev/null; then
+    say "session looks unhealthy (no kwin) - restarting display-manager before the swap"
+    systemctl restart display-manager
+    for _ in $(seq 1 30); do
+        sleep 2
+        pgrep -x kwin_x11 >/dev/null && break
+    done
+fi
+
+# kmscon (the tty1 console) renders through the vendor GL stack: it was holding
+# 154 of 172 pvrsrvkm references on its own, which is enough to block the unload
+# even with the desktop stopped. Stop it for the duration.
+if systemctl is-active --quiet kmsconvt@tty1; then
+    say "stopping kmsconvt@tty1 (it holds most of the GPU references)"
+    systemctl stop kmsconvt@tty1
+fi
+
 say "--- stopping display-manager ---"
 systemctl stop display-manager 2>&1 | sed 's/^/    /' | tee -a "$LOG"
 for _ in $(seq 1 30); do
@@ -118,6 +152,16 @@ for _ in $(seq 1 30); do
 done
 refs=$(awk '$1=="pvrsrvkm"{print $3}' /proc/modules)
 say "pvrsrvkm refs after stopping the desktop: ${refs:-unloaded}"
+if [ -n "$refs" ] && [ "$refs" != "0" ]; then
+    say "refs still $refs - listing GPU clients and clearing session processes"
+    head -20 /sys/kernel/debug/dri/128/clients 2>/dev/null | sed 's/^/    /' | tee -a "$LOG"
+    for p in kwin_x11 plasmashell picom kded6 ksmserver kaccess; do pkill -x "$p" 2>/dev/null; done
+    for _ in $(seq 1 15); do
+        sleep 2
+        refs=$(awk '$1=="pvrsrvkm"{print $3}' /proc/modules)
+        { [ -z "$refs" ] || [ "$refs" = "0" ]; } && break
+    done
+fi
 if [ -n "$refs" ] && [ "$refs" != "0" ]; then
     say "ABORT: something still holds the vendor module (refs=$refs) - not unloading"
     exit 3

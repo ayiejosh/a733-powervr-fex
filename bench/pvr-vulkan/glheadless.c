@@ -230,7 +230,11 @@ int main(int argc, char **argv)
     int use_es = 1;
     if (!eglBindAPI(EGL_OPENGL_ES_API))
         DIE("eglBindAPI(GLES) failed");
-    if (!pick_config(dpy, EGL_OPENGL_ES2_BIT, "GLES", &cfg))
+    /* Ask for the ES3 bit first: EGL_OPENGL_ES3_BIT_KHR is 0x40 and a config
+     * advertising only 0x1|0x4|0x8 will refuse an ES3 context with EGL_BAD_CONFIG
+     * ("context api is 0x40 while config supports 0xd"). */
+    if (!pick_config(dpy, EGL_OPENGL_ES3_BIT_KHR, "GLES 3", &cfg) &&
+        !pick_config(dpy, EGL_OPENGL_ES2_BIT, "GLES 2", &cfg))
         DIE("no EGL config - zink initialised but EGL cannot offer one");
 
     EGLint chosen_rt = 0;
