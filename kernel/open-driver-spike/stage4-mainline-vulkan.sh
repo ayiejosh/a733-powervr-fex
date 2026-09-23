@@ -169,6 +169,22 @@ else
     say "no $BENCH/pvrscanout - skipping the scanout test"
 fi
 
+if [ -x "$BENCH/pvranimate" ]; then
+    say "--- continuous presentation: page-flipped animation on screen ---"
+    (
+        cd "$BENCH" || exit 1
+        for _res in "1920 1080 240" "3840 2160 120"; do
+            VK_ICD_FILENAMES="$MESA_ICD" VK_DRIVER_FILES="$MESA_ICD" \
+                PVR_I_WANT_A_BROKEN_VULKAN_DRIVER=1 \
+                timeout 300 ./pvranimate $_res 2>&1 \
+                | grep -E 'display:|presented|phase|pushed twice|first 6|animation|push constant|VERDICT' \
+                | sed "s/^/    [$_res] /" | tee -a "$LOG"
+        done
+    )
+else
+    say "no $BENCH/pvranimate - skipping the presentation test"
+fi
+
 GL_PREFIX=/home/radxa/mesa/inst-gl/usr/local/lib/aarch64-linux-gnu
 if [ -x "$BENCH/glheadless" ] && [ -d /home/radxa/mesa/gldri ]; then
     say "--- zink GL (Mesa 25.3) over Mesa pvr + mainline driver ---"

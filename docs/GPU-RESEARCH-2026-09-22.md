@@ -731,3 +731,55 @@ sunxi-drm imported the pvr buffer without complaint.
   that is the next step, and it is what separates "can scan out" from "can drive a display".
 - Still compute-and-render only as far as Mesa is concerned: this does not need the compositor, and
   the GL path over the open driver (§12) remains blocked in Mesa's EGL.
+
+## 14. The open stack drives the display, and a Mesa bug fell out of it
+
+### Animated page-flipped presentation
+
+`bench/pvr-vulkan/pvranimate.c` is the compositor's job in miniature: two exportable linear images
+on the pvr device, two framebuffers on sunxi-drm, and a loop of render -> fence -> `drmModePageFlip`
+-> wait for the flip event.
+
+```
+[1920 1080 240] presented 240 frames in 4023.5 ms: 59.6 fps (2 buffers, 0 flip timeouts)
+[1920 1080 240] first 6 presented frames, pixel 0: 2 0 2 18 34 50
+[1920 1080 240] animation: the pattern advances frame to frame
+[1920 1080 240] VERDICT: PASS - the open driver presented animated frames by page flip
+[3840 2160 120] presented 120 frames in 4315.1 ms: 27.8 fps (2 buffers, 0 flip timeouts)
+[3840 2160 120] VERDICT: PASS
+```
+
+**60 fps at 1080p** is the panel's own refresh rate - the loop is not the bottleneck at that size.
+At 4K it is 28 fps, so the limit there is render throughput, not presentation. Zero flip timeouts at
+both sizes.
+
+### The bug this exposed in Mesa's pvr driver
+
+The animation phase is delivered by a push constant. Pushing two different values produced
+**byte-identical frames**, which is not a subtle rendering difference - it is a feature doing
+nothing. The cause:
+
+- the generated dispatch table wants `pvr_CmdPushConstants`
+  (`build/src/imagination/vulkan/pvr_entrypoints.c`: `.CmdPushConstants = pvr_CmdPushConstants`);
+- the driver defines only `pvr_CmdPushConstants2KHR` (the Vulkan 1.4 spelling);
+- so core `vkCmdPushConstants` resolves to the generated entrypoint **stub** and silently does
+  nothing. Anything written against Vulkan 1.0-1.3 gets no push constants at all, with no error.
+
+`mesa/0003-pvr-implement-core-CmdPushConstants.patch` adds the missing entry point by delegating to
+the 2KHR variant. With it applied, push constants take effect: the same test then shows
+`phase 32 pushed twice -> content matches (pixel 0 = 129, want 129)` and the presented frames
+advance `2 0 2 18 34 50`.
+
+A second issue remains open, and the same test pins it down: **a pushed value reaches the GPU one
+submission late**. Pushing 0 then 16 then 16 gives 2, 2, 66 - each frame renders with the previous
+submission's value - and pushing the same value twice is the workaround. The mechanism looks like
+the upload being tied to the pipeline's special-buffer setup (`state->push_consts[stage].dev_addr`
+is only populated once per command buffer), but that is a hypothesis, not a result.
+
+### Method note
+
+The first version verified frame 0 from inside the presentation loop, reading back the image the
+display was simultaneously scanning out. It passed, then failed, then passed again at 4K. That is
+not a driver result, it is a race in the test, so the verification moved to a separate submission
+after the loop stops, plus a steady-state case whose expected value is unambiguous. Two runs of a
+flaky check are not evidence; the fix was to stop racing rather than to re-run until it agreed.
