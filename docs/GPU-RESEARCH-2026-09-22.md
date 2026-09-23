@@ -1247,3 +1247,53 @@ The GL number is the remaining puzzle: `glReadPixels` moved only 5.5 -> 4.48 ms 
 underlying readback is now 0.73 ms, so most of zink's readback cost is in zink's own path (staging
 choice, an extra copy, or per-call synchronisation) rather than in the driver. That is the next thing
 to instrument, and it is a zink/GL question rather than a kernel-driver one.
+
+### 18.2 The draw gap is per-pass setup, not fill - and one more gap: allocation
+
+Following §16.3 (draw cost follows the surface, not what is drawn), two more experiments narrowed it:
+
+**An empty render pass is nearly free on both drivers.** `MODE=empty` (same render pass, nothing
+loaded or stored, no draw) at 1024x1024:
+
+| | empty pass | pass + one triangle | difference |
+|---|---|---|---|
+| vendor | 0.000 ms | 0.690 ms | 0.69 ms |
+| open | 0.394 ms | 2.571 ms | **2.18 ms** |
+
+So the vendor's whole cost is the draw, and the open driver's draw costs **3.2x** more than the
+vendor's, while its pass overhead (0.39 ms) is a smaller separate matter.
+
+**The excess is not bytes per pixel either.** Rendering into R8 (1 B/px), R16 (2 B/px) and RGBA8
+(4 B/px) at 1024x1024:
+
+| format | vendor | open |
+|---|---|---|
+| R8 | 0.526 ms | 1.798 ms |
+| R16 | 0.592 ms | 1.788 ms |
+| RGBA8 | 0.618 ms | 2.692 ms |
+
+The vendor barely moves (0.53 -> 0.62 ms); the open driver is flat between R8 and R16 and then jumps
+for the 4-byte format. Combined with §16.3 (insensitive to render area, load op and store op), the
+excess is per-draw work proportional to the surface's *pixels* but independent of coverage, format
+and attachment behaviour - which is what per-tile bookkeeping over the whole tile grid looks like,
+and Mesa's pvr does exactly that: `pvr_rt_get_isp_region_size()` sizes the ISP region headers from
+`tiles_per_mtile * mtiles` (`pvr_arch_job_render.c:166-180`, used at :609), i.e. from the full
+surface's tile grid rather than from the tiles that will actually be processed. That is the
+mechanism to attack; it is real driver work (initialise only the regions that will be used, or reuse
+the initialisation when the target is unchanged) and is not something the harness can configure away.
+
+**Allocation is 2.2x the vendor's.** `memtypes` now times allocate+bind+free of 1 MiB host-visible
+buffers:
+
+| | allocate + bind |
+|---|---|
+| vendor type 2 / 3 | 0.343 / 0.389 ms |
+| open type 0 / 1 | 0.862 / 0.735 ms |
+
+Two consequences. First, it is a second, independent gap on the open stack (page allocation and
+zeroing in `drm_gem_shmem`, where the vendor DDK keeps its own pool) that a BO cache in the driver
+would address - and the open stack allocates several buffers per frame (the ioctl profile in §16.3
+showed 5 `VM_MAP` and a BO per submission). Second, it explains part of the zink readback mystery:
+`glReadPixels` costs 4.48 ms while the underlying readback is 0.68 ms, and a fresh staging
+allocation costs ~0.8 ms, so per-call allocation plus a per-call synchronisation is where the rest
+of that 4.48 ms lives.

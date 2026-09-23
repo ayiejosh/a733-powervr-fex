@@ -140,10 +140,27 @@ int main(int argc, char **argv)
     vkGetPhysicalDeviceMemoryProperties(phys, &mp);
 
     /* ---- colour image -------------------------------------------------- */
+    /* FORMAT picks the render target's format: if the per-draw cost follows the
+     * surface's *bytes* rather than its pixels, the cost is surface-sized memory
+     * work (a tile buffer being created or cleared per frame, say) rather than fill. */
+    const char *fmt_env = getenv("FORMAT");
+    VkFormat target_format = VK_FORMAT_R8G8B8A8_UNORM;
+    int bpp = 4;
+    if (fmt_env && strcmp(fmt_env, "r8") == 0) {
+        target_format = VK_FORMAT_R8_UNORM;
+        bpp = 1;
+    } else if (fmt_env && strcmp(fmt_env, "rg16") == 0) {
+        target_format = VK_FORMAT_R16G16_UNORM;
+        bpp = 4; /* two 16-bit channels */
+    } else if (fmt_env && strcmp(fmt_env, "r16") == 0) {
+        target_format = VK_FORMAT_R16_UNORM;
+        bpp = 2;
+    }
+
     VkImageCreateInfo imci = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
         .imageType = VK_IMAGE_TYPE_2D,
-        .format = VK_FORMAT_R8G8B8A8_UNORM,
+        .format = target_format,
         .extent = { size, size, 1 },
         .mipLevels = 1,
         .arrayLayers = 1,
@@ -183,7 +200,7 @@ int main(int argc, char **argv)
         .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
         .image = image,
         .viewType = VK_IMAGE_VIEW_TYPE_2D,
-        .format = VK_FORMAT_R8G8B8A8_UNORM,
+        .format = target_format,
         .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
     };
     VkImageView view;
@@ -206,8 +223,35 @@ int main(int argc, char **argv)
     if (storeop_env && strcmp(storeop_env, "dontcare") == 0)
         storeop = VK_ATTACHMENT_STORE_OP_DONT_CARE;
 
+    /* AREA shrinks the render area without changing the surface, which separates
+     * "the driver's cost follows the pixels it actually covers" (fill-bound) from
+     * "it does full-surface work regardless" (an extra internal pass). */
+    uint32_t area_div = 1;
+    const char *area_env = getenv("AREA");
+    if (area_env && strcmp(area_env, "half") == 0)
+        area_div = 2;
+    else if (area_env && strcmp(area_env, "quarter") == 0)
+        area_div = 4;
+
+    const char *mode_env = getenv("MODE");
+    int do_render = 1, do_copy = 1;
+    int empty_pass = 0;
+    if (mode_env && strcmp(mode_env, "render") == 0)
+        do_copy = 0;
+    else if (mode_env && strcmp(mode_env, "copy") == 0)
+        do_render = 0;
+    else if (mode_env && strcmp(mode_env, "empty") == 0) {
+        /* Same render pass, no draw, nothing loaded or stored: isolates the per-pass
+         * setup cost from the cost of actually drawing. */
+        do_copy = 0;
+        empty_pass = 1;
+        loadop = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        storeop = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    }
+
+
     VkAttachmentDescription att = {
-        .format = VK_FORMAT_R8G8B8A8_UNORM,
+        .format = target_format,
         .samples = VK_SAMPLE_COUNT_1_BIT,
         .loadOp = loadop,
         .storeOp = storeop,
@@ -418,24 +462,8 @@ int main(int argc, char **argv)
 
     /* MODE splits the two halves of the workload so a gap can be attributed: the
      * draw itself, or the image->buffer copy that follows it. */
-    /* AREA shrinks the render area without changing the surface, which separates
-     * "the driver's cost follows the pixels it actually covers" (fill-bound) from
-     * "it does full-surface work regardless" (an extra internal pass). */
-    uint32_t area_div = 1;
-    const char *area_env = getenv("AREA");
-    if (area_env && strcmp(area_env, "half") == 0)
-        area_div = 2;
-    else if (area_env && strcmp(area_env, "quarter") == 0)
-        area_div = 4;
-
-    const char *mode_env = getenv("MODE");
-    int do_render = 1, do_copy = 1;
-    if (mode_env && strcmp(mode_env, "render") == 0)
-        do_copy = 0;
-    else if (mode_env && strcmp(mode_env, "copy") == 0)
-        do_render = 0;
-    printf("rendering %d x %ux%u offscreen frames (BATCH=%d, MODE=%s)...\n", iters, size, size,
-           batch, do_render ? (do_copy ? "both" : "render") : "copy");
+    printf("rendering %d x %ux%u offscreen frames (BATCH=%d, MODE=%s, bpp=%d)...\n", iters, size, size,
+           batch, empty_pass ? "empty" : (do_render ? (do_copy ? "both" : "render") : "copy"), bpp);
     g_timing = getenv("PVR_TIMING") != NULL;
     double t0 = now_ms();
     int done = 0;
@@ -462,8 +490,10 @@ int main(int argc, char **argv)
         };
         if (do_render) {
             vkCmdBeginRenderPass(cmd, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
-            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
-            vkCmdDraw(cmd, 3, 1, 0, 0);
+            if (!empty_pass) {
+                vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+                vkCmdDraw(cmd, 3, 1, 0, 0);
+            }
             vkCmdEndRenderPass(cmd);
         }
 

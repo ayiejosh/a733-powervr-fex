@@ -193,6 +193,45 @@ int main(int argc, char **argv)
         vkFreeMemory(dev, dmem, NULL);
     }
 
+    /* If a driver allocates a fresh staging buffer per readback, the allocation
+     * itself is a fixed per-call cost. Time allocate+bind+free for each host-visible
+     * type, with and without a first CPU touch. */
+    {
+        printf("\nallocation cost (%zu KiB buffers)\n", bytes / 1024);
+        for (uint32_t t = 0; t < mem.memoryTypeCount; t++) {
+            if (!(mem.memoryTypes[t].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT))
+                continue;
+            VkBuffer b;
+            VkMemoryRequirements req;
+            bci.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+            VKCHECK(vkCreateBuffer(dev, &bci, NULL, &b));
+            vkGetBufferMemoryRequirements(dev, b, &req);
+            double t_alloc = 0, t_touch = 0;
+            int n = 20;
+            for (int i = 0; i < n; i++) {
+                mai.allocationSize = req.size;
+                mai.memoryTypeIndex = t;
+                VkDeviceMemory m;
+                double a = now_ms();
+                if (vkAllocateMemory(dev, &mai, NULL, &m) != VK_SUCCESS)
+                    break;
+                VKCHECK(vkBindBufferMemory(dev, b, m, 0));
+                t_alloc += now_ms() - a;
+                void *map = NULL;
+                a = now_ms();
+                VKCHECK(vkMapMemory(dev, m, 0, VK_WHOLE_SIZE, 0, &map));
+                memset(map, i, 4096); /* first touch of the first page only */
+                vkUnmapMemory(dev, m);
+                t_touch += now_ms() - a;
+                vkFreeMemory(dev, m, NULL);
+            }
+            printf("  type %u: allocate+bind %6.3f ms | map+touch(4K) %6.3f ms\n", t, t_alloc / n,
+                   t_touch / n);
+            bci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+            vkDestroyBuffer(dev, b, NULL);
+        }
+    }
+
     /* The readback shape a GL driver uses: render target -> host buffer -> CPU read.
      * Splitting the three parts says which one dominates, which the buffer-to-buffer
      * numbers above cannot, because a readback also pays for the image copy and for
