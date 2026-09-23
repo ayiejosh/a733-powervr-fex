@@ -67,6 +67,9 @@ link vkrender vkrender.c
 # memtypes: what memory the driver offers and how fast a readback is on it.
 link memtypes memtypes.c
 
+# vkaudit: diffable capability dump, for comparing two ICDs.
+link vkaudit vkaudit.c
+
 # pvrscanout also needs libdrm for the KMS/PRIME half.
 $CC $CFLAGS -I/usr/include/libdrm -o pvrscanout pvrscanout.c -lvulkan -ldrm -lm 2>/dev/null || \
   $CC $CFLAGS -I/usr/include/libdrm -o pvrscanout pvrscanout.c -l:libvulkan.so.1 -ldrm -lm

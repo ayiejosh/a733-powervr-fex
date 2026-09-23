@@ -154,10 +154,59 @@ index 57d843b..558a29e 100644
        if (result != VK_SUCCESS)
           goto err_vk_device_memory_destroy;
 diff --git a/src/imagination/vulkan/pvr_physical_device.c b/src/imagination/vulkan/pvr_physical_device.c
-index 860f43d..6e493a7 100644
+index 860f43d..ffe2a7e 100644
 --- a/src/imagination/vulkan/pvr_physical_device.c
 +++ b/src/imagination/vulkan/pvr_physical_device.c
-@@ -1222,12 +1222,33 @@ VkResult pvr_physical_device_init(struct pvr_physical_device *pdevice,
+@@ -601,7 +601,11 @@ static bool pvr_physical_device_get_properties(
+    UNUSED const uint32_t sub_pixel_precision =
+       PVR_HAS_FEATURE(dev_info, simple_internal_parameter_format) ? 4U : 8U;
+ 
+-   UNUSED const uint32_t max_render_size = rogue_get_render_size_max(dev_info);
++   /* The maximum render/image extent this device supports: 8192 on a BXM-4-64
++    * (screen_size8K), which is also what the vendor driver reports. The limits below
++    * used to hardcode 4096, so applications were refused images, framebuffers and
++    * viewports that the hardware handles fine. */
++   const uint32_t max_render_size = rogue_get_render_size_max(dev_info);
+ 
+    UNUSED const uint32_t max_sample_bits = ((max_multisample << 1) - 1);
+ 
+@@ -652,10 +656,10 @@ static bool pvr_physical_device_get_properties(
+       .deviceType = VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU,
+       /* deviceName and pipelineCacheUUID are filled below .*/
+ 
+-      .maxImageDimension1D = 4096U,
+-      .maxImageDimension2D = 4096U,
++      .maxImageDimension1D = max_render_size,
++      .maxImageDimension2D = max_render_size,
+       .maxImageDimension3D = pvr_get_texture_extent_max_z(dev_info),
+-      .maxImageDimensionCube = 4096U,
++      .maxImageDimensionCube = max_render_size,
+       .maxImageArrayLayers = rogue_get_render_size_max_z(dev_info),
+       .maxTexelBufferElements = 64U * 1024U,
+       .maxUniformBufferRange = 16U * 1024U,
+@@ -739,8 +743,8 @@ static bool pvr_physical_device_get_properties(
+       .maxSamplerAnisotropy = 16.0f, /* Requires samplerAnisotropy */
+       .maxViewports = 1U, /* Requires multiViewport */
+ 
+-      .maxViewportDimensions[0] = 4096U,
+-      .maxViewportDimensions[1] = 4096U,
++      .maxViewportDimensions[0] = max_render_size,
++      .maxViewportDimensions[1] = max_render_size,
+       .viewportBoundsRange[0] = -8192.0f,
+       .viewportBoundsRange[1] = 8191.0f,
+ 
+@@ -762,8 +766,8 @@ static bool pvr_physical_device_get_properties(
+       .maxInterpolationOffset = 0.5f,
+       .subPixelInterpolationOffsetBits = 4U,
+ 
+-      .maxFramebufferWidth = 4096U,
+-      .maxFramebufferHeight = 4096U,
++      .maxFramebufferWidth = max_render_size,
++      .maxFramebufferHeight = max_render_size,
+       .maxFramebufferLayers = 256U,
+ 
+       /* Note: update nir_shader_compiler_options.max_samples when changing this. */
+@@ -1222,12 +1226,33 @@ VkResult pvr_physical_device_init(struct pvr_physical_device *pdevice,
     pdevice->memory.memoryHeaps[0].size = pvr_compute_heap_size(instance);
     pdevice->memory.memoryHeaps[0].flags = VK_MEMORY_HEAP_DEVICE_LOCAL_BIT;
  

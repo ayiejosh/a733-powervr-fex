@@ -63,8 +63,10 @@ int main(int argc, char **argv)
         size = (uint32_t)strtoul(argv[1], NULL, 0);
     if (argc > 2)
         iters = atoi(argv[2]);
-    if (size < 64 || size > 4096 || iters < 1)
-        DIE("bad arguments: size=%u (64..4096) iters=%d", size, iters);
+    /* 8192 is what this device actually reports (BXM-4-64 has screen_size8K); the
+     * old 4096 cap mirrored a hardcoded limit in Mesa's pvr that is now fixed. */
+    if (size < 64 || size > 8192 || iters < 1)
+        DIE("bad arguments: size=%u (64..8192) iters=%d", size, iters);
 
     uint32_t api = VK_API_VERSION_1_0;
     const char *api_env = getenv("VKTEST_API");

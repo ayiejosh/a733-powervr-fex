@@ -1443,3 +1443,78 @@ what the ISP/TPU control stream should look like per tile), because the next ste
 tiles are set up rather than to remove work the API asked for. That is a genuinely different kind of
 task from everything in this document so far, and it is the honest boundary of what measurement and
 the public sources here can resolve.
+
+## 20. Compatibility: what the open driver does not offer, measured against the vendor
+
+Performance is bounded by the hardware's per-tile behaviour (§19), so this section switches to the
+other question: what can the open stack not *do* that the vendor stack can. `vkaudit` (new tool)
+dumps a driver's capabilities in a diffable form; run once per ICD and diffed, it gives the list.
+
+### 20.1 Fixed: the driver under-reported its own maximum extent by 2x
+
+`pvr_physical_device.c` hard-coded `maxImageDimension1D/2D/Cube`, `maxFramebufferWidth/Height` and
+`maxViewportDimensions` to **4096**, while the driver's own helper says otherwise:
+
+```c
+static inline uint32_t rogue_get_render_size_max(const struct pvr_device_info *dev_info)
+{
+   if (PVR_HAS_FEATURE(dev_info, simple_internal_parameter_format))
+      if (!PVR_HAS_FEATURE(dev_info, screen_size8K))
+         return 4096U;
+   return 8192U;
+}
+```
+
+`bxm-4-64.h` - this board's GPU - has `.has_screen_size8K = true`, so the helper returns **8192**,
+which is exactly what the vendor driver reports. The file even computed that value and marked it
+`UNUSED`. The result was that applications asking for anything wider than 4096 were refused by a
+limit the hardware does not have.
+
+The limits now use the device's real maximum (`max_render_size`), and that matches the vendor
+driver exactly:
+
+| limit | vendor | open, before | open, now |
+|---|---|---|---|
+| maxImageDimension2D | 8192 | 4096 | **8192** |
+| maxImageDimensionCube | 8192 | 4096 | **8192** |
+| maxFramebufferWidth/Height | 8192/8192 | 4096/4096 | **8192/8192** |
+| maxViewportDimensions | 8192 8192 | 4096 4096 | **8192 8192** |
+
+Verified by rendering at sizes that were previously impossible, with every pixel checked:
+
+```
+6144x6144: RESULT: PASS - 37748736/37748736 pixels correct
+8192x8192: RESULT: PASS - 67108864/67108864 pixels correct
+1024x1024 regression: PASS   compute 1M elements regression: PASS
+```
+
+### 20.2 The remaining compatibility gap, in priority order
+
+Measured, not guessed - each line is present in the vendor audit and absent from the open one, and
+each is explicitly `false`/hard-coded in Mesa's pvr rather than an oversight:
+
+1. **`bufferDeviceAddress`** (and `bufferDeviceAddressCaptureReplay`). DXVK and vkd3d want it, and so
+   do a lot of modern engines.
+2. **8- and 16-bit storage, `shaderFloat16`, `shaderInt8`** - `storageBuffer8/16BitAccess`,
+   `uniformAndStorageBuffer8/16BitAccess`, `storagePushConstant8/16`, `storageInputOutput16`. DXVK
+   uses 16-bit types heavily.
+3. **`variablePointers` / `variablePointersStorageBuffer`**, **`drawIndirectCount`** - engine-side
+   conveniences that some renderers require.
+4. **Core features**: `depthClamp`, `occlusionQueryPrecise`,
+   `vertexPipelineStoresAndAtomics` - all advertised by the vendor, all `false` in pvr's feature
+   table.
+5. **API version**: open reports 1.2, vendor 1.3.277. Applications that require 1.3 (or a 1.3 core
+   feature) refuse the device; zink works around it because pvr advertises dynamic rendering as an
+   extension.
+6. **2x MSAA**: `framebufferColorSampleCounts` is `1|4` here, `1|2|4` in the vendor.
+7. **Timestamps**: `timestampPeriod = 0.0` and `timestampComputeAndGraphics = false`; the vendor
+   reports 512 ns. Anything using timestamp queries gets nothing useful.
+8. **X11 WSI**: our ICD build has `platforms=wayland` only, so X11 applications have no surface path
+   at all on the open stack (the vendor ICD has xcb/xlib surfaces). This one is a build-configuration
+   gap in *our* stack rather than a driver gap, and is the cheapest of the list to close.
+
+Items 1-5 are implementation work in Mesa's pvr - the hardware supports them (the vendor driver
+proves it on this very board), but the driver does not implement them yet, so enabling the flags
+alone would produce wrong rendering rather than working features. Items 6-8 are smaller: 2x MSAA
+needs the two-sample position setup, timestamps need the query path, and X11 needs a rebuild with
+the xcb headers present.
