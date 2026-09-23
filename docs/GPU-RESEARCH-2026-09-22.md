@@ -898,3 +898,38 @@ With those fixed, one `stage4-mainline-vulkan.sh` run passes every phase on the 
 `disp->ClientAPIs |= EGL_OPENGL_ES3_BIT_KHR` when the driver's config carries `__DRI_API_GLES3`
 (`egl_dri2.c:626`), so the question is why zink's configs do not - that is the next thing to look
 at, and it is a quality gap rather than a blocker, since ES2 renders correctly here.
+
+### §15 addendum 2: the GL level is ES 3.2, matching the vendor stack
+
+The ES3 gap is closed, and it was one variable. Mesa derives the EGL config's ES3 bit from
+`screen->max_gl_es2_version >= 30` (`dri_util.c:178`), and that value comes from
+`st_api_query_versions()` -> `get_version(fscreen->screen, options, API_OPENGLES2)`. With zink over
+pvr that came out below 30, so the configs advertised `RenderableType = 0xd`
+(`ES | ES2 | OpenGL`) and ES3 context requests were refused with `EGL_BAD_CONFIG`.
+
+`MESA_GLES_VERSION_OVERRIDE=3.2` sets that version through
+`_mesa_override_gl_version_contextless()` (`dri_util.c:159`), the ES3 bit appears in the config, and
+the ES3 context is accepted:
+
+```
+GLES 3: config found (surface=window alpha=8)
+  context GLES 3 (client version)  -> OK
+GL_RENDERER: zink Vulkan 1.2(PowerVR B-Series BXM-4-64 MC1 (IMAGINATION_OPEN_SOURCE_MESA))
+GL_VERSION:  OpenGL ES 3.2 Mesa 25.3.0
+RESULT: PASS - 262144/262144 pixels correct
+```
+
+This is not a fake capability: zink really does implement ES 3.2, and the override only supplies the
+version the DRI screen failed to derive. The test keeps a GLES 2 shader path (vertex buffer plus
+`gl_FragColor`) for the case where only an ES2 config is offered.
+
+**Like for like with the vendor stack**, same 512x512 offscreen pattern, both at GLES 3.2:
+
+| stack | ms/frame | Mpix/s |
+|---|---|---|
+| vendor (libGLESv2_PVR_MESA, DDK 24.2) | 1.131 | 231.7 |
+| open (zink -> Mesa pvr -> powervr) | 5.501 | 47.7 |
+
+So GL on the open driver works at the same API level as the vendor stack and is **~4.9x slower**.
+That gap lines up with the render-path measurement in §14 (158 vs 395 Mpix/s) plus zink's own
+overhead; it is a performance question now, not a correctness or capability one.

@@ -254,6 +254,7 @@ if [ -x "$BENCH/glheadless" ] && [ -d /home/radxa/mesa/gldri ]; then
         MESA_LOADER_DRIVER_OVERRIDE=zink EGL_PLATFORM=gbm \
         DRM_RENDER_NODE=/dev/dri/renderD128 \
         EGL_LOG_LEVEL=debug LIBGL_DEBUG=verbose ZINK_TRACE=1 \
+        MESA_GLES_VERSION_OVERRIDE=3.2 \
         VK_ICD_FILENAMES="$GL_ICD" VK_DRIVER_FILES="$GL_ICD" \
         PVR_I_WANT_A_BROKEN_VULKAN_DRIVER=1 \
         timeout 300 ./glheadless 512 20 2>&1 | sed 's/^/    /' | tee -a "$LOG" )
