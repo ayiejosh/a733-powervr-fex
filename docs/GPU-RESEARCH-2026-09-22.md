@@ -1784,7 +1784,7 @@ run in the same boot; in another, 4096 passed once and failed 3/3 in a fresh boo
 | compiler segfault on `PhysicalStorageBuffer` shaders | **fixed** (`pco_nir.c`) |
 | 64-bit push constants | **fixed** (§21.8) - `pctest` 6/6, `bda` push-constant delivery 9/9 |
 | cached host-visible memory type (section 18) | **opt-in** (`PVR_ENABLE_CACHED_MEMORY_TYPE=1`) - the kernel half of the missing cache maintenance is **fixed** (§21.12, corruption down 30x); per-submit flush/invalidate and a truthful coherency flag still to do |
-| large render targets / reliability within a boot | **open** - pre-existing, not a regression; earlier "verified" claim withdrawn |
+| large render targets / reliability within a boot | **closed** - the withdrawal this row referred to was `vkrender`'s missing barrier, not the driver; 6144² and 8192² PASS reproducibly (§21.11), which restores the §20.6 claim. Row kept only to record that it was wrong here. |
 | 8/16-bit storage, `shaderFloat16`, `shaderInt8`, `variablePointers`, `drawIndirectCount` | open - implementation work |
 | `depthClamp`, `occlusionQueryPrecise`, `vertexPipelineStoresAndAtomics` | open - implementation work |
 | API 1.2 vs the vendor's 1.3 | open - needs the 1.3 core feature set |
@@ -2113,3 +2113,137 @@ reason.
 
 The type therefore stays opt-in (`PVR_ENABLE_CACHED_MEMORY_TYPE=1`), and the default configuration
 was re-verified on the rebuilt module: **20 passed, 0 failed, 0 known-open**.
+
+## 21.13 Compatibility, re-measured after section 21
+
+Sections 20.6 and 21.6 were both written before the last three fixes landed, and both had drifted in
+the same direction: they list as open things that are now closed, and 21.6 repeated a "large render
+targets" withdrawal that 21.11 had already retracted. Rather than edit the scorecards from memory,
+both drivers were re-audited on 2026-09-23 and the two outputs **diffed**:
+
+```
+sudo ./open-run.sh bench/pvr-vulkan/vkaudit > /tmp/audit-open-now.txt     # after the module swap
+VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/img_icd.json \
+  bench/pvr-vulkan/vkaudit > /tmp/audit-vendor-now.txt                    # vendor, no swap needed
+```
+
+Raw outputs kept at `bench/pvr-vulkan/audit-2026-09-23-{open,vendor}.txt`.
+
+### One caveat before reading any of it: the loader edits the list
+
+`vkaudit` runs through the system Vulkan loader, and the loader does **not** pass every ICD instance
+extension through. `VK_KHR_wayland_surface` is missing from *both* drivers' instance lists as seen
+through the loader - which looks like a gap until you ask the ICD directly:
+
+```c
+/* dlopen the ICD, vk_icdGetInstanceProcAddr(NULL, "vkEnumerateInstanceExtensionProperties") */
+vk_icdprobe libvulkan_powervr_mesa.so
+  VK_KHR_wayland_surface advertised by the ICD itself: YES      (21 instance extensions)
+```
+
+The vendor's list through the loader has 14 (no wayland either). So the wayland row is a
+loader/environment artefact that affects both drivers identically, not a driver gap, and it is the
+reason this section does not claim "open driver lacks wayland WSI". Device features and device
+extensions are ICD-reported and unaffected by the filter.
+
+### Closed since section 20
+
+| gap | evidence in this audit |
+|---|---|
+| extent limit under-reported (4096 vs 8192) | `maxImageDimension2D 8192`, `maxFramebufferWidth/Height 8192/8192` on both drivers |
+| X11 WSI absent | open ICD advertises `VK_KHR_xcb_surface` **and** `VK_KHR_xlib_surface` |
+| 2x MSAA not advertised | `framebufferColorSampleCounts 0x7` = 1\|2\|4, matching the vendor |
+| `bufferDeviceAddress` | `vk12.bufferDeviceAddress=1` (was 0), 9/9 on descriptors and push constants |
+| 64-bit push constants | `pctest` 6/6, and the core `vkCmdPushConstants` entry point now resolves and works |
+
+### Still open, measured
+
+Everything the vendor advertises and the open driver does not: **21 device features and 30 device
+extensions**, plus the API version. This is the authoritative list - what follows is the whole of it,
+not a selection.
+
+**1. 8/16-bit storage and the 16-bit shader types** (the group DXVK actually uses):
+`vk11.storageBuffer16BitAccess`, `storagePushConstant16`, `storageInputOutput16`,
+`uniformAndStorageBuffer16BitAccess`, and `vk12.storageBuffer8BitAccess`, `storagePushConstant8`,
+`uniformAndStorageBuffer8BitAccess`, `shaderFloat16`, `shaderInt8`. Vendor has all nine, open has
+none. Implementation work in pco/NIR, and the backend says so itself: `trans_load_input_vs()` and
+`trans_store_output_vs()` both carry a bare `/* TODO: f16 support. */` and assert 32-bit types, and
+there is no 8/16-bit storage-access lowering at all. The silicon is capable of the whole group - the
+vendor driver implements it on this very board, and the core's device info reports 16-bit float
+capability (`has_usc_f16sop_u8`, `has_pbe_filterable_f16` in `bxm-4-64.h`).
+
+**2. `variablePointers` + `variablePointersStorageBuffer`**, **`drawIndirectCount`** - engine-side
+conveniences some renderers require outright. `variablePointers` also needs
+`VK_KHR_variable_pointers`.
+
+**3. `vulkanMemoryModel` + `vulkanMemoryModelDeviceScope`** - present in the vendor, absent here.
+Worth flagging because it was *not* on 20.2's list: the vulkan memory model affects how the compiler
+may reorder and cache memory operations, so implementations that enable it usually need
+`nir_lower_vulkan_memory_model` wired into the pvr pipeline first.
+
+**4. Core features**: `depthClamp`, `occlusionQueryPrecise`, `vertexPipelineStoresAndAtomics` - all
+advertised by the vendor, all `false` in pvr's feature table.
+
+**5. Vulkan 1.3 features**: `robustImageAccess`, `pipelineCreationCacheControl`,
+`shaderZeroInitializeWorkgroupMemory` (see below - these three are exactly the 1.3 blocker).
+
+**6. API version**: open reports `1.2.363`, vendor `1.3.277`. Applications that *require* 1.3 still
+refuse the device.
+
+**7. Timestamps**: `timestampPeriod 0.000` against the vendor's `512.000`, and the vendor also
+advertises `VK_KHR/EXT_calibrated_timestamps`. There is no timestamp query path in pvr at all, so the
+honest value is 0 - this is unimplemented work, not a mis-set constant.
+
+**8. `bufferDeviceAddressCaptureReplay`** - open by choice; it needs application-directed placement in
+the winsys so an address survives a process restart.
+
+### Where the open driver is ahead of the vendor
+
+Worth recording, because "compatibility" is a two-sided comparison: the open driver advertises 4
+features the vendor does not (`vk12.shaderInputAttachmentArrayDynamicIndexing`,
+`shaderUniformTexelBufferArrayDynamicIndexing`, `shaderStorageTexelBufferArrayDynamicIndexing`,
+`vk13.descriptorBindingInlineUniformBlockUpdateAfterBind`), **22 device extensions** the vendor lacks
+(`VK_KHR_dynamic_rendering`, `VK_KHR_synchronization2`, `VK_KHR_maintenance4`, `VK_KHR_present_wait2`,
+`VK_EXT_robustness2`, `VK_EXT_map_memory_placed`, ...) and **7 instance extensions** (the
+`KHR_display`/DRM display path, `VK_EXT_direct_mode_display`, `VK_EXT_acquire_drm_display`,
+`VK_EXT_surface_maintenance1`, ...) - against 106 and 114 device extensions respectively, so the two
+lists are close in size rather than one being a subset. zink runs here partly *because* of the
+overlap: it needs dynamic rendering, which the vendor only has as core 1.3.
+
+### The API 1.3 gap is three features wide, and that is a smaller job than 20.6 implied
+
+`VkPhysicalDeviceVulkan13Features` on the open driver is true for every flag **except three**:
+
+```
+vk13.pipelineCreationCacheControl=0
+vk13.robustImageAccess=0
+vk13.shaderZeroInitializeWorkgroupMemory=0
+```
+
+`textureCompressionASTC_HDR` is the only other false, and that one is optional. Every 1.3-promoted
+feature 1.3 does *not* require is already advertised: `dynamicRendering`, `synchronization2`,
+`maintenance4`, `inlineUniformBlock`, `descriptorBindingInlineUniformBlockUpdateAfterBind`,
+`privateData`, `shaderIntegerDotProduct`, `subgroupSizeControl`, `computeFullSubgroups`,
+`shaderDemoteToHelperInvocation`, `shaderTerminateInvocation`.
+
+The three false ones are precisely the three that Vulkan 1.3 **requires**
+([spec feature requirements](https://registry.khronos.org/vulkan/specs/latest/html/vkspec.html#features-requirements)),
+so the sentence in 20.6 - "needs the 1.3 core feature set" - was accurate but pessimistic. It is:
+a flag plus a small compile-required path (`pipelineCreationCacheControl`), a shared-memory zeroing
+prologue in the compiler (`shaderZeroInitializeWorkgroupMemory`), and per-access clamping for
+out-of-bounds image reads (`robustImageAccess`). Whether reporting 1.3 is *worth* it is a separate
+question: DXVK-Sarek and vkd3d-proton ask for 1.1 and work today at 1.2.
+
+### Non-Vulkan items still open
+
+- cached memory type: per-submit flush/invalidate UAPI and the untruthful `HOST_COHERENT` claim
+  (§21.12); the type stays opt-in until then;
+- the §16 push-constant "one submission late" result was measured on mesa-25.3.0 with
+  `0003-pvr-implement-core-CmdPushConstants.patch`; it has not been re-measured on mesa-main;
+- X11 WSI is advertised, but end-to-end presentation has never been exercised - it needs an X server
+  that does not touch the GPU, since only one driver can own the device at a time;
+- the DXVK/vkd3d path has not been re-run since `bufferDeviceAddress` and the 64-bit push-constant fix
+  landed, so the real-application effect of both is unverified;
+- performance is a separate axis from compatibility and is still the widest gap: draw is 2.2-3.3x the
+  vendor's and the whole difference is per-tile cost (§19), with the tiling work blocked on the
+  hardware programming guide.
