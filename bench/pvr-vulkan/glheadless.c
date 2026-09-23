@@ -122,10 +122,35 @@ int main(int argc, char **argv)
     if (!get_platform_display)
         DIE("no eglGetPlatformDisplayEXT (need a Mesa EGL)");
 
-    EGLDisplay dpy = get_platform_display(EGL_PLATFORM_SURFACELESS_MESA, EGL_DEFAULT_DISPLAY,
-                                          NULL);
+    /* Two headless ways in. "device" (EGL_EXT_platform_device) picks the DRM
+     * device explicitly instead of letting Mesa iterate its own device list,
+     * which is the more robust path when several drivers are installed. */
+    const char *want = getenv("EGL_PLATFORM");
+    EGLDisplay dpy = EGL_NO_DISPLAY;
+    if (want && strcmp(want, "device") == 0) {
+        PFNEGLQUERYDEVICESEXTPROC query_devices =
+            (PFNEGLQUERYDEVICESEXTPROC)eglGetProcAddress("eglQueryDevicesEXT");
+        PFNEGLQUERYDEVICESTRINGEXTPROC query_device_string =
+            (PFNEGLQUERYDEVICESTRINGEXTPROC)eglGetProcAddress("eglQueryDeviceStringEXT");
+        const char *want_node = getenv("DRM_RENDER_NODE");
+        EGLDeviceEXT devs[16];
+        EGLint ndev = 0;
+        if (!query_devices || !query_device_string || !query_devices(16, devs, &ndev) || ndev == 0)
+            DIE("no EGL devices enumerated (need EGL_EXT_device_enumeration)");
+        printf("EGL devices: %d\n", ndev);
+        for (EGLint i = 0; i < ndev; i++) {
+            const char *node = query_device_string(devs[i], EGL_DRM_RENDER_NODE_FILE_EXT);
+            printf("  device[%d] render node: %s\n", i, node ? node : "(none)");
+            if (want_node && node && strcmp(node, want_node) == 0)
+                dpy = get_platform_display(EGL_PLATFORM_DEVICE_EXT, devs[i], NULL);
+        }
+        if (dpy == EGL_NO_DISPLAY)
+            DIE("no EGL device matching DRM_RENDER_NODE=%s", want_node ? want_node : "(unset)");
+    } else {
+        dpy = get_platform_display(EGL_PLATFORM_SURFACELESS_MESA, EGL_DEFAULT_DISPLAY, NULL);
+    }
     if (dpy == EGL_NO_DISPLAY)
-        DIE("eglGetPlatformDisplay(surfaceless) failed");
+        DIE("eglGetPlatformDisplay failed");
 
     EGLint major = 0, minor = 0;
     if (!eglInitialize(dpy, &major, &minor)) {

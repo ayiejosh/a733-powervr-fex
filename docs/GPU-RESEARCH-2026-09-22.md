@@ -621,3 +621,58 @@ rather than to change anything in the driver.
 there, since apt cannot install on this image), with `BISON_PKGDATADIR` and `M4` pointing into it;
 `wayland-protocols` 1.44 and `libwayland-dev` headers; `libclc.pc` written by hand; LLVMSPIRVLib
 19.1.15 built from source. See `mesa/README.md`.
+
+## 12. GL: the vendor baseline, and exactly where the open path stops
+
+### The vendor GL stack, measured headless (new)
+
+The vendor stack is GLES-only (no desktop GL, as §1 says), but it does run without a display
+server, so it can be measured on the same harness:
+
+```
+EGL 1.5  vendor=Mesa Project
+GL_VENDOR:   Imagination Technologies
+GL_RENDERER: PowerVR B-Series BXM-4-64
+GL_VERSION:  OpenGL ES 3.2 build 24.2@6603887
+512x512, FBO + glReadPixels + glFinish:  1.131 ms/frame, 231.7 Mpix/s, 262144/262144 pixels correct
+```
+
+That is the number any GL-over-open-driver result has to be read against, and it is the first
+headless GL measurement on this board.
+
+### Where zink over the open driver stops, and what was ruled out
+
+Getting here eliminated four candidate causes, one of which was a real missing dependency:
+
+1. **libudev was not installed**, so Mesa's EGL device enumeration had no backend: the device list
+   was empty and the surfaceless probe reported `DRI2: failed to load driver`. Installing
+   `libudev-dev` and rebuilding fixed enumeration — it now reports
+   `EGL devices: 1 / device[0] render node: /dev/dri/renderD128`.
+2. **WSI was compiled out.** pvr's `VK_KHR_swapchain` is gated on `PVR_USE_WSI_PLATFORM`, and our
+   first build had `-Dplatforms=` (none). Rebuilt with Wayland WSI (`wayland-protocols` 1.44 +
+   `libwayland-dev` installed); the ICD now has it.
+3. **Driver loading is fine.** `LIBGL_DRIVERS_PATH` + `MESA_LOADER_DRIVER_OVERRIDE=zink` resolve
+   `zink_dri.so`; proof is that the same build against the *vendor* ICD gets as far as zink's own
+   check and fails with *"Zink requires the nullDescriptor feature of KHR/EXT robustness2"* — i.e.
+   the driver loaded and zink ran.
+4. **Device matching is fine.** Mesa's pvr advertises `VK_EXT_physical_device_drm`, so zink can
+   pair the DRM render node with the pvr Vulkan device; the run shows the pvr device created (its
+   conformance warning appears once per device creation) with no *"failed to choose pdev"*.
+
+What remains is inside Mesa: `driCreateNewScreen3()` returns NULL, which surfaces as
+`egl: failed to create dri2 screen` -> `DRI2: failed to create screen`, on **both** the surfaceless
+platform and an explicitly selected device platform (`EGL_PLATFORM=device` +
+`DRM_RENDER_NODE=/dev/dri/renderD128`, added to the harness and validated against the vendor GL
+stack first). This board has three Mesa generations installed — the vendor's 24.0.1-based GL in
+`/usr/local/lib` (on the loader path via `/etc/ld.so.conf.d/00_xserver-xorg-img-bxm.conf`),
+Debian's 25.0.7, and our 25.3 builds — and the system stack fails differently
+(`did not find extension DRI_Mesa version 1`). A coherent GL stack is the next thing to try, not a
+driver change.
+
+### What this sets up
+
+The pieces for a **render -> scanout** test (the capability that actually matters for using the
+GPU) are all present: the kernel driver uses `drm_gem_shmem`, so PRIME import/export comes from the
+shmem helper; Mesa's pvr advertises `VK_KHR_external_memory_fd` and
+`VK_EXT_external_memory_dma_buf`; the display side is `sunxi-drm` on `card0`, and the vendor module
+does not have to be loaded for that side to work.

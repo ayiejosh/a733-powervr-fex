@@ -164,7 +164,9 @@ GL_PREFIX=/home/radxa/mesa/inst-gl/usr/local/lib/aarch64-linux-gnu
 if [ -x "$BENCH/glheadless" ] && [ -d /home/radxa/mesa/gldri ]; then
     say "--- zink GL (Mesa 25.3) over Mesa pvr + mainline driver ---"
     ( cd "$BENCH" && LD_LIBRARY_PATH="$GL_PREFIX" LIBGL_DRIVERS_PATH=/home/radxa/mesa/gldri \
-        MESA_LOADER_DRIVER_OVERRIDE=zink EGL_PLATFORM=surfaceless \
+        MESA_LOADER_DRIVER_OVERRIDE=zink EGL_PLATFORM=device \
+        DRM_RENDER_NODE=/dev/dri/renderD128 \
+        EGL_LOG_LEVEL=debug LIBGL_DEBUG=verbose \
         VK_ICD_FILENAMES="$MESA_ICD" VK_DRIVER_FILES="$MESA_ICD" \
         PVR_I_WANT_A_BROKEN_VULKAN_DRIVER=1 \
         timeout 300 ./glheadless 512 20 2>&1 | sed 's/^/    /' | tee -a "$LOG" )
