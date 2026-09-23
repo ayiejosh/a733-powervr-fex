@@ -1297,3 +1297,42 @@ showed 5 `VM_MAP` and a BO per submission). Second, it explains part of the zink
 `glReadPixels` costs 4.48 ms while the underlying readback is 0.68 ms, and a fresh staging
 allocation costs ~0.8 ms, so per-call allocation plus a per-call synchronisation is where the rest
 of that 4.48 ms lives.
+
+### 18.3 Refuted: it is not per-frame allocation. Confirmed: it is sized by the surface, not the render area
+
+Two hypotheses tested and settled with measurements rather than reasoning.
+
+**Not per-frame BO allocation.** The driver now counts allocations per command buffer
+(`PVR_ALLOC_TRACE=1`), because any buffer created per command buffer is per-frame cost:
+
+```
+[alloc] command buffer 1:  31 bo(s), 5156 KiB     <- setup
+[alloc] command buffer 2:   2 bo(s),  132 KiB
+[alloc] command buffer 50:  2 bo(s),  132 KiB     <- steady state
+```
+
+Steady state is 2 BOs / 132 KiB per frame - a few percent of the frame, not the gap. My
+"region headers are re-allocated every frame" theory was wrong, and the counter is what said so.
+
+**The per-pass work is sized by the framebuffer extent, not by the render area.** Same number of
+drawn pixels (256x256), different surfaces:
+
+| | 1024x1024, quarter render area | 256x256, full | ratio |
+|---|---|---|---|
+| vendor GPU | 0.568 ms | 0.297 ms | 1.9x |
+| open GPU | **2.607 ms** | **0.508 ms** | **5.1x** |
+| open record+submit | 1.117 ms | 0.477 ms | 2.3x |
+
+Drawing the same 256x256 of content costs 3.7x more on the open driver when the surface happens to
+be 1024x1024. Combined with §16.3 (render area changes nothing) this says the per-pass tile
+structures - the region headers, the SPM/EOT state, the tile grid - are derived from the image
+extent (`rstate->width/height` come from the framebuffer, and `pvr_rt_mtile_info` is computed from
+those), so a partial render pays for the whole surface. The vendor is much less sensitive (1.9x).
+
+That matters for exactly the workload a compositor has: rendering damage rectangles into a
+full-size target. Fixing it means sizing those per-pass structures from the render area, which is
+not a local change - the datasets are created at framebuffer creation (`pvr_arch_framebuffer.c`),
+where no render area exists yet, so they would need a per-render-area variant or an offset-based
+scheme. That is the next real piece of driver work, and it is worth more than the remaining
+per-tile efficiency difference measured at full extent (2.5 ms against the vendor's 0.69 ms at
+1024x1024, §18.2).
