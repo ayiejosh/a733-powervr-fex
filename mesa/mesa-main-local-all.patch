@@ -502,10 +502,28 @@ index 6dde9d2..922bfd8 100644
        printf("Unsupported alu instruction: \"");
        nir_print_instr(&alu->instr, stdout);
 diff --git a/src/imagination/vulkan/pvr_arch_cmd_buffer.c b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
-index f21b320..3692b56 100644
+index f21b320..7671303 100644
 --- a/src/imagination/vulkan/pvr_arch_cmd_buffer.c
 +++ b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
-@@ -9939,8 +9939,28 @@ void PVR_PER_ARCH(CmdWriteTimestamp2)(VkCommandBuffer commandBuffer,
+@@ -6595,6 +6595,17 @@ static void pvr_setup_output_select(struct pvr_cmd_buffer *const cmd_buffer)
+       state.rhw_pres = fs_data->fs.uses.w;
+       state.tsp_unclamped_z_pres = fs_data->fs.uses.z;
+ 
++      /* VkPipelineRasterizationStateCreateInfo::depthClampEnable. The clip half of
++       * it is already handled in pvr_setup_ppp_control(), which stops clipping
++       * against the near and far planes when this is set; this is the other half,
++       * the ISP clamping the vertex's Z into [minDepth, maxDepth] instead.
++       * csbgen/rogue/ppp.xml documents the field as "the Z value written into the
++       * ISP vertex data is depth clamped", and before this it was mentioned only
++       * by the CSB dump tool - the feature was tracked and half-used but never
++       * actually programmed. */
++      state.isp_position_depth_clamp_z =
++         cmd_buffer->vk.dynamic_graphics_state.rs.depth_clamp_enable;
++
+       state.vtxsize = vs_data->vs.vtxouts;
+       state.psprite_size_pres = has_point_size;
+       state.vpt_tgt_pres = has_viewport;
+@@ -9939,8 +9950,28 @@ void PVR_PER_ARCH(CmdWriteTimestamp2)(VkCommandBuffer commandBuffer,
     UNREACHABLE("Timestamp queries are not supported.");
  }
  
@@ -923,7 +941,7 @@ index 57d843b..8c5f8be 100644
                         VkBuffer _buffer,
                         const VkAllocationCallbacks *pAllocator)
 diff --git a/src/imagination/vulkan/pvr_physical_device.c b/src/imagination/vulkan/pvr_physical_device.c
-index 860f43d..5e8c16b 100644
+index 860f43d..0e2e4f6 100644
 --- a/src/imagination/vulkan/pvr_physical_device.c
 +++ b/src/imagination/vulkan/pvr_physical_device.c
 @@ -123,9 +123,20 @@ void pvr_physical_device_free_pipeline_cache(
@@ -956,6 +974,15 @@ index 860f43d..5e8c16b 100644
        .EXT_color_write_enable = true,
        .EXT_custom_border_color = true,
        .EXT_debug_marker = true,
+@@ -252,7 +264,7 @@ static void pvr_physical_device_get_supported_features(
+       .logicOp = true,
+       .multiDrawIndirect = true,
+       .drawIndirectFirstInstance = true,
+-      .depthClamp = false,
++      .depthClamp = true,
+       .depthBiasClamp = true,
+       .fillModeNonSolid = false,
+       .depthBounds = false,
 @@ -298,10 +310,18 @@ static void pvr_physical_device_get_supported_features(
        .inheritedQueries = false,
  

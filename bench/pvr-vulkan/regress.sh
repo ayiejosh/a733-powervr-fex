@@ -125,6 +125,13 @@ run_case verdict "vkbits (8/16-bit storage, sentinel-checked)" -- ./vkbits
 # therefore the check - is render.frag's, unchanged.
 run_case verdict "vkrender IO16 (16-bit varying)" IO16=1 -- ./vkrender 512 4
 
+# depthClamp, as a pair that can only both pass if the clamp bit does something.
+# dc.vert puts the triangle at z = 2.0 with w = 1.0, outside the clip volume, so
+# with the clamp off it must be clipped away entirely and the target must still
+# be the clear colour; with the clamp on it must be drawn as the usual pattern.
+run_case verdict "vkrender depthClamp off (triangle must be clipped)" DEPTHCLAMP=0 -- ./vkrender 512 4
+run_case verdict "vkrender depthClamp on (triangle must be clamped, not clipped)" DEPTHCLAMP=1 -- ./vkrender 512 4
+
 # GL/zink drives the same ICD through a second compiler path, so it is a real
 # regression target rather than an optional extra. It needs nullDescriptor from
 # VK_KHR_robustness2, which the vendor ICD does not expose, so skip it there

@@ -38,6 +38,9 @@ glslangValidator -V --target-env vulkan1.1 -o bits_storage.spv bits_storage.comp
 # fragment stage through a 16-bit varying, so the expected image is unchanged.
 glslangValidator -V --target-env vulkan1.1 -o io16.vert.spv io16.vert
 glslangValidator -V --target-env vulkan1.1 -o io16.frag.spv io16.frag
+# dc.vert: the depth clamp probe - render.vert's triangle at z outside the clip
+# volume, so the fragment is either clipped or clamped depending on the state.
+glslangValidator -V --target-env vulkan1.1 -o dc.vert.spv dc.vert
 
 python3 - <<'PY'
 import struct
@@ -67,6 +70,7 @@ emit('f16_alu.spv', 'f16_alu_spv', 'f16_alu_spv.h')
 emit('bits_storage.spv', 'bits_storage_spv', 'bits_storage_spv.h')
 emit('io16.vert.spv', 'io16_vert_spv', 'io16_vert_spv.h')
 emit('io16.frag.spv', 'io16_frag_spv', 'io16_frag_spv.h')
+emit('dc.vert.spv', 'dc_vert_spv', 'dc_vert_spv.h')
 PY
 
 CC=${CC:-gcc}

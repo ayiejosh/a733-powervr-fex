@@ -2585,4 +2585,70 @@ no vertex buffer, so the test covers the 16-bit *varying* (vertex output and fra
 application's `VkVertexInputAttributeDescription` format converts to, which is what a 32-bit attribute
 already does today - but it is argued rather than measured, and the distinction is worth keeping.
 
+## 21.19 depthClamp: the same "already half there" pattern, one field short
+
+With the 8/16-bit group closed, the next item off the §20.2 list is `depthClamp` - advertised by the
+vendor, `false` in pvr's feature table. It turned out to be the pattern that closed most of the others,
+with a twist.
+
+**Half of it was already implemented.** `pvr_setup_ppp_control()` already reads
+`depth_clamp_enable` from the shared Vulkan runtime graphics state and, when it is set, programs
+`ROGUE_TA_CLIP_MODE_NO_FRONT_OR_REAR` - that is, it already stops clipping the fragment against the near
+and far planes, which is one of the two things Vulkan's `depthClampEnable` asks for.
+
+**The other half was one CSB field, never programmed.** `csbgen/rogue/ppp.xml` has
+`isp_position_depth_clamp_z`, documented as "if set, the Z value written into the ISP vertex data is
+depth clamped", and it sits in the same `TA_OUTPUT_SEL` register as `rhw_pres`, `vpt_tgt_pres` and
+`psprite_size_pres` - all of which `pvr_setup_output_select()` sets. The clamp bit was referenced by
+**nothing but the CSB dump tool** (`pvr_dump_csb.c`). So the feature was tracked, half-used, and never
+actually turned on.
+
+The whole change is the feature flag plus one assignment in `pvr_setup_output_select()`:
+
+```c
+state.isp_position_depth_clamp_z =
+   cmd_buffer->vk.dynamic_graphics_state.rs.depth_clamp_enable;
+```
+
+### 21.19.1 The test, which is a pair
+
+A single-sided test here proves nothing: a shader that draws and then reports "drawn" passes whether or
+not the clamp bit does anything. `dc.vert` puts the same full-screen triangle at **z = 2.0 with
+w = 1.0**, which is outside the clip volume, and the test runs it twice through the same pipeline:
+
+| run | expected image | why |
+|---|---|---|
+| `DEPTHCLAMP=0` | the clear colour, everywhere | the triangle is outside the clip volume, so it must be clipped away entirely |
+| `DEPTHCLAMP=1` | `render.frag`'s pattern, exactly | the Z is clamped to `maxDepth` and the triangle is drawn |
+
+Both are checked with the existing 262144-pixel verifier, so the two runs can only both pass if
+`depthClampEnable` actually changes what the hardware does. On the open driver:
+
+```
+DEPTHCLAMP=0  RESULT: PASS - 262144/262144 pixels correct   (all clear colour)
+DEPTHCLAMP=1  RESULT: PASS - 262144/262144 pixels correct   (all pattern)
+regress       27 passed, 0 failed, 0 known-open
+```
+
+### 21.19.2 Scorecard after this round
+
+| gap | status |
+|---|---|
+| extent limit under-reported by 2x | fixed (§20.1) |
+| X11 WSI surfaces | enabled, advertised (§20.3-20.4) |
+| 2x MSAA | fixed (§20.5) |
+| `bufferDeviceAddress` | closed (§21) |
+| API 1.3 | closed (§21.16, §21.17) |
+| 8/16-bit storage group, all nine features | **closed** (§21.17, §21.18) |
+| cached memory type | correct, still opt-in (§21.16) |
+| `depthClamp` | **closed** (§21.19) |
+| `occlusionQueryPrecise` | open |
+| `vertexPipelineStoresAndAtomics` | open |
+| `variablePointers`, `variablePointersStorageBuffer` | open |
+| `drawIndirectCount` | open |
+| timestamps (`timestampPeriod = 0.0`) | open - the driver has no timestamp query path, so the value is honest |
+| `bufferDeviceAddressCaptureReplay` | open |
+
+**Remaining feature gap to the vendor: 12 device features.**
+
 

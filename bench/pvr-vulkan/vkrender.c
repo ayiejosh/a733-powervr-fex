@@ -29,6 +29,7 @@
 #include "render_vert_spv.h"
 #include "io16_vert_spv.h"
 #include "io16_frag_spv.h"
+#include "dc_vert_spv.h"
 
 #define DIE(...)                               \
     do {                                       \
@@ -90,7 +91,16 @@ int main(int argc, char **argv)
      * which looks exactly like the driver not advertising it. */
     const char *io16_env = getenv("IO16");
     bool io16 = io16_env && *io16_env;
-    if (io16 && api < VK_API_VERSION_1_1)
+
+    /* DEPTHCLAMP=1 draws dc.vert (z outside the clip volume) with depth clamping
+     * on, so the pattern must appear; DEPTHCLAMP=0 draws the same shader with it
+     * off, so every fragment must be clipped and the target must be the clear
+     * colour. Either way the shader goes through the same pipeline. */
+    const char *dc_env = getenv("DEPTHCLAMP");
+    const int depth_clamp = dc_env ? atoi(dc_env) : -1;
+    const bool use_feat2 = io16 || depth_clamp >= 0;
+
+    if (use_feat2 && api < VK_API_VERSION_1_1)
         api = VK_API_VERSION_1_1;
 
     VkApplicationInfo app = {
@@ -175,9 +185,15 @@ int main(int argc, char **argv)
         io_feat_f16.shaderFloat16 = VK_TRUE;
     }
 
+    if (depth_clamp >= 0) {
+        vkGetPhysicalDeviceFeatures2(phys, &io_feat2);
+        printf("depthClamp = %d (asked for %d)\n", io_feat2.features.depthClamp, depth_clamp);
+        io_feat2.features.depthClamp = VK_TRUE;
+    }
+
     VkDeviceCreateInfo dci = {
         .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-        .pNext = io16 ? &io_feat2 : NULL,
+        .pNext = use_feat2 ? &io_feat2 : NULL,
         .queueCreateInfoCount = 1,
         .pQueueCreateInfos = &qci,
     };
@@ -409,10 +425,13 @@ int main(int argc, char **argv)
     VKCHECK(vkCreateFramebuffer(dev, &fbci, NULL, &fb));
 
     /* ---- pipeline ------------------------------------------------------ */
+    const bool use_dc_vert = depth_clamp >= 0;
     VkShaderModuleCreateInfo vsci = {
         .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-        .codeSize = io16 ? sizeof(io16_vert_spv) : sizeof(render_vert_spv),
-        .pCode = io16 ? io16_vert_spv : render_vert_spv,
+        .codeSize = use_dc_vert ? sizeof(dc_vert_spv)
+                                : (io16 ? sizeof(io16_vert_spv) : sizeof(render_vert_spv)),
+        .pCode = use_dc_vert ? dc_vert_spv
+                             : (io16 ? io16_vert_spv : render_vert_spv),
     };
     VkShaderModule vs;
     VKCHECK(vkCreateShaderModule(dev, &vsci, NULL, &vs));
@@ -462,6 +481,7 @@ int main(int argc, char **argv)
     };
     VkPipelineRasterizationStateCreateInfo rs = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+        .depthClampEnable = (depth_clamp == 1) ? VK_TRUE : VK_FALSE,
         .polygonMode = VK_POLYGON_MODE_FILL,
         .cullMode = VK_CULL_MODE_NONE,
         .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
@@ -732,7 +752,13 @@ int main(int argc, char **argv)
                 break;
             }
             default:
-                wr = expect_r(x); wg = expect_r(y); wb = 64; wa = 255;
+                if (depth_clamp == 0) {
+                    /* Clamped off, so the triangle is clipped away entirely and the
+                     * target must still be the clear colour. */
+                    wr = 0; wg = 0; wb = 0; wa = 255;
+                } else {
+                    wr = expect_r(x); wg = expect_r(y); wb = 64; wa = 255;
+                }
                 /* With MSAA the triangle's hypotenuse passes through the top-right
                  * corner, so pixels on that edge are only partially covered and the
                  * resolve blends toward the background - a correct result that is not
