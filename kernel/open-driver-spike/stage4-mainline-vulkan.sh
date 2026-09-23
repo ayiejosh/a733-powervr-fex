@@ -160,6 +160,15 @@ else
     say "no $BENCH/vkrender - skipping the graphics test"
 fi
 
+if [ -x "$BENCH/pvrscanout" ]; then
+    say "--- render -> dma-buf -> sunxi-drm scanout (pattern on screen for 6 s) ---"
+    ( cd "$BENCH" && VK_ICD_FILENAMES="$MESA_ICD" VK_DRIVER_FILES="$MESA_ICD" \
+        PVR_I_WANT_A_BROKEN_VULKAN_DRIVER=1 \
+        timeout 300 ./pvrscanout 1280 720 6 2>&1 | sed 's/^/    /' | tee -a "$LOG" )
+else
+    say "no $BENCH/pvrscanout - skipping the scanout test"
+fi
+
 GL_PREFIX=/home/radxa/mesa/inst-gl/usr/local/lib/aarch64-linux-gnu
 if [ -x "$BENCH/glheadless" ] && [ -d /home/radxa/mesa/gldri ]; then
     say "--- zink GL (Mesa 25.3) over Mesa pvr + mainline driver ---"

@@ -8,7 +8,8 @@
 # Two binaries:
 #   vktest    compute execution + readback verification + throughput
 #   vkrender  offscreen graphics: render pass, draw, resolve, copy, pixel check
-#   glheadless  EGL surfaceless + zink: desktop GL (or GLES3) over the Vulkan ICD
+#   glheadless  EGL surfaceless/device + zink: desktop GL (or GLES3) over the Vulkan ICD
+#   pvrscanout  render -> export dma-buf -> import into sunxi-drm -> scan it out
 #
 # The Vulkan loader is linked directly; on this board the arm64 loader has no .so
 # symlink in the default path, so fall back to linking the versioned library.
@@ -52,6 +53,10 @@ link() {
 
 link vktest vktest.c
 link vkrender vkrender.c
+
+# pvrscanout also needs libdrm for the KMS/PRIME half.
+$CC $CFLAGS -I/usr/include/libdrm -o pvrscanout pvrscanout.c -lvulkan -ldrm -lm 2>/dev/null || \
+  $CC $CFLAGS -I/usr/include/libdrm -o pvrscanout pvrscanout.c -l:libvulkan.so.1 -ldrm -lm
 
 # glheadless links EGL + GLES2; the Mesa build that provides zink is separate
 # (mesa/build-gl) and is selected at run time with LD_LIBRARY_PATH.

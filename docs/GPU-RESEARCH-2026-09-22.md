@@ -676,3 +676,58 @@ GPU) are all present: the kernel driver uses `drm_gem_shmem`, so PRIME import/ex
 shmem helper; Mesa's pvr advertises `VK_KHR_external_memory_fd` and
 `VK_EXT_external_memory_dma_buf`; the display side is `sunxi-drm` on `card0`, and the vendor module
 does not have to be loaded for that side to work.
+
+## 13. The open stack renders and puts it on the display
+
+Stage 4 proved the open driver computes and renders. This closes the loop that actually matters:
+a buffer drawn by the open driver is scanned out by the display controller.
+
+```
+GPU: PowerVR B-Series BXM-4-64 MC1 (api 1.2.328), scanout buffer 1920x1080
+trying to create an exportable image:
+  RGBA8 LINEAR renderable      WORKS (dma-buf fd=5)
+scanout image: RGBA8 LINEAR, rowPitch=7680 offset=0 size=8294400 modifier=0x0
+1/3 render: PASS (2073600 pixels verified in the scanout image)
+2/3 export: PASS (dma-buf fd=6, 8294400 bytes)
+   imported into /dev/dri/card0 as GEM handle 1
+   display: connector 146 crtc 99 mode 1920x1080@60 (image 1920x1080)
+3/3 scanout: fb 163 on crtc 99 - committed, CRTC reports it
+```
+
+The path is `/dev/dri/card1` (powervr) for the Vulkan render and the dma-buf, and
+`/dev/dri/card0` (sunxi-drm) for `drmPrimeFDToHandle` -> `drmModeAddFB2` -> `drmModeSetCrtc`.
+The pattern (two 64-pixel ramps over a constant blue, the same one `vkrender` uses) was on the
+panel for six seconds, and it is the open driver's output: no vendor module was loaded at the time.
+
+### What made it work, and what did not
+
+Four things were learned by failing first:
+
+1. **The external-memory capability query is gated on instance extensions.** With an instance that
+   enabled nothing, *every* shape reported `exportable=no` and the test refused to start. Adding
+   `VK_KHR_external_memory_capabilities` + `VK_KHR_get_physical_device_properties2` at instance
+   creation turned all 16 shapes in the grid to `exportable=yes`. The query is worth having, but it
+   is not the thing that decides: pvr implements import/export for dma-buf either way, so the test
+   now attempts creation, allocation and `vkGetMemoryFdKHR` and reports what actually happens.
+2. **pvr renders straight into a LINEAR image** (`RGBA8`, colour attachment + transfer source), so
+   no render-then-copy dance was needed. An earlier version assumed it would be, and a probe that
+   only asked about `BGRA8`/copy-destination shapes made it look impossible.
+3. **Format mapping:** `VK_FORMAT_R8G8B8A8_UNORM` is `DRM_FORMAT_ABGR8888`;
+   `VK_FORMAT_B8G8R8A8_UNORM` is `DRM_FORMAT_ARGB8888`.
+4. **The panel's active mode is not its preferred mode.** The first run found the connector on
+   3840x2160 and refused to scan a 1280x720 buffer; the next run found 1920x1080 on the same
+   connector. The tool now re-runs itself at whatever size the display is actually using.
+
+The kernel side needed nothing: the driver's GEM objects come from `drm_gem_shmem`
+(`gem_prime_import_sg_table` is wired up), so a dma-buf export is available for free, and
+sunxi-drm imported the pvr buffer without complaint.
+
+### Honest scope
+
+- The pixels were verified **in the image that was handed to the display**, and the display device
+  accepted and committed it (the CRTC reports our framebuffer id). There is no writeback capture
+  yet, so "the panel showed it" rests on that commit plus a human looking at the screen.
+- One frame, one commit, six seconds. No page flips, no vsync, no double buffering, no animation -
+  that is the next step, and it is what separates "can scan out" from "can drive a display".
+- Still compute-and-render only as far as Mesa is concerned: this does not need the compositor, and
+  the GL path over the open driver (§12) remains blocked in Mesa's EGL.
