@@ -90,10 +90,12 @@ run_case verdict "vkrender 512 samples=2" SAMPLES=2 -- ./vkrender 512 4
 run_case verdict "vkrender 512 samples=4" SAMPLES=4 -- ./vkrender 512 4
 run_case verdict "vkrender 1024" -- ./vkrender 1024 4
 run_case verdict "vkrender 2048" -- ./vkrender 2048 2
-# Single-channel target formats fail on the vendor driver too (same command,
-# same expected pixel), so they are not a regression signal for this driver.
-run_case known "vkrender 512 r8" FORMAT=r8 -- ./vkrender 512 4
-run_case known "vkrender 512 r16" FORMAT=r16 -- ./vkrender 512 4
+# The verifier used to compare four channels for every format, so these could
+# never pass; it now checks each format at its own width, and the driver renders
+# all of them correctly.
+run_case verdict "vkrender 512 r8" FORMAT=r8 -- ./vkrender 512 4
+run_case verdict "vkrender 512 r16" FORMAT=r16 -- ./vkrender 512 4
+run_case verdict "vkrender 512 rg16" FORMAT=rg16 -- ./vkrender 512 4
 # Partial modes exercise the individual passes; they do not self-verify.
 run_case clean "vkrender 512 copy-only" MODE=copy -- ./vkrender 512 4
 run_case clean "vkrender 512 empty pass" MODE=empty -- ./vkrender 512 4
@@ -132,16 +134,16 @@ elif [ -x ./glheadless ] && [ -d /home/radxa/mesa/gldri ]; then
     -- ./glheadless 512 20
 fi
 
-# These run last on purpose. Rendering in this driver degrades within one boot
-# of the module: once a large target has been rendered, later frames come back
-# all-black - including 512x512, which passes at the start of a boot. Measured,
-# and reproduced with the pre-change ICD, so it is neither caused by this work
-# nor a usable regression signal. The extent limit itself (vkaudit) is separate
-# from whether these sizes render correctly.
-echo "== large render targets (see the note above; last on purpose) =="
-run_case known "vkrender 4096 (max before the extent fix)" -- ./vkrender 4096 1
-run_case known "vkrender 6144" -- ./vkrender 6144 1
-run_case known "vkrender 8192" -- ./vkrender 8192 1
+# These used to fail intermittently and were blamed on the driver. They were a
+# missing pipeline barrier in this tool: a layout transition does not order the
+# render pass's writes against the copy's reads, and the vendor driver fails 5/5
+# without the barrier and passes 5/5 with it. With the barrier in place the
+# whole range is expected to be correct, including the sizes the extent fix
+# enabled.
+echo "== large render targets =="
+run_case verdict "vkrender 4096 (max before the extent fix)" -- ./vkrender 4096 1
+run_case verdict "vkrender 6144" -- ./vkrender 6144 1
+run_case verdict "vkrender 8192" -- ./vkrender 8192 1
 
 echo
 echo "regress: $pass passed, $fail failed, $known known-open"

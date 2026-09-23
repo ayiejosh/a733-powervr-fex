@@ -1611,7 +1611,7 @@ been loosened until it passed.
 
 | gap | status |
 |---|---|
-| extent limit under-reported by 2x (8192 vs 4096) | **fixed**, verified by 6144² and 8192² renders |
+| extent limit under-reported by 2x (8192 vs 4096) | **fixed and reproducible**, 4096²/6144²/8192² PASS with the corrected test (§21.11) |
 | X11 WSI (xcb/xlib surfaces) absent | **enabled**, verified as advertised; end-to-end pending an X server that does not use the GPU |
 | 2x MSAA implemented but not advertised | **fixed**, verified at 1x/2x/4x |
 | `bufferDeviceAddress` (+ capture replay) | base feature **closed in §21**; capture replay still open |
@@ -1623,10 +1623,9 @@ been loosened until it passed.
 
 Three of the four gaps that were "the driver can already do this" are now closed.
 
-**Correction (see §21.4):** the extent-limit row above claims verification by 6144² and 8192²
-renders. That was a single passing run and it does not reproduce; rendering at those sizes fails
-on the pre-change ICD too, so the *limit advertisement* is what is verified, not full-frame
-correctness. What remains needs
+**Corrected twice (see §21.11):** the extent-limit row above is verified by 6144² and 8192² renders
+*and is reproducible*. The intermediate claim that those renders failed intermittently turned out to
+be a missing pipeline barrier in the test tool, not a driver fault, so the original row stands. What remains needs
 features implemented inside Mesa's pvr, not flags flipped: the hardware supports them (the vendor
 driver on this board is the proof), but enabling a feature without implementing it would render
 wrongly rather than work.
@@ -1741,7 +1740,7 @@ lowered, and `trans_shift()` asserts `bits == 32` - an assert compiled out in a 
 shift is translated as if the operand were a single 32-bit value and the high half is lost. This is
 the next item, and it is why `bda` without `--bda-only` still fails.
 
-### 21.4 Correction: the earlier extent-limit verification was a single observation
+### 21.4 The extent-limit verification looked like a single observation - resolved in 21.11
 
 20.6 recorded the extent limit fix as "verified by 6144² and 8192² renders". That was one passing run
 and it does not reproduce. Regression testing showed the larger sizes failing, so the question was
@@ -2004,3 +2003,48 @@ regress: 14 passed, 0 failed, 5 known-open
 The readback throughput that the cached type bought (~6.6 GB/s against ~330 MB/s, section 18) is
 still available behind the variable, and worth revisiting once the kernel can do the cache
 maintenance - that is the real fix, and it is on the kernel side, not here.
+
+### 21.11 Follow-up: all five remaining failures were test bugs
+
+The suite had five cases that failed on both drivers and were carried as "known-open, pre-existing".
+All five were faults in `bench/pvr-vulkan`, and with them fixed the suite is **20 passed, 0 failed, 0
+known-open**.
+
+**r8 and r16: the verifier ignored the format.** `vkrender`'s pixel check read `px + (y*size + x) * 4`
+and compared four channels whatever the target format was, so a single-channel target could never
+match. The shader writes `fract(coord/64)` as a normalized float, so the expectations are
+`round(fract*255)` for `R8` and `round(fract*65535)` for `R16` - and at x = 0 those are 2 and **512**,
+not `2 * 257 = 514`, which matters because 514 was what a naive expectation would have asserted. The
+verifier is now format-aware (`R8`, `R16`, `RG16` and `RGBA8` each checked at their own width; the
+MSAA edge rule applies only to the 4-channel case). Both drivers render all of them correctly:
+`rgba8`, `r8`, `r16` and `rg16` at 512 all PASS 262144/262144.
+
+**The large render targets: the tool was missing a pipeline barrier.** `vkrender` ended its render
+pass and called `vkCmdCopyImageToBuffer` with nothing in between, relying on the copy's implicit
+layout transition to order it after the render pass. A layout transition does not do that - the
+application has to synchronize the *data* - so the readback could copy the pre-clear contents, which
+are zeros, which is exactly the "all-black" that was being reported as a driver bug.
+
+The evidence is the two drivers disagreeing about the same test:
+
+| `vkrender 2048 1`, vendor driver | result |
+|---|---|
+| with an explicit render pass -> transfer barrier | **5/5 PASS** |
+| without it (the old tool) | **0/5 FAIL** |
+
+A conformant driver is allowed to fail the second case, and it does. On the open driver the
+boundary hunting that followed was chasing an intermittent: 4096 gave pass, fail, fail, fail, pass,
+and 4032 passed while 3840, 4000 and 4048 failed - not a size threshold at all. With the barrier in
+place, **4096, 6144 and 8192 all PASS**, which also makes the extent-limit work of section 20
+properly reproducible: the original 6144²/8192² claim was right, the withdrawal in 21.4 was wrong,
+and 21.10's "rendering reliability degrades within one boot" was the same missing barrier seen
+through a smaller sample.
+
+`vkrender` keeps a `PVR_NO_READBACK_BARRIER=1` gate so the old behaviour stays reproducible for the
+A/B, and `PVR_DUMP=1` prints the first bytes the readback delivered - which is what showed the frame
+was the clear colour rather than the draw, and pointed at the copy rather than the geometry.
+
+**What this changes about the driver's report card.** The open driver's Vulkan correctness is in
+better shape than sections 20-21 said: it passes everything the vendor passes on this suite, plus
+buffer device addresses and 64-bit push constants. The failures that were attributed to it at large
+sizes were the harness's.

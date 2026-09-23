@@ -22,6 +22,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <stdbool.h>
 #include <vulkan/vulkan.h>
 
 #include "render_frag_spv.h"
@@ -43,6 +44,12 @@
 
 /* Unorm conversion is round(f * 255), so the host can predict stored bytes. */
 static int expect_r(int x) { return (int)lroundf(fminf(fmaxf((float)((x + 0.5) / 64.0 - floor((x + 0.5) / 64.0)), 0.0f), 1.0f) * 255.0f); }
+
+/* The shader writes fract(coord/64) as a normalized float, so the value a
+ * 16-bit UNORM target stores is round(fract * 65535), NOT expect_r() * 257 - at
+ * x = 0 the two differ (512 against 514) and only the first is what the hardware
+ * is supposed to produce. */
+static int expect_r16(int x) { return (int)lroundf(fminf(fmaxf((float)((x + 0.5) / 64.0 - floor((x + 0.5) / 64.0)), 0.0f), 1.0f) * 65535.0f); }
 
 static double g_record_ms, g_submit_ms, g_wait_ms;
 static int g_timing;
@@ -160,15 +167,21 @@ int main(int argc, char **argv)
     const char *fmt_env = getenv("FORMAT");
     VkFormat target_format = VK_FORMAT_R8G8B8A8_UNORM;
     int bpp = 4;
+    /* Which channels exist, and in what width. bpp alone cannot express this:
+     * rgba8 and rg16 are both 4 bytes per pixel but share no channel layout. */
+    enum { FMT_RGBA8, FMT_R8, FMT_R16, FMT_RG16 } fmt = FMT_RGBA8;
     if (fmt_env && strcmp(fmt_env, "r8") == 0) {
         target_format = VK_FORMAT_R8_UNORM;
         bpp = 1;
+        fmt = FMT_R8;
     } else if (fmt_env && strcmp(fmt_env, "rg16") == 0) {
         target_format = VK_FORMAT_R16G16_UNORM;
         bpp = 4; /* two 16-bit channels */
+        fmt = FMT_RG16;
     } else if (fmt_env && strcmp(fmt_env, "r16") == 0) {
         target_format = VK_FORMAT_R16_UNORM;
         bpp = 2;
+        fmt = FMT_R16;
     }
 
     VkImageCreateInfo imci = {
@@ -555,6 +568,27 @@ int main(int argc, char **argv)
         if (!do_copy)
             continue;
 
+        /* Render pass -> readback dependency. Whether a conformant driver owes
+         * this implicitly is the question this gate answers: with the barrier the
+         * copy must see the render pass's writes, without it the driver is left
+         * to infer the dependency from the copy's implicit layout transition.
+         * PVR_NO_READBACK_BARRIER=1 restores the old behaviour for A/B. */
+        if (do_render && !getenv("PVR_NO_READBACK_BARRIER")) {
+            VkImageMemoryBarrier dep = {
+                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+                .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .image = samples > 1 ? resolve_image : image,
+                .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
+            };
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                 VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &dep);
+        }
+
         VkBufferImageCopy region = {
             .bufferOffset = 0,
             .bufferRowLength = 0,
@@ -592,6 +626,17 @@ int main(int argc, char **argv)
                g_record_ms / n, g_submit_ms / batches, g_wait_ms / batches, batches);
     }
 
+    /* PVR_DUMP=1 prints the first bytes the readback actually delivered, in every
+     * mode including the ones that cannot self-verify. That separates "the draw
+     * produced nothing" from "the transfer delivered nothing": the clear colour
+     * is a known non-zero value, so zeros here mean the copy path, not the draw. */
+    if (getenv("PVR_DUMP")) {
+        printf("readback[0..15]:");
+        for (int i = 0; i < 16; i++)
+            printf(" %02x", ((const unsigned char *)mapped)[i]);
+        printf(" (bpp=%d, %ux%u, clear=%d,%d,%d,%d)\n", bpp, size, size, 2, 2, 64, 255);
+    }
+
     /* ---- verify -------------------------------------------------------- */
     if (!(do_render && do_copy)) {
         printf("verification skipped: MODE=%s only exercises part of the frame\n",
@@ -604,26 +649,59 @@ int main(int argc, char **argv)
     int er = 0, eg = 0, eb = 0, ea = 0, gr = 0, gg = 0, gb = 0, ga = 0;
     for (uint32_t y = 0; y < size; y++) {
         for (uint32_t x = 0; x < size; x++) {
-            const unsigned char *p = px + ((size_t)y * size + x) * 4;
-            int wr = expect_r(x), wg = expect_r(y), wb = 64, wa = 255;
-            /* With MSAA the triangle's hypotenuse passes through the top-right corner,
-             * so pixels on that edge are only partially covered and the resolve
-             * blends toward the background - a correct result that is not equal to
-             * the single-sample value. Those pixels are checked for a plausible
-             * blend instead, and the interior is still checked exactly. */
-            if (samples > 1 && (int)(x + y) >= (int)size - 3) {
-                int maxr = wr > 0 ? wr : 1, maxg = wg > 0 ? wg : 1;
-                if (p[0] > maxr || p[1] > maxg || p[2] > 64)
-                    edge_bad++;
-                else
-                    edge_blended++;
-                continue;
+            const unsigned char *p = px + ((size_t)y * size + x) * bpp;
+            int wr = 0, wg = 0, wb = 0, wa = 0, gr = 0, gg = 0, gb = 0, ga = 0;
+            bool ok;
+
+            /* Each format is checked against what the shader's normalized output
+             * must become in that format - the same expression, encoded at the
+             * target's width. A single-channel target simply has no green, blue
+             * or alpha to compare against. */
+            switch (fmt) {
+            case FMT_R8:
+                wr = expect_r(x);
+                gr = p[0];
+                ok = gr == wr;
+                break;
+            case FMT_R16: {
+                int v = p[0] | (p[1] << 8);
+                wr = expect_r16(x);
+                gr = v;
+                ok = v == wr;
+                break;
             }
-            if (p[0] != wr || p[1] != wg || p[2] != wb || p[3] != wa) {
+            case FMT_RG16: {
+                int vr = p[0] | (p[1] << 8), vg = p[2] | (p[3] << 8);
+                wr = expect_r16(x); wg = expect_r16(y);
+                gr = vr; gg = vg;
+                ok = vr == wr && vg == wg;
+                break;
+            }
+            default:
+                wr = expect_r(x); wg = expect_r(y); wb = 64; wa = 255;
+                /* With MSAA the triangle's hypotenuse passes through the top-right
+                 * corner, so pixels on that edge are only partially covered and the
+                 * resolve blends toward the background - a correct result that is not
+                 * equal to the single-sample value. Those pixels are checked for a
+                 * plausible blend instead, and the interior is still checked
+                 * exactly. */
+                if (samples > 1 && (int)(x + y) >= (int)size - 3) {
+                    int maxr = wr > 0 ? wr : 1, maxg = wg > 0 ? wg : 1;
+                    if (p[0] > maxr || p[1] > maxg || p[2] > 64)
+                        edge_bad++;
+                    else
+                        edge_blended++;
+                    continue;
+                }
+                gr = p[0]; gg = p[1]; gb = p[2]; ga = p[3];
+                ok = gr == wr && gg == wg && gb == wb && ga == wa;
+                break;
+            }
+
+            if (!ok) {
                 if (bad == 0) {
                     fx = x; fy = y;
                     er = wr; eg = wg; eb = wb; ea = wa;
-                    gr = p[0]; gg = p[1]; gb = p[2]; ga = p[3];
                 }
                 bad++;
             }
