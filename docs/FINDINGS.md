@@ -183,3 +183,36 @@ fix: heap budget is no longer wrongly enforced on unified-memory GPUs.)
 Same bench suite, trixie vs bullseye baseline: unaligned atomics **+11–18%**
 (136.6/53.8/51.1 Mops vs 120.8/48.3/43.4), thread create+join **30% faster**
 (139,849 ns vs 199,995 ns), CPU/GPU baselines unchanged. See bench/baseline.txt.
+
+## 2026-09-24 additions (full-suite verification)
+
+### Every applied gain re-measured in one session — all still hold
+`bench/run.sh` vs `baseline.txt`: cpu.1thread **847.83 vs 847.80**; FEX atomics
+153.2/60.8/56.8 vs 152.1/61.4/56.9 Mops; x87 ratio **18.7x vs 18.9x**; glbench
+**7589/2225/579/147** vs 7392/2229/579/147 Mpix (GPU at 1104 MHz, DSU 1027 MHz, verified
+through `clkctl`). D3D11: 21/27 apps clean, baseline draw **4.690 us/draw** (repeat spread
+0.15%), realistic frames GPU-fill-bound, PSO swap still the only costly state op (+54%).
+Desktop GL over zink: **2.2–3.5x** faster than llvmpipe windowed, 0 swap errors. Open
+driver: `regress.sh` **29 passed, 0 failed** plus GL/render repeats PASS.
+
+### `bench/run.sh` reads NA for the GPU rows when run from the Plasma session
+`MESA_LOADER_DRIVER_OVERRIDE=zink` is session-wide for the desktop GL change, so Mesa's EGL
+tries zink on the GBM platform and the vendor GLES path dies with `eglInitialize 0x3001`.
+Unset `MESA_LOADER_DRIVER_OVERRIDE GALLIUM_DRIVER LIBGL_DRIVERS_PATH LIBGL_KOPPER_DRI2
+VK_ICD_FILENAMES VK_INSTANCE_LAYERS VK_LAYER_PATH PVR_FAKE_GS PVR_FAKE_FILL` around the
+`gpu.glbench` section (or run the suite outside a GUI session) and the four rows come back
+matching baseline within 3%. **Not a capability regression** — the row was NA, not lower.
+
+### Known-failing D3D apps, confirmed pre-existing (layer on == layer off)
+`msaa.exe`/`msaa2.exe` (MSAA_FAIL, no MSAA in the blob), `tess.exe` (rc=3, no tessellation),
+`d7test.exe`/`d3d7test.exe` (no D3DHALDevice), and `mrt.exe` (MRT_FAIL — the
+`SV_VertexID`/no-input-layout variant; `mrt2.exe` with a real vertex buffer is MRT_OK, which
+is what the "MRT works" row below rests on). None is caused by `PVR_FAKE_*`/the strip layer.
+
+### Geometry shaders: the blob itself reports `geometryShader: 0`
+With `PVR_FAKE_GS` unset DXVK sees `geometryShader: 0`; with the session fake on it sees 1.
+Either way a GS draw on the shipping dll dies in `vkCreateGraphicsPipelines` (rc=3), so
+native GS is a genuine wall and the compute emulation is the only way through. Two
+consequences: (a) the emulation does not depend on the session fake — it renders GS_OK with
+the fake on *and* off; (b) the trade-off note on `PVR_FAKE_GS=1` is about *Vulkan* apps that
+trust the flag, not about the DXVK path.
