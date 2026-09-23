@@ -107,48 +107,89 @@ bad". Worth noting for anyone revisiting it: the 80x is per *draw*, so a workloa
 per draw - or one where the emulation could be batched into fewer serialized passes - would see a much
 smaller ratio. The prior record says exactly this and it is the right framing.
 
-## 3. `multiViewport` - the one with a real hardware lead
+## 3. `multiViewport` - the strongest lead of the five
 
-Unlike the first two, the hardware mechanism appears to be present and **the driver is already halfway
-to using it**. `TA_OUTPUT_SEL` in `csbgen/rogue/ppp.xml` has:
+**Correction to the first version of this section**, which said the mechanism "appears to be present" on
+the strength of one field and the driver being "halfway". A deeper probe found considerably more
+hardware state than that, and one hard blocker that the first pass missed.
+
+The hardware has a full multi-viewport path:
 
 ```xml
-<field name="vpt_tgt_pres" start="19" end="19" type="bool">
-  <doc>If set, viewport target is present, this is always assumed to be the last thing in the vertex except render target if present.</doc>
-</field>
-<field name="render_tgt_pres" start="19" ...>   <!-- render target / layer -->
+ppp.xml:170-175  TA_STATE_HEADER:
+  <field name="view_port_count" start="12" end="15" type="uint">
+    <doc>The number of viewport targets minus 1.</doc>          <!-- 4 bits: up to 16 -->
+  <field name="pres_viewport" start="11" end="11" type="bool">
+    <doc>If set, the Viewport Transform words are present.</doc>
+
+cr.xml:761-766  PPP_CTRL.vpt_scissor
+  <doc>When 0 the PPP will insert state updates on change of VPT ID. When 1 this feature is disabled.</doc>
 ```
 
-and `pvr_arch_cmd_buffer.c` already programs them from whether the vertex shader writes the
-corresponding varying:
+The viewport transform is an **array** of 6-dword groups in the CSB, one per viewport; the scissor is an
+**indexed array in memory** (`cr.xml:1147-1151` `ISP_SCISSOR_BASE`, selected per object by
+`ppp.xml:318-325` `STATE_ISPDBSC.dbindex/scindex`), not a register. `vdm.xml` and `pds.xml` contain zero
+viewport/scissor matches - it is all PPP/TA and CR state.
 
-```c
-const bool has_viewport = varyings[VARYING_SLOT_VIEWPORT].count > 0;
-const bool has_layer    = varyings[VARYING_SLOT_LAYER].count > 0;
-...
-state.vpt_tgt_pres = has_viewport;
-state.render_tgt_pres = has_layer;
+**And the driver is further along than "halfway".** `pvr_setup_viewport()` already loops over the
+viewport count and emits `MAX2(1, viewport_count)` groups of six dwords, and
+`header->view_port_count` is already computed from `ppp_state->viewport_count - 1`
+(`pvr_arch_cmd_buffer.c:7468-7516`, `:7657-7658`, `:7768-7787`). The CSB emission is generalised
+already. What is missing is bounded and enumerable:
+
+| missing piece | where |
+|---|---|
+| `PVR_MAX_VIEWPORTS` is **1** | `common/pvr_limits.h:37` - pure Mesa policy, no hardware limit exists |
+| `ppp_state->viewports[]` is a one-slot array | `vulkan/pvr_cmd_buffer.h:373-382` |
+| two asserts spelling out the limitation | `pvr_arch_cmd_buffer.c:7126-7129` ("We don't support multiple viewport calculations.") |
+| `TA_REGION_CLIP` derived from `viewport[0] ∩ scissor[0]` | `:7131-7185` - has to be reworked for N viewports |
+| **`shaderOutputViewportIndex = false`** | `pvr_physical_device.c:367` - **the hard blocker: without this an app cannot legally write `gl_ViewportIndex` at all**, and the SPIR-V capability is generated from it |
+| `.multiViewport = false`, `.maxViewports = 1U` | `pvr_physical_device.c:274`, `:817` |
+
+Note `PVR_MAX_MULTIVIEW` is **6** (`pvr_limits.h:39`) - layered multiview works, so "no multiViewport
+because there is no layered rendering" is false, and the driver already replays a draw once per view
+index for it (`pvr_arch_queue.c:331-335`).
+
+**Verdict: native support is plausible and probably the intended path, but unproven on silicon.** The
+XML never documents how the per-vertex viewport ID selects a transform group, nor its width; and
+Imagination's own DDK reports `multiViewport=false` on this exact core, which is weak evidence they do
+not use it either. The alternative - replaying the draw once per viewport - is **not equivalent**: Vulkan
+lets one draw contain primitives for different viewports, and there is no geometry stage here to express
+a per-primitive predicate.
+
+## 4. `fillModeNonSolid` - I was wrong; the hardware has an object type for it
+
+**Correction: the first version of this section said "no fill/polygon/wireframe field exists in `ppp.xml`,
+`cr.xml`, `vdm.xml` or `pds.xml`". That was asserted rather than grepped, and it is false.**
+
+`ppp.xml` defines the object type the rasteriser is given, and two of its values are exactly
+wireframe and point fill:
+
+```xml
+ppp.xml:100-110  OBJTYPE: TRIANGLE=0, LINE=1, SPRITE_10UV=2, SPRITE_UV=3, SPRITE_01UV=4,
+                          LINE_FILLED_TRIANGLE=5, POINT_FILLED_TRIANGLE=6, ...
+ppp.xml:269-270  TA_STATE_ISPA.pointlinewidth
+   <doc>The width/pitch used for rendering lines, point-filled and line-filled triangles.</doc>
+ppp.xml:266-268  linefilllastpixel  <doc>If set, the last pixel of a line is filled.</doc>
 ```
 
-That is per-vertex viewport selection being carried into the VDM already - i.e. the piece
-`multiViewport` needs at the *shader* level. What is missing is the viewport/scissor **array** state and
-per-viewport transforms. **This is the most concrete implementation lead of the five**, and it is
-checkable: count how many viewports the VDM/PPP can hold, and whether the viewport transform is indexed.
+That doc sentence - "lines, point-filled and line-filled triangles" - is the hardware saying these object
+types rasterise a triangle as lines or points. Mesa sets the object type from the topology at
+`pvr_arch_cmd_buffer.c:6711-6712` and `:6776`, and uses neither value 5 nor 6 anywhere.
 
-## 4. `fillModeNonSolid` - no polygon-mode field, and zink only warns
+So the cheap path exists and does not involve index expansion at all: when `rs.polygon_mode` is
+`LINE`/`POINT` and the topology is a triangle, select `ROGUE_TA_OBJTYPE_LINE_FILLED_TRIANGLE` /
+`POINT_FILLED_TRIANGLE` instead of `TRIANGLE`. Line width and point size plumbing already exist
+(`wideLines = true`, `PVR_LINE_WIDTH_MAX 16.0f`, `rs.line.width` programmed at `:6747-6762`).
 
-No fill/polygon/wireframe field exists in `ppp.xml`, `cr.xml`, `vdm.xml` or `pds.xml`. There is no
-hardware polygon mode. Two things make this less urgent than it looks:
+Two honest caveats. Vulkan requires polygon mode to affect "only the final rasterization of polygons"
+(vertices are still shaded, the polygon is still clipped and possibly culled before it applies) - an
+object-type swap is the right shape for that, but whether B-Series honours values 5/6 is unverified and
+needs silicon. And `VK_IMG_relaxed_line_rasterization`, which the vendor advertises, is **not** related:
+it is the OpenGL diamond-exit line rule for GL emulation layers, a Zink knob with no wireframe meaning.
 
-* GLES has no `glPolygonMode` at all, and in Mesa main `fillModeNonSolid` is **no longer on zink's base
-  requirement list** (`zink_screen.c:2929-2934`). It was on the list in system Mesa 25.0.7, which is
-  where the old note's warning came from.
-* The vendor's *only* zink complaint today is this one, and it is a `WARNING: Some incorrect rendering
-  might occur`, not a refusal.
-
-Emulation would mean converting triangles to lines at draw time, which changes rasterisation rules
-(and which is why drivers that do it gate it carefully). **Bounded but real, with no hardware support to
-lean on.** Low priority.
+**This is now the cheapest of the five to try** - a few lines plus a feature bit, with a fallback
+(triangle-to-line index expansion) if the hardware ignores the object type.
 
 ## 5. `descriptorIndexing` + 11 sub-features - the hard one, and honestly unresolved
 
@@ -214,11 +255,31 @@ checked.
 |---|---|---|
 | `tessellationShader` | **hardware-absent, proven** | none - Volcanic-only block, 0 Rogue configs |
 | `geometryShader` | **hardware-absent**; emulation proven and priced at ~80x | the DXVK branch exists; the cost is per-draw and could be amortised |
-| `multiViewport` | **hardware mechanism present** | `vpt_tgt_pres`/`render_tgt_pres` already programmed; needs the viewport array state |
-| `fillModeNonSolid` | no hardware polygon mode; zink only warns now | line conversion, changes rasterisation rules - low priority |
+| `multiViewport` | **hardware path exists and the CSB emission is already generalised**; unproven on silicon | `view_port_count` (4 bits, up to 16), `vpt_tgt_pres`, `PPP_CTRL.vpt_scissor`, indexed scissor array; blockers are `PVR_MAX_VIEWPORTS 1`, two asserts, and `shaderOutputViewportIndex = false` |
+| `fillModeNonSolid` | **corrected: the hardware has `LINE_FILLED_TRIANGLE`/`POINT_FILLED_TRIANGLE` object types** | select objtype 5/6 when `polygon_mode != FILL` - a few lines, with index expansion as a fallback |
 | `descriptorIndexing` (+11) | **unresolved** | buffer half plausibly lowerable to global loads; image half needs a runtime descriptor fetch that is not established |
-| *framebuffer compression* | **not asked about, and the best lead** | hardware present, device info knows it, `cr.xml` models it, driver never uses it, and it sits on the bottleneck |
+| *framebuffer compression* | **not asked about, and the highest-value lead** | hardware present, device info knows it, `cr.xml` models it, driver never uses it, and it sits on the bottleneck |
+
+Ordered by what to try first, given the corrections: **`fillModeNonSolid`** (smallest change, hardware
+mechanism identified, fallback exists), then **`multiViewport`** (bigger, CSB side already done, but one
+unproven assumption about the silicon), then `geometryShader` only if the 80x can be amortised;
+`tessellationShader` is closed; `descriptorIndexing` needs an experiment before it deserves a plan; and
+framebuffer compression remains the only item here with a user-visible payoff.
 
 The three artefacts worth keeping from this: the PVR_strip layer and the GS branch are prior work that
 still stands; `glceiling.sh` is new and shows the GL ceiling is a device-level wall rather than a blob
 one; and the compression lead is the only one here that would change what a user feels.
+
+## Appendix: method and its limits
+
+Sections 1, 2 and 6, plus the prior-work section, come from my own probe. Sections 3 and 4 were
+rewritten from a deeper delegated probe after the first version of both was wrong - in the
+`fillModeNonSolid` case wrong because the negative claim ("no fill/polygon/wireframe field exists") was
+**asserted rather than grepped**, which is the mistake worth remembering here: a negative grep result is
+only evidence if the grep was actually run, and mine had not been.
+
+What is still open and would need silicon rather than source: whether this core implements
+`view_port_count > 1` and object types 5/6 at all; the width and encoding of the per-vertex viewport ID;
+whether `PPP_CTRL.vpt_scissor` inserts viewport transforms as well as scissor/depth-bias; and whether the
+texture unit can take a runtime-selected descriptor. The vendor's user-space capability table would
+answer several of these and is a stripped binary, so it cannot be read.
