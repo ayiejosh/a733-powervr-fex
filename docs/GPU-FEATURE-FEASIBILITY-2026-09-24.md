@@ -64,6 +64,14 @@ full DXVK branch.
    `EXT_custom_border_color`, `EXT_line_rasterization`). So the GLES 2.0 advertisement comes from
    somewhere else in the Mesa/EGL version path, and **that is an open lead, not a settled one**.
 
+   **One unexplained observation from the same runs, recorded rather than smoothed over.** With the
+   version override the GLES 3 path renders correctly on the open driver (`regress.sh` passes). Without
+   it, both stacks fall back to the GLES 2 shader path - and there the vendor rendered 262144/262144
+   pixels correct while the open driver produced **all zeros**. That may be the driver, the newer zink
+   build, or the test's GLES 2 path, and the two runs change **two** variables at once (driver *and*
+   Mesa/zink build), so it does not isolate anything. It is the kind of thing that is easy to lose by
+   only reporting the passes, so it is written down as an open question with its confound named.
+
 ## 1. `tessellationShader` - hardware-absent, proven
 
 The DDK ships a per-core capability list. `RGX_FEATURE_TESSELLATION` appears in **26 configuration
