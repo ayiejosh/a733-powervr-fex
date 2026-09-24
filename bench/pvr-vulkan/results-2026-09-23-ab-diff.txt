@@ -1,0 +1,34 @@
+metric                         vendor         open           ratio
+stack                          vendor         open           
+icd                            /usr/share/vulkan/icd.d/img_icd.json /home/radxa/mesa/mesa-main/build-x11/src/imagination/vulkan/powervr_mesa_devenv_icd.aarch64.json 
+date                           2026-09-23T15:57Z 2026-09-23T15:57Z 
+icd.apiVersion                 1.3.277        1.3.363        1.00x
+icd.maxImageDimension2D        8192           8192           1.00x
+icd.bufferDeviceAddress        1              1              1.00x
+icd.colorSampleCounts          0x7            0x7            
+icd.deviceExtCount             114            106            0.93x
+icd.featuresOn                 55             51             0.93x
+compat.bda                     PASS           PASS           
+compat.pctest                  PASS           PASS           
+compat.vkbits                  PASS           PASS           
+compat.io16                    PASS           PASS           
+compat.depthclamp              PASS           PASS           
+compat.depthclamp_clipped      PASS           PASS           
+compat.vsstore                 PASS           PASS           
+compute.ms_dispatch            0.787          0.878          1.12x
+compute.GBps                   2.67           2.39           0.90x
+compat.compute                 PASS           PASS           
+render512.ms_frame             0.690          1.755          2.54x
+render512.Mpix_s               379.7          149.4          0.39x
+compat.render512               PASS           PASS           
+render1024.ms_frame            1.742          4.365          2.51x
+render1024.Mpix_s              601.9          240.2          0.40x
+compat.render1024              PASS           PASS           
+render2048.ms_frame            6.024          14.424         2.39x
+render2048.Mpix_s              696.3          290.8          0.42x
+compat.render2048              PASS           PASS           
+compat.render4096              PASS           PASS           
+compat.render8192              PASS           PASS           
+readback.total_ms              3.136          -              
+readback.cpu_ms                2.779          -              
+alloc.ms                       0.152          -              

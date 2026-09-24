@@ -1,0 +1,32 @@
+#version 450
+// Descriptor array indexed by a dynamically-uniform value.
+//
+// This is core Vulkan 1.0 shaderStorageBufferArrayDynamicIndexing, which pco
+// already advertises but which nothing has ever exercised. If the compiler's
+// pco_dynidx path works, the read comes from whichever of the two buffers the
+// push constant names; if the dynamic offset is dropped (the failure mode this
+// targets) both dispatches read buffer 0 and the second check fails.
+//
+// The index is a push constant rather than a literal so it cannot be folded, and
+// `marker` is a separate fixed value so "the dispatch did not run at all" is
+// distinguishable from "it ran and read the wrong descriptor".
+layout(local_size_x = 1) in;
+
+layout(set = 0, binding = 0, std430) buffer B {
+    uint v;
+} b[2];
+
+layout(push_constant) uniform PC {
+    uint idx;
+    uint marker;
+} pc;
+
+layout(set = 0, binding = 1, std430) buffer Out {
+    uint got;
+    uint marker;
+} o;
+
+void main() {
+    o.got = b[pc.idx].v;
+    o.marker = pc.marker;
+}

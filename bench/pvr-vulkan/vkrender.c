@@ -1,0 +1,1018 @@
+/*
+ * vkrender.c - does the PowerVR driver RENDER, or only compute?
+ *
+ * vktest.c proves the compute queue executes. A GPU driver can pass that and
+ * still be unable to run a graphics pipeline at all: render passes, tile buffers,
+ * MSAA resolve, image layouts and the transfer queue are a separate machinery,
+ * and on this board that machinery is exactly what was unproven.
+ *
+ * So this draws one full-screen triangle into an offscreen 512x512 image with a
+ * fragment shader whose output the host can predict exactly, resolves it to
+ * TRANSFER_SRC layout, copies it to a host-visible buffer, and compares every
+ * pixel. No window, no WSI, no swapchain: offscreen rendering is the part the
+ * driver owns.
+ *
+ *   vkCreateImage -> render pass -> graphics pipeline -> vkCmdDraw(3)
+ *   -> vkCmdCopyImageToBuffer -> readback -> per-pixel compare
+ *
+ * Build: see build.sh   Run: VK_ICD_FILENAMES=<icd.json> ./vkrender [size]
+ */
+#include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+#include <stdbool.h>
+#include <vulkan/vulkan.h>
+
+#include "render_frag_spv.h"
+#include "render_vert_spv.h"
+#include "io16_vert_spv.h"
+#include "io16_frag_spv.h"
+#include "dc_vert_spv.h"
+#include "vsstore_vert_spv.h"
+
+#define DIE(...)                               \
+    do {                                       \
+        fprintf(stderr, "FAIL: " __VA_ARGS__); \
+        fputc('\n', stderr);                   \
+        exit(1);                               \
+    } while (0)
+
+#define VKCHECK(expr)                                          \
+    do {                                                       \
+        VkResult r_ = (expr);                                  \
+        if (r_ != VK_SUCCESS)                                  \
+            DIE("%s -> VkResult %d", #expr, (int)r_);           \
+    } while (0)
+
+/* Unorm conversion is round(f * 255), so the host can predict stored bytes. */
+static int expect_r(int x) { return (int)lroundf(fminf(fmaxf((float)((x + 0.5) / 64.0 - floor((x + 0.5) / 64.0)), 0.0f), 1.0f) * 255.0f); }
+
+/* The shader writes fract(coord/64) as a normalized float, so the value a
+ * 16-bit UNORM target stores is round(fract * 65535), NOT expect_r() * 257 - at
+ * x = 0 the two differ (512 against 514) and only the first is what the hardware
+ * is supposed to produce. */
+static int expect_r16(int x) { return (int)lroundf(fminf(fmaxf((float)((x + 0.5) / 64.0 - floor((x + 0.5) / 64.0)), 0.0f), 1.0f) * 65535.0f); }
+
+static double g_record_ms, g_submit_ms, g_wait_ms;
+static int g_timing;
+
+static double now_ms(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1e6;
+}
+
+int main(int argc, char **argv)
+{
+    uint32_t size = 512;
+    int iters = 1;
+
+    if (argc > 1)
+        size = (uint32_t)strtoul(argv[1], NULL, 0);
+    if (argc > 2)
+        iters = atoi(argv[2]);
+    /* 8192 is what this device actually reports (BXM-4-64 has screen_size8K); the
+     * old 4096 cap mirrored a hardcoded limit in Mesa's pvr that is now fixed. */
+    if (size < 64 || size > 8192 || iters < 1)
+        DIE("bad arguments: size=%u (64..8192) iters=%d", size, iters);
+
+    uint32_t api = VK_API_VERSION_1_0;
+    const char *api_env = getenv("VKTEST_API");
+    if (api_env) {
+        unsigned maj = 1, min = 0;
+        if (sscanf(api_env, "%u.%u", &maj, &min) == 2)
+            api = VK_MAKE_VERSION(maj, min, 0);
+    }
+
+    /* IO16 needs vkGetPhysicalDeviceFeatures2, which is core 1.1: with a 1.0
+     * instance the loader fills nothing and every feature reads back as zero,
+     * which looks exactly like the driver not advertising it. */
+    const char *io16_env = getenv("IO16");
+    bool io16 = io16_env && *io16_env;
+
+    /* DEPTHCLAMP=1 draws dc.vert (z outside the clip volume) with depth clamping
+     * on, so the pattern must appear; DEPTHCLAMP=0 draws the same shader with it
+     * off, so every fragment must be clipped and the target must be the clear
+     * colour. Either way the shader goes through the same pipeline. */
+    const char *dc_env = getenv("DEPTHCLAMP");
+    const int depth_clamp = dc_env ? atoi(dc_env) : -1;
+    const char *vssbo_env = getenv("VSSBO");
+    const bool vs_store = vssbo_env && *vssbo_env;
+
+    /* POLYGONMODE=line|point draws the same triangle through the non-solid fill
+     * modes. The result is counted rather than pattern-matched: a wireframe of
+     * the full-screen triangle touches a few hundred pixels along its edges and a
+     * point fill touches three, so "a small non-zero fraction of the target" is
+     * the check, and it can only pass if the mode actually changed rasterisation.
+     * 0 = line, 1 = point, -1 = untouched (fill). */
+    const char *pm_env = getenv("POLYGONMODE");
+    int polygon_mode = -1;
+    if (pm_env) {
+        if (!strcmp(pm_env, "line"))
+            polygon_mode = 0;
+        else if (!strcmp(pm_env, "point"))
+            polygon_mode = 1;
+        else
+            DIE("POLYGONMODE must be line or point");
+    }
+
+    /* VIEWPORTS=n asks for n viewports and n scissors in the viewport state.
+     * multiViewport requires more than one to be accepted, but with
+     * shaderOutputViewportIndex unadvertised every primitive is assigned
+     * viewport index 0, so the rendered image must be bit-identical to the
+     * single-viewport result. The extra viewports exist to prove the state is
+     * accepted and programmed rather than rejected or overflowing the driver's
+     * per-viewport arrays. */
+    const char *vp_env = getenv("VIEWPORTS");
+    uint32_t viewport_count = 1;
+    if (vp_env) {
+        long v = strtol(vp_env, NULL, 10);
+        if (v < 1 || v > 16)
+            DIE("VIEWPORTS must be 1..16");
+        viewport_count = (uint32_t)v;
+    }
+
+    const bool use_feat2 = io16 || depth_clamp >= 0 || vs_store || polygon_mode >= 0 ||
+                           vp_env != NULL;
+
+    if (use_feat2 && api < VK_API_VERSION_1_1)
+        api = VK_API_VERSION_1_1;
+
+    VkApplicationInfo app = {
+        .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
+        .pApplicationName = "pvr-vulkan-render-test",
+        .apiVersion = api,
+    };
+    VkInstanceCreateInfo ici = {
+        .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+        .pApplicationInfo = &app,
+    };
+    VkInstance instance;
+    VKCHECK(vkCreateInstance(&ici, NULL, &instance));
+
+    uint32_t ndev = 0;
+    VKCHECK(vkEnumeratePhysicalDevices(instance, &ndev, NULL));
+    if (ndev == 0)
+        DIE("no Vulkan physical device");
+    VkPhysicalDevice *devs = calloc(ndev, sizeof(*devs));
+    VKCHECK(vkEnumeratePhysicalDevices(instance, &ndev, devs));
+
+    VkPhysicalDevice phys = devs[0];
+    VkPhysicalDeviceProperties props;
+    vkGetPhysicalDeviceProperties(phys, &props);
+    printf("device: %s (api %u.%u.%u)\n", props.deviceName,
+           VK_VERSION_MAJOR(props.apiVersion), VK_VERSION_MINOR(props.apiVersion),
+           VK_VERSION_PATCH(props.apiVersion));
+
+    uint32_t nqf = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(phys, &nqf, NULL);
+    VkQueueFamilyProperties *qf = calloc(nqf, sizeof(*qf));
+    vkGetPhysicalDeviceQueueFamilyProperties(phys, &nqf, qf);
+
+    /* A graphics queue is the whole point here; do not silently accept less. */
+    uint32_t qfi = UINT32_MAX;
+    for (uint32_t i = 0; i < nqf; i++) {
+        if ((qf[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) && qfi == UINT32_MAX)
+            qfi = i;
+    }
+    if (qfi == UINT32_MAX) {
+        printf("RESULT: FAIL - no graphics queue family (only compute/transfer)\n");
+        printf("VERDICT: FAIL\n");
+        return 1;
+    }
+    printf("graphics queue family %u (flags=0x%x, count=%u)\n", qfi, qf[qfi].queueFlags,
+           qf[qfi].queueCount);
+
+    float prio = 1.0f;
+    VkDeviceQueueCreateInfo qci = {
+        .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+        .queueFamilyIndex = qfi,
+        .queueCount = 1,
+        .pQueuePriorities = &prio,
+    };
+    /* IO16=1 draws the same triangle, but the blue channel reaches the fragment
+     * stage through a 16-bit varying, so the image must come out identical. It
+     * needs storageInputOutput16 for the varying and storagePushConstant16 for
+     * the value the vertex stage forwards. (io16 is read above, because it
+     * forces the instance to 1.1.) */
+    VkPhysicalDeviceShaderFloat16Int8Features io_feat_f16 = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES,
+    };
+    VkPhysicalDevice8BitStorageFeatures io_feat8 = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_8BIT_STORAGE_FEATURES,
+        .pNext = &io_feat_f16,
+    };
+    VkPhysicalDevice16BitStorageFeatures io_feat16 = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_16BIT_STORAGE_FEATURES,
+        .pNext = &io_feat8,
+    };
+    VkPhysicalDeviceFeatures2 io_feat2 = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+        .pNext = &io_feat16,
+    };
+    if (io16) {
+        vkGetPhysicalDeviceFeatures2(phys, &io_feat2);
+        printf("storageInputOutput16 = %d, storagePushConstant16 = %d, shaderFloat16 = %d\n",
+               io_feat16.storageInputOutput16, io_feat16.storagePushConstant16,
+               io_feat_f16.shaderFloat16);
+        io_feat16.storageInputOutput16 = VK_TRUE;
+        io_feat16.storagePushConstant16 = VK_TRUE;
+        io_feat_f16.shaderFloat16 = VK_TRUE;
+    }
+
+    if (depth_clamp >= 0) {
+        vkGetPhysicalDeviceFeatures2(phys, &io_feat2);
+        printf("depthClamp = %d (asked for %d)\n", io_feat2.features.depthClamp, depth_clamp);
+        io_feat2.features.depthClamp = VK_TRUE;
+    }
+
+    if (vs_store) {
+        vkGetPhysicalDeviceFeatures2(phys, &io_feat2);
+        printf("vertexPipelineStoresAndAtomics = %d\n",
+               io_feat2.features.vertexPipelineStoresAndAtomics);
+        io_feat2.features.vertexPipelineStoresAndAtomics = VK_TRUE;
+    }
+
+    if (polygon_mode >= 0) {
+        vkGetPhysicalDeviceFeatures2(phys, &io_feat2);
+        printf("fillModeNonSolid = %d (asked for %s fill)\n",
+               io_feat2.features.fillModeNonSolid, polygon_mode == 0 ? "line" : "point");
+        io_feat2.features.fillModeNonSolid = VK_TRUE;
+    }
+
+    if (vp_env) {
+        VkPhysicalDeviceProperties props;
+        vkGetPhysicalDeviceProperties(phys, &props);
+        vkGetPhysicalDeviceFeatures2(phys, &io_feat2);
+        printf("multiViewport = %d, maxViewports = %u (asked for %u viewports)\n",
+               io_feat2.features.multiViewport, props.limits.maxViewports,
+               viewport_count);
+        io_feat2.features.multiViewport = VK_TRUE;
+    }
+
+    VkDeviceCreateInfo dci = {
+        .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+        .pNext = use_feat2 ? &io_feat2 : NULL,
+        .queueCreateInfoCount = 1,
+        .pQueueCreateInfos = &qci,
+    };
+    VkDevice dev;
+    VKCHECK(vkCreateDevice(phys, &dci, NULL, &dev));
+    VkQueue queue;
+    vkGetDeviceQueue(dev, qfi, 0, &queue);
+
+    VkPhysicalDeviceMemoryProperties mp;
+    vkGetPhysicalDeviceMemoryProperties(phys, &mp);
+
+    /* SAMPLES=2|4 exercises multisampled rendering with a resolve. The triangle
+     * covers the whole viewport, so every sample of every pixel gets the same value
+     * and the resolved image must equal the single-sample one exactly - which makes
+     * the existing pixel check a full correctness check for MSAA too. */
+    uint32_t samples = 1;
+    const char *samp_env = getenv("SAMPLES");
+    if (samp_env) {
+        samples = (uint32_t)strtoul(samp_env, NULL, 0);
+        if (samples != 1 && samples != 2 && samples != 4)
+            DIE("SAMPLES must be 1, 2 or 4");
+    }
+
+    /* ---- colour image -------------------------------------------------- */
+    /* FORMAT picks the render target's format: if the per-draw cost follows the
+     * surface's *bytes* rather than its pixels, the cost is surface-sized memory
+     * work (a tile buffer being created or cleared per frame, say) rather than fill. */
+    const char *fmt_env = getenv("FORMAT");
+    VkFormat target_format = VK_FORMAT_R8G8B8A8_UNORM;
+    int bpp = 4;
+    /* Which channels exist, and in what width. bpp alone cannot express this:
+     * rgba8 and rg16 are both 4 bytes per pixel but share no channel layout. */
+    enum { FMT_RGBA8, FMT_R8, FMT_R16, FMT_RG16 } fmt = FMT_RGBA8;
+    if (fmt_env && strcmp(fmt_env, "r8") == 0) {
+        target_format = VK_FORMAT_R8_UNORM;
+        bpp = 1;
+        fmt = FMT_R8;
+    } else if (fmt_env && strcmp(fmt_env, "rg16") == 0) {
+        target_format = VK_FORMAT_R16G16_UNORM;
+        bpp = 4; /* two 16-bit channels */
+        fmt = FMT_RG16;
+    } else if (fmt_env && strcmp(fmt_env, "r16") == 0) {
+        target_format = VK_FORMAT_R16_UNORM;
+        bpp = 2;
+        fmt = FMT_R16;
+    }
+
+    VkImageCreateInfo imci = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .imageType = VK_IMAGE_TYPE_2D,
+        .format = target_format,
+        .extent = { size, size, 1 },
+        .mipLevels = 1,
+        .arrayLayers = 1,
+        .samples = (VkSampleCountFlagBits)samples,
+        .tiling = VK_IMAGE_TILING_OPTIMAL,
+        .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+    };
+    VkImage image;
+    VKCHECK(vkCreateImage(dev, &imci, NULL, &image));
+
+    VkMemoryRequirements imr;
+    vkGetImageMemoryRequirements(dev, image, &imr);
+
+    uint32_t imti = UINT32_MAX;
+    for (uint32_t i = 0; i < mp.memoryTypeCount; i++) {
+        if ((imr.memoryTypeBits & (1u << i)) &&
+            (mp.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
+            imti = i;
+            break;
+        }
+    }
+    if (imti == UINT32_MAX)
+        DIE("no device-local memory type for the colour image");
+
+    VkMemoryAllocateInfo imai = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize = imr.size,
+        .memoryTypeIndex = imti,
+    };
+    VkDeviceMemory imem;
+    VKCHECK(vkAllocateMemory(dev, &imai, NULL, &imem));
+    VKCHECK(vkBindImageMemory(dev, image, imem, 0));
+
+    VkImageViewCreateInfo ivci = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+        .image = image,
+        .viewType = VK_IMAGE_VIEW_TYPE_2D,
+        .format = target_format,
+        .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
+    };
+    VkImageView view;
+    VKCHECK(vkCreateImageView(dev, &ivci, NULL, &view));
+
+    /* ---- resolve target (only when multisampled) ----------------------- */
+    VkImage resolve_image = image;
+    VkImageView resolve_view = view;
+    if (samples > 1) {
+        VkImageCreateInfo rici = imci;
+        rici.samples = VK_SAMPLE_COUNT_1_BIT;
+        VKCHECK(vkCreateImage(dev, &rici, NULL, &resolve_image));
+        VkMemoryRequirements rreq2;
+        vkGetImageMemoryRequirements(dev, resolve_image, &rreq2);
+        uint32_t rtype = 0;
+        for (uint32_t i = 0; i < mp.memoryTypeCount; i++) {
+            if (rreq2.memoryTypeBits & (1u << i)) {
+                rtype = i;
+                break;
+            }
+        }
+        VkMemoryAllocateInfo rmai = { .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                                      .allocationSize = rreq2.size,
+                                      .memoryTypeIndex = rtype };
+        VkDeviceMemory rmem2;
+        VKCHECK(vkAllocateMemory(dev, &rmai, NULL, &rmem2));
+        VKCHECK(vkBindImageMemory(dev, resolve_image, rmem2, 0));
+        VkImageViewCreateInfo rvci = ivci;
+        rvci.image = resolve_image;
+        VKCHECK(vkCreateImageView(dev, &rvci, NULL, &resolve_view));
+    }
+
+    /* ---- render pass --------------------------------------------------- */
+    /* LOADOP selects the attachment load operation: if the driver's per-draw cost
+     * is a full-surface clear, VK_ATTACHMENT_LOAD_OP_LOAD removes it. */
+    const char *loadop_env = getenv("LOADOP");
+    VkAttachmentLoadOp loadop = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    if (loadop_env && strcmp(loadop_env, "load") == 0)
+        loadop = VK_ATTACHMENT_LOAD_OP_LOAD;
+    else if (loadop_env && strcmp(loadop_env, "dontcare") == 0)
+        loadop = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+
+    /* STOREOP=dontcare drops the attachment store, which tests whether the
+     * per-frame cost is the driver writing the whole surface back. */
+    const char *storeop_env = getenv("STOREOP");
+    VkAttachmentStoreOp storeop = VK_ATTACHMENT_STORE_OP_STORE;
+    if (storeop_env && strcmp(storeop_env, "dontcare") == 0)
+        storeop = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+
+    /* AREA shrinks the render area without changing the surface, which separates
+     * "the driver's cost follows the pixels it actually covers" (fill-bound) from
+     * "it does full-surface work regardless" (an extra internal pass). */
+    uint32_t area_div = 1;
+    const char *area_env = getenv("AREA");
+    if (area_env && strcmp(area_env, "half") == 0)
+        area_div = 2;
+    else if (area_env && strcmp(area_env, "quarter") == 0)
+        area_div = 4;
+
+    const char *mode_env = getenv("MODE");
+    int do_render = 1, do_copy = 1;
+    int empty_pass = 0;
+    if (mode_env && strcmp(mode_env, "render") == 0)
+        do_copy = 0;
+    else if (mode_env && strcmp(mode_env, "copy") == 0)
+        do_render = 0;
+    else if (mode_env && strcmp(mode_env, "empty") == 0) {
+        /* Same render pass, no draw, nothing loaded or stored: isolates the per-pass
+         * setup cost from the cost of actually drawing. */
+        do_copy = 0;
+        empty_pass = 1;
+        loadop = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        storeop = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    }
+
+
+    VkAttachmentDescription att = {
+        .format = target_format,
+        .samples = (VkSampleCountFlagBits)samples,
+        .loadOp = loadop,
+        .storeOp = storeop,
+        .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+        .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        .finalLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+    };
+    VkAttachmentReference attref = { 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
+    /* Second attachment: the single-sample image the multisample one resolves into. */
+    VkAttachmentDescription resolve_att = {
+        .format = target_format,
+        .samples = VK_SAMPLE_COUNT_1_BIT,
+        .loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+        .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+        .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+        .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        .finalLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+    };
+    VkAttachmentReference resolve_ref = { 1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
+    VkSubpassDescription sub = {
+        .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
+        .colorAttachmentCount = 1,
+        .pColorAttachments = &attref,
+        .pResolveAttachments = samples > 1 ? &resolve_ref : NULL,
+    };
+    VkSubpassDependency dep = {
+        .srcSubpass = VK_SUBPASS_EXTERNAL,
+        .dstSubpass = 0,
+        .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        .srcAccessMask = 0,
+        .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+    };
+    VkAttachmentDescription attachments[2] = { att, resolve_att };
+    VkRenderPassCreateInfo rpci = {
+        .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
+        .attachmentCount = samples > 1 ? 2 : 1,
+        .pAttachments = attachments,
+        .subpassCount = 1,
+        .pSubpasses = &sub,
+        .dependencyCount = 1,
+        .pDependencies = &dep,
+    };
+    VkRenderPass rpass;
+    VKCHECK(vkCreateRenderPass(dev, &rpci, NULL, &rpass));
+
+    VkImageView fb_views[2] = { view, resolve_view };
+    VkFramebufferCreateInfo fbci = {
+        .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+        .renderPass = rpass,
+        .attachmentCount = samples > 1 ? 2 : 1,
+        .pAttachments = fb_views,
+        .width = size,
+        .height = size,
+        .layers = 1,
+    };
+    VkFramebuffer fb;
+    VKCHECK(vkCreateFramebuffer(dev, &fbci, NULL, &fb));
+
+    /* ---- pipeline ------------------------------------------------------ */
+    const bool use_dc_vert = depth_clamp >= 0;
+    VkShaderModuleCreateInfo vsci = {
+        .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+        .codeSize = vs_store ? sizeof(vsstore_vert_spv)
+                             : (use_dc_vert ? sizeof(dc_vert_spv)
+                                            : (io16 ? sizeof(io16_vert_spv) : sizeof(render_vert_spv))),
+        .pCode = vs_store ? vsstore_vert_spv
+                          : (use_dc_vert ? dc_vert_spv
+                                         : (io16 ? io16_vert_spv : render_vert_spv)),
+    };
+    VkShaderModule vs;
+    VKCHECK(vkCreateShaderModule(dev, &vsci, NULL, &vs));
+
+    VkShaderModuleCreateInfo fsci = {
+        .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+        .codeSize = io16 ? sizeof(io16_frag_spv) : sizeof(render_frag_spv),
+        .pCode = io16 ? io16_frag_spv : render_frag_spv,
+    };
+    VkShaderModule fs;
+    VKCHECK(vkCreateShaderModule(dev, &fsci, NULL, &fs));
+
+    /* VSSBO=1 gives the vertex stage a storage buffer to write to, which is what
+     * vertexPipelineStoresAndAtomics is about. The fragment stage and the image
+     * are untouched, so the pixel check still applies; the buffer is checked
+     * after the draw. */
+    VkDescriptorSetLayout vssbo_dsl = VK_NULL_HANDLE;
+    VkDescriptorPool vssbo_pool = VK_NULL_HANDLE;
+    VkDescriptorSet vssbo_set = VK_NULL_HANDLE;
+    VkBuffer vssbo_buf = VK_NULL_HANDLE;
+    VkDeviceMemory vssbo_mem = VK_NULL_HANDLE;
+    uint32_t *vssbo_map = NULL;
+    if (vs_store) {
+        VkDescriptorSetLayoutBinding vssbo_bind = {
+            .binding = 0,
+            .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            .descriptorCount = 1,
+            .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+        };
+        VKCHECK(vkCreateDescriptorSetLayout(dev,
+                                            &(VkDescriptorSetLayoutCreateInfo){
+                                               .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+                                               .bindingCount = 1,
+                                               .pBindings = &vssbo_bind },
+                                            NULL, &vssbo_dsl));
+        VKCHECK(vkCreateDescriptorPool(dev,
+                                       &(VkDescriptorPoolCreateInfo){
+                                          .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+                                          .maxSets = 1,
+                                          .poolSizeCount = 1,
+                                          .pPoolSizes = &(VkDescriptorPoolSize){
+                                             .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                             .descriptorCount = 1 } },
+                                       NULL, &vssbo_pool));
+        VKCHECK(vkAllocateDescriptorSets(dev,
+                                         &(VkDescriptorSetAllocateInfo){
+                                            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+                                            .descriptorPool = vssbo_pool,
+                                            .descriptorSetCount = 1,
+                                            .pSetLayouts = &vssbo_dsl },
+                                         &vssbo_set));
+        VKCHECK(vkCreateBuffer(dev,
+                               &(VkBufferCreateInfo){
+                                  .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                                  .size = 4096,
+                                  .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT },
+                               NULL, &vssbo_buf));
+        VkMemoryRequirements vssbo_req;
+        vkGetBufferMemoryRequirements(dev, vssbo_buf, &vssbo_req);
+        uint32_t vssbo_mt = 0;
+        for (uint32_t i = 0; i < mp.memoryTypeCount; i++) {
+            if ((vssbo_req.memoryTypeBits & (1u << i)) &&
+                (mp.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)) {
+                vssbo_mt = i;
+                break;
+            }
+        }
+        VKCHECK(vkAllocateMemory(dev,
+                                 &(VkMemoryAllocateInfo){
+                                    .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                                    .allocationSize = vssbo_req.size,
+                                    .memoryTypeIndex = vssbo_mt },
+                                 NULL, &vssbo_mem));
+        VKCHECK(vkBindBufferMemory(dev, vssbo_buf, vssbo_mem, 0));
+        VKCHECK(vkMapMemory(dev, vssbo_mem, 0, VK_WHOLE_SIZE, 0, (void **)&vssbo_map));
+        vssbo_map[0] = 0xDEADBEEFu;  /* marker, must be overwritten */
+        vssbo_map[1] = 0;            /* counter, must become a multiple of 3 */
+        vkUpdateDescriptorSets(dev, 1,
+                               &(VkWriteDescriptorSet){
+                                  .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                  .dstSet = vssbo_set,
+                                  .dstBinding = 0,
+                                  .descriptorCount = 1,
+                                  .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                  .pBufferInfo = &(VkDescriptorBufferInfo){
+                                     .buffer = vssbo_buf,
+                                     .range = VK_WHOLE_SIZE } },
+                               0, NULL);
+    }
+
+    VkPushConstantRange io16_pcr = {
+        .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+        .offset = 0,
+        .size = 4,
+    };
+    VkPipelineLayoutCreateInfo plci = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+        .setLayoutCount = vs_store ? 1 : 0,
+        .pSetLayouts = vs_store ? &vssbo_dsl : NULL,
+        .pushConstantRangeCount = io16 ? 1 : 0,
+        .pPushConstantRanges = io16 ? &io16_pcr : NULL,
+    };
+    VkPipelineLayout pl;
+    VKCHECK(vkCreatePipelineLayout(dev, &plci, NULL, &pl));
+
+    VkPipelineShaderStageCreateInfo stages[2] = {
+        { .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+          .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = vs, .pName = "main" },
+        { .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+          .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = fs, .pName = "main" },
+    };
+    VkPipelineVertexInputStateCreateInfo vi = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+    };
+    VkPipelineInputAssemblyStateCreateInfo ia = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+        .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+    };
+    /* One viewport by default, byte-identical to the original test. With
+     * VIEWPORTS=n the state carries n entries, and viewport/scissor are made
+     * dynamic so the vkCmdSetViewport/vkCmdSetScissor path with a count above
+     * one is exercised too (that is how real multiViewport applications set
+     * it up). */
+    VkViewport vp_arr[16];
+    VkRect2D sc_arr[16];
+    for (uint32_t i = 0; i < viewport_count; i++) {
+        vp_arr[i] = (VkViewport){ 0, 0, (float)size, (float)size, 0.0f, 1.0f };
+        sc_arr[i] = (VkRect2D){ { 0, 0 }, { size, size } };
+    }
+    VkPipelineViewportStateCreateInfo vps = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+        .viewportCount = viewport_count,
+        .pViewports = vp_arr,
+        .scissorCount = viewport_count,
+        .pScissors = sc_arr,
+    };
+    VkDynamicState dyn_states[2] = { VK_DYNAMIC_STATE_VIEWPORT,
+                                     VK_DYNAMIC_STATE_SCISSOR };
+    VkPipelineDynamicStateCreateInfo dyn = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+        .dynamicStateCount = vp_env ? 2 : 0,
+        .pDynamicStates = vp_env ? dyn_states : NULL,
+    };
+    VkPipelineRasterizationStateCreateInfo rs = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+        .depthClampEnable = (depth_clamp == 1) ? VK_TRUE : VK_FALSE,
+        .polygonMode = polygon_mode == 0   ? VK_POLYGON_MODE_LINE
+                       : polygon_mode == 1 ? VK_POLYGON_MODE_POINT
+                                           : VK_POLYGON_MODE_FILL,
+        .cullMode = VK_CULL_MODE_NONE,
+        .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
+        .lineWidth = 1.0f,
+    };
+    VkPipelineMultisampleStateCreateInfo ms_state = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+        .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
+    };
+    VkPipelineColorBlendAttachmentState cba = {
+        .colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                          VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+    };
+    VkPipelineColorBlendStateCreateInfo cb = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+        .attachmentCount = 1,
+        .pAttachments = &cba,
+    };
+    VkGraphicsPipelineCreateInfo gpci = {
+        .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+        .stageCount = 2,
+        .pStages = stages,
+        .pVertexInputState = &vi,
+        .pInputAssemblyState = &ia,
+        .pViewportState = &vps,
+        .pDynamicState = &dyn,
+        .pRasterizationState = &rs,
+        .pMultisampleState = &ms_state,
+        .pColorBlendState = &cb,
+        .layout = pl,
+        .renderPass = rpass,
+        .subpass = 0,
+    };
+    VkPipeline pipe;
+    VkResult pr = vkCreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gpci, NULL, &pipe);
+    if (pr != VK_SUCCESS)
+        DIE("vkCreateGraphicsPipelines -> %d (the graphics path is not usable)", (int)pr);
+    printf("graphics pipeline created\n");
+
+    /* ---- readback buffer ----------------------------------------------- */
+    VkDeviceSize bytes = (VkDeviceSize)size * size * 4;
+    VkBufferCreateInfo bci = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size = bytes,
+        .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+    };
+    VkBuffer buf;
+    VKCHECK(vkCreateBuffer(dev, &bci, NULL, &buf));
+    VkMemoryRequirements bmr;
+    vkGetBufferMemoryRequirements(dev, buf, &bmr);
+
+    uint32_t bmti = UINT32_MAX;
+    const VkMemoryPropertyFlags want =
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    for (uint32_t i = 0; i < mp.memoryTypeCount; i++) {
+        if ((bmr.memoryTypeBits & (1u << i)) &&
+            (mp.memoryTypes[i].propertyFlags & want) == want) {
+            bmti = i;
+            break;
+        }
+    }
+    if (bmti == UINT32_MAX)
+        DIE("no host-visible coherent memory type for readback");
+    VkMemoryAllocateInfo bmai = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize = bmr.size,
+        .memoryTypeIndex = bmti,
+    };
+    VkDeviceMemory bmem;
+    VKCHECK(vkAllocateMemory(dev, &bmai, NULL, &bmem));
+    VKCHECK(vkBindBufferMemory(dev, buf, bmem, 0));
+    void *mapped = NULL;
+    VKCHECK(vkMapMemory(dev, bmem, 0, VK_WHOLE_SIZE, 0, &mapped));
+
+    /* ---- commands ------------------------------------------------------ */
+    VkCommandPoolCreateInfo cpi = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+        .queueFamilyIndex = qfi,
+    };
+    VkCommandPool pool;
+    VKCHECK(vkCreateCommandPool(dev, &cpi, NULL, &pool));
+    VkCommandBufferAllocateInfo cbai = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .commandPool = pool,
+        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        .commandBufferCount = 1,
+    };
+    VkCommandBuffer cmd;
+    VKCHECK(vkAllocateCommandBuffers(dev, &cbai, &cmd));
+
+    VkFenceCreateInfo fci = { .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
+    VkFence fence;
+    VKCHECK(vkCreateFence(dev, &fci, NULL, &fence));
+
+    VkSubmitInfo si = {
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .commandBufferCount = 1,
+        .pCommandBuffers = &cmd,
+    };
+
+    /* BATCH=n records n frames into one command buffer and submits once. With
+     * BATCH=1 every frame is its own submit+fence wait, which is how a compositor
+     * or a game actually behaves; the difference between the two is what a
+     * submit path costs on this driver. */
+    int batch = 1;
+    const char *batch_env = getenv("BATCH");
+    if (batch_env) {
+        batch = atoi(batch_env);
+        if (batch < 1)
+            batch = 1;
+        if (batch > iters)
+            batch = iters;
+    }
+
+    /* MODE splits the two halves of the workload so a gap can be attributed: the
+     * draw itself, or the image->buffer copy that follows it. */
+    printf("rendering %d x %ux%u offscreen frames (BATCH=%d, MODE=%s, bpp=%d)...\n", iters, size, size,
+           batch, empty_pass ? "empty" : (do_render ? (do_copy ? "both" : "render") : "copy"), bpp);
+    g_timing = getenv("PVR_TIMING") != NULL;
+    double t0 = now_ms();
+    int done = 0;
+    while (done < iters) {
+        int n = iters - done;
+        if (n > batch)
+            n = batch;
+        double _r0 = now_ms();
+        VkCommandBufferBeginInfo cbbi = {
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+        };
+        VKCHECK(vkBeginCommandBuffer(cmd, &cbbi));
+
+        for (int k = 0; k < n; k++) {
+        VkClearValue clear = { .color = { { 0.0f, 0.0f, 0.0f, 1.0f } } };
+        VkRenderPassBeginInfo rpbi = {
+            .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+            .renderPass = rpass,
+            .framebuffer = fb,
+            .renderArea = { { 0, 0 }, { size / area_div, size / area_div } },
+            .clearValueCount = 1,
+            .pClearValues = &clear,
+        };
+        if (do_render) {
+            vkCmdBeginRenderPass(cmd, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
+            if (!empty_pass) {
+                vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+                if (vp_env) {
+                    vkCmdSetViewport(cmd, 0, viewport_count, vp_arr);
+                    vkCmdSetScissor(cmd, 0, viewport_count, sc_arr);
+                }
+                if (vs_store) {
+                    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pl, 0, 1,
+                                            &vssbo_set, 0, NULL);
+                }
+                if (io16) {
+                    /* 0.25 as an IEEE half: 0x3400, in the low half of the dword. */
+                    const uint32_t half_quarter = 0x00003400u;
+                    vkCmdPushConstants(cmd, pl, VK_SHADER_STAGE_VERTEX_BIT, 0, 4,
+                                       &half_quarter);
+                }
+                vkCmdDraw(cmd, 3, 1, 0, 0);
+            }
+            vkCmdEndRenderPass(cmd);
+        }
+
+        if (!do_copy)
+            continue;
+
+        /* Render pass -> readback dependency. Whether a conformant driver owes
+         * this implicitly is the question this gate answers: with the barrier the
+         * copy must see the render pass's writes, without it the driver is left
+         * to infer the dependency from the copy's implicit layout transition.
+         * PVR_NO_READBACK_BARRIER=1 restores the old behaviour for A/B. */
+        if (do_render && !getenv("PVR_NO_READBACK_BARRIER")) {
+            VkImageMemoryBarrier dep = {
+                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+                .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .image = samples > 1 ? resolve_image : image,
+                .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
+            };
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                 VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &dep);
+        }
+
+        VkBufferImageCopy region = {
+            .bufferOffset = 0,
+            .bufferRowLength = 0,
+            .bufferImageHeight = 0,
+            .imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
+            .imageOffset = { 0, 0, 0 },
+            .imageExtent = { size, size, 1 },
+        };
+        vkCmdCopyImageToBuffer(cmd, samples > 1 ? resolve_image : image,
+                               VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buf, 1, &region);
+        }
+        VKCHECK(vkEndCommandBuffer(cmd));
+        double _r1 = now_ms();
+
+        VKCHECK(vkResetFences(dev, 1, &fence));
+        VKCHECK(vkQueueSubmit(queue, 1, &si, fence));
+        double _s1 = now_ms();
+        VkResult w = vkWaitForFences(dev, 1, &fence, VK_TRUE, 10ull * 1000 * 1000 * 1000);
+        if (g_timing) {
+            g_record_ms += _r1 - _r0;
+            g_submit_ms += _s1 - _r1;
+            g_wait_ms += now_ms() - _s1;
+        }
+        if (w != VK_SUCCESS)
+            DIE("vkWaitForFences after %d frame(s) -> %d (GPU never signalled)", done + n,
+                (int)w);
+        done += n;
+    }
+    double t1 = now_ms();
+
+    if (g_timing) {
+        double n = iters > 0 ? iters : 1;
+        double batches = (double)iters / (batch > 0 ? batch : 1);
+        printf("timing per frame: record=%.3f ms, submit=%.3f ms, gpu_wait=%.3f ms (%.0f batches)\n",
+               g_record_ms / n, g_submit_ms / batches, g_wait_ms / batches, batches);
+    }
+
+    /* PVR_DUMP=1 prints the first bytes the readback actually delivered, in every
+     * mode including the ones that cannot self-verify. That separates "the draw
+     * produced nothing" from "the transfer delivered nothing": the clear colour
+     * is a known non-zero value, so zeros here mean the copy path, not the draw. */
+    if (getenv("PVR_DUMP")) {
+        printf("readback[0..15]:");
+        for (int i = 0; i < 16; i++)
+            printf(" %02x", ((const unsigned char *)mapped)[i]);
+        printf(" (bpp=%d, %ux%u, clear=%d,%d,%d,%d)\n", bpp, size, size, 2, 2, 64, 255);
+    }
+
+    /* ---- verify -------------------------------------------------------- */
+    if (!(do_render && do_copy)) {
+        printf("verification skipped: MODE=%s only exercises part of the frame\n",
+               do_render ? "render" : "copy");
+        return 0;
+    }
+    const unsigned char *px = mapped;
+    uint64_t bad = 0, edge_blended = 0, edge_bad = 0, nonclear = 0;
+    uint32_t fx = 0, fy = 0;
+    int er = 0, eg = 0, eb = 0, ea = 0, gr = 0, gg = 0, gb = 0, ga = 0;
+    for (uint32_t y = 0; y < size; y++) {
+        for (uint32_t x = 0; x < size; x++) {
+            const unsigned char *p = px + ((size_t)y * size + x) * bpp;
+            int wr = 0, wg = 0, wb = 0, wa = 0, gr = 0, gg = 0, gb = 0, ga = 0;
+            bool ok;
+
+            /* Non-solid polygon modes are counted, not pattern-matched. A
+             * wireframe of the full-screen triangle touches only its edges and a
+             * point fill touches only its corners, so "a small, non-zero fraction
+             * of the target was written" is the whole check - and it can only
+             * pass if the polygon mode actually changed rasterisation. */
+            if (polygon_mode >= 0) {
+                if (p[0] | p[1] | p[2])
+                    nonclear++;
+                continue;
+            }
+
+            /* Each format is checked against what the shader's normalized output
+             * must become in that format - the same expression, encoded at the
+             * target's width. A single-channel target simply has no green, blue
+             * or alpha to compare against. */
+            switch (fmt) {
+            case FMT_R8:
+                wr = expect_r(x);
+                gr = p[0];
+                ok = gr == wr;
+                break;
+            case FMT_R16: {
+                int v = p[0] | (p[1] << 8);
+                wr = expect_r16(x);
+                gr = v;
+                ok = v == wr;
+                break;
+            }
+            case FMT_RG16: {
+                int vr = p[0] | (p[1] << 8), vg = p[2] | (p[3] << 8);
+                wr = expect_r16(x); wg = expect_r16(y);
+                gr = vr; gg = vg;
+                ok = vr == wr && vg == wg;
+                break;
+            }
+            default:
+                if (depth_clamp == 0) {
+                    /* Clamped off, so the triangle is clipped away entirely and the
+                     * target must still be the clear colour. */
+                    wr = 0; wg = 0; wb = 0; wa = 255;
+                } else {
+                    wr = expect_r(x); wg = expect_r(y); wb = 64; wa = 255;
+                }
+                /* With MSAA the triangle's hypotenuse passes through the top-right
+                 * corner, so pixels on that edge are only partially covered and the
+                 * resolve blends toward the background - a correct result that is not
+                 * equal to the single-sample value. Those pixels are checked for a
+                 * plausible blend instead, and the interior is still checked
+                 * exactly. */
+                if (samples > 1 && (int)(x + y) >= (int)size - 3) {
+                    int maxr = wr > 0 ? wr : 1, maxg = wg > 0 ? wg : 1;
+                    if (p[0] > maxr || p[1] > maxg || p[2] > 64)
+                        edge_bad++;
+                    else
+                        edge_blended++;
+                    continue;
+                }
+                gr = p[0]; gg = p[1]; gb = p[2]; ga = p[3];
+                ok = gr == wr && gg == wg && gb == wb && ga == wa;
+                break;
+            }
+
+            if (!ok) {
+                if (bad == 0) {
+                    fx = x; fy = y;
+                    er = wr; eg = wg; eb = wb; ea = wa;
+                }
+                bad++;
+            }
+        }
+    }
+
+    double ms_total = t1 - t0;
+    printf("%d frame(s) in %.3f ms (%.3f ms/frame, %.1f Mpix/s)\n", iters, ms_total,
+           ms_total / iters, (double)size * size * iters / (ms_total / 1000.0) / 1e6);
+
+    if (polygon_mode >= 0) {
+        const char *name = polygon_mode == 0 ? "line" : "point";
+        const uint64_t limit = (uint64_t)size * size / 8;
+        const bool ok = nonclear > 0 && nonclear < limit;
+
+        printf("polygon mode %s: %llu of %u pixels written (%.2f%%; want non-zero and under 12.5%%)\n",
+               name, (unsigned long long)nonclear, size * size,
+               100.0 * (double)nonclear / ((double)size * size));
+        printf("  %s  non-solid fill drew a sparse fraction of the target\n", ok ? "ok  " : "FAIL");
+        printf("RESULT: %s - polygon mode %s\n", ok ? "PASS" : "FAIL", name);
+        printf("VERDICT: %s\n", ok ? "PASS" : "FAIL");
+        return ok ? 0 : 1;
+    }
+    /* The vertex stage's storage buffer, if VSSBO=1. The store is checked for its
+     * exact value; the atomic is checked as "ran at least once and always in
+     * steps of three" rather than against a fixed count, because the number of
+     * vertex shader invocations is the hardware's business, not the test's. */
+    bool vssbo_ok = true;
+    if (vs_store) {
+        printf("vertex-stage SSBO: marker = 0x%08x (want 0xabcd1234), counter = %u "
+               "(want non-zero and a multiple of 3)\n",
+               vssbo_map[0], vssbo_map[1]);
+        vssbo_ok = vssbo_map[0] == 0xABCD1234u && vssbo_map[1] != 0 &&
+                   (vssbo_map[1] % 3) == 0;
+        printf("  %s  vertex-stage store and atomic\n", vssbo_ok ? "ok  " : "FAIL");
+    }
+
+    if (viewport_count > 1)
+        printf("multiViewport: %u viewports and %u scissors accepted; viewport 0 drives "
+               "rasterisation, so the image above must be unchanged\n",
+               viewport_count, viewport_count);
+
+    if (bad) {
+        printf("RESULT: FAIL - %llu/%u pixels wrong (first at %u,%u: want %d,%d,%d,%d got %d,%d,%d,%d)\n",
+               (unsigned long long)bad, size * size, fx, fy, er, eg, eb, ea, gr, gg, gb, ga);
+    } else {
+        printf("RESULT: PASS - %u/%u pixels correct\n", size * size, size * size);
+    }
+    printf("VERDICT: %s\n", (bad || !vssbo_ok) ? "FAIL" : "PASS");
+
+    return bad ? 1 : 0;
+}

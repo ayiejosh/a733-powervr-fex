@@ -1,0 +1,38 @@
+#version 450
+// Address delivered exactly the way a real application delivers one: a uint64_t
+// member of the push constant block, reinterpreted as a buffer reference. This is
+// the DXVK/vkd3d shape, and it is the variant most likely to expose a bug in the
+// 64-bit push-constant path rather than in buffer device addresses themselves.
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+
+layout(local_size_x = 64) in;
+
+layout(buffer_reference, std430, buffer_reference_align = 4) buffer Buf {
+    uint v[];
+};
+
+layout(push_constant, std430) uniform PC {
+    uint64_t addr;
+    uint     count;
+    uint     mode;
+} pc;
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= pc.count)
+        return;
+
+    Buf b = Buf(pc.addr);
+
+    // 2: store a constant that encodes the lane index. Needs no prior content,
+    //    so it isolates "did the write land at addr + 4*i" from any read bug.
+    // 1: global atomic through the address.
+    // 0: load + store through the address.
+    if (pc.mode == 2u)
+        b.v[i] = 0xA5A50000u | i;
+    else if (pc.mode == 1u)
+        atomicAdd(b.v[i], 1u);
+    else
+        b.v[i] = b.v[i] + 1u;
+}
