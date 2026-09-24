@@ -33,9 +33,25 @@ command -v sysbench >/dev/null && \
   m cpu.1thread.evps "$(bestmax "$PIN sysbench cpu --cpu-max-prime=20000 --threads=1 --time=6 run 2>/dev/null | num 'events per second:[ ]*[0-9.]+'")"
 
 # --- GPU (PowerVR GLES throughput) ---
+# glbench measures the VENDOR GLES path (LD_LIBRARY_PATH=/usr/local/lib). The desktop
+# GL change (system/desktop-gl-zink) exports MESA_LOADER_DRIVER_OVERRIDE=zink and the
+# rest session-wide, and inherited into this script that makes Mesa's EGL try zink on
+# the GBM platform: the vendor path then dies with `eglInitialize 0x3001` and all four
+# rows read NA - which looks exactly like a GPU regression but is not one. Strip those
+# variables for this section only. (Measured 2026-09-24: NA with them set, and
+# 7589/2225/579/147 Mpix with them unset, against the 7392/2229/579/147 baseline.)
+GLBENCH_ENV="env -u MESA_LOADER_DRIVER_OVERRIDE -u GALLIUM_DRIVER -u LIBGL_DRIVERS_PATH \
+  -u LIBGL_KOPPER_DRI2 -u LIBGL_ALWAYS_SOFTWARE -u VK_ICD_FILENAMES -u VK_DRIVER_FILES \
+  -u VK_INSTANCE_LAYERS -u VK_LAYER_PATH -u PVR_FAKE_GS -u PVR_FAKE_FILL"
+G16=""
 for L in 4 16 64 256; do
-  m gpu.glbench.loop$L.Mpix "$(LD_LIBRARY_PATH=$LD timeout 90 /tmp/glbench /dev/dri/renderD128 $L 300 2>/dev/null | num '[0-9.]+ ?Mpix')"
+  V=$($GLBENCH_ENV LD_LIBRARY_PATH=$LD timeout 90 /tmp/glbench /dev/dri/renderD128 $L 300 2>/dev/null | num '[0-9.]+ ?Mpix')
+  m gpu.glbench.loop$L.Mpix "$V"
+  if [ "$L" = 16 ]; then G16="$V"; fi
 done
+if [ -z "$G16" ]; then
+  echo "# note: glbench produced no number - check for a session-wide Mesa override (see comment above)"
+fi
 
 # --- FEX: unaligned atomic (off0 aligned / off2 unaligned / off14 split-lock), patched + stock ---
 A0=$($PIN "$FEXI" /tmp/uatomic_x86 30000000 0 2>/dev/null | num '[0-9.]+ Mops'); m fex.atomic.off0.Mops "$A0"

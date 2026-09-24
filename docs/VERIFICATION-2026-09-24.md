@@ -144,13 +144,11 @@ Canonical `bench/run.sh` vs `bench/baseline.txt` — CPU/FEX side reproduces:
 | fex.x87.RP0 / RP1 → ratio | 76.8 / 4.1 → **18.7×** | 77.3 / 4.1 → 18.9× |
 | gpu.glbench loop4/16/64/256 Mpix | 7589 / 2225 / 579 / 147 | 7392 / 2229 / 579 / 147 |
 
-**Tooling gotcha found:** in the canonical run the four `gpu.glbench` rows read **NA**. Cause is
-not the GPU: `bench/run.sh` inherits the Plasma session environment, and
+**Tooling gotcha found (fixed, see §8.2):** in the canonical run the four `gpu.glbench` rows read
+**NA**. Cause is not the GPU: `bench/run.sh` inherits the Plasma session environment, and
 `MESA_LOADER_DRIVER_OVERRIDE=zink` makes Mesa's EGL try zink on the GBM platform, so the vendor
 GLES path fails `eglInitialize (0x3001)`. With the session GL variables unset the same binary
-gives the four rows above, matching baseline within 3%. Fix the runner by unsetting
-`MESA_LOADER_DRIVER_OVERRIDE GALLIUM_DRIVER LIBGL_DRIVERS_PATH LIBGL_KOPPER_DRI2 VK_ICD_FILENAMES
-VK_INSTANCE_LAYERS VK_LAYER_PATH PVR_FAKE_GS PVR_FAKE_FILL` for the GL section.
+gives the four rows above, matching baseline within 3%.
 
 ## 6. Verdict per gain
 
@@ -186,3 +184,55 @@ VK_INSTANCE_LAYERS VK_LAYER_PATH PVR_FAKE_GS PVR_FAKE_FILL` for the GL section.
 `d3d11.dll = 4c4bd57926b7c0fce96783202e0e7f68` (shipping BCn), DXVK-Sarek back on
 `bcn-update-20260921` with 0 tracked changes, `pvrsrvkm` loaded, `X=1 kwin=1 plasma=1 picom=1`,
 GPU 1104 MHz / DSU 1027 MHz, GUI answering. Nothing pushed.
+
+---
+
+## 8. Addendum — both findings fixed the same day
+
+### 8.1 The GS dll is no longer on an old base
+
+Why it was stale: the GS work was written **2026-06-21** against `main` as of 2026-06-16
+(`27c050b5`); the shipping branch `bcn-update-20260921` was assembled afterwards from upstream
+1.14 + the 2026-07-02 BC1-5 patch and reached **4830 commits** past that common base. The GS
+branch was never rebased — it stayed a research branch whose dll was swapped in by hand for
+benchmarks, which is exactly why nobody noticed that a BC-textured app could not run on it.
+
+| branch | tip | contents |
+|---|---|---|
+| `gs-latest` | `80756906` | shipping base + all 9 GS commits (M1–M3 + the 3 folds) |
+| `gs-latest-nofold` | `8652b433` | shipping base + M1–M3 only (the fold reference point) |
+
+Both are merges of the GS line onto `bcn-update-20260921`; one conflict each, the same one
+(`d3d11_options.h`, upstream and GS both appended option fields — both kept).
+`dxbc_compiler.cpp` auto-merged although 455 GS lines met 235 lines of upstream drift, and
+upstream drift touches **no GS-added line**: the two ported branches differ by exactly the folds
+(3 files, +107/−194 — the same shape as on the old base). **Builds clean with no source change.**
+
+Verification, vendor ICD, one session:
+
+| check | result |
+|---|---|
+| `gs.exe` gate on the ported build | `GS_OK`, green, rc=0 |
+| `cube.exe` (the app that page-faulted) | **`CUBE_DONE`, rc=0** |
+| BC battery | `bctex`/`bc2t`/`bc4t`/`bc5t`/`bcdxvk`/`bcdxvk3` all OK |
+| other non-GS apps | `tri`, `tex`, `compute`, `rtt`, `mrt2`, `depth`, `cgs`, `cgs2`, `min_d3d11` — 15/15 |
+| nogs on the ported dll | 0.7093 / 0.7148 ms/frame vs shipping 0.7169 — parity |
+
+And the folds keep their value on the shipping base (same session, same base):
+
+| run | µs/draw |
+|---|---:|
+| no folds (`gs-latest-nofold`) | 1007.479 / 1004.254 |
+| folded (`gs-latest`) | 674.817 / 677.519 / 680.514 |
+| nogs baseline | 11.083 / 11.168 / 11.201 / 12.391 |
+
+**−32.6% per draw** (1005.9 → 677.6) — the same as on June main. Penalty ≈ **60×** the no-GS
+baseline. Still not default-on: the path's shape assumptions, the un-intercepted draw verbs, the
+implicit post-dispatch barrier and the missing fallback all stand (see §6, item 1 is now done).
+
+### 8.2 `bench/run.sh` GPU rows
+
+`bench/run.sh` now strips the session GL variables for the glbench section and prints a note if a
+row still comes back empty. Re-run after the fix: **7616 / 2224 / 579 / 147** Mpix vs the
+7392 / 2229 / 579 / 147 baseline — the four rows are back and the tool no longer reports a
+phantom GPU regression.
