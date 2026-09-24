@@ -21,7 +21,9 @@
 #   LOGDIR        default ./logs-<timestamp> (each phase keeps its own logs there)
 #   GS_DLL        dll built from a `gs-*` branch, required by the gs phase
 #   QUICK=1       three-app smoke matrix instead of the full one
-set -u
+# `pipefail` matters: run_phase pipes each phase through `tee`, and without it the
+# pipeline's status is tee's - a failing phase would be reported as ok.
+set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
