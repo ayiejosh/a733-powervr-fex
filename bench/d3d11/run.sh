@@ -107,7 +107,7 @@ timed_one() {
     ( cd "$D3D_BIN" && timeout 900 "$PLAIN" "$@" ) > "$LOGDIR/timed-$label.log" 2>&1
     local rc=$?
     printf '  %-16s rc=%-4s %s\n' "$label" "$rc" \
-        "$(grep -aE "RESULT|totalMs|msPerFrame" "$LOGDIR/timed-$label.log" | tail -1 | cut -c1-88)"
+        "$(grep -aE "RESULT|totalMs|msPerFrame" "$LOGDIR/timed-$label.log" | tail -1 | cut -c1-120)"
 }
 
 do_timed() {
@@ -139,7 +139,7 @@ gs_run() {   # gs_run <label> <dll> <wrapper> <timeout> <app> [args...]
     ( cd "$D3D_BIN" && timeout "$tmo" "$wrapper" "./$@" ) > "$LOGDIR/gs-$label.log" 2>&1
     local rc=$?
     printf '  %-18s rc=%-4s %s\n' "$label" "$rc" \
-        "$(grep -aE "RESULT|GS_OK|GS_FAIL|center RGB|CUBE_DONE" "$LOGDIR/gs-$label.log" | tail -1 | cut -c1-78)"
+        "$(grep -aE "RESULT|GS_OK|GS_FAIL|center RGB|CUBE_DONE" "$LOGDIR/gs-$label.log" | tail -1 | cut -c1-110)"
 }
 
 do_gsab() {

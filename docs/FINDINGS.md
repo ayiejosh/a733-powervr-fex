@@ -223,6 +223,16 @@ leaving all four `gpu.glbench` rows NA — which reads like a GPU regression but
 for the glbench section and warns if a row still comes back empty. Verified after the fix:
 **7616/2224/579/147** Mpix vs the 7392/2229/579/147 baseline.
 
+### One entry point for all of it: `bench/full.sh`
+Four selectable phases — `canonical` (CPU/FEX/GPU GLES), `d3d` (the 30-program D3D11
+matrix + the timed suite, now in-tree under `bench/d3d11/`), `gs` (geometry-shader
+emulation A/B) and `open` (the Vulkan/GL suite on the open driver through the module-swap
+wrapper). Per-phase logs plus a `SUMMARY.txt`; a failed phase does not hide the others and
+the exit status is non-zero if any failed. `docs/FULL-BENCHMARK.md` records what is
+covered, what is not, and when two numbers may be compared (same session for evidence,
+`baseline.txt` only with the clock overlays applied and the session GL environment
+stripped, never by md5 — the arm64ec link is not bit-reproducible).
+
 ### Known-failing D3D apps, confirmed pre-existing (layer on == layer off)
 `msaa.exe`/`msaa2.exe` (MSAA_FAIL, no MSAA in the blob), `tess.exe` (rc=3, no tessellation),
 `d7test.exe`/`d3d7test.exe` (no D3DHALDevice), and `mrt.exe` (MRT_FAIL — the

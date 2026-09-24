@@ -236,3 +236,42 @@ implicit post-dispatch barrier and the missing fallback all stand (see §6, item
 row still comes back empty. Re-run after the fix: **7616 / 2224 / 579 / 147** Mpix vs the
 7392 / 2229 / 579 / 147 baseline — the four rows are back and the tool no longer reports a
 phantom GPU regression.
+
+---
+
+## 9. The benchmark is now a single command
+
+Everything above was assembled by hand, phase by phase. It is now packaged:
+
+| file | what it adds |
+|---|---|
+| `bench/full.sh` | one entry point, four selectable phases (`canonical`, `d3d`, `gs`, `open`), per-phase logs + `SUMMARY.txt`, non-zero exit if any phase failed |
+| `bench/d3d11/` | the 30-program D3D11 harness in-tree: `matrix` (with expectations and the five known-open rows classified), `timed` (the suite behind `BENCHMARKS.md`), `gsab` (dll-swapping A/B), `build.sh` for mingw-w64 |
+| `docs/FULL-BENCHMARK.md` | what is covered, what is **not** (no real apps, no D3D9/10, no soak, no WoW64), and when two numbers may be compared |
+| `.gitignore` | `bench/logs-*/`, `bench/d3d11/logs-*/` |
+
+### The end-to-end run — one command, four phases, all green
+
+`GS_DLL=<gs-latest dll> bench/full.sh all`, logs in `bench/logs-20260924-094539/`, `failed: none`:
+
+| phase | result |
+|---|---|
+| canonical | cpu.1thread **847.30**, glbench **7589/2227/579/147** (baseline 7392/2229/579/147), FEX atomics 153.9/61.9/56.5 Mops, x87 ratio **19.3×** |
+| d3d | matrix **21 clean, 6 known-open, 0 unexpected**; drawbench a **4.686 µs/draw** (repeat 4.440), PSO swap 7.665, present 3.19 ms/frame, bench 184 fps, instancing 185k tris/s |
+| open | **29 passed, 0 failed, 0 known-open**, desktop restored |
+| gs | `gs.exe` **GS_OK**, gs **688.3 / 687.1 µs/draw**, BC-texture canary `CUBE_DONE`, deployed dll restored |
+
+### Three bugs the first end-to-end runs found (all fixed)
+
+1. `run.sh matrix` crashed with `QUICK: unbound variable` whenever `QUICK` was not set — the
+   quick path had only ever been tested with it set.
+2. Every phase is piped through `tee`, and without `set -o pipefail` a *failing* phase was
+   reported as **ok**: the first full run announced "phase d3d: ok" over a matrix that had died
+   on the line above it.
+3. The `open` phase must strip the session zink/feature-strip variables before handing the board
+   to `regress.sh`, or the strip layer fakes and removes features on the open driver too and the
+   `depthClamp`/`vk13` cases stop testing what their names say.
+
+One caveat for reading the `gs` phase: it runs right after `open`, while the desktop is coming
+back, so its *nogs* baseline is inflated (20.7 µs/draw against 11.2 quiet). The `gs` absolutes
+are unaffected (688 vs 677 µs/draw) — run the phase on a quiet board when the ratio is the point.
