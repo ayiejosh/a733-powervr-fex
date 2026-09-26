@@ -18,6 +18,51 @@ gcc -O3 -fopenmp -march=native cpubench.c -o cpubench -lm
 ./cpubench <loop> <frames>
 ```
 
+### The windowed path (`gles-x11.c`) — and the per-frame-sync wall
+`glbench` never presents. `gles-x11.c` creates a real X11 window, a real EGL window surface and
+calls `eglSwapBuffers` every frame, timing draw / `glFinish` / swap separately.
+```sh
+gcc -O2 gles-x11.c -o /tmp/gles-x11 -lX11 -lEGL -lGLESv2
+LD_LIBRARY_PATH=/usr/local/lib DISPLAY=:0 SWAP_INTERVAL=0 /tmp/gles-x11 800 600 64 200
+LD_LIBRARY_PATH=/usr/local/lib BLIT=1 SWAP_INTERVAL=0 /tmp/gles-x11 800 600 64 200  # offscreen+copy
+glrun /tmp/gles-x11 800 600 64 300                                                  # via zink->Vulkan
+```
+Measured 2026-09-22 (vendor stack, GPU at 1104 MHz): off-screen FBO **579 Mpix/s** at loop 64, but
+the *same shader* pipelined vs one `glFinish()` per frame off-screen is 9 125 → 756 fps (loop 1) and
+598 → 21 fps (loop 64). A per-frame sync costs **1.3–48 ms** and scales with the shader; the window
+buffer, the swap and the X server were each ruled out (see `../docs/GPU-RESEARCH-2026-09-22.md` §2.3).
+Windowed throughput is a flat ≈18 Mpix/s at every resolution; at 1920×1080 with a light shader,
+vsync'd, it holds **59.8 fps** — so 1080p60 GPU compositing is feasible, heavy per-pixel work is not.
+
+### What the vendor EGL actually offers (`egl-configs.c`)
+Written to explain why KWin cannot start GL compositing ("Cannot find EGLConfig, returning null
+config" from Qt, then a KWin segfault — see `../docs/GPU-RESEARCH-2026-09-22.md` §7).
+```sh
+gcc -O2 egl-configs.c -o /tmp/egl-configs -lX11 -lEGL
+LD_LIBRARY_PATH=/usr/local/lib DISPLAY=:0 /tmp/egl-configs   # vendor PowerVR EGL
+DISPLAY=:0 /tmp/egl-configs                                  # system Mesa EGL, for contrast
+```
+Vendor result: 36 configs, all window-capable, all ES2/ES3, 18 with alpha=8, mapped to visuals 33
+and 34 only; RGB888+WINDOW+ES2, RGB888+ALPHA8+depth24+stencil8 and BUFFER_SIZE=32+ALPHA8 all match —
+but **desktop OpenGL (`EGL_OPENGL_BIT`) has no config at all**, because the DDK is GLES-only.
+
+It also cross-references X's three visuals against the EGL configs: all three — including the
+32-bit ARGB visual a compositor needs — have a matching config. So the failure is not a missing
+class of config, it is *which API the request names*: see `egl-trace.c` below.
+
+### Whose request fails, and with what attributes (`egl-trace.c`)
+```sh
+gcc -shared -fPIC -O2 egl-trace.c -o /tmp/egl-trace.so -ldl
+LD_PRELOAD=/tmp/egl-trace.so LD_LIBRARY_PATH=/usr/local/lib kwin_x11 --version
+```
+Dumps every `eglChooseConfig` a process makes (also hooks `eglGetProcAddress`, since Qt resolves
+entry points through it). KWin's compositing init asks `RENDERABLE_TYPE=8` (`EGL_OPENGL_BIT`,
+desktop GL) six times, gets `matched=0` every time, logs Qt's *"Cannot find EGLConfig, returning
+null config"*, and then calls `eglCreateContext(config=NULL)` — which this driver answers with a
+non-null context **and** `EGL_BAD_CONFIG`. `KWIN_COMPOSE=O2ES`, `KWIN_OPENGL_INTERFACE=egl` and
+`QT_OPENGL=es2` all leave the request unchanged. Full analysis:
+[`../docs/GPU-RESEARCH-2026-09-22.md`](../docs/GPU-RESEARCH-2026-09-22.md) §7.
+
 ## GPU present & usable (Vulkan ICD probe)
 ```sh
 gcc vkprobe.c -o vkprobe -ldl

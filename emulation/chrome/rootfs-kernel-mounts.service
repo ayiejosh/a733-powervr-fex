@@ -1,0 +1,19 @@
+[Unit]
+Description=Mount kernel filesystems into the x86-64 FEX rootfs
+Documentation=file:/home/radxa/trixie-prep/docs/FEX-BOX-TUNING-2026-09-22.md
+# The rootfs must exist before we can mount into it. Guard against boot order.
+RequiresMountsFor=/home/radxa/crd-rootfs
+After=local-fs.target
+ConditionPathIsDirectory=/home/radxa/crd-rootfs
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Idempotent: skips anything already mounted, so re-running is harmless.
+ExecStart=/home/radxa/trixie-prep/emulation/chrome/rootfs-mounts.sh
+ExecStop=/home/radxa/trixie-prep/emulation/chrome/rootfs-mounts.sh --unmount
+# Mounting needs privileges; the script itself re-checks uid and refuses otherwise.
+User=root
+
+[Install]
+WantedBy=multi-user.target

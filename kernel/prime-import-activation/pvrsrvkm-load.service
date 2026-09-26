@@ -1,0 +1,14 @@
+[Unit]
+Description=Load the PowerVR kernel module (pvrsrvkm) before the desktop
+Documentation=file:/home/radxa/prime-build/staged/README.md
+After=local-fs.target systemd-modules-load.service
+Before=display-manager.service graphical.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/sbin/modprobe pvrsrvkm
+ExecStartPost=/bin/bash -c 'grep -q "^pvrsrvkm " /proc/modules && echo "pvrsrvkm loaded: $(od -An -tx1 /sys/module/pvrsrvkm/notes/.note.gnu.build-id | tr -d " \n" | sed "s/^040000001400000003000000474e5500//")" || (echo "pvrsrvkm FAILED to load"; exit 1)'
+
+[Install]
+WantedBy=graphical.target

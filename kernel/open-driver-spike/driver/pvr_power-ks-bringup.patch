@@ -1,0 +1,58 @@
+--- linux/drivers/gpu/drm/imagination/pvr_power.c	2026-09-23 07:19:10.171424507 +0800
++++ img/pvr_power.c	2026-09-23 09:45:41.215973452 +0800
+@@ -11,6 +11,7 @@
+ #include <drm/drm_drv.h>
+ #include <drm/drm_managed.h>
+ #include <linux/clk.h>
++#include <linux/reset.h>
+ #include <linux/interrupt.h>
+ #include <linux/mutex.h>
+ #include <linux/platform_device.h>
+@@ -270,6 +271,47 @@
+ 	if (!drm_dev_enter(drm_dev, &idx))
+ 		return -EIO;
+ 
++	/*
++	 * Bring-up shim for the vendor A733 node: it exposes the functional clock as
++	 * "clk" (mapped in pvr_device.c) plus a separate bus clock "clk_bus" and a
++	 * "reset_bus" reset, neither of which the mainline driver knows about. Without
++	 * them the GPU block does not respond and the BVNC reads as 0.0.0.0.
++	 *
++	 * The clock and the reset are acquired exactly once. Doing the devm_*_get()
++	 * calls here on every runtime resume allocated devres each time and, because
++	 * the reset is exclusive, the second call returned -EBUSY; the kernel then
++	 * warned from this path (pvr_power_device_resume) and leaked a devres per
++	 * resume. Enabling the clock stays per-resume, because the mainline driver
++	 * disables its clocks when it suspends.
++	 */
++	if (!pvr_dev->ks_bringup_done) {
++		pvr_dev->ks_bus_clk = devm_clk_get(pvr_dev->base.dev, "clk_bus");
++		if (IS_ERR(pvr_dev->ks_bus_clk)) {
++			dev_warn(pvr_dev->base.dev, "ks-bringup: no clk_bus (%ld)\n",
++				 PTR_ERR(pvr_dev->ks_bus_clk));
++			pvr_dev->ks_bus_clk = NULL;
++		}
++
++		pvr_dev->ks_bus_rst = devm_reset_control_get_optional_exclusive(
++			pvr_dev->base.dev, "reset_bus");
++		if (IS_ERR(pvr_dev->ks_bus_rst)) {
++			dev_warn(pvr_dev->base.dev, "ks-bringup: no reset_bus (%ld)\n",
++				 PTR_ERR(pvr_dev->ks_bus_rst));
++			pvr_dev->ks_bus_rst = NULL;
++		}
++
++		pvr_dev->ks_bringup_done = true;
++		dev_info(pvr_dev->base.dev, "ks-bringup: clk_bus %s, reset_bus %s\n",
++			 pvr_dev->ks_bus_clk ? "found" : "absent",
++			 pvr_dev->ks_bus_rst ? "found" : "absent");
++	}
++
++	if (pvr_dev->ks_bus_clk)
++		clk_prepare_enable(pvr_dev->ks_bus_clk);
++
++	if (pvr_dev->ks_bus_rst)
++		reset_control_deassert(pvr_dev->ks_bus_rst);
++
+ 	err = clk_prepare_enable(pvr_dev->core_clk);
+ 	if (err)
+ 		goto err_drm_dev_exit;

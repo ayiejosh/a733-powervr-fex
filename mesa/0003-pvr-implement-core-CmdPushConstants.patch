@@ -1,0 +1,47 @@
+# pvr: implement the core vkCmdPushConstants entry point
+#
+# The generated dispatch table expects pvr_CmdPushConstants (see
+# build/src/imagination/vulkan/pvr_entrypoints.c: .CmdPushConstants = pvr_CmdPushConstants),
+# but the driver only defines the 2KHR variant, so vkCmdPushConstants resolves to the
+# entrypoint stub and silently does nothing: every frame renders with push constant values of
+# zero, and applications written against Vulkan 1.0-1.3 lose push constants entirely.
+#
+# Found with trixie-prep/bench/pvr-vulkan/pvranimate.c, where pushing two different values
+# produced byte-identical frames. This hunk makes them take effect; a second, separate issue
+# remains (a pushed value reaches the GPU one submission late).
+# Applies to: mesa-25.3.0
+--- a/src/imagination/vulkan/pvr_cmd_buffer.c
++++ b/src/imagination/vulkan/pvr_cmd_buffer.c
+@@ -3013,6 +3013,32 @@
+    push_consts->dirty = true;
+ }
+ 
++/* The core entry point, which the generated dispatch table expects
++ * (".CmdPushConstants = pvr_CmdPushConstants"): without it vkCmdPushConstants
++ * resolves to the entrypoint stub and silently does nothing, so applications
++ * targeting Vulkan 1.0-1.3 lose push constants entirely. This is the pvr driver's
++ * own bug in 25.3, found with the animation test in
++ * trixie-prep/bench/pvr-vulkan/pvranimate.c, where two different push constant
++ * values produced byte-identical frames. */
++void pvr_CmdPushConstants(VkCommandBuffer commandBuffer,
++                          VkPipelineLayout layout,
++                          VkShaderStageFlags stageFlags,
++                          uint32_t offset,
++                          uint32_t size,
++                          const void *pValues)
++{
++   const VkPushConstantsInfoKHR info = {
++      .sType = VK_STRUCTURE_TYPE_PUSH_CONSTANTS_INFO_KHR,
++      .layout = layout,
++      .stageFlags = stageFlags,
++      .offset = offset,
++      .size = size,
++      .pValues = pValues,
++   };
++
++   pvr_CmdPushConstants2KHR(commandBuffer, &info);
++}
++
+ void pvr_CmdPushConstants2KHR(VkCommandBuffer commandBuffer,
+                               const VkPushConstantsInfoKHR *pPushConstantsInfo)
+ {

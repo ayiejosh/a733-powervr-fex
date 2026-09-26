@@ -1,0 +1,55 @@
+--- linux/drivers/gpu/drm/imagination/pvr_device.c	2026-09-23 07:19:10.171424507 +0800
++++ img/pvr_device.c	2026-09-23 08:08:33.607437685 +0800
+@@ -30,6 +30,34 @@
+ #include <linux/types.h>
+ #include <linux/workqueue.h>
+ 
++/*
++ * Bring-up shim: the vendor A733 DT node declares an unnamed GPU clock, while the driver
++ * asks for named ones ("core"/"sys"). Fall back to the unnamed clock so probe can proceed;
++ * the proper fix is a DT overlay adding clock-names to the node.
++ */
++static struct clk *ks_clk_get(struct device *dev, const char *name)
++{
++	struct clk *c = devm_clk_get(dev, name);
++
++	if (!IS_ERR(c))
++		return c;
++
++	/*
++	 * Vendor A733 GPU node names its clocks clk_parent/clk/clk_bus/clk_800/... -
++	 * the functional GPU clock is "clk", the bus clock "clk_bus". The mainline
++	 * driver asks for "core"/"sys"/"mem". Map core -> clk so the block is really
++	 * clocked (falling back to the unnamed first clock gives clk_parent, which
++	 * leaves the GPU dark and the BVNC reads as 0.0.0.0).
++	 */
++	if (strcmp(name, "core") == 0)
++		c = devm_clk_get(dev, "clk");
++
++	if (!IS_ERR(c))
++		return c;
++
++	return devm_clk_get(dev, name);
++}
++
+ /* Major number for the supported version of the firmware. */
+ #define PVR_FW_VERSION_MAJOR 1
+ 
+@@ -88,7 +116,7 @@
+  *
+  * Return:
+  *  * 0 on success,
+- *  * Any error returned by devm_clk_get(), or
++ *  * Any error returned by ks_clk_get(), or
+  *  * Any error returned by devm_clk_get_optional().
+  */
+ static int pvr_device_clk_init(struct pvr_device *pvr_dev)
+@@ -98,7 +126,7 @@
+ 	struct clk *sys_clk;
+ 	struct clk *mem_clk;
+ 
+-	core_clk = devm_clk_get(drm_dev->dev, "core");
++	core_clk = ks_clk_get(drm_dev->dev, "core");
+ 	if (IS_ERR(core_clk))
+ 		return dev_err_probe(drm_dev->dev, PTR_ERR(core_clk),
+ 				     "failed to get core clock\n");

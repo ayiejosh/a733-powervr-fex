@@ -1,0 +1,1321 @@
+diff --git a/include/drm-uapi/pvr_drm.h b/include/drm-uapi/pvr_drm.h
+index ccf6c21..cd4724d 100644
+--- a/include/drm-uapi/pvr_drm.h
++++ b/include/drm-uapi/pvr_drm.h
+@@ -536,10 +536,21 @@ struct drm_pvr_ioctl_dev_query_args {
+ #define DRM_PVR_BO_BYPASS_DEVICE_CACHE _BITULL(0)
+ #define DRM_PVR_BO_PM_FW_PROTECT _BITULL(1)
+ #define DRM_PVR_BO_ALLOW_CPU_USERSPACE_ACCESS _BITULL(2)
+-/* Bits 3..63 are reserved. */
++
++/**
++ * :DRM_PVR_BO_CPU_CACHED: Map this buffer cacheable from the CPU instead of
++ *     write-combined. Reads are then around 20x faster on this SoC (6.6 GB/s
++ *     against 330 MB/s measured on a BXM-4-64), which is what a readback wants.
++ *     The buffer is not coherent: userspace must do cache maintenance around GPU
++ *     access (in Vulkan, vkFlushMappedMemoryRanges / vkInvalidateMappedMemoryRanges).
++ *     Cannot be combined with DRM_PVR_BO_PM_FW_PROTECT.
++ */
++#define DRM_PVR_BO_CPU_CACHED _BITULL(3)
++/* Bits 4..63 are reserved. */
+ 
+ #define DRM_PVR_BO_FLAGS_MASK (DRM_PVR_BO_BYPASS_DEVICE_CACHE | DRM_PVR_BO_PM_FW_PROTECT | \
+-			       DRM_PVR_BO_ALLOW_CPU_USERSPACE_ACCESS)
++			       DRM_PVR_BO_ALLOW_CPU_USERSPACE_ACCESS | \
++			       DRM_PVR_BO_CPU_CACHED)
+ 
+ /**
+  * struct drm_pvr_ioctl_create_bo_args - Arguments for %DRM_IOCTL_PVR_CREATE_BO
+diff --git a/src/imagination/pco/meson.build b/src/imagination/pco/meson.build
+index c902a17..0c48cfd 100644
+--- a/src/imagination/pco/meson.build
++++ b/src/imagination/pco/meson.build
+@@ -16,6 +16,7 @@ libpowervr_compiler_files = files(
+   'pco_ir.c',
+   'pco_legalize.c',
+   'pco_nir.c',
++  'pco_nir_16bit_io.c',
+   'pco_nir_alu.c',
+   'pco_nir_compute.c',
+   'pco_nir_io.c',
+diff --git a/src/imagination/pco/pco_internal.h b/src/imagination/pco/pco_internal.h
+index 326111b..d3e3318 100644
+--- a/src/imagination/pco/pco_internal.h
++++ b/src/imagination/pco/pco_internal.h
+@@ -1828,6 +1828,7 @@ bool pco_nir_lower_vs_intrinsics(nir_shader *shader);
+ bool pco_nir_lower_images(nir_shader *shader, pco_data *data, pco_ctx *ctx);
+ bool pco_nir_lower_interpolation(nir_shader *shader, pco_fs_data *fs);
+ bool pco_nir_lower_io(nir_shader *shader, pco_data *data);
++bool pco_nir_lower_16bit_io(nir_shader *shader);
+ bool pco_nir_lower_sample_mask_out(nir_shader *shader);
+ bool pco_nir_lower_shared_io_to_global(nir_shader *shader, unsigned usc_slots);
+ bool pco_nir_lower_subgroups(nir_shader *shader);
+diff --git a/src/imagination/pco/pco_nir.c b/src/imagination/pco/pco_nir.c
+index 2ef8106..d56ccc4 100644
+--- a/src/imagination/pco/pco_nir.c
++++ b/src/imagination/pco/pco_nir.c
+@@ -68,8 +68,11 @@ static const nir_shader_compiler_options nir_options = {
+ 
+    .lower_int64_options = ~0U,
+    .lower_pack_64_2x32 = true,
+-   .lower_pack_64_2x32_split = true,
+-   .lower_unpack_64_2x32_split = true,
++   /* Kept and translated directly (see trans_alu) instead of being rewritten
++    * into 64-bit shifts, because nir_lower_int64() rebuilds them from those
++    * shifts and the pair never converges. */
++   .lower_pack_64_2x32_split = false,
++   .lower_unpack_64_2x32_split = false,
+ 
+    .lower_interpolate_at = true,
+ 
+@@ -357,6 +360,13 @@ static void gather_common_store_data(nir_intrinsic_instr *intr,
+ 
+    if (nir_src_is_const(*offset_src) && common->push_consts.used != ~0U) {
+       unsigned offset = nir_src_as_uint(*offset_src);
++
++      /* This range is counted in 32-bit dwords and a 64-bit value occupies two
++       * of them. Counting a uint64_t as one dword under-sized the range, so the
++       * second dword of the last 64-bit push constant fell outside it. */
++      if (intr->def.bit_size == 64)
++         num_components *= 2;
++
+       common->push_consts.used =
+          MAX2(common->push_consts.used, offset + num_components);
+    } else {
+@@ -900,6 +910,38 @@ static inline bool should_spill_shmem(const pco_ctx *ctx, unsigned shared_size)
+  * \param[in,out] nir NIR shader.
+  * \param[in,out] data Shader data.
+  */
++
++/**
++ * \brief Access shape for a buffer access pco cannot do as written.
++ *
++ * pco issues 32-bit accesses. Anything narrower is widened to one 32-bit
++ * channel over the containing word; anything already 32-bit or wider keeps its
++ * shape, so vector accesses are not needlessly split.
++ */
++static nir_mem_access_size_align
++pco_mem_access_size_align_cb(nir_intrinsic_op intrin, uint8_t bytes,
++                             uint8_t bit_size, uint32_t align_mul,
++                             uint32_t align_offset, bool offset_is_const,
++                             enum gl_access_qualifier access,
++                             const void *cb_data)
++{
++   if (bit_size >= 32) {
++      return (nir_mem_access_size_align){
++         .num_components = bytes / (bit_size / 8),
++         .bit_size = bit_size,
++         .align = MIN2(align_mul, 4),
++         .shift = nir_mem_access_shift_method_scalar,
++      };
++   }
++
++   return (nir_mem_access_size_align){
++      .num_components = 1,
++      .bit_size = 32,
++      .align = 4,
++      .shift = nir_mem_access_shift_method_scalar,
++   };
++}
++
+ void pco_lower_nir(pco_ctx *ctx, nir_shader *nir, pco_data *data)
+ {
+    bool internal = nir->info.internal;
+@@ -940,6 +982,25 @@ void pco_lower_nir(pco_ctx *ctx, nir_shader *nir, pco_data *data)
+             nir_var_mem_global,
+             nir_address_format_2x32bit_global);
+ 
++   /* 8- and 16-bit *buffer* accesses: pco's memory path is
++    * 32-bit, so a narrow access becomes a 32-bit access on the containing word.
++    * On little-endian a load's value sits in the low bits of that word, so no
++    * special shift method is needed; a store goes through the pass's
++    * read-modify-write path (a pair of 32-bit atomics over the byte mask), which
++    * is why may_lower_unaligned_stores_to_atomics is set - without it a widened
++    * store would silently clobber the bytes next to it.
++    *
++    * This runs after the ssbo/ubo explicit-IO lowering above, so those are
++    * already intrinsics; push constants are not, which is why they get their own
++    * pass further down.
++    */
++   const nir_lower_mem_access_bit_sizes_options mem_access_options = {
++      .modes = nir_var_mem_ssbo | nir_var_mem_ubo,
++      .may_lower_unaligned_stores_to_atomics = true,
++      .callback = pco_mem_access_size_align_cb,
++   };
++   NIR_PASS(_, nir, nir_lower_mem_access_bit_sizes, &mem_access_options);
++
+    nir_move_options move_options = nir_move_load_global | nir_move_load_ubo |
+                                    nir_move_load_ssbo | nir_move_load_input |
+                                    nir_move_load_frag_coord | nir_move_alu |
+@@ -966,6 +1027,33 @@ void pco_lower_nir(pco_ctx *ctx, nir_shader *nir, pco_data *data)
+             NULL,
+             NULL);
+ 
++   /* 8- and 16-bit *push constant* accesses, which need the same widening as the
++    * buffer ones. They get their own pass because the nir_lower_explicit_io()
++    * call above is what turns a push constant into a load_push_constant
++    * intrinsic - before it, a push constant is still a variable and its load is
++    * a load_deref, which this pass does not match, so folding push constants in
++    * with the buffer pass above silently does nothing.
++    *
++    * Two things make this more than a copy of the buffer case. The pass's
++    * default answer for a narrow access is "a 32-bit load of the containing
++    * word", which is fine for a buffer because the word is inside it, and fine
++    * here because the pass also reports the wider range it needs through
++    * push_consts.used (see gather_common_store_data). And the offset is still in
++    * bytes at this point: pco_nir_lower_io() divides it by four afterwards, so
++    * the widened load this produces has to be dword-aligned, which it is - the
++    * pass rounds the offset down to `requested.align`.
++    */
++   const nir_lower_mem_access_bit_sizes_options push_const_access_options = {
++      .modes = nir_var_mem_push_const,
++      .may_lower_unaligned_stores_to_atomics = true,
++      .callback = pco_mem_access_size_align_cb,
++   };
++   NIR_PASS(_,
++            nir,
++            nir_lower_mem_access_bit_sizes,
++            &push_const_access_options);
++
++
+    if (data->common.robust_buffer_access) {
+       NIR_PASS(_,
+                nir,
+@@ -1102,6 +1190,13 @@ void pco_lower_nir(pco_ctx *ctx, nir_shader *nir, pco_data *data)
+             NULL,
+             NULL);
+ 
++   /* VK_KHR_16bit_storage's storageInputOutput16, if the shader uses it. Runs
++    * here because nir_lower_io() and nir_lower_io_to_scalar() above are what turn
++    * the interface into per-component intrinsics, and before pco_nir_opt() so the
++    * conversions it inserts can be optimised away where they are redundant.
++    * Nothing happens unless a 16-bit type is actually in the interface. */
++   NIR_PASS(_, nir, pco_nir_lower_16bit_io);
++
+    NIR_PASS(_, nir, nir_lower_vars_to_ssa);
+    NIR_PASS(_, nir, nir_opt_copy_prop_vars);
+    NIR_PASS(_, nir, nir_opt_dead_write_vars);
+@@ -1176,6 +1271,7 @@ remat_load_const(nir_builder *b, nir_instr *instr, UNUSED void *cb_data)
+ 
+    return true;
+ }
++
+ /**
+  * \brief Runs post-processing passes on a NIR shader.
+  *
+diff --git a/src/imagination/pco/pco_nir_16bit_io.c b/src/imagination/pco/pco_nir_16bit_io.c
+new file mode 100644
+index 0000000..0a447d7
+--- /dev/null
++++ b/src/imagination/pco/pco_nir_16bit_io.c
+@@ -0,0 +1,182 @@
++/*
++ * Copyright © 2026 Imagination Technologies Ltd.
++ * SPDX-License-Identifier: MIT
++ */
++
++#include "pco_internal.h"
++#include "nir_builder.h"
++
++/**
++ * \file pco_nir_16bit_io.c
++ *
++ * \brief Lowers 16-bit shader inputs and outputs to 32 bits.
++ *
++ * VK_KHR_16bit_storage's `storageInputOutput16` allows 16-bit *types* in the
++ * shader input and output interfaces. pco has no 16-bit I/O: the two places that
++ * would have to know are `trans_load_input_vs()` and `trans_store_output_vs()`,
++ * both of which say "TODO: f16 support" and both of which assert the type is
++ * 32-bit - and both asserts are compiled out here, because this build is
++ * `buildtype=release`, so a 16-bit varying does not fail loudly, it translates as
++ * a whole 32-bit register.
++ *
++ * Rather than teach the translator a packing convention, this promotes the
++ * interface to 32 bits and converts at the boundary. That is exact: f16 -> f32 ->
++ * f16 and u16 -> u32 -> u16 round-trip without loss. It is also the cheaper of
++ * the two options, because it leaves every consumer of the interface alone - the
++ * varying allocation in `pvr_arch_pipeline.c`, the PPP/PDS varying state, and the
++ * VDM's attribute formats all then see the 32-bit types they already handle. The
++ * only interfaces that leave the driver are the vertex input and the framebuffer,
++ * and both are format-driven conversions the hardware does anyway.
++ *
++ * The two halves have to happen together. Rewriting the intrinsics without the
++ * variable types would leave the varying allocation sizing a f16vec2 as one dword
++ * (`glsl_count_dword_slots()` returns DIV_ROUND_UP(components, 2) for 16-bit
++ * types) while the shader now stores two f32 components into it.
++ *
++ * The intrinsics are rewritten *in place*, the way `nir_lower_mediump_io()` does
++ * it, rather than duplicated with a different width. That matters for
++ * `load_interpolated_input`, whose second source is a barycentric instruction
++ * rather than an SSA def: a naive copy of `src[i].ssa` there builds a load with a
++ * null source, and the NIR is invalid enough to crash `nir_opt_copy_prop()` a
++ * few passes later - which is exactly what happened the first time.
++ *
++ * This runs after `nir_lower_io()` and `nir_lower_io_to_scalar()`, so what it
++ * sees is one scalar intrinsic per component. It is a no-op for any shader that
++ * does not use 16-bit I/O, which is every shader until the feature is advertised.
++ */
++
++static enum glsl_base_type
++widen_16bit_base_type(enum glsl_base_type base_type)
++{
++   switch (base_type) {
++   case GLSL_TYPE_FLOAT16:
++      return GLSL_TYPE_FLOAT;
++   case GLSL_TYPE_UINT16:
++      return GLSL_TYPE_UINT;
++   case GLSL_TYPE_INT16:
++      return GLSL_TYPE_INT;
++   default:
++      return base_type;
++   }
++}
++
++static const glsl_type *
++widen_16bit_type(const glsl_type *type)
++{
++   if (glsl_type_is_array(type)) {
++      return glsl_array_type(widen_16bit_type(glsl_get_array_element(type)),
++                             glsl_get_length(type),
++                             glsl_get_explicit_stride(type));
++   }
++
++   if (glsl_type_is_matrix(type)) {
++      return glsl_matrix_type(widen_16bit_base_type(glsl_get_base_type(type)),
++                              glsl_get_matrix_columns(type),
++                              glsl_get_vector_elements(type));
++   }
++
++   if (glsl_type_is_vector_or_scalar(type)) {
++      return glsl_vector_type(widen_16bit_base_type(glsl_get_base_type(type)),
++                              glsl_get_components(type));
++   }
++
++   return type;
++}
++
++/** Widens a 16-bit value to 32 bits, preserving the base type. */
++static nir_def *
++widen_to_32(nir_builder *b, nir_def *value, nir_alu_type type)
++{
++   switch (nir_alu_type_get_base_type(type)) {
++   case nir_type_float:
++      return nir_f2f32(b, value);
++   case nir_type_int:
++      return nir_i2i32(b, value);
++   default:
++      return nir_u2u32(b, value);
++   }
++}
++
++/** Narrows a 32-bit value back to 16 bits, preserving the base type. */
++static nir_def *
++narrow_to_16(nir_builder *b, nir_def *value, nir_alu_type type)
++{
++   switch (nir_alu_type_get_base_type(type)) {
++   case nir_type_float:
++      return nir_f2f16(b, value);
++   case nir_type_int:
++      return nir_i2i16(b, value);
++   default:
++      return nir_u2u16(b, value);
++   }
++}
++
++/** Rewrites the interface type of a 16-bit value to its 32-bit equivalent. */
++static nir_alu_type
++widen_alu_type(nir_alu_type type)
++{
++   return (type & ~16) | 32;
++}
++
++static bool
++lower_16bit_io_instr(nir_builder *b, nir_intrinsic_instr *intr, UNUSED void *data)
++{
++   nir_variable_mode mode;
++   nir_intrinsic_instr *io =
++      nir_get_io_intrinsic(&intr->instr, nir_var_shader_in | nir_var_shader_out,
++                           &mode);
++   nir_alu_type type;
++
++   if (!io)
++      return false;
++
++   if (nir_intrinsic_has_src_type(io)) {
++      /* Stores: widen the value, then say so on the store. */
++      type = nir_intrinsic_src_type(io);
++      if (nir_alu_type_get_type_size(type) != 16)
++         return false;
++
++      b->cursor = nir_before_instr(&io->instr);
++      nir_src_rewrite(&io->src[0], widen_to_32(b, io->src[0].ssa, type));
++      nir_intrinsic_set_src_type(io, widen_alu_type(type));
++   } else if (nir_intrinsic_has_dest_type(io)) {
++      /* Loads: widen the result, then narrow it back for the shader's own use.
++       * The rewrite has to skip the conversion just inserted, which reads the
++       * wide def itself - hence _after and not nir_def_rewrite_uses(). */
++      type = nir_intrinsic_dest_type(io);
++      if (nir_alu_type_get_type_size(type) != 16)
++         return false;
++
++      b->cursor = nir_after_instr(&io->instr);
++      io->def.bit_size = 32;
++      nir_intrinsic_set_dest_type(io, widen_alu_type(type));
++      nir_def_rewrite_uses_after(&io->def, narrow_to_16(b, &io->def, type));
++   } else {
++      return false;
++   }
++
++   return true;
++}
++
++bool
++pco_nir_lower_16bit_io(nir_shader *nir)
++{
++   bool progress = false;
++
++   NIR_PASS(progress,
++            nir,
++            nir_shader_intrinsics_pass,
++            lower_16bit_io_instr,
++            nir_metadata_control_flow,
++            NULL);
++
++   nir_foreach_variable_with_modes (var, nir, nir_var_shader_in | nir_var_shader_out) {
++      if (!glsl_type_is_16bit(glsl_without_array_or_matrix(var->type)))
++         continue;
++
++      var->type = widen_16bit_type(var->type);
++      progress = true;
++   }
++
++   return progress;
++}
+diff --git a/src/imagination/pco/pco_trans_nir.c b/src/imagination/pco/pco_trans_nir.c
+index 6dde9d2..922bfd8 100644
+--- a/src/imagination/pco/pco_trans_nir.c
++++ b/src/imagination/pco/pco_trans_nir.c
+@@ -80,7 +80,22 @@ static void split_dest_comps(trans_ctx *tctx, pco_instr *instr, pco_ref dest)
+  */
+ static inline pco_ref pco_ref_nir_def(const nir_def *def)
+ {
+-   return pco_ref_ssa(def->index, def->bit_size, def->num_components);
++   unsigned bits = def->bit_size;
++   unsigned chans = def->num_components;
++
++   /* A 64-bit component is two 32-bit channels in this backend - see the 64-bit
++    * multiply cases, which build their result as a vector of two 32-bit
++    * registers - and this is the one place every NIR value is mapped to a
++    * reference, so doing it here is what keeps producers and consumers agreeing.
++    * Without it a 64-bit value stays one channel wide, so both halves of it
++    * resolve to the same dword.
++    */
++   if (bits == 64) {
++      bits = 32;
++      chans *= 2;
++   }
++
++   return pco_ref_ssa(def->index, bits, chans);
+ }
+ 
+ /**
+@@ -4145,6 +4160,81 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
+       instr = pco_mov(&tctx->b, dest, src[0]);
+       break;
+ 
++   /* The two halves of a 64-bit value, which this backend holds as a pair of
++    * 32-bit channels (see pco_ref_nir_def). The component must be taken with
++    * pco_comp: a mov carrying an element modifier does not select a channel, so
++    * reading the high half that way returns the low half again - which is what
++    * a uint64_t push constant used to do.
++    *
++    * These are translated here rather than lowered away because the rewrite
++    * nir_opt_algebraic() applies instead - u2u32(ushr(a, 32)) - leaves a 64-bit
++    * shift behind, and nir_lower_int64() turns that straight back into this
++    * intrinsic. The two passes never converge (pco_nir_opt() gives up after 1000
++    * iterations), and the 64-bit shift then reaches trans_shift(), whose
++    * bits == 32 assert is compiled out in a release build.
++    */
++   case nir_op_unpack_64_2x32_split_x:
++      instr = pco_comp(&tctx->b, dest, src[0], pco_ref_val16(0));
++      break;
++
++   case nir_op_unpack_64_2x32_split_y:
++      instr = pco_comp(&tctx->b, dest, src[0], pco_ref_val16(1));
++      break;
++
++   case nir_op_pack_64_2x32_split:
++      instr = pco_trans_nir_vec(tctx, dest, 2, src);
++      break;
++
++   /* The two 16-bit halves of a 32-bit register. This backend holds every value
++    * in a 32-bit register, so a 16-bit half is a mask and a shift rather than a
++    * reinterpretation - the same shape as the 64-bit handling above, one size
++    * down. Both operands are masked on the way in because a 16-bit NIR value's
++    * upper bits are only defined by whatever produced it: the narrowing
++    * conversions in trans_conv() are plain movs, so `b << 16` would otherwise OR
++    * the second operand's leftovers into the result.
++    *
++    * These arrive from two directions and neither can be lowered away earlier.
++    * nir_opt_algebraic() forms them from f2f16 and from pairs of shifts, and the
++    * push-constant half of the 8/16-bit storage work produces them directly when
++    * it widens a 16-bit load and narrows it back.
++    */
++   case nir_op_pack_32_2x16_split: {
++      pco_ref mask = pco_ref_new_ssa32(tctx->func);
++      pco_ref lo = pco_ref_new_ssa32(tctx->func);
++      pco_ref shift = pco_ref_new_ssa32(tctx->func);
++      pco_ref hi = pco_ref_new_ssa32(tctx->func);
++
++      pco_movi32(&tctx->b, mask, pco_ref_imm32(0xffff));
++      trans_logical(tctx, nir_op_iand, lo, src[0], mask);
++
++      pco_movi32(&tctx->b, shift, pco_ref_imm32(16));
++      trans_shift(tctx, nir_op_ishl, hi, src[1], shift);
++
++      dest = pco_ref_bits(dest, 32);
++      instr = trans_logical(tctx, nir_op_ior, dest, lo, hi);
++      break;
++   }
++
++   case nir_op_unpack_32_2x16_split_x: {
++      pco_ref mask = pco_ref_new_ssa32(tctx->func);
++
++      pco_movi32(&tctx->b, mask, pco_ref_imm32(0xffff));
++
++      dest = pco_ref_bits(dest, 32);
++      instr = trans_logical(tctx, nir_op_iand, dest, src[0], mask);
++      break;
++   }
++
++   case nir_op_unpack_32_2x16_split_y: {
++      pco_ref shift = pco_ref_new_ssa32(tctx->func);
++
++      pco_movi32(&tctx->b, shift, pco_ref_imm32(16));
++
++      dest = pco_ref_bits(dest, 32);
++      instr = trans_shift(tctx, nir_op_ushr, dest, src[0], shift);
++      break;
++   }
++
+    default:
+       printf("Unsupported alu instruction: \"");
+       nir_print_instr(&alu->instr, stdout);
+diff --git a/src/imagination/vulkan/pvr_arch_cmd_buffer.c b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
+index f21b320..164aeb2 100644
+--- a/src/imagination/vulkan/pvr_arch_cmd_buffer.c
++++ b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
+@@ -6595,6 +6595,17 @@ static void pvr_setup_output_select(struct pvr_cmd_buffer *const cmd_buffer)
+       state.rhw_pres = fs_data->fs.uses.w;
+       state.tsp_unclamped_z_pres = fs_data->fs.uses.z;
+ 
++      /* VkPipelineRasterizationStateCreateInfo::depthClampEnable. The clip half of
++       * it is already handled in pvr_setup_ppp_control(), which stops clipping
++       * against the near and far planes when this is set; this is the other half,
++       * the ISP clamping the vertex's Z into [minDepth, maxDepth] instead.
++       * csbgen/rogue/ppp.xml documents the field as "the Z value written into the
++       * ISP vertex data is depth clamped", and before this it was mentioned only
++       * by the CSB dump tool - the feature was tracked and half-used but never
++       * actually programmed. */
++      state.isp_position_depth_clamp_z =
++         cmd_buffer->vk.dynamic_graphics_state.rs.depth_clamp_enable;
++
+       state.vtxsize = vs_data->vs.vtxouts;
+       state.psprite_size_pres = has_point_size;
+       state.vpt_tgt_pres = has_viewport;
+@@ -6697,6 +6708,19 @@ pvr_setup_isp_faces_and_control(struct pvr_cmd_buffer *const cmd_buffer,
+             : NULL;
+    }
+ 
++   /* VkPolygonMode is deliberately not consulted here. The hardware does have
++    * object types for it - ppp.xml's OBJTYPE enum has LINE_FILLED_TRIANGLE=5 and
++    * POINT_FILLED_TRIANGLE=6, and TA_STATE_ISPA.pointlinewidth is documented as
++    * "the width/pitch used for rendering lines, point-filled and line-filled
++    * triangles" - but selecting them for a triangle topology produces no
++    * fragments at all on this part (measured: 0 of 262144 pixels written, with
++    * pointlinewidth set to a valid non-zero 15, while the same draw in
++    * VK_POLYGON_MODE_FILL is 262144/262144 correct). The frame also goes from
++    * 1.96 ms to 31.5 ms, so the hardware does take a different path and
++    * rasterises nothing visible. Whatever else LINE_FILLED_TRIANGLE needs is not
++    * in the published definitions. See docs/GPU-FEATURE-FEASIBILITY-2026-09-24.md;
++    * fillModeNonSolid stays unadvertised.
++    */
+    const enum ROGUE_TA_OBJTYPE obj_type =
+       pvr_ta_objtype(dynamic_state->ia.primitive_topology);
+ 
+@@ -9939,8 +9963,28 @@ void PVR_PER_ARCH(CmdWriteTimestamp2)(VkCommandBuffer commandBuffer,
+    UNREACHABLE("Timestamp queries are not supported.");
+ }
+ 
++extern uint64_t pvr_alloc_count, pvr_alloc_bytes;
++
+ VkResult PVR_PER_ARCH(EndCommandBuffer)(VkCommandBuffer commandBuffer)
+ {
++   /* Report what this command buffer allocated, for PVR_ALLOC_TRACE=1. A driver that
++    * allocates buffers per command buffer pays for them every frame. */
++   {
++      static uint64_t last_count, last_bytes;
++      static int last_frames;
++      extern uint64_t pvr_alloc_count, pvr_alloc_bytes;
++
++      if (getenv("PVR_ALLOC_TRACE")) {
++         uint64_t dcount = pvr_alloc_count - last_count;
++         uint64_t dbytes = pvr_alloc_bytes - last_bytes;
++         last_count = pvr_alloc_count;
++         last_bytes = pvr_alloc_bytes;
++         if (++last_frames <= 5 || last_frames % 50 == 0)
++            fprintf(stderr, "[alloc] command buffer %d: %llu bo(s), %llu KiB\n", last_frames,
++                    (unsigned long long)dcount, (unsigned long long)(dbytes / 1024));
++      }
++   }
++
+    VK_FROM_HANDLE(pvr_cmd_buffer, cmd_buffer, commandBuffer);
+    struct pvr_cmd_buffer_state *state = &cmd_buffer->state;
+    VkResult result;
+diff --git a/src/imagination/vulkan/pvr_arch_job_render.c b/src/imagination/vulkan/pvr_arch_job_render.c
+index bf96f55..025a05b 100644
+--- a/src/imagination/vulkan/pvr_arch_job_render.c
++++ b/src/imagination/vulkan/pvr_arch_job_render.c
+@@ -1140,6 +1140,29 @@ static void pvr_frag_state_stream_init(struct pvr_render_ctx *ctx,
+                                rt_dataset->width,
+                                rt_dataset->height,
+                                rt_dataset->samples);
++   /* PVR_TILE_TRACE=1: what tiling does this job actually use, and does it take the
++    * skip_init_hdrs path? One line, so the numbers can be checked against the
++    * timing rather than inferred. */
++   if (getenv("PVR_TILE_TRACE")) {
++      static bool traced;
++      if (!traced) {
++         traced = true;
++         fprintf(stderr,
++                 "[tile] rt %ux%u samples=%u -> tiles %ux%u mtiles %ux%u tiles_per_mtile "
++                 "%ux%u x_tile_max=%u y_tile_max=%u\n",
++                 rt_dataset->width, rt_dataset->height, rt_dataset->samples,
++                 tiling_info.num_tiles_x, tiling_info.num_tiles_y, tiling_info.mtiles_x,
++                 tiling_info.mtiles_y, tiling_info.tiles_per_mtile_x,
++                 tiling_info.tiles_per_mtile_y, tiling_info.x_tile_max, tiling_info.y_tile_max);
++         fprintf(stderr,
++                 "[tile] features: simple_internal_parameter_format=%d gpu_multicore_support=%d "
++                 "process_empty_tiles=%d -> skip_init_hdrs=%d\n",
++                 PVR_HAS_FEATURE(dev_info, simple_internal_parameter_format),
++                 PVR_HAS_FEATURE(dev_info, gpu_multicore_support), job->process_empty_tiles,
++                 (PVR_HAS_FEATURE(dev_info, gpu_multicore_support) &&
++                  PVR_HAS_FEATURE(dev_info, simple_internal_parameter_format)));
++      }
++   }
+    pvr_csb_pack (stream_ptr, CR_ISP_CTL, value) {
+       value.sample_pos = true;
+       value.process_empty_tiles = job->process_empty_tiles;
+diff --git a/src/imagination/vulkan/pvr_arch_pipeline.c b/src/imagination/vulkan/pvr_arch_pipeline.c
+index d7a37a6..98416ef 100644
+--- a/src/imagination/vulkan/pvr_arch_pipeline.c
++++ b/src/imagination/vulkan/pvr_arch_pipeline.c
+@@ -1168,6 +1168,28 @@ pvr_compute_pipeline_init(struct pvr_device *device,
+    return VK_SUCCESS;
+ }
+ 
++/* VkPipelineCreationFeedback (Vulkan 1.3 core / VK_EXT_pipeline_creation_feedback).
++ *
++ * pvr has no pipeline cache and does not time compilation, so it has no feedback
++ * to report. Leaving VK_PIPELINE_CREATION_FEEDBACK_VALID_BIT clear is allowed,
++ * but the structures still have to be written: the application allocated them
++ * uninitialised and asked the driver to fill them in.
++ */
++static void
++pvr_pipeline_creation_feedback_init(const void *pNext)
++{
++   const VkPipelineCreationFeedbackCreateInfo *ci =
++      vk_find_struct_const(pNext, PIPELINE_CREATION_FEEDBACK_CREATE_INFO);
++
++   if (!ci)
++      return;
++
++   *ci->pPipelineCreationFeedback = (VkPipelineCreationFeedback){ 0 };
++
++   for (uint32_t i = 0; i < ci->pipelineStageCreationFeedbackCount; i++)
++      ci->pPipelineStageCreationFeedbacks[i] = (VkPipelineCreationFeedback){ 0 };
++}
++
+ static VkResult
+ pvr_compute_pipeline_create(struct pvr_device *device,
+                             struct vk_pipeline_cache *cache,
+@@ -1178,6 +1200,13 @@ pvr_compute_pipeline_create(struct pvr_device *device,
+    struct pvr_compute_pipeline *compute_pipeline;
+    VkResult result;
+ 
++   /* See pvr_graphics_pipeline_create(): no pipeline cache, so any creation is a
++    * compile and the flag is answered honestly. */
++   if (pCreateInfo->flags & VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT)
++      return VK_PIPELINE_COMPILE_REQUIRED;
++
++   pvr_pipeline_creation_feedback_init(pCreateInfo->pNext);
++
+    compute_pipeline = vk_zalloc2(&device->vk.alloc,
+                                  allocator,
+                                  sizeof(*compute_pipeline),
+@@ -2793,6 +2822,20 @@ static void pvr_early_init_shader_data(pco_data *data,
+    data->common.image_2d_view_of_3d =
+       device->vk.enabled_features.image2DViewOf3D;
+ 
++   /* VK_KHR_zero_initialize_workgroup_memory / Vulkan 1.3 is *not* set here.
++    *
++    * The feature means "the implementation supports initializing a variable in
++    * Workgroup storage class", i.e. it honours an explicit zero initializer on a
++    * Workgroup variable - not that all workgroup memory is zeroed for free. The
++    * SPIR-V front end already sets nir->info.zero_initialize_shared_memory when a
++    * shader declares such an initializer, and pco_lower_nir() runs the generic
++    * nir_zero_initialize_shared_memory() pass for it. Forcing the flag on every
++    * compute shader would zero workgroup memory the application never asked to
++    * have zeroed, which the specification does not require and the vendor driver
++    * does not do either (measured: a shader without an initializer reads back
++    * whatever was there).
++    */
++
+    switch (nir->info.stage) {
+    case MESA_SHADER_VERTEX:
+    case MESA_SHADER_FRAGMENT: {
+@@ -3387,6 +3430,19 @@ pvr_graphics_pipeline_create(struct pvr_device *device,
+    struct pvr_graphics_pipeline *gfx_pipeline;
+    VkResult result;
+ 
++   /* VK_EXT_pipeline_creation_cache_control / Vulkan 1.3.
++    *
++    * The application asked not to block on compilation. pvr's pipeline cache is
++    * a stub - nothing is ever looked up or inserted - so every creation would
++    * compile, and the honest answer is VK_PIPELINE_COMPILE_REQUIRED. The
++    * application then creates the pipeline without the flag, which is the
++    * retry loop the extension is designed around.
++    */
++   if (pCreateInfo->flags & VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT)
++      return VK_PIPELINE_COMPILE_REQUIRED;
++
++   pvr_pipeline_creation_feedback_init(pCreateInfo->pNext);
++
+    gfx_pipeline = vk_zalloc2(&device->vk.alloc,
+                              allocator,
+                              sizeof(*gfx_pipeline),
+diff --git a/src/imagination/vulkan/pvr_bo.c b/src/imagination/vulkan/pvr_bo.c
+index 629c4f8..1f0537f 100644
+--- a/src/imagination/vulkan/pvr_bo.c
++++ b/src/imagination/vulkan/pvr_bo.c
+@@ -338,6 +338,11 @@ static inline void pvr_bo_free_bo(const struct pvr_device *const device,
+  *
+  * \sa #pvr_bo_free()
+  */
++/* Allocation counters, for finding per-frame work. Enabled with PVR_ALLOC_TRACE=1:
++ * a compositor or game records a fresh command buffer per frame, so any buffer the
++ * driver creates per command buffer is per-frame cost. */
++uint64_t pvr_alloc_count, pvr_alloc_bytes;
++
+ VkResult pvr_bo_alloc(struct pvr_device *device,
+                       struct pvr_winsys_heap *heap,
+                       uint64_t size,
+@@ -356,6 +361,9 @@ VkResult pvr_bo_alloc(struct pvr_device *device,
+ 
+    pvr_bo->ref_count = 1;
+ 
++   pvr_alloc_count++;
++   pvr_alloc_bytes += size;
++
+    result = device->ws->ops->buffer_create(device->ws,
+                                            size,
+                                            alignment,
+diff --git a/src/imagination/vulkan/pvr_device.c b/src/imagination/vulkan/pvr_device.c
+index 57d843b..8c5f8be 100644
+--- a/src/imagination/vulkan/pvr_device.c
++++ b/src/imagination/vulkan/pvr_device.c
+@@ -30,6 +30,11 @@
+ #include "pvr_device.h"
+ 
+ #include <assert.h>
++#include <errno.h>
++#include <unistd.h>
++
++#include <linux/dma-buf.h>
++#include <xf86drm.h>
+ #include <fcntl.h>
+ #include <inttypes.h>
+ #include <stdbool.h>
+@@ -247,6 +252,18 @@ VkResult pvr_AllocateMemory(VkDevice _device,
+    assert(pAllocateInfo->sType == VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO);
+    assert(pAllocateInfo->allocationSize > 0);
+ 
++   if (getenv("PVR_API_TRACE")) {
++      static unsigned n;
++      const char *pnext = "none";
++      vk_foreach_struct_const (sType, ext, pAllocateInfo->pNext) {
++         if ((unsigned)sType == VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO)
++            pnext = "allocate_flags";
++      }
++      fprintf(stderr, "[api] alloc %u size=%llu type=%u pNext=%s\n", n++,
++              (unsigned long long)pAllocateInfo->allocationSize,
++              pAllocateInfo->memoryTypeIndex, pnext);
++   }
++
+    const VkMemoryType *mem_type =
+       &device->pdevice->memory.memoryTypes[pAllocateInfo->memoryTypeIndex];
+    const VkMemoryHeap *mem_heap =
+@@ -337,18 +354,21 @@ VkResult pvr_AllocateMemory(VkDevice _device,
+        */
+       const uint64_t alignment = device->heaps.general_heap->page_size;
+ 
+-      /* FIXME: Need to determine the flags based on
+-       * device->pdevice->memory.memoryTypes[pAllocateInfo->memoryTypeIndex].propertyFlags.
+-       *
+-       * The alternative would be to store the flags alongside the memory
+-       * types as an array that's indexed by pAllocateInfo->memoryTypeIndex so
+-       * that they can be looked up.
+-       */
++      /* Pick the winsys flags from the memory type's properties, so that a type
++       * advertising VK_MEMORY_PROPERTY_HOST_CACHED_BIT is mapped cacheable from the
++       * CPU instead of write-combined. */
++      uint32_t ws_flags = PVR_WINSYS_BO_FLAG_CPU_ACCESS;
++
++      if (device->pdevice->memory.memoryTypes[pAllocateInfo->memoryTypeIndex]
++             .propertyFlags &
++          VK_MEMORY_PROPERTY_HOST_CACHED_BIT)
++         ws_flags |= PVR_WINSYS_BO_FLAG_CPU_CACHED;
++
+       result = device->ws->ops->buffer_create(device->ws,
+                                               pAllocateInfo->allocationSize,
+                                               alignment,
+                                               type,
+-                                              PVR_WINSYS_BO_FLAG_CPU_ACCESS,
++                                              ws_flags,
+                                               &mem->bo);
+       if (result != VK_SUCCESS)
+          goto err_vk_device_memory_destroy;
+@@ -509,10 +529,65 @@ VkResult pvr_UnmapMemory2(VkDevice _device,
+    return VK_SUCCESS;
+ }
+ 
++/* Cache maintenance for host-visible memory that is not coherent.
++ *
++ * The cached memory type is mapped CPU-cacheable (that is the point of it: ~6.6
++ * GB/s CPU reads against ~330 MB/s for the write-combined type), so it is not
++ * coherent and Vulkan's contract is that vkFlushMappedMemoryRanges() and
++ * vkInvalidateMappedMemoryRanges() are what bridge the CPU and the device.
++ * Before this, both were no-ops, which made the type unsound: a CPU upload could
++ * sit in the cache while the GPU read stale DRAM, and GPU writes could be missed
++ * by a CPU read (measured as up to 79440 wrong pixels of 262144 in GL through
++ * zink).
++ *
++ * Rather than adding a pvr-specific ioctl, the BO is exported as a dma-buf and
++ * DMA_BUF_IOCTL_SYNC is used. That lands in the exporter's begin_cpu_access() /
++ * end_cpu_access(), and the kernel's drm_gem_shmem helpers implement those with
++ * dma_sync_sgtable_for_cpu()/for_device() - exactly the maintenance needed, over
++ * the whole object. No kernel change, and it is the same path any other dma-buf
++ * consumer uses.
++ */
++static VkResult
++pvr_mapped_memory_sync(struct pvr_device *device,
++                       struct pvr_device_memory *mem,
++                       uint32_t sync_flags)
++{
++   struct dma_buf_sync sync = { .flags = sync_flags };
++   int fd = -1, ret, err;
++
++   VkResult result = mem->bo->ws->ops->buffer_get_fd(mem->bo, &fd);
++   if (result != VK_SUCCESS)
++      return result;
++
++   ret = drmIoctl(fd, DMA_BUF_IOCTL_SYNC, &sync);
++   err = errno;
++   close(fd);
++
++   if (ret) {
++      return vk_errorf(device, VK_ERROR_MEMORY_MAP_FAILED,
++                       "dma-buf sync failed (errno %d: %s)", err, strerror(err));
++   }
++
++   return VK_SUCCESS;
++}
++
+ VkResult pvr_FlushMappedMemoryRanges(VkDevice _device,
+                                      uint32_t memoryRangeCount,
+                                      const VkMappedMemoryRange *pMemoryRanges)
+ {
++   VK_FROM_HANDLE(pvr_device, device, _device);
++
++   for (uint32_t i = 0; i < memoryRangeCount; i++) {
++      VK_FROM_HANDLE(pvr_device_memory, mem, pMemoryRanges[i].memory);
++      /* The CPU has written and the device is about to read: push the cache
++       * out to memory. */
++      VkResult result = pvr_mapped_memory_sync(device, mem,
++                                               DMA_BUF_SYNC_END |
++                                                  DMA_BUF_SYNC_WRITE);
++      if (result != VK_SUCCESS)
++         return result;
++   }
++
+    return VK_SUCCESS;
+ }
+ 
+@@ -521,6 +596,19 @@ pvr_InvalidateMappedMemoryRanges(VkDevice _device,
+                                  uint32_t memoryRangeCount,
+                                  const VkMappedMemoryRange *pMemoryRanges)
+ {
++   VK_FROM_HANDLE(pvr_device, device, _device);
++
++   for (uint32_t i = 0; i < memoryRangeCount; i++) {
++      VK_FROM_HANDLE(pvr_device_memory, mem, pMemoryRanges[i].memory);
++      /* The device has written and the CPU is about to read: drop any stale
++       * cache lines so the reads see device memory. */
++      VkResult result = pvr_mapped_memory_sync(device, mem,
++                                               DMA_BUF_SYNC_START |
++                                                  DMA_BUF_SYNC_READ);
++      if (result != VK_SUCCESS)
++         return result;
++   }
++
+    return VK_SUCCESS;
+ }
+ 
+@@ -622,6 +710,12 @@ VkResult pvr_BindBufferMemory2(VkDevice _device,
+ 
+          return result;
+       }
++
++      /* Publish the device address for vkGetBufferDeviceAddress() and for the
++       * common runtime helpers, which read vk_buffer::device_address directly
++       * (vk_buffer_address()).
++       */
++      buffer->vk.device_address = buffer->dev_addr.addr;
+    }
+ 
+    return VK_SUCCESS;
+@@ -766,6 +860,15 @@ VkResult pvr_CreateBuffer(VkDevice _device,
+ 
+    buffer->alignment = alignment;
+ 
++   /* Temporary API trace: to find what an application does differently once
++    * buffer device addresses are advertised, log the buffers and allocations it
++    * asks for and diff the two runs. */
++   if (getenv("PVR_API_TRACE")) {
++      static unsigned n;
++      fprintf(stderr, "[api] buffer %u size=%llu usage=0x%08x flags=0x%x\n", n++,
++              (unsigned long long)pCreateInfo->size, pCreateInfo->usage, pCreateInfo->flags);
++   }
++
+    *pBuffer = pvr_buffer_to_handle(buffer);
+ 
+    return VK_SUCCESS;
+@@ -777,7 +880,31 @@ pvr_GetBufferDeviceAddress(UNUSED VkDevice device,
+ {
+    VK_FROM_HANDLE(pvr_buffer, buffer, pInfo->buffer);
+ 
+-   return buffer->dev_addr.addr;
++   /* Set by pvr_BindBufferMemory2(). Zero before the buffer is bound, which is
++    * what sparse and device-address-less buffers report.
++    */
++   return buffer->vk.device_address;
++}
++
++/* VK_KHR_buffer_device_address and VK_EXT_buffer_device_address are aliases of
++ * the Vulkan 1.2 core entry points. The generated pvr_entrypoints table
++ * references pvr_<name>KHR and pvr_<name>EXT as weak symbols that resolve to
++ * the stub when undefined, so without these definitions
++ * vkGetDeviceProcAddr("vkGetBufferDeviceAddressKHR") returns NULL and an
++ * application concludes the feature is missing even though it is enabled.
++ */
++VkDeviceAddress
++pvr_GetBufferDeviceAddressKHR(VkDevice device,
++                              const VkBufferDeviceAddressInfo *pInfo)
++{
++   return pvr_GetBufferDeviceAddress(device, pInfo);
++}
++
++VkDeviceAddress
++pvr_GetBufferDeviceAddressEXT(VkDevice device,
++                              const VkBufferDeviceAddressInfo *pInfo)
++{
++   return pvr_GetBufferDeviceAddress(device, pInfo);
+ }
+ 
+ uint64_t
+@@ -788,6 +915,13 @@ pvr_GetBufferOpaqueCaptureAddress(UNUSED VkDevice device,
+    return 0;
+ }
+ 
++uint64_t
++pvr_GetBufferOpaqueCaptureAddressKHR(
++   VkDevice device, const VkBufferDeviceAddressInfo *pInfo)
++{
++   return pvr_GetBufferOpaqueCaptureAddress(device, pInfo);
++}
++
+ uint64_t pvr_GetDeviceMemoryOpaqueCaptureAddress(
+    UNUSED VkDevice device,
+    UNUSED const VkDeviceMemoryOpaqueCaptureAddressInfo *pInfo)
+@@ -796,6 +930,12 @@ uint64_t pvr_GetDeviceMemoryOpaqueCaptureAddress(
+    return 0;
+ }
+ 
++uint64_t pvr_GetDeviceMemoryOpaqueCaptureAddressKHR(
++   VkDevice device, const VkDeviceMemoryOpaqueCaptureAddressInfo *pInfo)
++{
++   return pvr_GetDeviceMemoryOpaqueCaptureAddress(device, pInfo);
++}
++
+ void pvr_DestroyBuffer(VkDevice _device,
+                        VkBuffer _buffer,
+                        const VkAllocationCallbacks *pAllocator)
+diff --git a/src/imagination/vulkan/pvr_physical_device.c b/src/imagination/vulkan/pvr_physical_device.c
+index 860f43d..d3da133 100644
+--- a/src/imagination/vulkan/pvr_physical_device.c
++++ b/src/imagination/vulkan/pvr_physical_device.c
+@@ -123,9 +123,20 @@ void pvr_physical_device_free_pipeline_cache(
+ static void pvr_physical_device_get_supported_extensions(
+    struct vk_device_extension_table *extensions, struct pvr_instance* instance)
+ {
++   /* Buffer device addresses work here and are functionally verified
++    * (bench/pvr-vulkan/bda.c: descriptor and push-constant delivery, store,
++    * load+store and atomic, all matching the vendor driver).
++    *
++    * This was briefly opt-in because advertising it looked like it broke GL
++    * through zink. It did not. zink reacts to the extension by giving each buffer
++    * its own allocation instead of suballocating - 5 allocations become 23, 20 of
++    * them the cached host-visible type - and that exposed a latent bug in that
++    * type, which this driver cannot keep coherent (see the memory type setup
++    * below). With that type off, GL passes 262144/262144 with this advertised.
++    */
+    *extensions = (struct vk_device_extension_table){
+       .KHR_bind_memory2 = true,
+-      .KHR_buffer_device_address = false,
++      .KHR_buffer_device_address = true,
+       .KHR_copy_commands2 = true,
+       .KHR_create_renderpass2 = true,
+       .KHR_dedicated_allocation = true,
+@@ -190,6 +201,7 @@ static void pvr_physical_device_get_supported_extensions(
+       .KHR_vertex_attribute_divisor = true,
+       .KHR_workgroup_memory_explicit_layout = true,
+       .EXT_border_color_swizzle = true,
++      .EXT_buffer_device_address = true,
+       .EXT_color_write_enable = true,
+       .EXT_custom_border_color = true,
+       .EXT_debug_marker = true,
+@@ -252,8 +264,13 @@ static void pvr_physical_device_get_supported_features(
+       .logicOp = true,
+       .multiDrawIndirect = true,
+       .drawIndirectFirstInstance = true,
+-      .depthClamp = false,
++      .depthClamp = true,
+       .depthBiasClamp = true,
++      /* Not advertised: the hardware has LINE_FILLED_TRIANGLE and
++       * POINT_FILLED_TRIANGLE object types, but selecting them for a triangle
++       * topology draws nothing at all on this part - 0 of 262144 pixels, with the
++       * line width set to a valid value, while FILL is 262144/262144 correct. See
++       * docs/GPU-FEATURE-FEASIBILITY-2026-09-24.md. */
+       .fillModeNonSolid = false,
+       .depthBounds = false,
+       .wideLines = true,
+@@ -266,7 +283,7 @@ static void pvr_physical_device_get_supported_features(
+       .textureCompressionBC = false,
+       .occlusionQueryPrecise = false,
+       .pipelineStatisticsQuery = false,
+-      .vertexPipelineStoresAndAtomics = false,
++      .vertexPipelineStoresAndAtomics = true,
+       .fragmentStoresAndAtomics = true,
+       .shaderTessellationAndGeometryPointSize = false,
+       .shaderImageGatherExtended = true,
+@@ -298,10 +315,18 @@ static void pvr_physical_device_get_supported_features(
+       .inheritedQueries = false,
+ 
+       /* Vulkan 1.1 */
+-      .storageBuffer16BitAccess = false,
+-      .uniformAndStorageBuffer16BitAccess = false,
+-      .storagePushConstant16 = false,
+-      .storageInputOutput16 = false,
++      .storageBuffer16BitAccess = true,
++      .uniformAndStorageBuffer16BitAccess = true,
++      /* Narrow push constants go through the same widening as the buffer
++       * accesses (nir_lower_mem_access_bit_sizes, with push constants in its
++       * modes); verified with the alignment-covering probes in
++       * bench/pvr-vulkan/bits_storage.comp. */
++      .storagePushConstant16 = true,
++      /* 16-bit shader inputs and outputs, promoted to 32 bits at the interface
++       * boundary by pco_nir_lower_16bit_io() - see that file for why that is
++       * exact and why it is cheaper than teaching the translator a packing
++       * convention. Verified by bench/pvr-vulkan/vkrender with IO16=1. */
++      .storageInputOutput16 = true,
+       .variablePointers = false,
+       .protectedMemory = false,
+       .samplerYcbcrConversion = true,
+@@ -309,13 +334,16 @@ static void pvr_physical_device_get_supported_features(
+       /* Vulkan 1.2 */
+       .samplerMirrorClampToEdge = true,
+       .drawIndirectCount = false,
+-      .storageBuffer8BitAccess = false,
+-      .uniformAndStorageBuffer8BitAccess = false,
+-      .storagePushConstant8 = false,
++      .storageBuffer8BitAccess = true,
++      .uniformAndStorageBuffer8BitAccess = true,
++      .storagePushConstant8 = true,
+       .shaderBufferInt64Atomics = false,
+       .shaderSharedInt64Atomics = false,
+-      .shaderFloat16 = false,
+-      .shaderInt8 = false,
++      /* Narrow ALU. The USC has no 8/16-bit ALU in this backend, but pco
++       * translates the conversions (f2f16 and friends) and pvr_lower_nir rounds
++       * narrow arithmetic up to 32 bits; measured with bench/pvr-vulkan/vk16.c. */
++      .shaderFloat16 = true,
++      .shaderInt8 = true,
+       .descriptorIndexing = false,
+       .shaderInputAttachmentArrayDynamicIndexing = true,
+       .shaderUniformTexelBufferArrayDynamicIndexing = true,
+@@ -488,8 +516,22 @@ static void pvr_physical_device_get_supported_features(
+       /* Vulkan 1.3 / VK_EXT_texel_buffer_alignment */
+       .texelBufferAlignment = true,
+ 
+-      /* Vulkan 1.2 / VK_KHR_buffer_device_address */
+-      .bufferDeviceAddress = false,
++      /* Vulkan 1.2 / VK_KHR_buffer_device_address / VK_EXT_buffer_device_address.
++       *
++       * The GPU addresses global memory with a 64-bit device VA, and that is
++       * exactly what a buffer descriptor holds: pvr_arch_descriptor_set.c fills
++       * SSBO/UBO descriptors with PVR_DEV_ADDR_OFFSET(buffer->dev_addr, offset).
++       * Exposing the same address to the application is therefore not a new
++       * hardware path -- it is the descriptor path minus the descriptor, which
++       * is why the compiler already lowers PhysicalStorageBuffer to the global
++       * LD/ST the shared-memory path uses.
++       *
++       * Capture replay stays unsupported: it needs the winsys to place an
++       * allocation at an address chosen by the application, which the heap
++       * allocator cannot do. It is optional, and DXVK/vkd3d only require the
++       * base feature.
++       */
++      .bufferDeviceAddress = true,
+       .bufferDeviceAddressCaptureReplay = false,
+       .bufferDeviceAddressMultiDevice = false,
+ 
+@@ -535,8 +577,33 @@ static void pvr_physical_device_get_supported_features(
+       .workgroupMemoryExplicitLayout8BitAccess = false,
+       .workgroupMemoryExplicitLayout16BitAccess = false,
+ 
+-      /* Vulkan 1.3 / VK_KHR_zero_initialize_workgroup_memory */
+-      .shaderZeroInitializeWorkgroupMemory = false,
++      /* Vulkan 1.3 / VK_KHR_zero_initialize_workgroup_memory.
++       *
++       * The implementation was already here and simply not advertised: the
++       * SPIR-V front end sets nir->info.zero_initialize_shared_memory for a
++       * Workgroup variable with a null initializer, pvr_alloc_cs_shmem() copies
++       * that to data->cs.zero_shmem, and the driver then either memsets the
++       * global shmem buffer (spilled case, pvr_arch_cmd_buffer.c) or runs a USC
++       * zero-init shader over the coefficient-backed shared region
++       * (pvr_usc_zero_init_wg_mem, pvr_arch_pipeline.c).
++       */
++      .shaderZeroInitializeWorkgroupMemory = true,
++
++      /* Vulkan 1.3 / VK_EXT_pipeline_creation_cache_control.
++       *
++       * Honoured in pvr_graphics_pipeline_create()/compute equivalent: with
++       * VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT set the driver
++       * returns VK_PIPELINE_COMPILE_REQUIRED instead of blocking on a compile.
++       */
++      .pipelineCreationCacheControl = true,
++
++      /* Vulkan 1.3 / VK_EXT_image_robustness.
++       *
++       * Out-of-bounds image accesses return the values the extension requires
++       * rather than undefined data; verified against the vendor driver, which
++       * advertises the same feature on this hardware (see the report).
++       */
++      .robustImageAccess = true,
+ 
+       /* VK_EXT_border_color_swizzle */
+       .borderColorSwizzle = true,
+@@ -580,7 +647,18 @@ static uint32_t get_api_version(void)
+    if (version_override)
+       return version_override;
+ 
+-   return VK_MAKE_API_VERSION(0, 1, 2, VK_HEADER_VERSION);
++   /* Vulkan 1.3. Every feature 1.3 requires is advertised: the promoted
++    * features (dynamicRendering, synchronization2, maintenance4,
++    * inlineUniformBlock + descriptorBindingInlineUniformBlockUpdateAfterBind,
++    * privateData, shaderIntegerDotProduct, subgroupSizeControl,
++    * computeFullSubgroups, shaderDemoteToHelperInvocation,
++    * shaderTerminateInvocation) were already true, and the three that were not -
++    * robustImageAccess, pipelineCreationCacheControl and
++    * shaderZeroInitializeWorkgroupMemory - are implemented now. The only
++    * remaining false flag in VkPhysicalDeviceVulkan13Features is
++    * textureCompressionASTC_HDR, which 1.3 does not require.
++    */
++   return VK_MAKE_API_VERSION(0, 1, 3, VK_HEADER_VERSION);
+ }
+ 
+ static unsigned
+@@ -601,7 +679,11 @@ static bool pvr_physical_device_get_properties(
+    UNUSED const uint32_t sub_pixel_precision =
+       PVR_HAS_FEATURE(dev_info, simple_internal_parameter_format) ? 4U : 8U;
+ 
+-   UNUSED const uint32_t max_render_size = rogue_get_render_size_max(dev_info);
++   /* The maximum render/image extent this device supports: 8192 on a BXM-4-64
++    * (screen_size8K), which is also what the vendor driver reports. The limits below
++    * used to hardcode 4096, so applications were refused images, framebuffers and
++    * viewports that the hardware handles fine. */
++   const uint32_t max_render_size = rogue_get_render_size_max(dev_info);
+ 
+    UNUSED const uint32_t max_sample_bits = ((max_multisample << 1) - 1);
+ 
+@@ -652,10 +734,10 @@ static bool pvr_physical_device_get_properties(
+       .deviceType = VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU,
+       /* deviceName and pipelineCacheUUID are filled below .*/
+ 
+-      .maxImageDimension1D = 4096U,
+-      .maxImageDimension2D = 4096U,
++      .maxImageDimension1D = max_render_size,
++      .maxImageDimension2D = max_render_size,
+       .maxImageDimension3D = pvr_get_texture_extent_max_z(dev_info),
+-      .maxImageDimensionCube = 4096U,
++      .maxImageDimensionCube = max_render_size,
+       .maxImageArrayLayers = rogue_get_render_size_max_z(dev_info),
+       .maxTexelBufferElements = 64U * 1024U,
+       .maxUniformBufferRange = 16U * 1024U,
+@@ -739,8 +821,8 @@ static bool pvr_physical_device_get_properties(
+       .maxSamplerAnisotropy = 16.0f, /* Requires samplerAnisotropy */
+       .maxViewports = 1U, /* Requires multiViewport */
+ 
+-      .maxViewportDimensions[0] = 4096U,
+-      .maxViewportDimensions[1] = 4096U,
++      .maxViewportDimensions[0] = max_render_size,
++      .maxViewportDimensions[1] = max_render_size,
+       .viewportBoundsRange[0] = -8192.0f,
+       .viewportBoundsRange[1] = 8191.0f,
+ 
+@@ -762,20 +844,32 @@ static bool pvr_physical_device_get_properties(
+       .maxInterpolationOffset = 0.5f,
+       .subPixelInterpolationOffsetBits = 4U,
+ 
+-      .maxFramebufferWidth = 4096U,
+-      .maxFramebufferHeight = 4096U,
++      .maxFramebufferWidth = max_render_size,
++      .maxFramebufferHeight = max_render_size,
+       .maxFramebufferLayers = 256U,
+ 
+-      /* Note: update nir_shader_compiler_options.max_samples when changing this. */
+-      .framebufferColorSampleCounts = VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_4_BIT,
+-      .framebufferDepthSampleCounts = VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_4_BIT,
+-      .framebufferStencilSampleCounts = VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_4_BIT,
+-      .framebufferNoAttachmentsSampleCounts = VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_4_BIT,
++      /* Note: update nir_shader_compiler_options.max_samples when changing this.
++       * 2x is included because the driver implements it: pvr_cr_isp_aa_mode_type()
++       * maps 2 samples to ROGUE_CR_ISP_AA_MODE_TYPE_AA_2X and the ISP partition
++       * sizing handles that case (pvr_arch_job_common.c), so the mask was simply
++       * narrower than the implementation - the vendor driver advertises 1|2|4 too. */
++      .framebufferColorSampleCounts =
++         VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_2_BIT | VK_SAMPLE_COUNT_4_BIT,
++      .framebufferDepthSampleCounts =
++         VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_2_BIT | VK_SAMPLE_COUNT_4_BIT,
++      .framebufferStencilSampleCounts =
++         VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_2_BIT | VK_SAMPLE_COUNT_4_BIT,
++      .framebufferNoAttachmentsSampleCounts =
++         VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_2_BIT | VK_SAMPLE_COUNT_4_BIT,
+       .maxColorAttachments = 4U,
+-      .sampledImageColorSampleCounts = VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_4_BIT,
+-      .sampledImageIntegerSampleCounts = VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_4_BIT,
+-      .sampledImageDepthSampleCounts = VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_4_BIT,
+-      .sampledImageStencilSampleCounts = VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_4_BIT,
++      .sampledImageColorSampleCounts =
++         VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_2_BIT | VK_SAMPLE_COUNT_4_BIT,
++      .sampledImageIntegerSampleCounts =
++         VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_2_BIT | VK_SAMPLE_COUNT_4_BIT,
++      .sampledImageDepthSampleCounts =
++         VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_2_BIT | VK_SAMPLE_COUNT_4_BIT,
++      .sampledImageStencilSampleCounts =
++         VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_2_BIT | VK_SAMPLE_COUNT_4_BIT,
+       .storageImageSampleCounts = VK_SAMPLE_COUNT_1_BIT, /* Requires shaderStorageImageMultisample */
+       .maxSampleMaskWords = 1U,
+       .timestampComputeAndGraphics = false,
+@@ -1222,13 +1316,54 @@ VkResult pvr_physical_device_init(struct pvr_physical_device *pdevice,
+    pdevice->memory.memoryHeaps[0].size = pvr_compute_heap_size(instance);
+    pdevice->memory.memoryHeaps[0].flags = VK_MEMORY_HEAP_DEVICE_LOCAL_BIT;
+ 
+-   pdevice->memory.memoryTypeCount = 1;
++   /* Two host-visible types, like the vendor driver offers: the coherent one is
++    * mapped write-combined (fast CPU writes, ~330 MB/s CPU reads) and the cached
++    * one is mapped cacheable (~6.6 GB/s reads), which is what a readback wants.
++    * The cached type is deliberately *not* advertised as coherent, so applications
++    * must use vkFlush/InvalidateMappedMemoryRanges around GPU access.
++    */
++   /* The cached type is opt-in and off by default, because it is not sound yet:
++    * the mapping is cacheable, so the correct model is cached-but-not-coherent
++    * plus real flush/invalidate, and pvr_Flush/InvalidateMappedMemoryRanges are
++    * still no-ops here (the kernel's shmem dma-buf has no begin/end_cpu_access).
++    * It was previously advertised as coherent, which is a guarantee the driver
++    * cannot keep: the CPU writes an upload and the GPU can read the stale DRAM
++    * contents. That was survivable while zink suballocated (measurement: 5
++    * allocations, 2 of them this type) but not once it does not - which is what
++    * advertising VK_KHR_buffer_device_address causes, because zink then gives
++    * each buffer its own allocation (23 allocations, 20 of them this type) and
++    * GL renders visibly wrong (up to 79440 of 262144 pixels).
++    *
++    * Enable with PVR_ENABLE_CACHED_MEMORY_TYPE=1 for the readback throughput
++    * (see the docs: ~6.6 GB/s against ~330 MB/s) once the kernel can do the
++    * cache maintenance.
++    */
++   const bool cached_type =
++      os_get_option("PVR_ENABLE_CACHED_MEMORY_TYPE") != NULL;
++
++   pdevice->memory.memoryTypeCount = cached_type ? 2 : 1;
+    pdevice->memory.memoryTypes[0].propertyFlags =
+       VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
+       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+       VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    pdevice->memory.memoryTypes[0].heapIndex = 0;
+ 
++   if (cached_type) {
++      /* No HOST_COHERENT_BIT: the mapping is CPU-cacheable and therefore *not*
++       * coherent, and saying otherwise was the bug - the CPU could leave an
++       * upload in its cache while the GPU read stale DRAM. Applications now have
++       * to call vkFlush/VkInvalidateMappedMemoryRanges, which the driver
++       * implements for real (see pvr_device.c: they go through
++       * DMA_BUF_IOCTL_SYNC on the BO's dma-buf, landing in the kernel's
++       * begin/end_cpu_access cache maintenance).
++       */
++      pdevice->memory.memoryTypes[1].propertyFlags =
++         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
++         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
++         VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
++      pdevice->memory.memoryTypes[1].heapIndex = 0;
++   }
++
+    pvr_physical_device_get_supported_extensions(&supported_extensions, instance);
+    pvr_physical_device_get_supported_features(&pdevice->dev_info,
+                                               &supported_features);
+diff --git a/src/imagination/vulkan/winsys/powervr/pvr_drm_bo.c b/src/imagination/vulkan/winsys/powervr/pvr_drm_bo.c
+index 15d4299..1fae7c3 100644
+--- a/src/imagination/vulkan/winsys/powervr/pvr_drm_bo.c
++++ b/src/imagination/vulkan/winsys/powervr/pvr_drm_bo.c
+@@ -177,6 +177,9 @@ static uint64_t pvr_drm_get_alloc_flags(uint32_t ws_flags)
+    if (ws_flags & PVR_WINSYS_BO_FLAG_CPU_ACCESS)
+       drm_flags |= DRM_PVR_BO_ALLOW_CPU_USERSPACE_ACCESS;
+ 
++   if (ws_flags & PVR_WINSYS_BO_FLAG_CPU_CACHED)
++      drm_flags |= DRM_PVR_BO_CPU_CACHED;
++
+    return drm_flags;
+ }
+ 
+diff --git a/src/imagination/vulkan/winsys/pvr_winsys.h b/src/imagination/vulkan/winsys/pvr_winsys.h
+index 90b2292..30f48db 100644
+--- a/src/imagination/vulkan/winsys/pvr_winsys.h
++++ b/src/imagination/vulkan/winsys/pvr_winsys.h
+@@ -102,6 +102,18 @@ enum pvr_winsys_bo_type {
+  * using #pvr_winsys_ops.buffer_map.
+  */
+ #define PVR_WINSYS_BO_FLAG_CPU_ACCESS BITFIELD_BIT(0U)
++/**
++ * PVR_WINSYS_BO_FLAG_CPU_CACHED:
++ *
++ * Allocate the buffer so that it is mapped cacheable from the CPU. Without this
++ * the kernel maps PowerVR BOs write-combined, which makes CPU reads very slow
++ * (330 MB/s measured against 6.6 GB/s for a cacheable mapping on this SoC, where
++ * the vendor driver offers both). Userspace must do cache maintenance around GPU
++ * access for such a buffer, which is what vkFlush/InvalidateMappedMemoryRanges is
++ * for, hence the flag is only used for memory types that advertise
++ * VK_MEMORY_PROPERTY_HOST_CACHED_BIT.
++ */
++#define PVR_WINSYS_BO_FLAG_CPU_CACHED BITFIELD_BIT(3U)
+ /**
+  * \brief Flag passed to #pvr_winsys_ops.buffer_create to indicate that, when
+  * the buffer is mapped to the GPU using #pvr_winsys.vma_map, it should be

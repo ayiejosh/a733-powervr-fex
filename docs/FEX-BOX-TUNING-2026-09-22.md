@@ -247,6 +247,9 @@ game-path bug — but it is reproducible, and it is a reason to leave
 
 ## 6. Remaining headroom, ranked
 
+0. **Chrome's launch — done, and it turned out to be the largest single win in this
+   study: 262 s → 32 s, 8.1x. Full write-up in §13 at the end of this document.**
+
 1. **A/B the Windows backend on a real title: `HODLL=libwow64fex.dll` vs
    `wowbox64.dll`.** *Answered for throughput in §10 — FEX's backend won by 17.1%.
    What remains open is whether a real game agrees, since the workload used was a
@@ -256,10 +259,10 @@ game-path bug — but it is reproducible, and it is a reason to leave
    `"asound": 1` moves it to native. Not applied here: it changes audio behaviour and
    audio output could not be verified from this session. Do **not** thunk GL/EGL —
    display `:0` exports no GLX, which is why the nested-Xephyr path exists.
-3. **`FEX_DISKCACHE=1`** (new in 2609): measured **0.418 s → 0.378 s** (~10%) on a 0.4 s
-   guest launch, cache 1.6 MB. Real but small on this workload, and upstream notes it
-   grows without bound and is not invalidated when guest files change. Worth testing on
-   an actual title before adopting; not enabled by default.
+3. **`FEX_DISKCACHE=1`** (new in 2609) — **corrected in §11: it is −64%, not ~10%.**
+   The figure here was measured on a cache that had not finished warming and against a
+   workload that barely compiles anything. See §11 for the proper numbers and the
+   invalidate-on-update caveat.
 4. **Scope `TSOEnabled` per application** — see §7.
 5. **`dxvk.numCompilerThreads` / `shaderCompilationMethod`** are already set to the
    conservative values in `/home/radxa/dxvk.conf`; DXVK-Sarek upstream recommends
@@ -413,6 +416,540 @@ only route that works, since the rcfile route hangs (§5). Verified live: box64 
   was identical on this workload, but if a title renders or saves wrongly this is the
   first line to remove.
 
-**Not applied, deliberately:** switching the backend to FEX. It is the bigger win, but
-it replaces the emulator for every Windows app and the evidence is a console builtin,
-not a game. It is one commented line in each wrapper.
+**Applied: the WoW64 (32-bit) Windows backend was switched to FEX.**
+
+`d3drun`, `winrun` and `guirun` now export `HODLL="${HODLL_OVERRIDE:-libwow64fex.dll}"`,
+so 32-bit Windows programs run on FEX instead of box64. Re-measured on a second workload
+(an emulated i386 PE scanning a 100 MB file, 12/12 runs correct):
+
+| variant | best | vs box64 default |
+|---|---|---|
+| box64 default | 3.51 s | — |
+| box64 + `CALLRET=1` | 3.42 s | −2.6% |
+| box64 + CALLRET+BIGBLOCK+FORWARD | 3.48 s | −0.9% |
+| **FEX backend** | **3.01 s** | **−14.2%** |
+
+**The bitness mapping, which is the reason this is safe** — verified, not assumed:
+
+| guest | backend used | affected by `HODLL`? |
+|---|---|---|
+| 32-bit (i386) PE | `wowbox64.dll` or `libwow64fex.dll` | **yes** — this is the switch |
+| 64-bit (x86-64) PE | **always `libarm64ecfex.dll` (FEX)** | **no** — ignores `HODLL` entirely |
+
+All three `HODLL` values produced `starting FEX … libarm64ecfex.dll` for a 64-bit PE and
+the program ran. So 64-bit Windows programs were *already* on FEX, and this change only
+touches 32-bit ones. It also corrects an earlier statement in this report: box64 is the
+emulator for the 32-bit Windows path only.
+
+Verified through the wrappers: default `d3drun` on the 32-bit workload ran on FEX with the
+correct output; a 64-bit PE through `d3drun` still used `libarm64ecfex.dll`; `winrun` and
+`guirun` (the other prefix) both still work; zero leftover Wine processes afterwards.
+
+**A deliberate one-line escape hatch, and a bug found while testing it.** The first version
+documented `HODLL=wowbox64.dll d3drun …` as the revert path, and that silently did *not*
+work — each wrapper already assigns `HODLL` itself, so a caller's value was overwritten.
+Testing the document found the document was wrong. The effective value now comes from a
+distinct variable so the two cannot collide:
+
+```
+HODLL_OVERRIDE=wowbox64.dll d3drun <app.exe>     # back to box64 for one run
+```
+Verified: that run prints the `WowBox64 arm64 v0.4.4` banner again (3.40 s vs 3.16 s).
+
+---
+
+## 11. JIT cost: where it actually is, and the two wins
+
+"Can the JIT be optimized further?" splits into two costs that need different fixes:
+
+- **compile cost** — paid once per translated block. This is what launch delay and
+  in-game stutter are made of.
+- **run cost** — paid per block dispatch and per emulated instruction, and set by the
+  *quality* of the emitted ARM64.
+
+Both JITs are built from source on this board (`FEX-2609/build/`, `box64-0.4.4-src/build-a76/`),
+so build flags are in scope as well as runtime knobs.
+
+### The emitted code is invariant — all the recoverable cost is compilation
+
+Across every knob tested, the nine benchmark checksums stay **bit-identical** and the
+per-test timings do not move outside noise:
+
+| knob | effect on emitted code / throughput |
+|---|---|
+| `MaxInst` 1000 / 5000 / 20000 | none (1000 marginally worse) |
+| `Multiblock` (already on) | — |
+| `DynamicL1Cache`, `DisableL2Cache`, both heuristics | none measurable |
+| `EnableCodeCachingWIP` | none (checksums identical) |
+| TSO, x87 | no throughput change (x87 changes *accuracy*) |
+
+So FEX's JIT has **no code-quality headroom left in its configuration surface**. What
+follows is compile cost, and it is large. Measured on an import-heavy python start-up
+(a real amount of x86-64 gets translated):
+
+| configuration | time | vs no cache |
+|---|---|---|
+| no cache — recompiles every launch | 1.238 s | — |
+| `FEX_ENABLECODECACHINGWIP=1` (in-memory, experimental) | 0.77 s | −38% |
+| **`FEX_DISKCACHE=1`, cache warm** | **0.44 s** | **−64%** |
+| both together | 0.64 s | −48% — *worse than disk cache alone* |
+| trivial `python3 -c pass`: no cache → warm | 0.62 s → **0.19 s** | −70% |
+
+**The two caching mechanisms do not stack.** Disk cache alone wins; the WIP code cache is
+only worth having if the disk cache is unacceptable (0.77 s vs 1.24 s).
+
+Two corrections this produced:
+
+- **`DiskCache` is −64%, not the ~10% reported earlier in this document.** That number
+  came from a cache that had not finished warming (still growing, 3.4 → 5.6 MB, across
+  the three runs) and from comparing means rather than steady state. The trivial
+  workload made it worse: `-c pass` barely compiles anything.
+- **`MaxInst` is not a stutter lever here**, despite being `AffectsCodeGen`.
+
+Correctness: the full nine-test suite with the experimental code caching enabled gives
+**identical checksums** to baseline — only the `syscall` sum differs, and that is a sum of
+process ids. Nothing was miscompiled.
+
+Caveats for `DiskCache`: upstream documents unbounded growth and **no invalidation when
+guest files change**, so clear it when a title is updated, or if something starts
+misbehaving: `rm -rf ~/.cache/fex-emu`. It is per-user and off by default.
+
+### Applied: `DiskCache: "1"` in `~/.fex-emu/Config.json`
+
+Enabled 2026-09-22 with the user's approval, verified through the **config file** rather
+than an environment override, with the cache cleared first so run 1 pays full price:
+
+| launch | time | cache size |
+|---|---|---|
+| 1 (cold, rebuilds everything) | 1.239 s | 5.8 MB |
+| 2 | 0.733 s | 9.7 MB |
+| 3 | 0.519 s | 12 MB |
+| **4 (steady state)** | **0.439 s** | 12 MB |
+
+No `Unknown configuration option` warnings, and the pre-change file is backed up beside
+it as `Config.json.bak-prediskcache-*`. Because `libwow64fex.dll` reads the same file,
+this applies to Windows programs on the FEX backend as well. Clearing rule if a title is
+updated or misbehaves: `rm -rf ~/.cache/fex-emu`.
+
+Correction to an earlier claim in this report: the suggestion that a rebuild would gain
+from `-mcpu` was **wrong**. The installed binary already carries `-mcpu=cortex-a76`
+(`TUNE_CPU=native` auto-detects it via `Scripts/aarch64_fit_native.py`). The earlier
+check looked in `CMakeCache.txt`, but compiler flags live in `flags.make` / `build.ninja`,
+so it saw nothing and drew the wrong conclusion. **LTO is therefore the only remaining
+build lever**, since this build sets `ENABLE_LTO=False` while the source's own default is
+`TRUE`.
+
+### It applies to the Windows path too
+
+`/usr/lib/wine/aarch64-windows/libwow64fex.dll` — the FEX Windows backend — carries the
+same `FEX_DISKCACHE`, `FEX_ENABLECODECACHINGWIP`, `FEX_MAXINST`, `FEX_ROOTFS` and
+`FEX_TSOENABLED` strings and looks for `Config.json` under `/.fex-emu/`. So these settings
+are not limited to the x86-64 Linux path.
+
+### Build-time headroom — the largest remaining, untested
+
+| | installed | source default | note |
+|---|---|---|---|
+| `ENABLE_LTO` | **False** | `TRUE` | this build is *less* optimized than upstream's default |
+| `TUNE_CPU` | unset | — | FEX's own code targets generic ARMv8, not the A76 it runs on |
+| `ENABLE_FEXCORE_PROFILER` | OFF | OFF | would show where compile time goes |
+
+Because the dominant JIT cost is **the compiler's own speed**, the most direct remaining
+lever is making that compiler faster: rebuild with `-DENABLE_LTO=ON` and
+`-DTUNE_CPU=cortex-a76` (or `native`), from a **separate build directory**, and A/B it
+against the installed binary before anything is installed anywhere. With a warm ccache
+and ninja on 8 cores this is a real but bounded cost.
+
+Also noted: box64 was configured with `-DRK3588=ON` — a Rockchip SoC flag — on an
+Allwinner A733, and with no `-mcpu` either. It happens to set only `BAD_SIGNAL` (which
+the cache shows as OFF), so it is probably inert, but it is a build-script bug worth
+fixing before any box64 rebuild is trusted.
+
+---
+
+## 12. The LTO rebuild, and where the JIT time actually goes
+
+Both built from source into side directories. **Nothing was installed**: the judgement
+below is that it is not worth installing.
+
+### LTO is real but marginal — about 5%
+
+`-DENABLE_LTO=ON`, `-mcpu=cortex-a76` (already what the installed build uses), everything
+else matched to the working build's flags.
+
+| python import start-up, DiskCache forced off | installed | LTO | delta |
+|---|---|---|---|
+| rep 1 | 1.253 s | 1.182 s | −5.7% |
+| rep 2 | 1.236 s | 1.164 s | −5.8% |
+| rep 3 | 1.253 s | 1.206 s | −3.8% |
+
+`-flto=thin` appears 410 times in the generated build graph, so it is genuinely applied.
+Throughput and all nine checksums are **identical** — LTO optimises FEX's own code, not
+the code its JIT emits, so this is a compile-speed win only.
+
+**Recommendation: leave it uninstalled.** Five percent off an *un-cached* launch is small
+next to DiskCache's −64%, which already removes most of that time, and replacing a
+validated system binary with a local build for that margin is a bad trade. It stays at
+`FEX-2609/build-lto/Bin/FEX` if that judgement ever changes.
+
+### Profiler attribution: the JIT is IR-bound, not encoding-bound
+
+`-DENABLE_FEXCORE_PROFILER=ON` writes plain-text events to ftrace's `trace_marker`
+(`"<name> (lduration=-<ns>)"`), so **no GUI viewer is needed** — but the run must be root,
+because a non-root user cannot even list `/sys/kernel/tracing`. An earlier attempt
+silently captured nothing for exactly that reason.
+
+Aggregated over one profiled run of the import-heavy start-up (1.43 s, 85,334 events):
+
+| phase | calls | total | mean |
+|---|---|---|---|
+| **`CompileBlock`** | 30,791 | **1031 ms** | 33.5 µs |
+| `GenerateIR` | 7,777 | 760 ms | 97.7 µs |
+| `Run` (pass pipeline) | 7,777 | 276 ms | 35.4 µs |
+| `RA` (register allocation) | 7,777 | 151 ms | 19.4 µs |
+| `CompileCode` (instruction encoding) | 7,777 | 151 ms | 19.4 µs |
+| `DFE` | 7,777 | 100 ms | 12.8 µs |
+| `DecodeInstructions` | 7,777 | 13 ms | 1.7 µs |
+
+Scopes nest, so these durations overlap; the ratios are the point, not the sums.
+
+Two conclusions:
+
+1. **Compilation dominates** — about 72% of the run is inside `CompileBlock`, which
+   independently confirms the ~65% compile fraction inferred from the DiskCache delta
+   (§11). Two different methods, same answer.
+2. **The cost is IR-bound, not encoding-bound.** IR generation and the pass pipeline
+   (register allocation, dead-flag elimination) are the bulk; the final ARM64 encoding
+   step is a smaller slice. So the lever for FEX itself is fewer blocks to translate —
+   which is what `DiskCache` does — not faster encoding.
+
+The accumulation counters (`AccumulatedJITTime`, `AccumulatedDiskCacheHitCount`) do **not**
+appear in the binary even with the profiler enabled, so disk-cache hit/miss counts are
+not available from this backend; the strings check confirmed they are compiled out. The
+`CompileBlock`/`GenerateIR` call-count ratio (≈4:1) is not explained by this study and is
+recorded here rather than guessed at.
+
+### Build notes worth keeping
+
+- FEX requires clang; a fresh build directory picks `cc`→gcc and stops with
+  "FEX doesn't support GCC". Name the compilers explicitly.
+- `BUILD_FEXCONFIG` defaults to TRUE and needs Qt; the working build sets it OFF.
+- `X86_DEV_ROOTFS` must point at an amd64 sysroot (`/home/radxa/crd-rootfs` here) or the
+  thunk shims cannot link.
+- `BUILD_THUNKS=OFF` was used for these builds: the guest thunk shims cross-compile for
+  x86-64 **and i686**, and this box has no i686 sysroot — a pre-existing gap, not
+  something introduced here (the original `build/Guest_32/` is empty too). Thunks only
+  affect GL/Vulkan/audio redirection, not JIT compile speed or CPU throughput.
+
+---
+
+## 13. Chrome: the JIT cost in the wild — 262 s to 32 s
+
+> **Superseded in part by section 14.** The 32 s here was real but not reproducible in
+> isolation: the same command later hung, because the guest rootfs had no `/proc` mounted.
+> Section 14 has the root cause, the fix, and the per-phase dissection. The DiskCache
+> finding below stands unchanged.
+
+Chrome is the largest x86-64 body of code on this board (a 276 MB binary), so its launch
+is the purest example of the cost §11 and §12 measure. It was also the worst case, for a
+reason that had nothing to do with tuning:
+
+**Every `chrome-fex-*.sh` script on this board overrides `HOME` to the guest rootfs home
+(`/home/radxa/crd-rootfs/home/crd`), and FEX resolves `~/.fex-emu/Config.json` from
+`HOME`.** There was no config there, so every Chrome launch ran with **default FEX
+config**: `DiskCache` off, `TSOEnabled` back on, `X87ReducedPrecision` off. The tuning in
+`/home/radxa/.fex-emu/Config.json` had never applied to Chrome at all. FEX's own telemetry
+files proved where it was reading from.
+
+### Measured
+
+Headless launch of the same page through the working recipe (pinned to the two A76 cores),
+verifying the DOM byte count on every run so a fast-but-wrong run cannot pass:
+
+| run | wall | DOM bytes |
+|---|---|---|
+| no cache (`FEX_DISKCACHE=0`) — today's behaviour | **262 s** | 250326 |
+| DiskCache, cache warm | **32 s** | 250326 |
+| DiskCache, cache warm (rep 2, interleaved) | **34 s** | 250326 |
+| no cache (rep 2, interleaved) | 261 s | 250326 |
+
+**That is 8.1× faster**, and it is the disk cache: the two variants were alternated after
+everything else was warm, so page cache, FEXServer state and Chrome's own profile were
+identical between them. Warm-cache timings were 32/34 s against 262/261 s.
+
+Also measured: **pinning does not matter for Chrome** (warm 32 s pinned to 2 cores, 30 s
+unpinned) — consistent with §4, where pinning hurt threaded work but Chrome's launch is
+dominated by translation rather than by parallel execution.
+
+### The fix, which needs no per-script edit
+
+A config was written to the guest home, so every launcher that overrides `HOME` picks it up
+without touching seventeen scripts:
+
+`/home/radxa/crd-rootfs/home/crd/.fex-emu/Config.json` — `DiskCache`, `Multiblock`,
+`X87ReducedPrecision`, and **deliberately not `TSOEnabled`**. Upstream calls TSO-off
+"highly likely to break any multithreaded application" and this study measured real
+store-order violations with it (§7, 35 in 2.15M pairs). A browser is exactly the heavily
+threaded lock-free code where that would bite, so the risk was not taken by default.
+TSO-off remains available as a further, separately-measured step.
+
+### Two things not established, stated as such
+
+1. **Why a no-cache run is 4× slower than a run that starts with an empty cache** (262 s vs
+   the 59 s measured once for a cache-populating cold run) is **not** explained by this
+   study. Writing a cache while compiling should cost, not save. Reading the source, the
+   disk-cache lookup sits on the same miss path as a normal compile
+   (`Core.cpp` ~line 943, with `DiskCache.Store` only after `CompileCode`), so the write
+   path alone cannot account for it. The candidate explanations visible in that code —
+   that a cache-enabled run also resolves the executable file *region* and marks guest
+   executable ranges, which interacts with `SMCChecks=mtrack` invalidation — were not
+   tested. The headline conclusion does not depend on it: both cache-enabled runs were
+   vastly faster than both no-cache runs.
+2. The 59 s cold figure is a single measurement and should be treated as indicative only.
+
+### Operational caveat, and it matters for a browser
+
+The cache reached **558 MB** for Chrome alone, and upstream documents **no invalidation
+when guest files change**. Chrome auto-updates itself, so after a Chrome update the cache
+must be cleared or it may serve translations of the old binary:
+
+```
+rm -rf /home/radxa/crd-rootfs/home/crd/.cache/fex-emu    # the guest-home cache (Chrome)
+rm -rf /home/radxa/.cache/fex-emu                        # the normal-home cache (everything else)
+```
+
+## 14. Chrome, second pass: the launch was broken, not merely slow
+
+Section 13 treated 262 s as a tuning problem. It was two problems, and only one of them
+was about speed. This section is the dissection: every phase measured separately, and the
+finding that the launchers had never been able to start Chrome *reliably* at all.
+
+### 14.1 The symptom, which did not reproduce
+
+Re-running the section-13 recipe failed. The exact command that returned rc=0 in 33 s now
+hung until killed, twice, with and without a fresh profile. Instrumenting the launch
+(`chrome-dissect.sh`) showed why it read as a hang rather than a crash — two children died
+instantly while the browser kept running:
+
+```
+FATAL:sandbox/linux/services/thread_helpers.cc:41] Check failed: . : No such file or directory (2)
+```
+
+The browser then waits on IPC for a child that never arrives. With
+`--ipc-connection-timeout=3600` that wait is an hour, so `timeout` was the only thing
+ending the run. That is the shape of "this board sucks at launching Chrome".
+
+### 14.2 Root cause: `<rootfs>/proc` was an empty directory
+
+`thread_helpers.cc:41` is `PCHECK(0 == fstatat_ret)` immediately after:
+
+```cpp
+int proc_fd = open("/proc", O_RDONLY | O_DIRECTORY);
+fstatat(proc_fd, "self/task/", &task_stat, 0);
+```
+
+A minimal reproducer (`procprobe.c`) localised it exactly. It is **deterministic, not a
+race** — 200 iterations per variant:
+
+| probe | before | after |
+|---|---|---|
+| `fstatat(open("/proc"), "self/task/")` — *the Chrome call* | 200/200 ENOENT | 0/200 |
+| `fstatat(open("/proc"), "self")` | 200/200 ENOENT | 0/200 |
+| `fstatat(openat(AT_FDCWD,"/proc"), "self/task/")` | 200/200 ENOENT | 0/200 |
+| `fstatat(open("/etc"), "hostname")` — non-`/proc` dirfd | 0/200 | 0/200 |
+| `fstatat(open("/"), "proc/self/task/")` | 0/200 | 0/200 |
+| `fstatat(open("/proc/self"), "task/")` | 0/200 | 0/200 |
+| `stat("/proc/self/task/")` — absolute control | 0/200 | 0/200 |
+
+FEX resolves absolute `/proc` paths, and it resolves dirfd-relative paths in general. What
+fails is a *relative lookup against a directory fd opened on `/proc`* — because that fd is
+`<rootfs>/proc`, an empty directory. FEX's own internal `ProcFD` is a host fd and works
+fine (`FileManagement.cpp:343`, used by `UpdatePID` as `fstatat(ProcFD, "self/fd/N")`);
+only the guest's view is empty.
+
+**So this is a deployment bug, not an emulator bug.** The project's own `crd-run.sh` and
+`crd-rootfs-enter.sh` bind-mount `proc sys dev dev/pts` into the rootfs. The Chrome
+launchers (`chrome-fex-*.sh`) never call them — they set `FEX_ROOTFS` and exec Chrome
+directly. Every Chrome launch on this board therefore ran against an empty `/proc`, and an
+empty `/dev/shm`.
+
+### 14.3 The fix, and making it survive reboot
+
+`emulation/chrome/rootfs-mounts.sh` applies the same `--rbind` + `--make-rslave` pattern
+the project already uses. The `rslave` step is not optional: a recursive `/sys` bind once
+propagated an unmount back and killed the host's `/sys/fs/cgroup`.
+
+`rootfs-kernel-mounts.service` runs it at boot (installed and enabled). Verified:
+
+```
+/proc      mounted    (proc proc)          guest /dev/shm: 2.9G total, 2.9G avail
+/sys       mounted    (sysfs sysfs)
+/dev       mounted    (udev devtmpfs)
+/dev/pts   mounted    (devpts devpts)
+```
+
+### 14.4 What the remaining ~30 s actually is
+
+Measured, warm cache, 8 cores:
+
+| measurement | wall |
+|---|---|
+| `chrome --version` (load FEX + the 276 MB binary + libs) | **0.30 s** |
+| `procprobe` (static x86-64, 10 iterations) | 0.20 s |
+| `python3 -c pass` (dynamic guest binary from the rootfs) | 0.62 s |
+| `fc-list` (fontconfig enumeration; caches exist) | 0.31 s |
+| `--dump-dom about:blank` | **28–34 s** |
+| `--dump-dom file:///tmp/heavy.html` | **29–33 s** |
+
+`about:blank` costs the same as the heavy page, so **the 32 s is Chrome's own startup
+execution — not binary loading, not page work, not fonts, not I/O.** Process tree during a
+launch: browser 142% CPU, network utility process 20–30%, two crashpad handlers ~2%,
+iowait ~0%. There is no stuck child being waited on; it is CPU-bound in emulated guest
+code (user:kernel ≈ 90:10). Ambient load on this board accounts for 26–27% of system CPU
+during a launch — syncthing, tailscaled, cloudflared, plus a permanently running FEX'd
+guest desktop (`chrome-remote-desktop-host`, at-spi, dbus).
+
+### 14.5 Levers tested and rejected
+
+| lever | result | verdict |
+|---|---|---|
+| `FEX_DISKCACHE=0` (control) | 259 s vs 32 s | the cache works, worth **8.1×** |
+| `FEX_DISKCACHEVALIDATION=0` | 32 s | no effect |
+| `FEX_DISKCACHEFILEMAPPING=0` | 34 s | no effect |
+| drop `--disable-dev-shm-usage` (now that `/dev/shm` is real) | 34 s vs 32 s | no gain |
+| `FEX_TSOENABLED=0` | 50 s cold, **26 s** warm | within noise; risk not taken |
+| `FEX_SMCCHECKS=mtrack` | 27–28 s | within noise |
+| `FEX_SMCCHECKS=none` | 52 s cold | not pursued |
+| `FEX_VECTORTSOENABLED=0 FEX_HALFBARRIERTSOENABLED=0` | 53 s cold, 30 s warm | within noise |
+
+Nothing moved the launch beyond noise. The remaining time is Chrome's startup running
+under emulation at roughly 1.7× overhead on a workload that uses only ~1.6 of 8 cores —
+so adding cores does not help either (see 14.7).
+
+### 14.6 A methodological trap: each FEX config gets its own cache set
+
+The first cold number in that table is the trap. DiskCache keys on the JIT configuration,
+so **a run under a new config cannot hit the cache — it recompiles**, and the result looks
+like a catastrophic regression rather than a warmup. Four configs produced four cache
+sets totalling **2.2 GB**:
+
+```
+543M 757cd13014fb91cb319d184e7df1400f     <- experimental
+587M 7a6e53c92dbd46acb4da5caf5d45e547     <- production, kept
+511M 9509da9768a83d48bb253cc25e2d2dfb     <- experimental
+545M f05aec1657068d7c5c5467288bce9018     <- experimental
+```
+
+Any FEX-knob A/B on this board must run each variant **twice** and compare the second
+runs, or it is measuring compilation. The experimental sets were pruned; leaving them
+would silently waste 1.6 GB and inflate page-cache pressure on a 5.8 GB board.
+
+### 14.7 Honest limits, and one reliability caveat that matters
+
+1. **All numbers are the headless `--dump-dom` recipe.** The headed GUI path was not
+   re-measured. The mount fix is global to the rootfs, so the crash fix applies there too,
+   but the windowed wall time is unverified.
+2. **`--no-zygote` is still required.** With `/proc` mounted, allowing the zygote still
+   hangs (rc=124 at 90 s, 0 FATALs). That is a second, separate bug — FEX's emulated
+   clone/exec handshake for `base::LaunchProcess` — and it was **not** fixed. It also
+   means renderers cannot fork, so every child re-pays FEX init and relocation.
+3. **CORRECTED 2026-09-22: `taskset` is NOT required, and the earlier claim that it was
+   load-bearing was an artifact of this study's own instrumentation.** Runs made through
+   `chrome-dissect.sh` carry a sampler that walks `/proc` every 200 ms and costs ~40% of a
+   core; that contention — not the absence of an affinity mask — is what flipped launches
+   into hangs. Re-measured directly, with no sampler and no affinity mask of any kind:
+
+   | configuration (no sampler, no taskset, mounts in place) | result |
+   |---|---|
+   | `--no-zygote` | **31 s / 33 s / 32 s — 3 of 3 succeed** |
+   | zygote allowed | hang, rc=124 at 75 s |
+
+   So the single real requirement is `--no-zygote`; the affinity results (A55-only hanging,
+   A76-only working) were measured on a machine model that included the sampler and should
+   be treated as unproven. The honest lesson is methodological: this launch is sensitive
+   enough that a 40%-of-one-core observer changes the outcome, so any measurement of it
+   has to state its own overhead.
+4. **Nothing here reduced the ~30 s.** It removed a hard failure and made the launch
+   reproducible; the startup cost itself is irreducible without fixing 14.7.2 or improving
+   FEX's generated code.
+
+### 14.8 Reproducing
+
+```bash
+sudo emulation/chrome/rootfs-mounts.sh          # or rely on rootfs-kernel-mounts.service
+x86_64-linux-gnu-gcc -O1 -static -o /tmp/procprobe emulation/chrome/procprobe.c
+FEX_ROOTFS=/home/radxa/crd-rootfs /tmp/procprobe 200   # expect 0 failures everywhere
+
+# the working launch: no taskset, no affinity mask, no FATALs
+cd /home/radxa
+export FEX_ROOTFS=/home/radxa/crd-rootfs
+export HOME=/home/radxa/crd-rootfs/home/crd USER=crd XDG_RUNTIME_DIR=/tmp/fexrun
+timeout 120 env FEX_DISKCACHE=1 \
+  /home/radxa/crd-rootfs/opt/google/chrome/chrome \
+  --headless --no-sandbox --no-zygote --disable-gpu --in-process-gpu \
+  --disable-dev-shm-usage --ipc-connection-timeout=3600 --no-first-run \
+  --disable-extensions --disable-background-networking --no-pings \
+  --metrics-recording-only --disable-default-apps --disable-sync \
+  --user-data-dir=/home/radxa/chrome-data --dump-dom file:///tmp/heavy.html
+#    ^ the ONLY non-default requirement is --no-zygote
+
+# per-phase attribution of any launch
+emulation/chrome/chrome-dissect.sh <label> headless -- --no-zygote
+emulation/chrome/dissect-report.py /home/radxa/fex-tune/chrome-runs/<label>.tsv
+```
+
+Verified end state, 2026-09-22: **29–33 s, rc=0, DOM byte-identical (250326), 0 FATALs**,
+with no taskset and no affinity mask; `procprobe` 0 failures across all 8 variants.
+The only launcher-level requirement left is `--no-zygote`.
+
+## 15. Chrome removed from the device, and what was kept
+
+**Decision (2026-09-22): the x86-64 Chrome was removed from the guest rootfs.** A browser
+that needs 29–33 s to show a blank page when its 595 MB translation cache is warm, and
+259 s when it is not, is not a usable browser — and section 14 established that this
+cannot be configured away. The board keeps a native browser instead.
+
+Removed:
+
+| item | size |
+|---|---|
+| `/opt/google/chrome` payload (purged as `google-chrome-stable 149.0.7827.155-1`) | 403 MB |
+| guest FEX disk cache, which existed only for this one binary | 595 MB |
+| conffiles, apt source, `/etc/default/google-chrome`, desktop entries | — |
+
+Kept, deliberately:
+
+- **The general fixes, which were never Chrome-specific.** `rootfs-mounts.sh` +
+  `rootfs-kernel-mounts.service` still bind-mount `/proc`, `/sys`, `/dev` and `/dev/pts`
+  into the rootfs. The reproducer in 14.2 was a plain x86-64 program, not Chrome: *any*
+  guest binary doing a dirfd-relative lookup against `open("/proc")` got ENOENT 200/200
+  before this. Every x86-64 process on the board — including the two `crd-mirror` guest
+  desktops — benefits, with no launcher flags anywhere. Re-verified after the removal:
+  mounts `enabled`/`active`, `procprobe` 0/100 failures on all 8 variants.
+- Both FEX configs, the instrumentation (`chrome-dissect.sh`, `dissect-report.py`,
+  `procprobe.c`, `unlinkprobe.c`), and this document.
+- The Chrome profile at `/home/radxa/chrome-data` (49 MB) and the 18 launcher scripts in
+  `/home/radxa/`, left in place rather than deleted. The scripts are now inert.
+
+Verification after removal: `dpkg-query` reports `google-chrome-stable: unknown ok
+not-installed`, **`dpkg --audit` prints nothing** (database consistent, 533 packages),
+`chrome-remote-desktop 150.0.7871.19` is `install ok installed`, and both
+`crd-mirror.service` and `crd-mirror2.service` are still active. Reinstalling would mean
+re-downloading `google-chrome-stable_current_amd64.deb`; no local copy was cached.
+
+### One anomaly, recorded honestly and not attributed
+
+`dpkg --purge` removed the entire payload correctly and then failed with:
+
+```
+unable to delete control info file
+'/var/lib/dpkg/info/google-chrome-stable.postinst': No such file or directory
+```
+
+while that file was demonstrably still present (20367 bytes). Because this has the same
+shape as the `/proc` bug, it was tested rather than assumed: `unlinkprobe.c` exercises
+absolute `unlink`, `unlinkat(dirfd, "rel")` — the dpkg-shaped call — `unlinkat(AT_FDCWD,
+abs)`, a nested dirfd, and a stat-then-unlink sequence. **All five succeed under FEX with
+0 failures.** So unlink is not broken and the cause is unexplained; it is recorded as a
+caution, not a finding. The practical lesson is to run `dpkg --audit` after any dpkg
+operation in that rootfs, which is how the consistency above was confirmed.

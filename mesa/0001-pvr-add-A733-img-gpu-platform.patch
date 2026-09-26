@@ -1,0 +1,14 @@
+--- /tmp/pvr_device.c.orig	2026-09-23 08:54:19.256862340 +0800
++++ src/imagination/vulkan/pvr_device.c	2026-09-23 08:55:26.257245792 +0800
+@@ -141,6 +141,11 @@
+ 
+ /* This is the list of supported DRM render/display driver configs. */
+ static const struct pvr_drm_device_config pvr_drm_configs[] = {
++   /* Radxa Cubie A7A (Allwinner A733): the device tree names the GPU node
++    * "img,gpu" and the display engine "allwinner,sunxi-drm". Mesa main replaced
++    * this table with a capability check (DRM driver name plus dumb-buffer and
++    * PRIME caps), so this entry is only needed by the 25.0-25.2 pvr driver. */
++   DEF_CONFIG("img,gpu", "allwinner,sunxi-drm"),
+    DEF_CONFIG("mediatek,mt8173-gpu", "mediatek-drm"),
+    DEF_CONFIG("ti,am62-gpu", "ti,am625-dss"),
+    DEF_CONFIG("ti,j721s2-gpu", "ti,j721e-dss"),

@@ -7,6 +7,14 @@ BXM-4-64 MC1** (BVNC `36.56.104.183`, Vulkan **1.3.277**), Radxa BSP **Debian 13
 
 > This is the **trixie / 6.6** matrix. The Debian 11 / 5.15 matrix is on the
 > [`bullseye`](../../../tree/bullseye) branch — a different stack.
+>
+> **Partially superseded 2026-09-22 — see [`GPU-RESEARCH-2026-09-22.md`](GPU-RESEARCH-2026-09-22.md).**
+> Measured on the board: the X server has been rendering on the PowerVR GPU (glamor) all along and
+> windowed GLES on `:0` works and is stable (40 s at 1080p60, 0 swap errors, clean kernel log); the
+> block is narrower than "a GPU desktop" — no GLX, and the DDK has no Wayland surface extensions at
+> all. Also: open-ABI firmware for this exact BVNC (36.56.104.183) is now published by Imagination
+> and installed here, and the cost behind "slow windows" is a 1.3–48 ms per-frame GPU sync, not the
+> window path.
 
 The short version: **the GPU works great per-workload — including GPU Direct3D
 9/10/11 and off-screen GL — but it cannot drive a GPU-composited desktop (that
