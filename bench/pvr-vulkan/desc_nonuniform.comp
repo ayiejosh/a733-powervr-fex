@@ -1,0 +1,42 @@
+// desc_nonuniform.comp - descriptor array indexed by a per-lane DIVERGENT value.
+//
+// The uniform half of descriptor indexing is already proven on this hardware
+// (vkdescidx: a dynamically uniform runtime index selects the right descriptor).
+// What was never determined is the non-uniform half: can the descriptor be
+// selected separately for each lane of a wave, or does the lowering assume the
+// index is uniform and therefore break as soon as lanes disagree?
+//
+// mode 0 pushes a dynamically uniform index, which the existing lowering already
+// handles - it is the control, and it proves the pipeline and the descriptor
+// array are sound. mode 1 derives the index from gl_LocalInvocationID.x, so
+// adjacent lanes of the same wave select different descriptors. If mode 0 is
+// correct and mode 1 is not, the gap is divergence handling in the compiler, not
+// the descriptor path.
+//
+// nonuniformEXT is deliberate even though this driver does not advertise the
+// *NonUniformIndexing features: the NonUniform decoration is exactly the
+// information a compiler needs to keep the address per-lane, so leaving it out
+// would test the uniform path a second time instead of the divergent one.
+#version 450
+#extension GL_EXT_nonuniform_qualifier : require
+
+layout(local_size_x = 64) in;
+
+layout(set = 0, binding = 0) readonly buffer In { uint v[]; } b[];
+layout(set = 0, binding = 1) writeonly buffer Out { uint v[]; } o;
+
+layout(push_constant) uniform PC {
+    uint mode;        // 0 = uniformly indexed control, 1 = per-lane divergent
+    uint uniform_idx; // descriptor to read when mode == 0
+} pc;
+
+void main()
+{
+    uint idx;
+    if (pc.mode == 0u)
+        idx = pc.uniform_idx;              // dynamically uniform
+    else
+        idx = gl_LocalInvocationID.x & 1u; // diverges inside a wave
+
+    o.v[gl_GlobalInvocationID.x] = b[nonuniformEXT(idx)].v[0];
+}

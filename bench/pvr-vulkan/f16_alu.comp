@@ -1,0 +1,40 @@
+#version 450
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
+/* Narrow-type arithmetic, the shaderFloat16 / shaderInt8 half of the 16-bit
+ * feature group.
+ *
+ * Every value here is exact so the expectations are not a rounding argument:
+ * 1.5 * 2.25 = 3.375, times 8 is 27 exactly in both f16 and f32; -100 / 3
+ * truncates to -33; and uint8 arithmetic wraps, so 200 + 100 is 44. */
+layout(local_size_x = 1) in;
+
+layout(std430, binding = 0) buffer Out { uint v[]; } outbuf;
+
+void main() {
+    float16_t a = float16_t(1.5);
+    float16_t b = float16_t(2.25);
+    float16_t c = a * b + float16_t(0.0);
+
+    outbuf.v[0] = uint(c * float16_t(8.0));   /* 27 */
+
+    int8_t x = int8_t(-100);
+    int8_t y = int8_t(3);
+
+    outbuf.v[1] = uint(int(x / y) + 128);     /* -33 + 128 = 95 */
+
+    uint8_t u = uint8_t(200);
+    uint8_t w = uint8_t(100);
+    uint8_t s = u + w;                        /* wraps: 44 */
+
+    outbuf.v[2] = uint(s);
+
+    /* A f16 comparison and a select, so this is not only conversion. */
+    outbuf.v[3] = (c > float16_t(3.0)) ? 1u : 0u;   /* 1 */
+
+    /* NOTE: a per-operation rounding probe (1.0 + 0.0005 summed twice) was
+     * removed. Both this driver and the vendor return the constant-folded
+     * result for it - 1025 and 1024 x1024 - so it distinguishes nothing and its
+     * expectation was mine, not the specification's. Per-op f16 rounding is
+     * therefore *not* covered here; see vk16's output note. */
+}

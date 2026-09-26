@@ -124,18 +124,36 @@ unavailable on the custom kernel):
   BXM-4-64 raster/fragment ceiling), scaling linearly with triangle count and
   dominating CPU-record by 4-6x. No remaining DXVK software lever speeds it.
 
-## Geometry-shader compute-emulation (branch `gs-compute`)
+## Geometry-shader compute-emulation (branch `gs-latest`)
 
 A compute-based GS emulation (libpoly-style: GS->compute SPIR-V codegen + a 3-pass
 runtime driver — VS capture -> compute-GS dispatch -> counter-driven indirect draw) is
 **proven to render**: the probe `gs.exe` produces the GS-tinted output (`GS_OK`,
-RC=0, reproducible) on branch `gs-compute`. But it is **~80x slower** than a native
-draw (worst-case small-draw: each emulated GS draw replaces one native draw with a
-serialized copy + 2 dispatches + counter->indirect chain), so it is **compatibility-grade
-only**, gated behind `dxvk.conf d3d11.emulateGeometryShaders` (default OFF). The
-general Pass-1 (VS-as-compute for arbitrary app vertex shaders, with format-aware input
-gather) is **scoped but not implemented** — the current capture path is a probe-specific
-shortcut. Full detail in `gpu/dxvk/README.md`.
+RC=0, reproducible). Native GS is a genuine wall — the BXM blob itself reports
+`geometryShader: 0` and a GS draw dies in `vkCreateGraphicsPipelines` (rc=3) with our
+feature fakes on *or* off — so this emulation is the only way a GS workload runs here.
+
+It costs **~676 us/draw against a ~11.2 us/draw no-GS baseline (~60x)**, so it is
+compatibility-grade only, gated behind `dxvk.conf d3d11.emulateGeometryShaders`
+(default OFF).
+
+**2026-09-24: ported onto the shipping base.** The work was written 2026-06-21 against
+June `main`; the shipping branch (`bcn-update-20260921`) had grown 4830 commits past that
+base, so the test dlls had none of the BC1-5 decode patch or the WSI rework and a
+BC-textured app could not run on them at all (`cube.exe` page-faulted in
+`CreateTexture2D`). Branch **`gs-latest`** (`80756906`) is the merge onto the shipping
+base: one conflict (`d3d11_options.h`, both option fields kept), builds clean with **no
+source change**, `gs.exe` still `GS_OK`, and the non-GS battery — BC1-5, textures,
+compute, RTT, depth, MRT, present, `tri` — is clean. The three amortisation folds are
+worth **-32.6% per draw** on the new base too (1005.9 -> 677.6 us), measured against
+`gs-latest-nofold` (`8652b433`) in the same session. Still **not default-on**: the path
+assumes a fixed vertex stride, a 3-slot output record and 3-in/3-out triangle lists,
+ignores indexed draws and the application VS, intercepts only `Draw`/`DrawIndexed`, and
+its post-dispatch barrier is implicit. Full detail in `gpu/dxvk/README.md`.
+
+The general Pass-1 (VS-as-compute for arbitrary app vertex shaders, with format-aware
+input gather) is **scoped but not implemented** — the current input path is a
+probe-specific shortcut.
 
 ## The only lever that lifts the hard walls
 
@@ -183,3 +201,48 @@ fix: heap budget is no longer wrongly enforced on unified-memory GPUs.)
 Same bench suite, trixie vs bullseye baseline: unaligned atomics **+11–18%**
 (136.6/53.8/51.1 Mops vs 120.8/48.3/43.4), thread create+join **30% faster**
 (139,849 ns vs 199,995 ns), CPU/GPU baselines unchanged. See bench/baseline.txt.
+
+## 2026-09-24 additions (full-suite verification)
+
+### Every applied gain re-measured in one session — all still hold
+`bench/run.sh` vs `baseline.txt`: cpu.1thread **847.83 vs 847.80**; FEX atomics
+153.2/60.8/56.8 vs 152.1/61.4/56.9 Mops; x87 ratio **18.7x vs 18.9x**; glbench
+**7589/2225/579/147** vs 7392/2229/579/147 Mpix (GPU at 1104 MHz, DSU 1027 MHz, verified
+through `clkctl`). D3D11: 21/27 apps clean, baseline draw **4.690 us/draw** (repeat spread
+0.15%), realistic frames GPU-fill-bound, PSO swap still the only costly state op (+54%).
+Desktop GL over zink: **2.2–3.5x** faster than llvmpipe windowed, 0 swap errors. Open
+driver: `regress.sh` **29 passed, 0 failed** plus GL/render repeats PASS.
+
+### `bench/run.sh` read NA for the GPU rows inside a Plasma session — FIXED
+`MESA_LOADER_DRIVER_OVERRIDE=zink` is session-wide for the desktop GL change, so Mesa's EGL
+tried zink on the GBM platform and the vendor GLES path died with `eglInitialize 0x3001`,
+leaving all four `gpu.glbench` rows NA — which reads like a GPU regression but is not one.
+`bench/run.sh` now strips the session GL variables (`MESA_LOADER_DRIVER_OVERRIDE`,
+`GALLIUM_DRIVER`, `LIBGL_DRIVERS_PATH`, `LIBGL_KOPPER_DRI2`, `LIBGL_ALWAYS_SOFTWARE`,
+`VK_ICD_FILENAMES`, `VK_DRIVER_FILES`, `VK_INSTANCE_LAYERS`, `VK_LAYER_PATH`, `PVR_FAKE_*`)
+for the glbench section and warns if a row still comes back empty. Verified after the fix:
+**7616/2224/579/147** Mpix vs the 7392/2229/579/147 baseline.
+
+### One entry point for all of it: `bench/full.sh`
+Four selectable phases — `canonical` (CPU/FEX/GPU GLES), `d3d` (the 30-program D3D11
+matrix + the timed suite, now in-tree under `bench/d3d11/`), `gs` (geometry-shader
+emulation A/B) and `open` (the Vulkan/GL suite on the open driver through the module-swap
+wrapper). Per-phase logs plus a `SUMMARY.txt`; a failed phase does not hide the others and
+the exit status is non-zero if any failed. `docs/FULL-BENCHMARK.md` records what is
+covered, what is not, and when two numbers may be compared (same session for evidence,
+`baseline.txt` only with the clock overlays applied and the session GL environment
+stripped, never by md5 — the arm64ec link is not bit-reproducible).
+
+### Known-failing D3D apps, confirmed pre-existing (layer on == layer off)
+`msaa.exe`/`msaa2.exe` (MSAA_FAIL, no MSAA in the blob), `tess.exe` (rc=3, no tessellation),
+`d7test.exe`/`d3d7test.exe` (no D3DHALDevice), and `mrt.exe` (MRT_FAIL — the
+`SV_VertexID`/no-input-layout variant; `mrt2.exe` with a real vertex buffer is MRT_OK, which
+is what the "MRT works" row below rests on). None is caused by `PVR_FAKE_*`/the strip layer.
+
+### Geometry shaders: the blob itself reports `geometryShader: 0`
+With `PVR_FAKE_GS` unset DXVK sees `geometryShader: 0`; with the session fake on it sees 1.
+Either way a GS draw on the shipping dll dies in `vkCreateGraphicsPipelines` (rc=3), so
+native GS is a genuine wall and the compute emulation is the only way through. Two
+consequences: (a) the emulation does not depend on the session fake — it renders GS_OK with
+the fake on *and* off; (b) the trade-off note on `PVR_FAKE_GS=1` is about *Vulkan* apps that
+trust the flag, not about the DXVK path.

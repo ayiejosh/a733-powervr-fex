@@ -1,0 +1,73 @@
+########## Vulkan: open driver BEFORE our changes (build/, pre-BDA) ##########
+stack: open-prechange
+icd:   /home/radxa/mesa/mesa-main/build/src/imagination/vulkan/powervr_mesa_devenv_icd.aarch64.json
+date:  2026-09-23T12:24Z
+icd.apiVersion:                1.2.363
+icd.maxImageDimension2D:       8192
+icd.bufferDeviceAddress:       0
+icd.colorSampleCounts:         0x5
+compat.bda: NOOUTPUT
+compat.pctest: NOOUTPUT
+compute.ms_dispatch:           0.814
+compute.GBps:                  2.58
+compat.compute: PASS
+render512.ms_frame:            2.025
+render512.Mpix_s:              129.5
+compat.render512: PASS
+render1024.ms_frame:           4.534
+render1024.Mpix_s:             231.3
+compat.render1024: PASS
+render2048.ms_frame:           13.867
+render2048.Mpix_s:             302.5
+compat.render2048: PASS
+compat.render4096: PASS
+compat.render8192: PASS
+readback.total_ms:             
+readback.cpu_ms:               
+alloc.ms:                      
+
+########## Vulkan: open driver NOW (build-x11, default config) ##########
+stack: open-current
+icd:   /home/radxa/mesa/mesa-main/build-x11/src/imagination/vulkan/powervr_mesa_devenv_icd.aarch64.json
+date:  2026-09-23T12:24Z
+icd.apiVersion:                1.2.363
+icd.maxImageDimension2D:       8192
+icd.bufferDeviceAddress:       1
+icd.colorSampleCounts:         0x7
+compat.bda: PASS
+compat.pctest: PASS
+compute.ms_dispatch:           0.875
+compute.GBps:                  2.40
+compat.compute: PASS
+render512.ms_frame:            1.767
+render512.Mpix_s:              148.4
+compat.render512: PASS
+render1024.ms_frame:           4.264
+render1024.Mpix_s:             245.9
+compat.render1024: PASS
+render2048.ms_frame:           14.232
+render2048.Mpix_s:             294.7
+compat.render2048: PASS
+compat.render4096: PASS
+compat.render8192: PASS
+readback.total_ms:             
+readback.cpu_ms:               
+alloc.ms:                      
+
+########## GL: glbench 1280x720 through zink over each ICD ##########
+gl.prechange  loop4    
+gl.prechange  loop16   
+gl.prechange  loop64   
+gl.prechange  loop256  
+gl.current    loop4    
+gl.current    loop16   
+gl.current    loop64   
+gl.current    loop256  
+
+########## presentation: dma-buf scanout with page flips ##########
+present.prechange  1920       presented 240 frames in 4509.5 ms: 53.2 fps (3 buffers, 0 flip timeouts, pace=retry) first 6 presented frames, pixel 0: 2 0 0 2 18 34 VERDICT: PASS - the open driver presented animated frames by page flip 
+present.prechange  3840       presented 120 frames in 2867.8 ms: 41.8 fps (3 buffers, 0 flip timeouts, pace=retry) first 6 presented frames, pixel 0: 2 0 0 2 18 34 VERDICT: PASS - the open driver presented animated frames by page flip 
+present.current    1920       presented 240 frames in 4316.7 ms: 55.6 fps (3 buffers, 0 flip timeouts, pace=retry) first 6 presented frames, pixel 0: 2 0 0 2 18 34 VERDICT: PASS - the open driver presented animated frames by page flip 
+present.current    3840       presented 120 frames in 2840.7 ms: 42.2 fps (3 buffers, 0 flip timeouts, pace=retry) first 6 presented frames, pixel 0: 0 0 0 2 18 34 VERDICT: PASS - the open driver presented animated frames by page flip 
+
+########## done ##########

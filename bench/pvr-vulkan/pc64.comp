@@ -1,0 +1,26 @@
+#version 450
+// Same probe as pc.comp, with the push constant block declared as two uint64_t
+// instead of a uvec4. The host pushes byte-identical values in both cases, so a
+// difference in behaviour isolates the 64-bit member handling in the push
+// constant path from push constants in general.
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+
+layout(local_size_x = 64) in;
+
+layout(set = 0, binding = 0, std430) buffer Out {
+    uvec4 got;
+    uvec4 marker;
+} o;
+
+layout(push_constant, std430) uniform PC {
+    uint64_t a;
+    uint64_t b;
+} pc;
+
+void main() {
+    if (gl_GlobalInvocationID.x != 0u)
+        return;
+
+    o.got = uvec4(uint(pc.a), uint(pc.a >> 32), uint(pc.b), uint(pc.b >> 32));
+    o.marker = uvec4(0xDEADBEEFu, 1u, 2u, 3u);
+}

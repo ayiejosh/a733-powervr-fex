@@ -1,0 +1,51 @@
+#include <windows.h>
+#include <d3d11.h>
+#include <d3dcompiler.h>
+#include <cstdio>
+#include <cstring>
+struct Vx{float x,y,u,v;};
+// --- BC1 (DXT1) block decode: 8 bytes -> 16 RGBA8 pixels ---
+void bc1_decode(const unsigned char*blk,unsigned*out){
+  unsigned c0=blk[0]|(blk[1]<<8), c1=blk[2]|(blk[3]<<8);
+  int R[4],G[4],B[4];
+  auto ex=[&](unsigned c,int i){R[i]=((c>>11)&31)*255/31;G[i]=((c>>5)&63)*255/63;B[i]=(c&31)*255/31;};
+  ex(c0,0);ex(c1,1);
+  if(c0>c1){R[2]=(2*R[0]+R[1])/3;G[2]=(2*G[0]+G[1])/3;B[2]=(2*B[0]+B[1])/3;R[3]=(R[0]+2*R[1])/3;G[3]=(G[0]+2*G[1])/3;B[3]=(B[0]+2*B[1])/3;}
+  else{R[2]=(R[0]+R[1])/2;G[2]=(G[0]+G[1])/2;B[2]=(B[0]+B[1])/2;R[3]=G[3]=B[3]=0;}
+  unsigned idx=blk[4]|(blk[5]<<8)|(blk[6]<<16)|((unsigned)blk[7]<<24);
+  for(int i=0;i<16;i++){int s=(idx>>(i*2))&3;out[i]=(unsigned)R[s]|((unsigned)G[s]<<8)|((unsigned)B[s]<<16)|0xFF000000u;}
+}
+int main(){
+  ID3D11Device*dev=0;ID3D11DeviceContext*ctx=0;D3D_FEATURE_LEVEL fl;
+  if(FAILED(D3D11CreateDevice(0,D3D_DRIVER_TYPE_HARDWARE,0,0,0,0,D3D11_SDK_VERSION,&dev,&fl,&ctx)))return 1;
+  // BC1 block: color0=red(0xF800) color1=green(0x07E0), top 2 rows idx0(red), bottom 2 rows idx1(green)
+  unsigned char blk[8]={0x00,0xF8, 0xE0,0x07, 0x00,0x00,0x55,0x55};
+  unsigned rgba[16]; bc1_decode(blk,rgba);
+  printf("decoded px[0]=0x%08X (top, want red FF0000FF-ish) px[15]=0x%08X (bottom, want green FF00FF00-ish)\n",rgba[0],rgba[15]);
+  // upload decoded RGBA as a 4x4 texture, sample, readback
+  const int W=64,H=64;
+  D3D11_TEXTURE2D_DESC rd={};rd.Width=W;rd.Height=H;rd.MipLevels=1;rd.ArraySize=1;rd.Format=DXGI_FORMAT_R8G8B8A8_UNORM;rd.SampleDesc.Count=1;rd.Usage=D3D11_USAGE_DEFAULT;rd.BindFlags=D3D11_BIND_RENDER_TARGET;
+  ID3D11Texture2D*rt=0;dev->CreateTexture2D(&rd,0,&rt);ID3D11RenderTargetView*rtv=0;dev->CreateRenderTargetView(rt,0,&rtv);
+  D3D11_TEXTURE2D_DESC td={};td.Width=4;td.Height=4;td.MipLevels=1;td.ArraySize=1;td.Format=DXGI_FORMAT_R8G8B8A8_UNORM;td.SampleDesc.Count=1;td.Usage=D3D11_USAGE_DEFAULT;td.BindFlags=D3D11_BIND_SHADER_RESOURCE;
+  D3D11_SUBRESOURCE_DATA tsd={rgba,16,0};ID3D11Texture2D*tex=0;dev->CreateTexture2D(&td,&tsd,&tex);
+  ID3D11ShaderResourceView*srv=0;dev->CreateShaderResourceView(tex,0,&srv);
+  D3D11_SAMPLER_DESC smd={};smd.Filter=D3D11_FILTER_MIN_MAG_MIP_POINT;smd.AddressU=smd.AddressV=smd.AddressW=D3D11_TEXTURE_ADDRESS_CLAMP;
+  ID3D11SamplerState*smp=0;dev->CreateSamplerState(&smd,&smp);
+  const char*SH="Texture2D t:register(t0);SamplerState s:register(s0);struct VO{float4 p:SV_POSITION;float2 uv:TEXCOORD;};VO vs(float2 pos:POSITION,float2 uv:TEXCOORD){VO o;o.p=float4(pos,0,1);o.uv=uv;return o;}float4 ps(VO i):SV_TARGET{return t.Sample(s,i.uv);}";
+  ID3DBlob*vb=0,*pb=0,*e=0;D3DCompile(SH,strlen(SH),0,0,0,"vs","vs_4_0",0,0,&vb,&e);D3DCompile(SH,strlen(SH),0,0,0,"ps","ps_4_0",0,0,&pb,&e);
+  ID3D11VertexShader*vs=0;dev->CreateVertexShader(vb->GetBufferPointer(),vb->GetBufferSize(),0,&vs);
+  ID3D11PixelShader*ps=0;dev->CreatePixelShader(pb->GetBufferPointer(),pb->GetBufferSize(),0,&ps);
+  D3D11_INPUT_ELEMENT_DESC il[]={{"POSITION",0,DXGI_FORMAT_R32G32_FLOAT,0,0,D3D11_INPUT_PER_VERTEX_DATA,0},{"TEXCOORD",0,DXGI_FORMAT_R32G32_FLOAT,0,8,D3D11_INPUT_PER_VERTEX_DATA,0}};
+  ID3D11InputLayout*lay=0;dev->CreateInputLayout(il,2,vb->GetBufferPointer(),vb->GetBufferSize(),&lay);
+  Vx v[6]={{-1,-1,0,1},{-1,1,0,0},{1,1,1,0},{-1,-1,0,1},{1,1,1,0},{1,-1,1,1}};
+  D3D11_BUFFER_DESC bd={sizeof(v),D3D11_USAGE_DEFAULT,D3D11_BIND_VERTEX_BUFFER};D3D11_SUBRESOURCE_DATA sr={v};ID3D11Buffer*vbuf=0;dev->CreateBuffer(&bd,&sr,&vbuf);
+  float clr[4]={0,0,0,1};ctx->ClearRenderTargetView(rtv,clr);D3D11_VIEWPORT vp={0,0,W,H,0,1};ctx->RSSetViewports(1,&vp);
+  ctx->OMSetRenderTargets(1,&rtv,0);ctx->IASetInputLayout(lay);UINT st=sizeof(Vx),of=0;ctx->IASetVertexBuffers(0,1,&vbuf,&st,&of);
+  ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);ctx->VSSetShader(vs,0,0);ctx->PSSetShader(ps,0,0);ctx->PSSetShaderResources(0,1,&srv);ctx->PSSetSamplers(0,1,&smp);ctx->Draw(6,0);
+  D3D11_TEXTURE2D_DESC sd=rd;sd.BindFlags=0;sd.Usage=D3D11_USAGE_STAGING;sd.CPUAccessFlags=D3D11_CPU_ACCESS_READ;ID3D11Texture2D*stg=0;dev->CreateTexture2D(&sd,0,&stg);ctx->CopyResource(stg,rt);
+  D3D11_MAPPED_SUBRESOURCE m;if(FAILED(ctx->Map(stg,0,D3D11_MAP_READ,0,&m)))return 2;
+  unsigned char*top=(unsigned char*)m.pData+8*m.RowPitch+32*4;unsigned char*bot=(unsigned char*)m.pData+56*m.RowPitch+32*4;
+  printf("sampled TOP RGB=%d,%d,%d (want red) BOT RGB=%d,%d,%d (want green)\n",top[0],top[1],top[2],bot[0],bot[1],bot[2]);
+  int ok=(top[0]>200&&top[1]<60)&&(bot[1]>200&&bot[0]<60);ctx->Unmap(stg,0);
+  printf(ok?"BC_TRANSCODE_OK BC1 decoded->RGBA->sampled correctly\n":"BC_TRANSCODE_FAIL\n");return ok?0:3;
+}

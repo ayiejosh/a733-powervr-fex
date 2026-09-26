@@ -1,0 +1,252 @@
+# vkaudit output, open driver (Mesa pvr, build-x11 ICD, HEAD) - produced through the
+# pvr drm-shim with no GPU present (PVR_SHIM_DEVICE_BVNC=36.56.104.183), which is
+# enough because the feature table is static; see docs section 21.17.1.
+# Diffed against audit-2026-09-23-vendor.txt, the remaining gap is:
+#   core.occlusionQueryPrecise, vk11.variablePointers,
+#   vk11.variablePointersStorageBuffer, vk12.bufferDeviceAddressCaptureReplay,
+#   vk12.drawIndirectCount, vk12.vulkanMemoryModel,
+#   vk12.vulkanMemoryModelDeviceScope, subgroup properties
+MESA: warning: ../src/imagination/vulkan/winsys/powervr/pvr_drm.c:344: FINISHME: Core count fetching is unimplemented. Setting 1 for now.
+WARNING: powervr is not a conformant Vulkan implementation, testing use only.
+== instance extensions ==
+  VK_EXT_acquire_drm_display
+  VK_EXT_debug_report
+  VK_EXT_debug_utils
+  VK_EXT_direct_mode_display
+  VK_EXT_display_surface_counter
+  VK_EXT_headless_surface
+  VK_EXT_surface_maintenance1
+  VK_EXT_swapchain_colorspace
+  VK_KHR_device_group_creation
+  VK_KHR_display
+  VK_KHR_external_fence_capabilities
+  VK_KHR_external_memory_capabilities
+  VK_KHR_external_semaphore_capabilities
+  VK_KHR_get_display_properties2
+  VK_KHR_get_physical_device_properties2
+  VK_KHR_get_surface_capabilities2
+  VK_KHR_portability_enumeration
+  VK_KHR_surface
+  VK_KHR_xcb_surface
+  VK_KHR_xlib_surface
+  VK_LUNARG_direct_driver_loading
+
+== device 0 ==
+  deviceName    PowerVR B-Series BXM-4-64 MC1
+  apiVersion    1.3.363
+  driverVersion 0x06802063
+  deviceType    1
+
+-- limits (selected) --
+  maxImageDimension2D            8192
+  maxImageDimensionCube          8192
+  maxFramebufferWidth/Height     8192/8192
+  maxColorAttachments            4
+  maxComputeWorkGroupCount       65535 65535 65535
+  maxComputeWorkGroupSize        128 128 64
+  maxComputeWorkGroupInvocations 128
+  maxComputeSharedMemorySize     16384
+  maxDescriptorSetSamplers       48
+  maxPerStageDescriptorSamplers  16
+  maxVertexInputAttributes       16
+  maxViewportDimensions          8192 8192
+  maxBoundDescriptorSets         4
+  timestampPeriod                0.000
+  framebufferColorSampleCounts   0x7
+  framebufferDepthSampleCounts   0x7
+  sampledImageColorSampleCounts  0x7
+
+-- device extensions --
+  VK_EXT_border_color_swizzle
+  VK_EXT_buffer_device_address
+  VK_EXT_color_write_enable
+  VK_EXT_custom_border_color
+  VK_EXT_debug_marker
+  VK_EXT_depth_clamp_zero_one
+  VK_EXT_depth_clip_enable
+  VK_EXT_device_memory_report
+  VK_EXT_display_control
+  VK_EXT_extended_dynamic_state
+  VK_EXT_extended_dynamic_state2
+  VK_EXT_extended_dynamic_state3
+  VK_EXT_external_memory_dma_buf
+  VK_EXT_global_priority
+  VK_EXT_global_priority_query
+  VK_EXT_host_query_reset
+  VK_EXT_image_2d_view_of_3d
+  VK_EXT_image_drm_format_modifier
+  VK_EXT_index_type_uint8
+  VK_EXT_inline_uniform_block
+  VK_EXT_line_rasterization
+  VK_EXT_map_memory_placed
+  VK_EXT_non_seamless_cube_map
+  VK_EXT_physical_device_drm
+  VK_EXT_primitive_topology_list_restart
+  VK_EXT_private_data
+  VK_EXT_provoking_vertex
+  VK_EXT_queue_family_foreign
+  VK_EXT_robustness2
+  VK_EXT_scalar_block_layout
+  VK_EXT_separate_stencil_usage
+  VK_EXT_shader_demote_to_helper_invocation
+  VK_EXT_shader_replicated_composites
+  VK_EXT_shader_subgroup_ballot
+  VK_EXT_shader_subgroup_vote
+  VK_EXT_subgroup_size_control
+  VK_EXT_texel_buffer_alignment
+  VK_EXT_tooling_info
+  VK_EXT_vertex_attribute_divisor
+  VK_EXT_zero_initialize_device_memory
+  VK_IMG_filter_linear_2d
+  VK_KHR_bind_memory2
+  VK_KHR_buffer_device_address
+  VK_KHR_copy_commands2
+  VK_KHR_create_renderpass2
+  VK_KHR_dedicated_allocation
+  VK_KHR_depth_stencil_resolve
+  VK_KHR_descriptor_update_template
+  VK_KHR_device_group
+  VK_KHR_driver_properties
+  VK_KHR_dynamic_rendering
+  VK_KHR_external_fence
+  VK_KHR_external_fence_fd
+  VK_KHR_external_memory
+  VK_KHR_external_memory_fd
+  VK_KHR_external_semaphore
+  VK_KHR_external_semaphore_fd
+  VK_KHR_format_feature_flags2
+  VK_KHR_get_memory_requirements2
+  VK_KHR_global_priority
+  VK_KHR_image_format_list
+  VK_KHR_imageless_framebuffer
+  VK_KHR_incremental_present
+  VK_KHR_index_type_uint8
+  VK_KHR_line_rasterization
+  VK_KHR_maintenance1
+  VK_KHR_maintenance2
+  VK_KHR_maintenance3
+  VK_KHR_maintenance4
+  VK_KHR_maintenance5
+  VK_KHR_maintenance7
+  VK_KHR_map_memory2
+  VK_KHR_multiview
+  VK_KHR_pipeline_executable_properties
+  VK_KHR_present_id
+  VK_KHR_present_id2
+  VK_KHR_present_wait
+  VK_KHR_present_wait2
+  VK_KHR_relaxed_block_layout
+  VK_KHR_robustness2
+  VK_KHR_sampler_mirror_clamp_to_edge
+  VK_KHR_sampler_ycbcr_conversion
+  VK_KHR_separate_depth_stencil_layouts
+  VK_KHR_shader_draw_parameters
+  VK_KHR_shader_expect_assume
+  VK_KHR_shader_float_controls
+  VK_KHR_shader_float_controls2
+  VK_KHR_shader_fma
+  VK_KHR_shader_integer_dot_product
+  VK_KHR_shader_non_semantic_info
+  VK_KHR_shader_relaxed_extended_instruction
+  VK_KHR_shader_subgroup_extended_types
+  VK_KHR_shader_subgroup_rotate
+  VK_KHR_shader_subgroup_uniform_control_flow
+  VK_KHR_shader_terminate_invocation
+  VK_KHR_spirv_1_4
+  VK_KHR_storage_buffer_storage_class
+  VK_KHR_swapchain
+  VK_KHR_swapchain_maintenance1
+  VK_KHR_swapchain_mutable_format
+  VK_KHR_synchronization2
+  VK_KHR_timeline_semaphore
+  VK_KHR_unified_image_layouts
+  VK_KHR_uniform_buffer_standard_layout
+  VK_KHR_vertex_attribute_divisor
+  VK_KHR_workgroup_memory_explicit_layout
+
+-- features --
+  core.geometryShader=0
+  core.tessellationShader=0
+  core.depthClamp=1
+  core.depthBiasClamp=1
+  core.fillModeNonSolid=0
+  core.wideLines=1
+  core.largePoints=1
+  core.independentBlend=1
+  core.sampleRateShading=1
+  core.multiViewport=0
+  core.imageCubeArray=1
+  core.shaderStorageImageExtendedFormats=1
+  core.occlusionQueryPrecise=0
+  core.pipelineStatisticsQuery=0
+  core.shaderStorageImageWriteWithoutFormat=1
+  core.shaderStorageImageReadWithoutFormat=1
+  core.fragmentStoresAndAtomics=1
+  core.vertexPipelineStoresAndAtomics=1
+  vk11.shaderDrawParameters=1
+  vk11.storageBuffer16BitAccess=1
+  vk11.uniformAndStorageBuffer16BitAccess=1
+  vk11.storagePushConstant16=1
+  vk11.storageInputOutput16=1
+  vk11.multiview=1
+  vk11.variablePointersStorageBuffer=0
+  vk11.variablePointers=0
+  vk11.protectedMemory=0
+  vk11.samplerYcbcrConversion=1
+  vk12.samplerMirrorClampToEdge=1
+  vk12.drawIndirectCount=0
+  vk12.storageBuffer8BitAccess=1
+  vk12.uniformAndStorageBuffer8BitAccess=1
+  vk12.storagePushConstant8=1
+  vk12.shaderBufferInt64Atomics=0
+  vk12.shaderSharedInt64Atomics=0
+  vk12.shaderFloat16=1
+  vk12.shaderInt8=1
+  vk12.descriptorIndexing=0
+  vk12.shaderInputAttachmentArrayDynamicIndexing=1
+  vk12.shaderUniformTexelBufferArrayDynamicIndexing=1
+  vk12.shaderStorageTexelBufferArrayDynamicIndexing=1
+  vk12.shaderUniformBufferArrayNonUniformIndexing=0
+  vk12.shaderSampledImageArrayNonUniformIndexing=0
+  vk12.shaderStorageBufferArrayNonUniformIndexing=0
+  vk12.shaderStorageImageArrayNonUniformIndexing=0
+  vk12.shaderInputAttachmentArrayNonUniformIndexing=0
+  vk12.descriptorBindingUniformBufferUpdateAfterBind=0
+  vk12.descriptorBindingSampledImageUpdateAfterBind=0
+  vk12.descriptorBindingStorageImageUpdateAfterBind=0
+  vk12.descriptorBindingStorageBufferUpdateAfterBind=0
+  vk12.descriptorBindingUpdateUnusedWhilePending=0
+  vk12.descriptorBindingPartiallyBound=0
+  vk12.descriptorBindingVariableDescriptorCount=0
+  vk12.runtimeDescriptorArray=0
+  vk12.samplerFilterMinmax=0
+  vk12.scalarBlockLayout=1
+  vk12.imagelessFramebuffer=1
+  vk12.uniformBufferStandardLayout=1
+  vk12.shaderSubgroupExtendedTypes=1
+  vk12.separateDepthStencilLayouts=1
+  vk12.hostQueryReset=1
+  vk12.timelineSemaphore=1
+  vk12.bufferDeviceAddress=1
+  vk12.bufferDeviceAddressCaptureReplay=0
+  vk12.vulkanMemoryModel=0
+  vk12.vulkanMemoryModelDeviceScope=0
+  vk12.subgroupBroadcastDynamicId=1
+  vk13.robustImageAccess=1
+  vk13.inlineUniformBlock=1
+  vk13.descriptorBindingInlineUniformBlockUpdateAfterBind=1
+  vk13.pipelineCreationCacheControl=1
+  vk13.privateData=1
+  vk13.shaderDemoteToHelperInvocation=1
+  vk13.shaderTerminateInvocation=1
+  vk13.subgroupSizeControl=1
+  vk13.computeFullSubgroups=1
+  vk13.synchronization2=1
+  vk13.textureCompressionASTC_HDR=0
+  vk13.shaderZeroInitializeWorkgroupMemory=1
+  vk13.dynamicRendering=1
+  vk13.shaderIntegerDotProduct=1
+  vk13.maintenance4=1
+
+-- subgroup --
+  subgroupSize=32 supportedStages=0x20 supportedOperations=0x67f quadOperations=0x0
