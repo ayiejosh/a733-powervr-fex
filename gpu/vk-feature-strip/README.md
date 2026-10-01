@@ -78,7 +78,7 @@ PVR_STRIP_DISABLE=1 <app>        # opt back out for one process
 the manifest with an absolute `library_path`, and **refuses to install if another manifest
 already claims the name `VK_LAYER_PVR_strip`**.
 
-### Two manifest rules that cost a debug session each (libvulkan1 1.4.309)
+### Three manifest rules that cost a debug session each (libvulkan1 1.4.309)
 
 1. **An implicit manifest must have `disable_environment`.** Without it the loader skips the
    layer outright — no error at app level, just this line under `VK_LOADER_DEBUG=layer`:
@@ -92,6 +92,18 @@ already claims the name `VK_LAYER_PVR_strip`**.
    `VK_ERROR_FEATURE_NOT_PRESENT` (measured: 115 device extensions vs 114). The layer
    advertises the extension itself, from `vkEnumerateDeviceExtensionProperties`, only when
    `PVR_FAKE_R2=1`.
+
+3. **`description` must be at most 254 bytes.** At 255 and above the loader discards the whole
+   manifest: it does not appear in the layer list at all, and requesting it by name fails with
+   `Layer "VK_LAYER_PVR_strip" was not found but was requested by env var VK_INSTANCE_LAYERS!`
+   — with no parse error anywhere. `VK_MAX_DESCRIPTION_SIZE` is 256, so the field looks
+   256-safe while 255 is already fatal; the limit is not the constant. Measured with the layer
+   built from this tree, only the description length varying, five runs each: 253 and 254
+   inserted, 255/256/277 discarded. @davidhfrankelcodes hit the same failure on libvulkan1
+   1.4.309 and bisected it field-by-field against a working manifest; the boundary above was
+   measured here on 1.3.275, so stay under 254 on both. `VkLayer_PVR_strip.json` is now the
+   single source for that string — `install.sh` derives the installed manifest from it — so
+   the two copies cannot drift apart again.
 
 ## ⚠️ One name, one layer
 
