@@ -54,25 +54,21 @@ mkdir -p "$DEST"
 gcc -shared -fPIC -fvisibility=hidden -O2 -o "$LIB.tmp" "$HERE/vk_layer_pvr_strip.c"
 mv "$LIB.tmp" "$LIB"
 
-cat > "$MANIFEST" <<EOF
-{
-    "file_format_version": "1.2.0",
-    "layer": {
-        "name": "$NAME",
-        "type": "GLOBAL",
-        "library_path": "$LIB",
-        "api_version": "1.3.277",
-        "implementation_version": "1",
-        "description": "Fakes geometryShader (and, with PVR_FAKE_R2=1, VK_EXT_robustness2.nullDescriptor) so zink accepts the closed PowerVR BXM-4-64 driver; strips both before vkCreateDevice. Enabled by PVR_FAKE_GS=1, disable with PVR_STRIP_DISABLE=1.",
-        "enable_environment": {
-            "PVR_FAKE_GS": "1"
-        },
-        "disable_environment": {
-            "PVR_STRIP_DISABLE": "1"
-        }
-    }
-}
-EOF
+# The manifest has ONE source of truth: the checked-in VkLayer_PVR_strip.json.
+# Duplicating the string here is how the two copies drifted apart once already —
+# the local copy carried 277 bytes of description while this script generated 228,
+# and the loader discards any manifest whose description exceeds 254 (see README).
+# Deriving the installed manifest from the file makes that impossible, not just
+# currently-absent. Only library_path is rewritten, to an absolute path.
+#
+# Written to .tmp and moved, exactly like the library above: redirecting straight
+# onto $MANIFEST truncates a working manifest before sed can fail on a missing
+# source file. The replacement text is escaped because sed reads & (and the
+# delimiter) as special inside a replacement, and a path may legally contain one.
+LIB_ESC=$(printf '%s' "$LIB" | sed 's/\\/\\\\/g; s/[&|]/\\&/g')
+sed "s|\"library_path\": \".*\"|\"library_path\": \"$LIB_ESC\"|" \
+    "$HERE/VkLayer_PVR_strip.json" > "$MANIFEST.tmp"
+mv "$MANIFEST.tmp" "$MANIFEST"
 
 echo "installed:"
 echo "  $LIB"
