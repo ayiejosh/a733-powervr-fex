@@ -17,7 +17,7 @@ restored to whatever *it* asked for once the call returns.
 
 | env var | default | what it does | risk |
 |---|---|---|---|
-| `PVR_FAKE_GS=1` | off | fakes `geometryShader`; strips it at device creation | **safe.** Mesa only *queries* this bit; nothing turns on real GS pipelines. This is what `glrun` in this repo sets. |
+| `PVR_FAKE_GS=1` | off | fakes `geometryShader`; strips it at device creation | **safe only for apps that never draw quads.** Mesa does more than query this bit: zink generates a real GS pipeline whenever it lowers `GL_QUADS`, and the blob `abort()`s on any GS. This is what `glrun` in this repo sets — see **Known limits** for the failing set and the one-line check. |
 | `PVR_FAKE_R2=1` | off | additionally advertises `VK_EXT_robustness2` and reports `nullDescriptor = VK_TRUE` | **crashes when used.** Satisfies the *screen-creation* check of newer zink, but the blob then segfaults inside `libVK_IMG.so` the first time Mesa actually binds a null descriptor. For getting a newer zink past initialisation only. |
 
 The r2 path needs both: the layer enabled (`PVR_FAKE_GS=1`) **and** `PVR_FAKE_R2=1`.
@@ -124,13 +124,34 @@ is not yet a working end-to-end path for Mesa ≥ 26.
 
 Not verified here: the original pixel-readback result on the contributor's Orange Pi Zero 3W
 (the independent implementation is theirs; this repo's re-test was the probe + glmark2 above).
-Faking real GS pipelines crashing the blob is documented by this repo and was **not** re-tested
-(a driver hang on a headless board means a power cycle).
+
+The GS crash is now measured rather than merely documented — see **Known limits**. It is a
+user-space `SIGABRT`, not a driver hang: `pvrsrvkm` stays loaded, `dmesg` stays clean and no
+power cycle is needed, so the earlier caution about re-testing it was unnecessary.
 
 ## Known limits
 
 - Single instance / single device (one static `g_inst`/`g_dev`, no dispatch-table map keyed by
   handle) — fine for `eglinfo`, `glmark2-es2`, single-instance apps; not general-purpose
   correct for multi-instance applications.
-- With `PVR_FAKE_GS=1`, GL content that actually uses geometry shaders will crash the blob
-  (rare for 2D/desktop GL; the fake is a query-only lie).
+- **With `PVR_FAKE_GS=1`, zink builds its own GS pipeline and the blob aborts.** The fake is
+  not a query-only lie. zink advertises `MESA_PRIM_QUADS` only when it sees `geometryShader`,
+  and lowers `GL_QUADS` with a self-generated GS (NIR dump name `filled quad gs`); the blob has
+  no GS pipeline support and its shader compiler calls `abort()` instead of returning an error.
+  So the trigger is *not* GL content that uses geometry shaders — fixed-function 1.x/2.x quad
+  demos are enough: `glxgears`, `eglgears_x11`, `glxdemo` and `peglgears` all aborted in
+  issue #6.
+  Check any app before shipping it:
+  `ZINK_DEBUG=nir <app> 2>&1 | grep -c MESA_SHADER_GEOMETRY` — `0` means it runs, non-zero means
+  zink compiled a GS for that program and it aborts here. There is no GS-free fallback:
+  `PVR_STRIP_DISABLE=1` does not make those apps run, it makes zink refuse to initialise
+  (`zink: Imagination proprietary driver w/o geometryShader is unsupported`). The safe set is
+  apps for which zink never generates a GS — `glmark2`, `glmark2-es2`, `glxheads`,
+  `es2gears_x11`.
+- That abort is a plain user-space `SIGABRT` (exit 134) on the driver thread `gdrv0`, inside
+  `BILParseStream()` in `libufwriter.so` called from `libVK_IMG.so`. The kernel stays up,
+  `pvrsrvkm` stays loaded and `dmesg` stays clean — no power cycle needed. Measured on an
+  Orange Pi Zero 3W (issue #6); reproduced here on the Radxa Cubie A7A with `peglgears`
+  (exit 134, `MESA_SHADER_GEOMETRY` = 1, same `BILParseStream()` frame), so it is not
+  board-specific. `glxgears` and `glxdemo` cannot obtain a GLX visual on this board at all,
+  so they never reach zink here either way.
