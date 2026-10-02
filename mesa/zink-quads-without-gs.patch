@@ -1,0 +1,129 @@
+diff --git a/src/gallium/drivers/zink/zink_context.c b/src/gallium/drivers/zink/zink_context.c
+index d264c0f..b9874d9 100644
+--- a/src/gallium/drivers/zink/zink_context.c
++++ b/src/gallium/drivers/zink/zink_context.c
+@@ -38,6 +38,8 @@
+ #include "zink_state.h"
+ #include "zink_surface.h"
+ 
++#include "indices/u_primconvert.h"
++
+ 
+ #include "nir/pipe_nir.h"
+ #include "util/u_blitter.h"
+@@ -119,6 +121,8 @@ zink_context_destroy(struct pipe_context *pctx)
+    struct zink_context *ctx = zink_context(pctx);
+    struct zink_screen *screen = zink_screen(pctx->screen);
+ 
++   util_primconvert_destroy(ctx->primconvert);
++
+    struct pipe_framebuffer_state fb = {0};
+    pctx->set_framebuffer_state(pctx, &fb);
+ 
+@@ -5598,6 +5602,13 @@ zink_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
+    if (!is_compute_only && zink_debug & ZINK_DEBUG_NOREORDER)
+       ctx->no_reorder = true;
+ 
++   /* Lower primitives this driver cannot take natively (on the PowerVR blob:
++    * quads, quad strips, polygons, line loops - everything zink used to emulate
++    * with a geometry shader) to triangles, which it can. */
++   ctx->primconvert = util_primconvert_create(&ctx->base, screen->base.caps.supported_prim_modes);
++   if (!ctx->primconvert)
++      goto fail;
++
+    if (!(flags & PIPE_CONTEXT_PREFER_THREADED) || flags & PIPE_CONTEXT_COMPUTE_ONLY) {
+       return &ctx->base;
+    }
+diff --git a/src/gallium/drivers/zink/zink_draw.cpp b/src/gallium/drivers/zink/zink_draw.cpp
+index 7284016..ce1ba81 100644
+--- a/src/gallium/drivers/zink/zink_draw.cpp
++++ b/src/gallium/drivers/zink/zink_draw.cpp
+@@ -17,6 +17,8 @@
+ #include "util/u_helpers.h"
+ #include "util/u_inlines.h"
+ #include "util/u_prim.h"
++
++#include "indices/u_primconvert.h"
+ #include "util/u_prim_restart.h"
+ 
+ static void
+@@ -950,6 +952,18 @@ zink_draw_vbo(struct pipe_context *pctx,
+               const struct pipe_draw_start_count_bias *draws,
+               unsigned num_draws)
+ {
++   /* Anything the driver cannot take natively is expanded to triangles here.
++    * This is the path that used to need a generated geometry shader; the draw
++    * itself still runs on the GPU, only the index generation is on the CPU.
++    */
++   if (!(pctx->screen->caps.supported_prim_modes & BITFIELD_BIT(info->mode))) {
++      struct zink_context *ctx = zink_context(pctx);
++      if (ctx->rast_state)
++         util_primconvert_save_rasterizer_state(ctx->primconvert, &ctx->rast_state->base);
++      util_primconvert_draw_vbo(ctx->primconvert, info, drawid_offset, indirect, draws, num_draws);
++      return;
++   }
++
+    zink_draw<HAS_MULTIDRAW, DYNAMIC_STATE, BATCH_CHANGED, false>(pctx, info, drawid_offset, indirect, draws, num_draws, NULL, 0);
+ }
+ 
+diff --git a/src/gallium/drivers/zink/zink_screen.c b/src/gallium/drivers/zink/zink_screen.c
+index bc0cc58..5df0bf3 100644
+--- a/src/gallium/drivers/zink/zink_screen.c
++++ b/src/gallium/drivers/zink/zink_screen.c
+@@ -2902,7 +2902,17 @@ init_driver_workarounds(struct zink_screen *screen)
+ 
+    if (zink_driverid(screen) ==
+        VK_DRIVER_ID_IMAGINATION_PROPRIETARY) {
+-      assert(screen->info.feats.features.geometryShader);
++      /* The blob advertises geometryShader but cannot execute one: asked to build
++       * a GS pipeline its shader compiler calls abort() (BILParseStream in
++       * libufwriter.so), which kills the process. zink only ever generates a GS
++       * itself - for GL_QUADS, quad strips, polygons, line stipple and smooth
++       * lines - so the feature is unusable in practice on this driver. Report it
++       * as absent so no GS is ever created, and let the primitives that needed it
++       * fall through to primconvert, which expands them to triangles on the CPU
++       * and still draws them on the GPU.
++       */
++      screen->info.feats.features.geometryShader = false;
++      screen->driver_workarounds.no_geometry_shader = true;
+       screen->driver_workarounds.no_linesmooth = true;
+    }
+ 
+@@ -3454,11 +3464,11 @@ zink_internal_create_screen(const struct pipe_screen_config *config, int64_t dev
+       goto fail;
+    }
+ 
+-   if (zink_driverid(screen) == VK_DRIVER_ID_IMAGINATION_PROPRIETARY && !screen->info.feats.features.geometryShader) {
+-      if (!screen->driver_name_is_inferred)
+-         mesa_loge("zink: Imagination proprietary driver w/o geometryShader is unsupported");
+-      goto fail;
+-   }
++   /* There used to be a gate here refusing VK_DRIVER_ID_IMAGINATION_PROPRIETARY
++    * without geometryShader. That driver's GS is not usable (see
++    * init_driver_workarounds), so the feature is now forced off for it and the
++    * primitives that needed a GS are lowered by primconvert instead.
++    */
+ 
+    if (zink_debug & ZINK_DEBUG_MEM) {
+       simple_mtx_init(&screen->debug_mem_lock, mtx_plain);
+diff --git a/src/gallium/drivers/zink/zink_types.h b/src/gallium/drivers/zink/zink_types.h
+index c34b9a2..7ffb4c6 100644
+--- a/src/gallium/drivers/zink/zink_types.h
++++ b/src/gallium/drivers/zink/zink_types.h
+@@ -1552,6 +1552,8 @@ struct zink_screen {
+       bool track_renderpasses;
+       bool no_linestipple;
+       bool no_linesmooth;
++      /* The driver advertises geometryShader but cannot execute one. */
++      bool no_geometry_shader;
+       bool no_hw_gl_point;
+       bool can_do_invalid_linear_modifier;
+       bool inconsistent_interpolation;
+@@ -1781,6 +1783,7 @@ enum zink_ds3_state {
+ struct zink_context {
+    struct pipe_context base;
+    struct threaded_context *tc;
++   struct primconvert_context *primconvert;
+    struct slab_child_pool transfer_pool;
+    struct slab_child_pool transfer_pool_unsync;
+    struct blitter_context *blitter;

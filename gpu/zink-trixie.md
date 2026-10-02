@@ -50,8 +50,14 @@ GPU, not llvmpipe.
 zink **hard-requires** `geometryShader`, which the blob reports as false ->
 `zink: Imagination proprietary driver w/o geometryShader is unsupported`. The layer reports
 `geometryShader=true` so zink proceeds, then **strips** it at `CreateDevice` so the blob
-accepts the device. (Faking GS this way means GS-using GL would crash the blob — rare for
-2D/desktop GL.) The same layer is used by the DXVK path.
+accepts the device. The same layer is used by the DXVK path.
+
+That fake is not free. zink **itself** generates real geometry-shader pipelines for legal GL
+content that contains no geometry shader, because it lowers `GL_QUADS` with a self-generated GS
+(NIR dump name `filled quad gs`). The blob cannot execute one and calls `abort()`, so the
+fixed-function quad demos die with `SIGABRT`. Measured — see issue #6 and
+[`vk-feature-strip/README.md`](vk-feature-strip/README.md). **The zink patch described below
+removes the need for the fake entirely.**
 
 Source: [`vk-feature-strip/`](vk-feature-strip/) (published 2026-09-22; it was described here
 for months without the source being in the repo).
@@ -60,7 +66,7 @@ for months without the source being in the repo).
 
 | env var | effect | use it? |
 |---|---|---|
-| `PVR_FAKE_GS=1` | reports `geometryShader=true`, strips it at `CreateDevice` | **yes — this is the one the recipe above sets.** Safe: Mesa only *queries* the bit, and nothing enables real GS pipelines. |
+| `PVR_FAKE_GS=1` | reports `geometryShader=true`, strips it at `CreateDevice` | **only without the zink patch below.** On its own it is *not* safe: zink generates real GS pipelines for `GL_QUADS` and the blob aborts. With `mesa/zink-quads-without-gs.patch` applied, zink no longer needs the bit and this switch can be dropped. |
 | `PVR_FAKE_R2=1` | additionally advertises `VK_EXT_robustness2` and reports `nullDescriptor=true` | **no, not for GL work.** It gets a newer zink past its *screen-creation* check, but the blob then segfaults inside `libVK_IMG.so` the first time Mesa binds a null descriptor (measured: `#0 libVK_IMG.so`, `#2 libgallium-25.0.7.so`, no kernel fault). |
 
 > ⚠️ **One name, one layer.** `VK_LAYER_PVR_strip` is also the name older builds of this layer
@@ -70,6 +76,24 @@ for months without the source being in the repo).
 > env vars**, so the layer looks like it does nothing. Remove the other manifest (or scope
 > with `VK_LAYER_PATH` + `XDG_DATA_HOME`), and check what actually loaded with
 > `VK_LOADER_DEBUG=layer`.
+
+### ✅ Fixing it: zink without a geometry shader
+
+[`../mesa/zink-quads-without-gs.patch`](../mesa/zink-quads-without-gs.patch) makes zink treat
+the blob's `geometryShader` as unusable and lower the primitives that used to need a GS —
+quads, quad strips, polygons, line loops — with `util_primconvert`, which expands them to
+triangles on the CPU. The draw still runs on the GPU; only index generation is on the CPU.
+Mesa already ships that conversion (virgl and d3d12 call `u_primconvert`; panfrost and lima get
+it through `u_vbuf`) — zink was the one driver not wired into it.
+
+Measured on this board, patched zink, **no layer and no `PVR_FAKE_GS`**:
+
+| app | before | after |
+|---|---|---|
+| `peglgears` (GL_QUADS) | `SIGABRT`, exit 134 | **209,772 frames in 5.0 s = 41,954 FPS**, exit 0 |
+| geometry shaders compiled (`ZINK_DEBUG=nir`) | 1 | **0** |
+
+Build and apply instructions: [`../mesa/README.md`](../mesa/README.md).
 
 ### ❌ Not a path to newer zink: Mesa ≥ 26
 

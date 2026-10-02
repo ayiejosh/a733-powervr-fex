@@ -30,6 +30,50 @@ hard-coded-program path had to go.
   pvr_device_info` is byte-identical between 25.0.7 and 25.3.0, so the copy
   compiles; entries that 25.0.7 cannot represent are removed and listed in the
   file. On 25.3.0 this patch is unnecessary.
+- `zink-quads-without-gs.patch` — **not part of the pvr series.** Applies to the gallium
+  `zink` GL driver in 25.0.7, the system Mesa this board's desktop GL path uses. It removes
+  zink's dependence on a geometry shader. See the section below.
+
+## Zink: primitives without a geometry shader
+
+`zink-quads-without-gs.patch` applies to the **gallium `zink` driver in 25.0.7**, not to pvr,
+and is what makes quad-drawing GL work on this blob.
+
+zink lowers `GL_QUADS` with a self-generated geometry shader (`filled quad gs`). The blob
+cannot execute a GS - its shader compiler calls `abort()` instead of returning an error - so
+the fixed-function quad demos die with `SIGABRT`. The feature-strip layer's `PVR_FAKE_GS=1` is
+what puts zink on that path; see [`../gpu/vk-feature-strip/README.md`](../gpu/vk-feature-strip/README.md)
+and issue #6.
+
+The patch makes zink treat the blob's `geometryShader` as unusable and lower quads, quad
+strips, polygons and line loops with `util_primconvert`, which expands them to triangles on the
+CPU. The draw still runs on the GPU; only index generation is on the CPU. Mesa already ships
+that conversion - `u_indices.c`'s `generate_quads`, reached by virgl and d3d12 through
+`u_primconvert` and by panfrost and lima through `u_vbuf` - and zink was the one driver not
+wired into it. 4 files, +44 -6.
+
+Build (25.0.7, zink only; a different configuration from the pvr build below):
+
+```sh
+git clone --depth 1 -b mesa-25.0.7 https://gitlab.freedesktop.org/mesa/mesa.git
+cd mesa && git apply <this repo>/mesa/zink-quads-without-gs.patch
+meson setup build -Dbuildtype=release -Dgallium-drivers=zink -Dvulkan-drivers= \
+  -Dglx=dri -Dplatforms=x11 -Dopengl=true -Dgles1=false -Dgles2=true -Dllvm=disabled \
+  -Dbuild-tests=false -Dtools= -Dvideo-codecs= -Dvalgrind=disabled
+ninja -C build -j3        # -j3: -j8 gets the compiler OOM-killed on this 5.9 GB board
+```
+
+Verified on this board with the built `libdril_dri.so` and `libgallium-25.0.7.so`, and with
+**no layer and no `PVR_FAKE_GS`**:
+
+| check | before | after |
+|---|---|---|
+| `peglgears` (GL_QUADS) | `SIGABRT`, exit 134 | **209,772 frames in 5.0 s = 41,954 FPS**, exit 0 |
+| geometry shaders compiled (`ZINK_DEBUG=nir`) | 1 | **0** |
+| `eglinfo` | - | `zink Vulkan 1.3(PowerVR B-Series BXM-4-64 MC1)` |
+
+Not verified: a software-rendering baseline for the FPS figure, and the other quad demos
+(`glxgears`, `glxdemo`) cannot obtain a GLX visual on this board at all.
 
 ## Building 25.3.0 here
 
