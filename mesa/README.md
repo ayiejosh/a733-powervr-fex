@@ -155,6 +155,11 @@ Two limits, both checked:
   warned about it. The patch now sets `no_linestipple` for this driver so stipple is dropped
   rather than attempted, matching what the GS-faked configuration does.
 
+  And there is nothing to substitute for that stage: this driver advertises no
+  `VK_EXT_geometry_shader`, no `VK_EXT_mesh_shader`, no `VK_NV_mesh_shader`, no
+  `VK_EXT_shader_object` and no `VK_KHR_fragment_shader_barycentric`. Four independent
+  angles, same answer.
+
   Tested from a third angle before concluding: forcing `no_linestipple` off, so zink enables
   `VK_DYNAMIC_STATE_LINE_STIPPLE_EXT` and issues `vkCmdSetLineStippleEXT` regardless of the
   missing feature. The blob ignores it - `solid=172 stippled=172` again, with Mesa warning
