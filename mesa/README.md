@@ -129,9 +129,20 @@ Two limits, both checked:
   using edge flags to select edges gets the full wireframe. Not emulated.
 - **Line stipple is dropped**: measured, `solid=172 stippled=172` with the expansion - the
   stipple has no effect. The blob has `bresenhamLines` but not `stippledBresenhamLines`, so
-  zink sets `no_linestipple` and falls back to its emulation, which is
-  `lower_line_stipple_gs` - a geometry-shader pass this driver cannot run. Emulating it
-  without a GS would mean a new vertex/fragment-shader path in zink.
+  zink sets `no_linestipple` and falls back to `lower_line_stipple_gs`.
+
+  That pass is not GS-based out of convenience. It needs both endpoints of each line to
+  accumulate the screen-space stipple counter:
+
+      prev = viewport_map(b, prev_pos, vp_scale);
+      curr = viewport_map(b, curr, pos_out);
+      len  = distance(prev, curr);
+      stipple_counter += len;
+
+  A vertex shader sees one vertex at a time and cannot know the other endpoint; a fragment
+  shader cannot recover it from interpolated values. So stipple needs a primitive-level
+  stage - a geometry or mesh shader - and this driver has neither. It is genuinely blocked,
+  not merely unimplemented.
 
 The five primitive types are unaffected and re-verified passing.
 
