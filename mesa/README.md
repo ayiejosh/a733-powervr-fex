@@ -82,9 +82,14 @@ edges are written to an index buffer and the draw is reissued as a line list. Th
 geometry still runs on the GPU; only index generation is on the CPU. The state path
 stops handing the driver a polygon mode it ignores.
 
-Polygon **point** mode is the same problem and needs no index work at all - the vertex
-stream is already the polygon's vertices, only the topology is wrong - so that draw is
-simply reissued as a point list.
+Polygon **point** mode was tried and deliberately reverted. Reissuing the draw as a point
+list does change the topology, but the pipeline's shader was compiled for triangles and
+never writes `gl_PointSize`, so the driver rasterises at an undefined size. Over 20 runs of
+the same draw: 18 correct, one at 25 pixels, one at 1961. Non-deterministic output is worse
+than consistently ignoring the mode. A plain `GL_POINTS` draw is stable at the same size
+(154 pixels for `glPointSize(8)`, 20 of 20 runs), so the limit is the topology override
+without a point-aware pipeline - fixing it means building the pipeline with point topology
+and a shader keyed on it.
 
 Measured, filled vs wireframe/point pixels, `primtest wireframe`:
 
@@ -98,7 +103,7 @@ Measured, filled vs wireframe/point pixels, `primtest wireframe`:
 | `fan indexed` | 1740 / 1740 ignored | 1740 / **235** works |
 | `multidraw` | 1682 / 1682 ignored | 1682 / **172** works |
 | `restart` | n/a | plain 172 = with-restart 172, no edge across the break |
-| `point mode` | 1682 / 1682 ignored | 1682 / **18** works |
+| `point mode` | 1682 / 1682 ignored | 1682 / 1682 ignored - not emulable, see above |
 | `instanced` | works either way | 1 instance 33408, 2 instances 66810 - exactly 2x |
 
 Indexed draws, multi-draw, instancing and primitive restart are all handled; a restart
@@ -116,6 +121,11 @@ Two limits, both checked:
   combination that cannot occur here.
 - **`GL_EDGE_FLAG` is ignored**: the expansion always emits all three edges, so an app
   using edge flags to select edges gets the full wireframe. Not emulated.
+- **Line stipple is dropped**: measured, `solid=172 stippled=172` with the expansion - the
+  stipple has no effect. The blob has `bresenhamLines` but not `stippledBresenhamLines`, so
+  zink sets `no_linestipple` and falls back to its emulation, which is
+  `lower_line_stipple_gs` - a geometry-shader pass this driver cannot run. Emulating it
+  without a GS would mean a new vertex/fragment-shader path in zink.
 
 The five primitive types are unaffected and re-verified passing.
 

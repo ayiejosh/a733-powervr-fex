@@ -243,6 +243,33 @@ static int wireframe_probe(void)
                ok ? "instancing WORKS" : "SECOND INSTANCE LOST");
     }
 
+    /* Line stipple applies to the lines the wireframe expansion generates, which
+     * is what glPolygonMode(GL_LINE) should do. A stippled line covers fewer
+     * pixels than a solid one. */
+    {
+        int solid, stippled;
+
+        glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+        glClear(GL_COLOR_BUFFER_BIT);
+        draw_arrays(GL_TRIANGLES, 3);
+        glFinish();
+        solid = lit_pixels();
+
+        glEnable(GL_LINE_STIPPLE);
+        glLineStipple(1, 0x00FF);
+        glClear(GL_COLOR_BUFFER_BIT);
+        draw_arrays(GL_TRIANGLES, 3);
+        glFinish();
+        stippled = lit_pixels();
+        glDisable(GL_LINE_STIPPLE);
+        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+
+        int ok = solid > 0 && stippled < solid;
+        if (!ok) bad++;
+        printf("  %-14s solid=%-5d stippled=%-5d -> %s\n", "stipple", solid, stippled,
+               ok ? "stipple APPLIES" : "stipple ignored");
+    }
+
     glDisableClientState(GL_VERTEX_ARRAY);
     return bad ? 1 : 0;
 }
@@ -337,6 +364,55 @@ static int tf_probe(void)
     return good ? 0 : 1;
 }
 
+/* Point-mode polygon rasterisation on its own, so it can be run in isolation
+ * many times: a single run once reported a wildly different pixel count and the
+ * cause was never found. */
+static int points_probe(void)
+{
+    glEnableClientState(GL_VERTEX_ARRAY);
+    glVertexPointer(2, GL_FLOAT, 0, verts);
+    glClearColor(0, 0, 0, 1);
+    glColor3f(1, 1, 1);
+
+    glClear(GL_COLOR_BUFFER_BIT);
+    glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+    draw_arrays(GL_TRIANGLES, 3);
+    glFinish();
+    int filled = lit_pixels();
+
+    glClear(GL_COLOR_BUFFER_BIT);
+    glPolygonMode(GL_FRONT_AND_BACK, GL_POINT);
+    draw_arrays(GL_TRIANGLES, 3);
+    glFinish();
+    int pointed = lit_pixels();
+    glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+
+    /* control: a plain GL_POINTS draw, no polygon mode involved at all. If this
+     * is also unstable then points are broken on this stack generally, and
+     * emulating polygon point mode cannot be made correct. */
+    glClear(GL_COLOR_BUFFER_BIT);
+    glPointSize(1.0f);
+    draw_arrays(GL_POINTS, 3);
+    glFinish();
+    int plain = lit_pixels();
+
+    /* an explicitly large point size: if this is respected and stable, the
+     * flakiness is only in the size-1 path. 3 points at 8x8 ~ 192 px. */
+    glClear(GL_COLOR_BUFFER_BIT);
+    glPointSize(8.0f);
+    draw_arrays(GL_POINTS, 3);
+    glFinish();
+    int big = lit_pixels();
+    glPointSize(1.0f);
+
+    GLfloat ps = 0; glGetFloatv(GL_POINT_SIZE, &ps);
+    GLint vp[4] = {0}; glGetIntegerv(GL_VIEWPORT, vp);
+    printf("filled=%d points=%d plain1=%d plain8=%d ps=%.1f vp=%dx%d\n",
+           filled, pointed, plain, big, ps, vp[2], vp[3]);
+    glDisableClientState(GL_VERTEX_ARRAY);
+    return (pointed > 0 && pointed < filled / 2) ? 0 : 1;
+}
+
 int main(int argc, char **argv)
 {
     if (argc < 2) {
@@ -344,7 +420,7 @@ int main(int argc, char **argv)
         return 2;
     }
     int is_wireframe = !strcmp(argv[1], "wireframe");
-    int is_tf = !strcmp(argv[1], "tf");
+    int is_tf = !strcmp(argv[1], "tf") || !strcmp(argv[1], "points");
     GLenum mode = pick(argv[1]);
     if (!mode && !is_wireframe && !is_tf) { printf("FAIL unknown mode %s\n", argv[1]); return 2; }
 
@@ -389,6 +465,8 @@ int main(int argc, char **argv)
         return wireframe_probe();
     if (!strcmp(argv[1], "tf"))
         return tf_probe();
+    if (!strcmp(argv[1], "points"))
+        return points_probe();
 
     glViewport(0, 0, 64, 64);
     glClearColor(0, 0, 0, 1);

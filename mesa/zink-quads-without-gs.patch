@@ -1,5 +1,5 @@
 diff --git a/src/gallium/drivers/zink/zink_draw.cpp b/src/gallium/drivers/zink/zink_draw.cpp
-index 7284016..0c640ff 100644
+index 7284016..bfd3726 100644
 --- a/src/gallium/drivers/zink/zink_draw.cpp
 +++ b/src/gallium/drivers/zink/zink_draw.cpp
 @@ -17,6 +17,7 @@
@@ -156,7 +156,7 @@ index 7284016..0c640ff 100644
  template <zink_multidraw HAS_MULTIDRAW, zink_dynamic_state DYNAMIC_STATE, bool BATCH_CHANGED>
  static void
  zink_draw_vbo(struct pipe_context *pctx,
-@@ -950,6 +1090,29 @@ zink_draw_vbo(struct pipe_context *pctx,
+@@ -950,6 +1090,27 @@ zink_draw_vbo(struct pipe_context *pctx,
                const struct pipe_draw_start_count_bias *draws,
                unsigned num_draws)
  {
@@ -170,18 +170,16 @@ index 7284016..0c640ff 100644
 +         return;
 +   }
 +
-+   /* Polygon point mode is the same story, and needs no index work at all: the
-+    * vertex stream is already the polygon's vertices, only the topology is wrong. */
-+   if (!ctx->expanding_wireframe && ctx->rast_state && ctx->num_so_targets == 0 &&
-+       ctx->rast_state->base.fill_front == PIPE_POLYGON_MODE_POINT &&
-+       zink_screen(pctx->screen)->driver_workarounds.no_hw_gl_point) {
-+      struct pipe_draw_info pinfo = *info;
-+      pinfo.mode = MESA_PRIM_POINTS;
-+      ctx->expanding_wireframe = true;
-+      pctx->draw_vbo(pctx, &pinfo, drawid_offset, indirect, draws, num_draws);
-+      ctx->expanding_wireframe = false;
-+      return;
-+   }
++   /* Polygon POINT mode is deliberately NOT expanded. Reissuing the draw as a
++    * point list does change the topology, but the pipeline's shader was compiled
++    * for triangles and never writes gl_PointSize, so the driver rasterises the
++    * points at an undefined size. Measured over 20 runs of the same draw:
++    * 18 correct, one at 25 pixels and one at 1961 - non-deterministic output,
++    * which is worse than consistently ignoring the mode. A plain GL_POINTS draw
++    * is stable at the same size (154 pixels for glPointSize(8), 20 of 20 runs),
++    * so the limit is the topology override without a point-aware pipeline; fixing
++    * it means building the pipeline with point topology and a shader keyed on it.
++    */
 +
     zink_draw<HAS_MULTIDRAW, DYNAMIC_STATE, BATCH_CHANGED, false>(pctx, info, drawid_offset, indirect, draws, num_draws, NULL, 0);
  }
