@@ -147,8 +147,13 @@ Two limits, both checked:
 
   A vertex shader sees one vertex at a time and cannot know the other endpoint; a fragment
   shader cannot recover it from interpolated values. So stipple needs a primitive-level
-  stage - a geometry or mesh shader - and this driver has neither. It is genuinely blocked,
-  not merely unimplemented.
+  stage - a geometry or mesh shader - and this driver has neither.
+
+  Tested from a third angle before concluding: forcing `no_linestipple` off, so zink enables
+  `VK_DYNAMIC_STATE_LINE_STIPPLE_EXT` and issues `vkCmdSetLineStippleEXT` regardless of the
+  missing feature. The blob ignores it - `solid=172 stippled=172` again, with Mesa warning
+  that incorrect rendering will happen. So it is not merely unadvertised: the state is
+  accepted and dropped. Three independent angles, same answer.
 
 The five primitive types are unaffected and re-verified passing.
 
