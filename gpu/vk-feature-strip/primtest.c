@@ -41,40 +41,55 @@ static int lit_pixels(void)
     return n;
 }
 
-static void big_triangle(void)
+static void tri_mode(GLenum mode)
 {
-    glBegin(GL_TRIANGLES);
+    glBegin(mode);
     glVertex2f(-0.9f, -0.9f);
     glVertex2f( 0.9f, -0.9f);
     glVertex2f( 0.0f,  0.9f);
+    if (mode != GL_TRIANGLES) {
+        glVertex2f(-0.5f, 0.2f);
+        glVertex2f( 0.5f, 0.2f);
+    }
     glEnd();
 }
 
 /* Does glPolygonMode(GL_LINE) actually change anything? That is what
  * VkPhysicalDeviceFeatures.fillModeNonSolid buys, so this probes the capability
- * rather than the report. */
+ * rather than the report. Run for every triangle topology, because the line
+ * expansion differs for each. */
 static int wireframe_probe(void)
 {
+    static const struct { const char *name; GLenum mode; } modes[] = {
+        { "triangles", GL_TRIANGLES },
+        { "strip",     GL_TRIANGLE_STRIP },
+        { "fan",       GL_TRIANGLE_FAN },
+    };
+    int bad = 0;
+
     glClearColor(0, 0, 0, 1);
     glColor3f(1, 1, 1);
 
-    glClear(GL_COLOR_BUFFER_BIT);
-    glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
-    big_triangle();
-    glFinish();
-    int filled = lit_pixels();
+    for (unsigned m = 0; m < sizeof(modes) / sizeof(modes[0]); m++) {
+        glClear(GL_COLOR_BUFFER_BIT);
+        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+        tri_mode(modes[m].mode);
+        glFinish();
+        int filled = lit_pixels();
 
-    glClear(GL_COLOR_BUFFER_BIT);
-    glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
-    big_triangle();
-    glFinish();
-    int lined = lit_pixels();
-    glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+        tri_mode(modes[m].mode);
+        glFinish();
+        int lined = lit_pixels();
+        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
 
-    printf("  filled=%d  lined=%d  ->  %s\n", filled, lined,
-           (lined > 0 && lined < filled / 2) ? "wireframe WORKS"
-                                             : "wireframe IGNORED (fill mode has no effect)");
-    return 0;
+        int ok = lined > 0 && lined < filled / 2;
+        if (!ok) bad++;
+        printf("  %-9s filled=%-5d lined=%-5d -> %s\n", modes[m].name, filled, lined,
+               ok ? "wireframe WORKS" : "wireframe IGNORED");
+    }
+    return bad ? 1 : 0;
 }
 
 int main(int argc, char **argv)

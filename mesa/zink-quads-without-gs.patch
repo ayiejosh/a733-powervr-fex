@@ -1,8 +1,151 @@
+diff --git a/src/gallium/drivers/zink/zink_draw.cpp b/src/gallium/drivers/zink/zink_draw.cpp
+index 7284016..6673a30 100644
+--- a/src/gallium/drivers/zink/zink_draw.cpp
++++ b/src/gallium/drivers/zink/zink_draw.cpp
+@@ -17,6 +17,7 @@
+ #include "util/u_helpers.h"
+ #include "util/u_inlines.h"
+ #include "util/u_prim.h"
++#include "util/u_upload_mgr.h"
+ #include "util/u_prim_restart.h"
+ 
+ static void
+@@ -941,6 +942,113 @@ zink_draw(struct pipe_context *pctx,
+       pctx->flush(pctx, NULL, 0);
+ }
+ 
++/* Wireframe emulation for drivers without fillModeNonSolid.
++ *
++ * Vulkan has no "draw these triangles as lines" other than polygonMode = LINE,
++ * which this driver does not implement. So each triangle's three edges are
++ * written out as an index buffer and the draw is reissued as a line list. The
++ * geometry still runs on the GPU; only index generation is on the CPU.
++ *
++ * Returns false for a non-triangle mode, so the caller falls through.
++ */
++static bool
++zink_expand_wireframe(struct zink_context *ctx,
++                      const struct pipe_draw_info *info,
++                      unsigned drawid_offset,
++                      const struct pipe_draw_start_count_bias *draws,
++                      unsigned num_draws)
++{
++   struct pipe_context *pctx = &ctx->base;
++   unsigned step;
++   switch (info->mode) {
++   case MESA_PRIM_TRIANGLES:      step = 3; break;
++   case MESA_PRIM_TRIANGLE_STRIP: step = 1; break;
++   case MESA_PRIM_TRIANGLE_FAN:   step = 1; break;
++   default:
++      return false;
++   }
++
++   unsigned total = 0;
++   for (unsigned i = 0; i < num_draws; i++) {
++      unsigned n = draws[i].count;
++      unsigned tris = step == 3 ? n / 3 : (n >= 3 ? n - 2 : 0);
++      total += tris * 6;
++   }
++   if (total == 0)
++      return true;   /* nothing to draw, and nothing to fall back to */
++
++   struct pipe_transfer *src_transfer = NULL;
++   const void *src = NULL;
++   if (info->index_size) {
++      if (info->has_user_indices)
++         src = info->index.user;
++      else
++         src = pipe_buffer_map(pctx, info->index.resource, PIPE_MAP_READ, &src_transfer);
++      if (!src)
++         return false;
++   }
++
++   struct pipe_resource *ib = NULL;
++   unsigned ib_offset = 0;
++   void *map = NULL;
++   u_upload_alloc(pctx->stream_uploader, 0, total * 4, 4, &ib_offset, &ib, &map);
++   uint32_t *dst = (uint32_t *)map;
++   if (!dst) {
++      if (src_transfer)
++         pipe_buffer_unmap(pctx, src_transfer);
++      return false;
++   }
++
++   unsigned w = 0;
++   for (unsigned i = 0; i < num_draws; i++) {
++      unsigned n = draws[i].count;
++      for (unsigned j = 0; j + 3 <= n; j += step) {
++         /* a fan's triangles all share vertex 0; a strip's slide by one */
++         unsigned v[3] = { info->mode == MESA_PRIM_TRIANGLE_FAN ? 0u : j, j + 1, j + 2 };
++         uint32_t idx[3];
++         for (unsigned k = 0; k < 3; k++) {
++            unsigned at = draws[i].start + v[k];
++            if (src == NULL)
++               idx[k] = at;
++            else if (info->index_size == 4)
++               idx[k] = ((const uint32_t *)src)[at];
++            else if (info->index_size == 2)
++               idx[k] = ((const uint16_t *)src)[at];
++            else
++               idx[k] = ((const uint8_t *)src)[at];
++         }
++         dst[w++] = idx[0]; dst[w++] = idx[1];
++         dst[w++] = idx[1]; dst[w++] = idx[2];
++         dst[w++] = idx[2]; dst[w++] = idx[0];
++      }
++   }
++   u_upload_unmap(pctx->stream_uploader);
++   if (src_transfer)
++      pipe_buffer_unmap(pctx, src_transfer);
++
++   struct pipe_draw_info linfo = {};
++   linfo.mode = MESA_PRIM_LINES;
++   linfo.index_size = 4;
++   linfo.index.resource = ib;
++   linfo.index_bounds_valid = false;
++   linfo.min_index = 0;
++   linfo.max_index = UINT32_MAX;
++   linfo.instance_count = info->instance_count;
++   linfo.start_instance = info->start_instance;
++   struct pipe_draw_start_count_bias ldraw = {};
++   /* u_upload_alloc hands back a byte offset into a shared buffer, so the draw
++    * has to start there rather than at index 0. */
++   ldraw.start = ib_offset / 4;
++   ldraw.count = w;
++
++   ctx->expanding_wireframe = true;
++   pctx->draw_vbo(pctx, &linfo, drawid_offset, NULL, &ldraw, 1);
++   ctx->expanding_wireframe = false;
++
++   pipe_resource_reference(&ib, NULL);
++   return true;
++}
++
+ template <zink_multidraw HAS_MULTIDRAW, zink_dynamic_state DYNAMIC_STATE, bool BATCH_CHANGED>
+ static void
+ zink_draw_vbo(struct pipe_context *pctx,
+@@ -950,6 +1058,16 @@ zink_draw_vbo(struct pipe_context *pctx,
+               const struct pipe_draw_start_count_bias *draws,
+               unsigned num_draws)
+ {
++   /* No fillModeNonSolid on this driver: expand a wireframe draw into an indexed
++    * line list rather than hand it a polygon mode the driver ignores. */
++   struct zink_context *ctx = zink_context(pctx);
++   if (!ctx->expanding_wireframe && ctx->rast_state &&
++       ctx->rast_state->base.fill_front == PIPE_POLYGON_MODE_LINE &&
++       zink_screen(pctx->screen)->driver_workarounds.no_hw_gl_wireframe) {
++      if (zink_expand_wireframe(ctx, info, drawid_offset, draws, num_draws))
++         return;
++   }
++
+    zink_draw<HAS_MULTIDRAW, DYNAMIC_STATE, BATCH_CHANGED, false>(pctx, info, drawid_offset, indirect, draws, num_draws, NULL, 0);
+ }
+ 
 diff --git a/src/gallium/drivers/zink/zink_screen.c b/src/gallium/drivers/zink/zink_screen.c
-index bc0cc58..313da03 100644
+index bc0cc58..9c0650c 100644
 --- a/src/gallium/drivers/zink/zink_screen.c
 +++ b/src/gallium/drivers/zink/zink_screen.c
-@@ -2902,7 +2902,9 @@ init_driver_workarounds(struct zink_screen *screen)
+@@ -2902,8 +2902,12 @@ init_driver_workarounds(struct zink_screen *screen)
  
     if (zink_driverid(screen) ==
         VK_DRIVER_ID_IMAGINATION_PROPRIETARY) {
@@ -11,9 +154,12 @@ index bc0cc58..313da03 100644
 +       * absent, honestly, and the gate that used to reject it for that is
 +       * gone - see the note where the gate used to be. */
        screen->driver_workarounds.no_linesmooth = true;
++      if (!screen->info.feats.features.fillModeNonSolid)
++         screen->driver_workarounds.no_hw_gl_wireframe = true;
     }
  
-@@ -3454,11 +3456,16 @@ zink_internal_create_screen(const struct pipe_screen_config *config, int64_t dev
+    /* This is a workarround for the lack of
+@@ -3454,11 +3458,16 @@ zink_internal_create_screen(const struct pipe_screen_config *config, int64_t dev
        goto fail;
     }
  
@@ -35,3 +181,44 @@ index bc0cc58..313da03 100644
  
     if (zink_debug & ZINK_DEBUG_MEM) {
        simple_mtx_init(&screen->debug_mem_lock, mtx_plain);
+diff --git a/src/gallium/drivers/zink/zink_state.c b/src/gallium/drivers/zink/zink_state.c
+index 82b1fbf..fb74424 100644
+--- a/src/gallium/drivers/zink/zink_state.c
++++ b/src/gallium/drivers/zink/zink_state.c
+@@ -613,7 +613,13 @@ zink_create_rasterizer_state(struct pipe_context *pctx,
+    if (rs_state->fill_back != rs_state->fill_front)
+       debug_printf("BUG: vulkan doesn't support different front and back fill modes\n");
+ 
+-   if (rs_state->fill_front == PIPE_POLYGON_MODE_POINT &&
++   if (rs_state->fill_front == PIPE_POLYGON_MODE_LINE &&
++       screen->driver_workarounds.no_hw_gl_wireframe) {
++      /* The driver has no fillModeNonSolid, so asking for LINE is invalid usage
++       * and it ignores it anyway. Draw filled and expand to lines in the draw. */
++      state->hw_state.polygon_mode = VK_POLYGON_MODE_FILL;
++      state->cull_mode = rs_state->cull_face;
++   } else if (rs_state->fill_front == PIPE_POLYGON_MODE_POINT &&
+        screen->driver_workarounds.no_hw_gl_point) {
+       state->hw_state.polygon_mode = VK_POLYGON_MODE_FILL;
+       state->cull_mode = VK_CULL_MODE_NONE;
+diff --git a/src/gallium/drivers/zink/zink_types.h b/src/gallium/drivers/zink/zink_types.h
+index c34b9a2..f93dd4d 100644
+--- a/src/gallium/drivers/zink/zink_types.h
++++ b/src/gallium/drivers/zink/zink_types.h
+@@ -1552,6 +1552,9 @@ struct zink_screen {
+       bool track_renderpasses;
+       bool no_linestipple;
+       bool no_linesmooth;
++      /* Driver has no fillModeNonSolid: wireframe is emulated by expanding the
++       * draw into an indexed line list. */
++      bool no_hw_gl_wireframe;
+       bool no_hw_gl_point;
+       bool can_do_invalid_linear_modifier;
+       bool inconsistent_interpolation;
+@@ -1781,6 +1784,7 @@ enum zink_ds3_state {
+ struct zink_context {
+    struct pipe_context base;
+    struct threaded_context *tc;
++   bool expanding_wireframe;
+    struct slab_child_pool transfer_pool;
+    struct slab_child_pool transfer_pool_unsync;
+    struct blitter_context *blitter;

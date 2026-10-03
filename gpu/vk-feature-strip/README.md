@@ -176,5 +176,9 @@ power cycle is needed, so the earlier caution about re-testing it was unnecessar
   pixel readback: filled 1682 pixels, lined 1682, identical. Crucially the same is true with
   `PVR_FAKE_FILL=1`, which reports the feature as present: faking it does not create the
   capability, it only makes zink stop warning and set `polygonMode = LINE` on a device that was
-  created without the feature. So wireframe is broken either way, and the fake hides it - an app
-  asking for wireframe silently gets filled polygons.
+  created without the feature. So the fake hides a real limitation - an app asking for wireframe
+  silently gets filled polygons.
+  `mesa/zink-quads-without-gs.patch` fixes this too: zink expands a wireframe draw into an
+  indexed line list itself, which measured 1682 filled vs 172 lined pixels for triangles, 1793
+  vs 283 for strips and 1820 vs 294 for fans. Before, filled and lined were identical in every
+  case. `primtest wireframe` is the check.

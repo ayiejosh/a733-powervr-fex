@@ -50,8 +50,10 @@ strips, polygons and line loops with `util_primconvert`, which expands them to t
 CPU. The draw still runs on the GPU; only index generation is on the CPU. Mesa already ships
 that conversion - `u_indices.c`'s `generate_quads`, reached by virgl and d3d12 through
 `u_primconvert` and by panfrost and lima through `u_vbuf` - and zink was the one driver not
-wired into it. **1 file, +13 -6** - the whole fix is two removals in `zink_screen.c`:
-an assert and an init gate that both assumed `geometryShader` was present.
+wired into it. **4 files, +144 -7**, in two parts.
+
+**Part 1 - let the driver start** (`zink_screen.c`): remove an assert and an init gate
+that both assumed `geometryShader` was present.
 
 Two earlier versions were cut after measurement:
 
@@ -68,6 +70,27 @@ Two earlier versions were cut after measurement:
 So nothing is forced and no capability is taken away: a driver that reports
 `geometryShader = true` is unaffected, and one that reports `false` can now start
 instead of being rejected.
+
+**Part 2 - emulate wireframe** (`zink_state.c`, `zink_draw.cpp`, `zink_types.h`).
+This driver also has no `fillModeNonSolid`, and that one cannot be fixed by asking
+nicely: enabling the feature on the device is refused with
+`VK_ERROR_FEATURE_NOT_PRESENT`, and with it merely faked, `glPolygonMode(GL_LINE)` is
+ignored - measured with pixel readback, filled and lined pixel counts identical.
+Vulkan has no way to say "draw these triangles as lines" other than
+`polygonMode = LINE`, so zink now expands the draw itself: each triangle's three
+edges are written to an index buffer and the draw is reissued as a line list. The
+geometry still runs on the GPU; only index generation is on the CPU. The state path
+stops handing the driver a polygon mode it ignores.
+
+Measured, filled vs lined pixels:
+
+| topology | before | after |
+|---|---|---|
+| `triangles` | 1682 / 1682 - ignored | 1682 / **172** - works |
+| `strip` | 1793 / 1793 - ignored | 1793 / **283** - works |
+| `fan` | 1820 / 1820 - ignored | 1820 / **294** - works |
+
+`primtest wireframe` covers all three. The five primitive types are unaffected.
 
 Measured with `gpu/vk-feature-strip/primtest.c` (one primitive per process,
 because an abort takes the whole process down):
