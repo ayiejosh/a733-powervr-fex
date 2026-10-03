@@ -166,6 +166,46 @@ Two limits, both checked:
   that incorrect rendering will happen. So it is not merely unadvertised: the state is
   accepted and dropped. Three independent angles, same answer.
 
+### Running real applications against the patched build
+
+The default build is `USE_LIBGLVND=0`, which produces `libEGL.so.1` and `libGL.so.1`
+directly. Desktop-GL programs that link those (peglgears) use the patched driver, but
+glvnd-based programs - anything linking `libEGL.so.1` through the glvnd dispatcher, which
+includes every GLES2 application - resolve the *system* `libEGL_mesa.so.0` and so load the
+system libgallium, gate and all.
+
+To make the patched build reachable by those, build it as a glvnd vendor library:
+
+    meson configure build -Dglvnd=enabled -Dglx=disabled
+    ninja -C build
+
+`glx=disabled` because this board's X server exports no GLX, and building it needs
+`glvnd/libglxabi.h` which Debian's stub `libglvnd-dev` does not ship. The glvnd ABI headers
+(`libeglabi.h`, `GLdispatchABI.h`) come from upstream libglvnd, and Debian's packages need
+`libglvnd0` for the real `libGLdispatch.so`.
+
+Then point EGL at the vendor library with a JSON manifest:
+
+    { "file_format_version": "1.0.0",
+      "ICD": { "library_path": "/home/radxa/mesa-glvnd/libEGL_mesa.so.0" } }
+
+    __EGL_VENDOR_LIBRARY_FILENAMES=/home/radxa/mesa-glvnd/50_myzink.json \
+    LD_LIBRARY_PATH=/home/radxa/mesa-glvnd:... \
+    LIBGL_DRIVERS_PATH=/home/radxa/mesa-glvnd/dri
+
+**glmark2-es2 on the patched build**, no layer and no fakes - all 30-plus scenes completed,
+exit 0:
+
+| | score |
+|---|---|
+| system Mesa + reference layer (current desktop config) | **511** |
+| patched Mesa, no layer, no `PVR_FAKE_GS`, no `PVR_FAKE_FILL` | **525** |
+
+The suite covers textures and mipmaps, gouraud/phong/blinn-phong/cel shading, bump mapping,
+FBO-based blur and shadow, buffer map and subdata updates, terrain, refraction and shader
+loops. That is a considerably broader exercise than anything `primtest` does, and it is the
+strongest evidence so far that the driver runs Zink - which is what upstream doubted.
+
 **Robustness.** Upstream rejected this driver as "not robust enough to run Zink at all".
 Measured after the patch: 48 consecutive context creations across every mode - the five
 primitive types, the wireframe matrix, edge flags and point mode - with zero failures, and a
