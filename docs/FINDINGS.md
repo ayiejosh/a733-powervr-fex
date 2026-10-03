@@ -75,10 +75,25 @@ deadlocks the kernel).** Details below.
   The desktop stays on **software-rendered X11** (the `LIBGL_ALWAYS_SOFTWARE`
   workaround is the board's defense against exactly this hang). See `kernel/`.
 - **D3D12** (vkd3d-proton) — **infeasible**: needs Vulkan features the blob lacks.
-- **Geometry shaders / tessellation / MSAA — not native.** The blob *advertises*
-  `geometryShader=1` but GS *pipelines* fail (the report is a lie); `tessellation` is
-  unsupported; no native MSAA. GS is emulated via compute (see below) but at **~80x
-  slow** = compatibility-grade only.
+- **Geometry shaders / tessellation / MSAA — not native.** The blob reports
+  `geometryShader = false`, honestly — it is the **feature-strip layer's `PVR_FAKE_GS=1`
+  that reports it as true**, and it does so only so zink will initialise, since zink
+  rejected the driver without it. Given that fake, zink advertises `MESA_PRIM_QUADS`,
+  builds a "filled quad gs" pipeline, and the blob **aborts the process** (`SIGABRT`,
+  exit 134, `BILParseStream` in `libufwriter.so`). So GS pipelines do fail — but the
+  lie is the layer's, not the blob's. `tessellation` is unsupported; no native MSAA.
+  GS is emulated via compute (see below) but at **~80x slow** = compatibility-grade only.
+  Both halves are fixed: the layer no longer restores `geometryShader` into the caller's
+  struct after `vkCreateDevice`, and `mesa/zink-quads-without-gs.patch` removes the gate
+  and assert that required it, so zink starts with the truth and Mesa's frontend lowers
+  quads to triangles. See `mesa/README.md`.
+- **Polygon modes and transform feedback are emulated, not native.** The blob has no
+  `fillModeNonSolid`, no `GL_POINTS` support and no `VK_EXT_transform_feedback`, so
+  `mesa/zink-quads-without-gs.patch` lowers all of them in zink: wireframe and point mode
+  become generated line/point lists, `GL_EDGE_FLAG` is honoured by reading the per-vertex
+  flags, and transform feedback stores its captured varyings through a device address in a
+  push constant. Line stipple is the one thing that cannot be done — it needs a stage that
+  sees both endpoints of a line, and this blob has no geometry or mesh shader.
 - **Open Mesa PowerVR (`pvr`) Vulkan on this kernel — HARD-BLOCKED.** The open driver
   targets the **mainline `powervr` DRM UAPI** (`DEV_QUERY`/`CREATE_BO`/`SUBMIT_JOBS`);
   our kernel only implements the **closed `pvrsrvkm` bridge UAPI** (`PVR_SRVKM_CMD` +
