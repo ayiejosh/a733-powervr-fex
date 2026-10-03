@@ -134,7 +134,8 @@ power cycle is needed, so the earlier caution about re-testing it was unnecessar
 - Single instance / single device (one static `g_inst`/`g_dev`, no dispatch-table map keyed by
   handle) — fine for `eglinfo`, `glmark2-es2`, single-instance apps; not general-purpose
   correct for multi-instance applications.
-- **With `PVR_FAKE_GS=1`, zink builds its own GS pipeline and the blob aborts.** The fake is
+- **FIXED in `vk_layer_pvr_strip.c` — see the note at the end of this list.** With
+  `PVR_FAKE_GS=1`, zink built its own GS pipeline and the blob aborted. The fake is
   not a query-only lie. zink advertises `MESA_PRIM_QUADS` only when it sees `geometryShader`,
   and lowers `GL_QUADS` with a self-generated GS (NIR dump name `filled quad gs`); the blob has
   no GS pipeline support and its shader compiler calls `abort()` instead of returning an error.
@@ -155,3 +156,11 @@ power cycle is needed, so the earlier caution about re-testing it was unnecessar
   (exit 134, `MESA_SHADER_GEOMETRY` = 1, same `BILParseStream()` frame), so it is not
   board-specific. `glxgears` and `glxdemo` cannot obtain a GLX visual on this board at all,
   so they never reach zink here either way.
+- **Root cause and fix.** zink computes its screen caps *after* `vkCreateDevice`, and this
+  layer used to restore `geometryShader = true` into the caller's struct once the call
+  returned. zink therefore re-read the feature as present, advertised `MESA_PRIM_QUADS`, took
+  quad draws, generated the GS, and the blob aborted. The restore is gone: the device really is
+  created without `geometryShader`, so reporting it back as enabled was a lie. With the stock,
+  unpatched system zink this turns the abort into 182,040 frames in 5 s (36,407 FPS) with zero
+  GS, and zink still initialises. `mesa/zink-quads-without-gs.patch` fixes the same failure
+  independently by removing zink's need for a GS at all.

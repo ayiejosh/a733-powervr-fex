@@ -270,8 +270,8 @@ static VKAPI_ATTR VkResult VKAPI_CALL PVRSTRIP_CreateDevice(
             modCreateInfo.pEnabledFeatures = &modFeatures;
         }
 
-        /* pNext-chain path: mutate the app's structs for the duration of
-         * this call only, then restore them below. */
+        /* pNext-chain path: strip geometryShader from the caller's struct and
+         * leave it stripped - see the note at the bottom of this function. */
         VkBaseOutStructure *s = (VkBaseOutStructure *)modCreateInfo.pNext;
         while (s) {
             if (s->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2) {
@@ -296,7 +296,18 @@ static VKAPI_ATTR VkResult VKAPI_CALL PVRSTRIP_CreateDevice(
         VkBaseOutStructure *s = (VkBaseOutStructure *)pCreateInfo->pNext;
         while (s) {
             if (s->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2) {
-                ((VkPhysicalDeviceFeatures2 *)s)->features.geometryShader = origGs;
+                /* Deliberately NOT restored. The device really was created without
+                 * geometryShader, so putting it back would tell the caller it has a
+                 * feature it does not. zink re-reads this struct when it computes
+                 * its screen caps, which happen after vkCreateDevice: given back
+                 * geometryShader = VK_TRUE it advertises MESA_PRIM_QUADS, receives
+                 * quad draws, generates a "filled quad gs" pipeline and the blob
+                 * aborts the process (measured: SIGABRT, exit 134). Left stripped,
+                 * zink sees the truth, does not advertise quads, and Mesa's
+                 * frontend lowers them to triangles - 49,048 FPS, zero GS.
+                 * Only the R2 flag is still restored; that one is a genuine
+                 * "report it, never enable it" fake with nothing reading it back. */
+                (void)origGs;
             } else if (enabled_r2() &&
                        (int)s->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_KHR) {
                 ((VkPhysicalDeviceRobustness2FeaturesKHR *)s)->nullDescriptor = origNull;

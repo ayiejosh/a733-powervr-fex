@@ -77,17 +77,25 @@ for months without the source being in the repo).
 > with `VK_LAYER_PATH` + `XDG_DATA_HOME`), and check what actually loaded with
 > `VK_LOADER_DEBUG=layer`.
 
-> ⚠️ **The two layers do not behave alike, and this is not fully explained.** Measured on this
-> board with the same zink and the same app: the reference layer at `~/gpu-experiment` runs
-> `peglgears` with **zero** geometry shaders compiled (49,027 FPS), while this repo's
-> `vk-feature-strip` layer compiles `filled quad gs` and aborts with `exit 134`. Both report
-> `geometryShader = true`; `fillModeNonSolid` is *not* the difference (ruling it out by unsetting
-> `PVR_FAKE_FILL` on the reference layer still gives zero GS). The one structural difference
-> found so far: this repo's layer restores `geometryShader = true` into the caller's feature
-> struct after `vkCreateDevice` (`vk_layer_pvr_strip.c:279-299`), where the reference layer
-> strips it in place and leaves it stripped. So the desktop, which uses the reference layer, is
-> **not** currently exposed to the abort — the published layer is. The zink patch below removes
-> the question entirely by removing zink's dependence on a GS.
+> ✅ **Resolved — it was a one-line bug in this repo's layer.** Measured with the same zink,
+> blob and app: the reference layer at `~/gpu-experiment` ran `peglgears` with **zero** geometry
+> shaders (49,027 FPS), while `vk-feature-strip` compiled `filled quad gs` and aborted (exit 134).
+> Both reported `geometryShader = true`; `fillModeNonSolid` was ruled out.
+>
+> Cause: zink computes its screen caps — including whether to advertise `MESA_PRIM_QUADS` —
+> **after** `vkCreateDevice`. The layer stripped `geometryShader` for the create call and then
+> **restored it into the caller's struct**, so zink re-read `true`, advertised quads, took quad
+> draws, generated a GS pipeline, and the blob aborted. The reference layer strips it in place
+> and leaves it stripped, so zink sees the truth and Mesa lowers quads to triangles instead.
+>
+> Fix (applied to `vk_layer_pvr_strip.c`): the layer no longer restores it. Verified against the
+> **stock, unpatched** system zink — `peglgears` runs 182,040 frames = 36,407 FPS with zero GS,
+> and zink still initialises. The restore was well-intentioned but wrong: the device really was
+> created without `geometryShader`, so handing it back as enabled is a lie. `nullDescriptor` is
+> still restored, because nothing reads that one back.
+>
+> The Mesa patch below fixes the same failure independently and is the durable one: it removes
+> zink's dependence on a GS entirely, so no feature-reporting mistake can reach it.
 
 ### ✅ Fixing it: zink without a geometry shader
 
