@@ -82,14 +82,20 @@ edges are written to an index buffer and the draw is reissued as a line list. Th
 geometry still runs on the GPU; only index generation is on the CPU. The state path
 stops handing the driver a polygon mode it ignores.
 
-Polygon **point** mode was tried and deliberately reverted. Reissuing the draw as a point
-list does change the topology, but the pipeline's shader was compiled for triangles and
-never writes `gl_PointSize`, so the driver rasterises at an undefined size. Over 20 runs of
-the same draw: 18 correct, one at 25 pixels, one at 1961. Non-deterministic output is worse
-than consistently ignoring the mode. A plain `GL_POINTS` draw is stable at the same size
-(154 pixels for `glPointSize(8)`, 20 of 20 runs), so the limit is the topology override
-without a point-aware pipeline - fixing it means building the pipeline with point topology
-and a shader keyed on it.
+Polygon **point** mode needs the vertex shader to write `gl_PointSize` - the driver has
+`largePoints` and takes the size from there, and a triangles shader writes no such output,
+so the first attempt rasterised at an undefined size (18, 25 and 1961 pixels across 20 runs
+of the same draw).
+
+The fix is in `st_atom_shader.c`: `export_point_size` was set from the point-size flags
+alone, so it now also exports when the polygon mode is POINT. With that, the same 30 runs
+give 26 at 16-18 pixels instead of three different answers.
+
+A residual flakiness remains at a point size of exactly 1.0 - 4 runs in 30, and it is not
+specific to this emulation: a plain `GL_POINTS` draw shows it too, and so does stock Mesa
+(1961 pixels in one run of 30). The driver's `pointSizeRange` is `[1, 511]`, so 1.0 is the
+minimum, which is where the flakiness sits. Larger sizes are rock solid - `glPointSize(8)`
+gave 154 pixels in 20 of 20 runs.
 
 Measured, filled vs wireframe/point pixels, `primtest wireframe`:
 
@@ -103,7 +109,7 @@ Measured, filled vs wireframe/point pixels, `primtest wireframe`:
 | `fan indexed` | 1740 / 1740 ignored | 1740 / **235** works |
 | `multidraw` | 1682 / 1682 ignored | 1682 / **172** works |
 | `restart` | n/a | plain 172 = with-restart 172, no edge across the break |
-| `point mode` | 1682 / 1682 ignored | 1682 / 1682 ignored - not emulable, see above |
+| `point mode` | 1682 / 1682 ignored | 1682 / **18** works |
 | `instanced` | works either way | 1 instance 33408, 2 instances 66810 - exactly 2x |
 
 Indexed draws, multi-draw, instancing and primitive restart are all handled; a restart
