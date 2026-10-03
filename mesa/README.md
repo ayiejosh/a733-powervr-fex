@@ -149,6 +149,12 @@ Two limits, both checked:
   shader cannot recover it from interpolated values. So stipple needs a primitive-level
   stage - a geometry or mesh shader - and this driver has neither.
 
+  Note that zink's own `no_linestipple` condition also requires a geometry shader, because
+  its fallback is a GS pass. With the GS honestly absent that condition is false, so zink
+  left hardware stipple enabled and issued state this driver does not implement - the driver
+  warned about it. The patch now sets `no_linestipple` for this driver so stipple is dropped
+  rather than attempted, matching what the GS-faked configuration does.
+
   Tested from a third angle before concluding: forcing `no_linestipple` off, so zink enables
   `VK_DYNAMIC_STATE_LINE_STIPPLE_EXT` and issues `vkCmdSetLineStippleEXT` regardless of the
   missing feature. The blob ignores it - `solid=172 stippled=172` again, with Mesa warning
