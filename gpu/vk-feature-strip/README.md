@@ -181,6 +181,6 @@ power cycle is needed, so the earlier caution about re-testing it was unnecessar
   `mesa/zink-quads-without-gs.patch` fixes this too: zink expands a wireframe draw into an
   indexed line list itself, and polygon point mode into a point list. `primtest wireframe`
   covers vertex arrays and index buffers for triangles, strips and fans, plus multi-draw,
-  primitive restart and point mode - nine cases, all ignored before and all working after
-  (triangles 1682 filled vs 172 lined). `primtest tf` reports that transform feedback is not
-  available on this stack at all, so the combination cannot be exercised here.
+  primitive restart, point mode and instancing - ten cases, all ignored before and all working
+  after (triangles 1682 filled vs 172 lined). `primtest tf` reports that transform feedback is
+  not available on this stack at all, so that combination cannot be exercised here.

@@ -99,9 +99,12 @@ Measured, filled vs wireframe/point pixels, `primtest wireframe`:
 | `multidraw` | 1682 / 1682 ignored | 1682 / **172** works |
 | `restart` | n/a | plain 172 = with-restart 172, no edge across the break |
 | `point mode` | 1682 / 1682 ignored | 1682 / **18** works |
+| `instanced` | works either way | 1 instance 33408, 2 instances 66810 - exactly 2x |
 
-Indexed draws, multi-draw and primitive restart are all handled; a restart starts a new
-primitive rather than drawing an edge across the break.
+Indexed draws, multi-draw, instancing and primitive restart are all handled; a restart
+starts a new primitive rather than drawing an edge across the break. The instancing case
+is measured with additive blending over a dimmed colour, because a white line already sits
+at 255 and adding to it shows nothing.
 
 Two limits, both checked:
 

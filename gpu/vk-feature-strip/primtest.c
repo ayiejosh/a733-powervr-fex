@@ -32,6 +32,18 @@ static GLenum pick(const char *n)
     return 0;
 }
 
+/* Sum the RGB of every pixel. With additive blending an overlapping second
+ * instance doubles the value, so this separates 1 instance from 2. */
+static long pixel_sum(void)
+{
+    unsigned char buf[64 * 64 * 4];
+    long s = 0;
+    glReadPixels(0, 0, 64, 64, GL_RGBA, GL_UNSIGNED_BYTE, buf);
+    for (int i = 0; i < 64 * 64; i++)
+        s += buf[i * 4] + buf[i * 4 + 1] + buf[i * 4 + 2];
+    return s;
+}
+
 /* Count non-black pixels in the 64x64 window. */
 static int lit_pixels(void)
 {
@@ -189,6 +201,46 @@ static int wireframe_probe(void)
         if (!ok) bad++;
         printf("  %-14s filled=%-5d points=%-5d -> %s\n", "point mode", filled, pointed,
                ok ? "points WORK" : "point mode IGNORED");
+    }
+
+    /* Instancing: the expansion copies instance_count to the line draw, so two
+     * instances must draw twice the geometry. Additive blending makes the
+     * overlap measurable. */
+    {
+        long one, two;
+
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_ONE, GL_ONE);
+        /* Dim, or the first draw already sits at 255 and adding cannot show. */
+        glColor3f(0.25f, 0.25f, 0.25f);
+        glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+
+        glClear(GL_COLOR_BUFFER_BIT);
+        glDrawArraysInstancedARB(GL_TRIANGLES, 0, 3, 1);
+        glFinish();
+        one = pixel_sum();
+
+        /* control: the same triangle drawn twice with two ordinary calls. If this
+         * does not double either, additive blending is what is not working. */
+        glClear(GL_COLOR_BUFFER_BIT);
+        draw_arrays(GL_TRIANGLES, 3);
+        draw_arrays(GL_TRIANGLES, 3);
+        glFinish();
+        printf("  instanced      control (2 plain draws)=%ld\n", pixel_sum());
+
+        glClear(GL_COLOR_BUFFER_BIT);
+        glDrawArraysInstancedARB(GL_TRIANGLES, 0, 3, 2);
+        glFinish();
+        two = pixel_sum();
+
+        glDisable(GL_BLEND);
+        glColor3f(1, 1, 1);
+        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+
+        int ok = one > 0 && two > one * 3 / 2;
+        if (!ok) bad++;
+        printf("  %-14s 1 instance=%-7ld 2 instances=%-7ld -> %s\n", "instanced", one, two,
+               ok ? "instancing WORKS" : "SECOND INSTANCE LOST");
     }
 
     glDisableClientState(GL_VERTEX_ARRAY);
