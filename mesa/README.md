@@ -50,7 +50,23 @@ strips, polygons and line loops with `util_primconvert`, which expands them to t
 CPU. The draw still runs on the GPU; only index generation is on the CPU. Mesa already ships
 that conversion - `u_indices.c`'s `generate_quads`, reached by virgl and d3d12 through
 `u_primconvert` and by panfrost and lima through `u_vbuf` - and zink was the one driver not
-wired into it. 4 files, +44 -6.
+wired into it. 4 files, +56 -6. Both draw entry points are guarded -
+`zink_draw_vbo` and `zink_draw_vertex_state` - since a primitive can arrive on
+either, and `util_primconvert` has a matching call for each.
+
+Measured with `gpu/vk-feature-strip/primtest.c` (one primitive per process,
+because an abort takes the whole process down):
+
+| primitive | pre-fix layer, stock Mesa | patched zink, no layer |
+|---|---|---|
+| `triangles` | OK | OK |
+| `quads` | **SIGABRT, exit 134** | **OK** |
+| `quad_strip` | **SIGABRT, exit 134** | **OK** |
+| `polygon` | OK | OK |
+| `line_loop` | OK | OK |
+
+Only quads and quad strips ever took the geometry-shader path; polygons and line
+loops were already handled without one.
 
 Build (25.0.7, zink only; a different configuration from the pvr build below):
 

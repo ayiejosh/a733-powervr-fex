@@ -164,3 +164,10 @@ power cycle is needed, so the earlier caution about re-testing it was unnecessar
   unpatched system zink this turns the abort into 182,040 frames in 5 s (36,407 FPS) with zero
   GS, and zink still initialises. `mesa/zink-quads-without-gs.patch` fixes the same failure
   independently by removing zink's need for a GS at all.
+- `primtest.c` is the check for the above: it draws one primitive type through whatever GL
+  driver is configured and reports whether it survived. One primitive per process, because an
+  abort takes the whole process with it.
+  `gcc -O2 -o primtest primtest.c -lEGL -lX11 -lGL`, then
+  `primtest quads|quad_strip|polygon|line_loop|triangles`. Measured: quads and quad strips
+  aborted with the pre-fix layer (exit 134) and pass with the patched zink; polygons and line
+  loops passed either way.

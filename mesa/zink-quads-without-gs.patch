@@ -35,7 +35,7 @@ index d264c0f..b9874d9 100644
        return &ctx->base;
     }
 diff --git a/src/gallium/drivers/zink/zink_draw.cpp b/src/gallium/drivers/zink/zink_draw.cpp
-index 7284016..ce1ba81 100644
+index 7284016..7006768 100644
 --- a/src/gallium/drivers/zink/zink_draw.cpp
 +++ b/src/gallium/drivers/zink/zink_draw.cpp
 @@ -17,6 +17,8 @@
@@ -66,6 +66,25 @@ index 7284016..ce1ba81 100644
     zink_draw<HAS_MULTIDRAW, DYNAMIC_STATE, BATCH_CHANGED, false>(pctx, info, drawid_offset, indirect, draws, num_draws, NULL, 0);
  }
  
+@@ -1009,6 +1023,18 @@ zink_draw_vertex_state(struct pipe_context *pctx,
+                        const struct pipe_draw_start_count_bias *draws,
+                        unsigned num_draws)
+ {
++   /* Same guard as zink_draw_vbo: a primitive this driver cannot take is
++    * expanded to triangles instead of being handed to a pipeline that cannot
++    * exist. util_primconvert_draw_vertex_state consumes
++    * info.take_vertex_state_ownership itself, so it is not released here. */
++   if (!(pctx->screen->caps.supported_prim_modes & BITFIELD_BIT(info.mode))) {
++      struct zink_context *ctx = zink_context(pctx);
++      if (ctx->rast_state)
++         util_primconvert_save_rasterizer_state(ctx->primconvert, &ctx->rast_state->base);
++      util_primconvert_draw_vertex_state(ctx->primconvert, vstate, partial_velem_mask, info, draws, num_draws);
++      return;
++   }
++
+    struct pipe_draw_info dinfo = {};
+ 
+    dinfo.mode = info.mode;
 diff --git a/src/gallium/drivers/zink/zink_screen.c b/src/gallium/drivers/zink/zink_screen.c
 index bc0cc58..5df0bf3 100644
 --- a/src/gallium/drivers/zink/zink_screen.c
