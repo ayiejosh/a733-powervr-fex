@@ -120,6 +120,22 @@ at 255 and adding to it shows nothing.
 
 Two limits, both checked:
 
+- **Transform feedback does not exist on this driver.** zink builds its whole stream-output
+  implementation on `VK_EXT_transform_feedback`, which the blob does not advertise, so
+  `max_stream_output_buffers` is 0 and the frontend exposes no transform-feedback extension.
+  Emulation is conceivable - the blob reports `vertexPipelineStoresAndAtomics`, so a vertex
+  shader can store to an SSBO, and injecting stores of the feedback varyings indexed by
+  `gl_VertexID` would give deterministic ordering - but that is a feature of its own, and
+  nothing exercised here uses it.
+
+  A related bug was found and fixed while checking this. zink set `caps->query_so_overflow =
+  true` unconditionally, so Mesa advertised `GL_ARB_transform_feedback_overflow_query` on a
+  driver with no stream output at all - and the query maps to
+  `VK_QUERY_TYPE_TRANSFORM_FEEDBACK_STREAM_EXT`, which needs the missing extension. It now
+  follows `have_EXT_transform_feedback`, and the extension is no longer advertised. That
+  false advertisement is what made an earlier check of mine conclude transform feedback was
+  reachable.
+
 - **Transform feedback is skipped**, not emulated: expanding the draw would make TF
   capture the generated lines instead of the app's triangles. `primtest tf` reports
   `SKIP: no transform feedback on this stack` - this stack advertises only
