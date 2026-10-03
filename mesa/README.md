@@ -50,14 +50,24 @@ strips, polygons and line loops with `util_primconvert`, which expands them to t
 CPU. The draw still runs on the GPU; only index generation is on the CPU. Mesa already ships
 that conversion - `u_indices.c`'s `generate_quads`, reached by virgl and d3d12 through
 `u_primconvert` and by panfrost and lima through `u_vbuf` - and zink was the one driver not
-wired into it. **1 file, +16 -6** - the whole fix is the `zink_screen.c` change.
+wired into it. **1 file, +13 -6** - the whole fix is two removals in `zink_screen.c`:
+an assert and an init gate that both assumed `geometryShader` was present.
 
-An earlier version of this patch also wired zink into `util_primconvert`, on the
-assumption that quads still reached zink and had to be lowered there. That was
-measured and is wrong: with a marker in the conversion branch, **zero hits** across
-all five primitive types. Mesa's frontend lowers anything the driver does not
-advertise before zink ever sees it, so that branch could never run. It was cut
-rather than carried as dead code.
+Two earlier versions were cut after measurement:
+
+1. A `util_primconvert` wiring, on the assumption that quads still reached zink and
+   had to be lowered there. Measured with a marker in the conversion branch: **zero
+   hits** across all five primitive types. Mesa's frontend lowers anything the driver
+   does not advertise before zink ever sees it, so that branch could never run.
+2. Forcing `geometryShader = false` for the driver. Also unnecessary - the PowerVR
+   blob already reports `geometryShader = false`, honestly. It is the feature-strip
+   layer's `PVR_FAKE_GS=1` that reports it as `true`, and the forcing existed only to
+   undo that lie. With no layer, zink sees the truth and takes its ordinary non-GS
+   path on its own.
+
+So nothing is forced and no capability is taken away: a driver that reports
+`geometryShader = true` is unaffected, and one that reports `false` can now start
+instead of being rejected.
 
 Measured with `gpu/vk-feature-strip/primtest.c` (one primitive per process,
 because an abort takes the whole process down):

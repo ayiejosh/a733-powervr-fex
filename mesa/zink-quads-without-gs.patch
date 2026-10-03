@@ -1,27 +1,19 @@
 diff --git a/src/gallium/drivers/zink/zink_screen.c b/src/gallium/drivers/zink/zink_screen.c
-index bc0cc58..5df0bf3 100644
+index bc0cc58..313da03 100644
 --- a/src/gallium/drivers/zink/zink_screen.c
 +++ b/src/gallium/drivers/zink/zink_screen.c
-@@ -2902,7 +2902,17 @@ init_driver_workarounds(struct zink_screen *screen)
+@@ -2902,7 +2902,9 @@ init_driver_workarounds(struct zink_screen *screen)
  
     if (zink_driverid(screen) ==
         VK_DRIVER_ID_IMAGINATION_PROPRIETARY) {
 -      assert(screen->info.feats.features.geometryShader);
-+      /* The blob advertises geometryShader but cannot execute one: asked to build
-+       * a GS pipeline its shader compiler calls abort() (BILParseStream in
-+       * libufwriter.so), which kills the process. zink only ever generates a GS
-+       * itself - for GL_QUADS, quad strips, polygons, line stipple and smooth
-+       * lines - so the feature is unusable in practice on this driver. Report it
-+       * as absent so no GS is ever created, and let the primitives that needed it
-+       * fall through to primconvert, which expands them to triangles on the CPU
-+       * and still draws them on the GPU.
-+       */
-+      screen->info.feats.features.geometryShader = false;
-+      screen->driver_workarounds.no_geometry_shader = true;
++      /* No assert that geometryShader is present: this driver reports it as
++       * absent, honestly, and the gate that used to reject it for that is
++       * gone - see the note where the gate used to be. */
        screen->driver_workarounds.no_linesmooth = true;
     }
  
-@@ -3454,11 +3464,11 @@ zink_internal_create_screen(const struct pipe_screen_config *config, int64_t dev
+@@ -3454,11 +3456,16 @@ zink_internal_create_screen(const struct pipe_screen_config *config, int64_t dev
        goto fail;
     }
  
@@ -30,10 +22,15 @@ index bc0cc58..5df0bf3 100644
 -         mesa_loge("zink: Imagination proprietary driver w/o geometryShader is unsupported");
 -      goto fail;
 -   }
-+   /* There used to be a gate here refusing VK_DRIVER_ID_IMAGINATION_PROPRIETARY
-+    * without geometryShader. That driver's GS is not usable (see
-+    * init_driver_workarounds), so the feature is now forced off for it and the
-+    * primitives that needed a GS are lowered by primconvert instead.
++   /* A gate used to sit here rejecting VK_DRIVER_ID_IMAGINATION_PROPRIETARY when
++    * the driver reported no geometryShader (commit ca087e20, "zink: reject
++    * Imagination proprietary driver w/o geometryShader"). That report is honest,
++    * and the GS is only needed for smooth-line emulation, which zink already
++    * declines for this driver via no_linesmooth. Refusing to start costs more
++    * than the one capability: without the gate zink takes its ordinary non-GS
++    * path and the frontend lowers quads and quad strips to triangles, so they
++    * draw instead of aborting the process. Measured on a BXM-4-64: all five
++    * primitive types render.
 +    */
  
     if (zink_debug & ZINK_DEBUG_MEM) {
