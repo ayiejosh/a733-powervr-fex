@@ -182,5 +182,7 @@ power cycle is needed, so the earlier caution about re-testing it was unnecessar
   indexed line list itself, and polygon point mode into a point list. `primtest wireframe`
   covers vertex arrays and index buffers for triangles, strips and fans, plus multi-draw,
   primitive restart, point mode and instancing - ten cases, all ignored before and all working
-  after (triangles 1682 filled vs 172 lined). `primtest tf` reports that transform feedback is
-  not available on this stack at all, so that combination cannot be exercised here.
+  after (triangles 1682 filled vs 172 lined). `primtest edgeflag` checks that `GL_EDGE_FLAG`
+  selects edges: 172 pixels with every flag set against 58 with only the first set, and 222
+  against 115 for an indexed draw. `primtest tf` reports that transform feedback is not
+  available on this stack at all, so that combination cannot be exercised here.

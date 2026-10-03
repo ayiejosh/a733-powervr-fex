@@ -110,6 +110,7 @@ Measured, filled vs wireframe/point pixels, `primtest wireframe`:
 | `multidraw` | 1682 / 1682 ignored | 1682 / **172** works |
 | `restart` | n/a | plain 172 = with-restart 172, no edge across the break |
 | `point mode` | 1682 / 1682 ignored | 1682 / **18** works |
+| `edge flags` | 1682 / 1682 ignored | 172 all-set vs **58** one-set |
 | `instanced` | works either way | 1 instance 33408, 2 instances 66810 - exactly 2x |
 
 Indexed draws, multi-draw, instancing and primitive restart are all handled; a restart
@@ -125,8 +126,13 @@ Two limits, both checked:
   `GL_ARB_transform_feedback_overflow_query`, which is not transform feedback, and the
   `GL_MAX_TRANSFORM_FEEDBACK_*` limits do not resolve at all. So the guard protects a
   combination that cannot occur here.
-- **`GL_EDGE_FLAG` is ignored**: the expansion always emits all three edges, so an app
-  using edge flags to select edges gets the full wireframe. Not emulated.
+- **`GL_EDGE_FLAG` is honoured.** An edge is drawn only when the flag of its first vertex
+  is set, so the expansion reads the per-vertex flags itself. st/mesa appends the edge flag
+  as the last vertex input, which makes it the last element, and `zink_vertex_elements_state`
+  now retains the `pipe_vertex_element` array - the Vulkan-derived state alone loses the
+  buffer, offset and stride, so the array was unreachable before. Measured: a triangle drawn
+  with all flags set gives 172 pixels, with only the first flagged 58 (one edge of three),
+  and an indexed draw 222 against 115.
 - **Line stipple is dropped**: measured, `solid=172 stippled=172` with the expansion - the
   stipple has no effect. The blob has `bresenhamLines` but not `stippledBresenhamLines`, so
   zink sets `no_linestipple` and falls back to `lower_line_stipple_gs`.

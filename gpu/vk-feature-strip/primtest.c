@@ -413,6 +413,63 @@ static int points_probe(void)
     return (pointed > 0 && pointed < filled / 2) ? 0 : 1;
 }
 
+/* glEdgeFlag: an edge is drawn only if the edge flag of its first vertex is
+ * TRUE. With flags (T,F,F) on a triangle only one of the three edges should
+ * appear, so the pixel count must drop against all-TRUE. */
+static int edgeflag_probe(void)
+{
+    static const GLboolean one_edge[3] = { GL_TRUE, GL_FALSE, GL_FALSE };
+    static const GLboolean all_edges[3] = { GL_TRUE, GL_TRUE, GL_TRUE };
+
+    glEnableClientState(GL_VERTEX_ARRAY);
+    glVertexPointer(2, GL_FLOAT, 0, verts);
+    glEnableClientState(GL_EDGE_FLAG_ARRAY);
+    glClearColor(0, 0, 0, 1);
+    glColor3f(1, 1, 1);
+    glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+
+    glEdgeFlagPointer(0, all_edges);
+    glClear(GL_COLOR_BUFFER_BIT);
+    draw_arrays(GL_TRIANGLES, 3);
+    glFinish();
+    int full = lit_pixels();
+
+    glEdgeFlagPointer(0, one_edge);
+    glClear(GL_COLOR_BUFFER_BIT);
+    draw_arrays(GL_TRIANGLES, 3);
+    glFinish();
+    int one = lit_pixels();
+
+    /* Indexed variant: the flag is looked up by vertex index, resolved through
+     * the index buffer, so this exercises a different path than the arrays case.
+     * Two triangles over vertices 0..3: six edges when all flags are set, and
+     * two when only vertex 0 is flagged. */
+    static const GLboolean idx_all[4] = { GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE };
+    static const GLboolean idx_one[4] = { GL_TRUE, GL_FALSE, GL_FALSE, GL_FALSE };
+    int ifull = 0, ione = 0;
+
+    glEdgeFlagPointer(0, idx_all);
+    glClear(GL_COLOR_BUFFER_BIT);
+    draw_elements(GL_TRIANGLES, idx_tris, 6);
+    glFinish();
+    ifull = lit_pixels();
+
+    glEdgeFlagPointer(0, idx_one);
+    glClear(GL_COLOR_BUFFER_BIT);
+    draw_elements(GL_TRIANGLES, idx_tris, 6);
+    glFinish();
+    ione = lit_pixels();
+
+    glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+    glDisableClientState(GL_EDGE_FLAG_ARRAY);
+    glDisableClientState(GL_VERTEX_ARRAY);
+
+    printf("all-TRUE=%d  (T,F,F)=%d  indexed all=%d one=%d  -> %s\n", full, one, ifull, ione,
+           (one > 0 && one < full && ione > 0 && ione < ifull) ? "edge flags APPLY"
+                                                               : "edge flags IGNORED");
+    return (one > 0 && one < full && ione > 0 && ione < ifull) ? 0 : 1;
+}
+
 int main(int argc, char **argv)
 {
     if (argc < 2) {
@@ -420,7 +477,7 @@ int main(int argc, char **argv)
         return 2;
     }
     int is_wireframe = !strcmp(argv[1], "wireframe");
-    int is_tf = !strcmp(argv[1], "tf") || !strcmp(argv[1], "points");
+    int is_tf = !strcmp(argv[1], "tf") || !strcmp(argv[1], "points") || !strcmp(argv[1], "edgeflag");
     GLenum mode = pick(argv[1]);
     if (!mode && !is_wireframe && !is_tf) { printf("FAIL unknown mode %s\n", argv[1]); return 2; }
 
@@ -467,6 +524,8 @@ int main(int argc, char **argv)
         return tf_probe();
     if (!strcmp(argv[1], "points"))
         return points_probe();
+    if (!strcmp(argv[1], "edgeflag"))
+        return edgeflag_probe();
 
     glViewport(0, 0, 64, 64);
     glClearColor(0, 0, 0, 1);

@@ -1,5 +1,5 @@
 diff --git a/src/gallium/drivers/zink/zink_draw.cpp b/src/gallium/drivers/zink/zink_draw.cpp
-index 7284016..efabf92 100644
+index 7284016..eb463ee 100644
 --- a/src/gallium/drivers/zink/zink_draw.cpp
 +++ b/src/gallium/drivers/zink/zink_draw.cpp
 @@ -17,6 +17,7 @@
@@ -10,7 +10,7 @@ index 7284016..efabf92 100644
  #include "util/u_prim_restart.h"
  
  static void
-@@ -941,6 +942,145 @@ zink_draw(struct pipe_context *pctx,
+@@ -941,6 +942,178 @@ zink_draw(struct pipe_context *pctx,
        pctx->flush(pctx, NULL, 0);
  }
  
@@ -66,6 +66,28 @@ index 7284016..efabf92 100644
 +         return false;
 +   }
 +
++   /* Per-vertex edge flags, when the shader reads them. st/mesa appends the edge
++    * flag as the last vertex input, so it is the last element. An edge is drawn
++    * only when the flag of its first vertex is set. */
++   const uint8_t *ef = NULL;
++   unsigned ef_stride = 1;
++   struct pipe_transfer *ef_transfer = NULL;
++   if (ctx->gfx_stages[MESA_SHADER_VERTEX] && ctx->gfx_stages[MESA_SHADER_VERTEX]->has_edgeflags &&
++       ctx->element_state && ctx->element_state->num_elements) {
++      const struct pipe_vertex_element *el =
++         &ctx->element_state->elements[ctx->element_state->num_elements - 1];
++      const struct pipe_vertex_buffer *vb = &ctx->vertex_buffers[el->vertex_buffer_index];
++      const void *base = NULL;
++      if (vb->is_user_buffer)
++         base = vb->buffer.user;
++      else if (vb->buffer.resource)
++         base = pipe_buffer_map(pctx, vb->buffer.resource, PIPE_MAP_READ, &ef_transfer);
++      if (base) {
++         ef = (const uint8_t *)base + vb->buffer_offset + el->src_offset;
++         ef_stride = el->src_stride ? el->src_stride : 1;
++      }
++   }
++
 +   struct pipe_resource *ib = NULL;
 +   unsigned ib_offset = 0;
 +   void *map = NULL;
@@ -86,10 +108,19 @@ index 7284016..efabf92 100644
 +   };
 +
 +   unsigned w = 0;
-+   auto emit = [&](uint32_t a, uint32_t b, uint32_t c) {
++   auto emit_edge = [&](uint32_t a, uint32_t b) {
 +      dst[w++] = a; dst[w++] = b;
-+      dst[w++] = b; dst[w++] = c;
-+      dst[w++] = c; dst[w++] = a;
++   };
++   auto emit = [&](uint32_t a, uint32_t b, uint32_t c) {
++      if (!ef) {
++         emit_edge(a, b);
++         emit_edge(b, c);
++         emit_edge(c, a);
++         return;
++      }
++      if (ef[a * ef_stride]) emit_edge(a, b);
++      if (ef[b * ef_stride]) emit_edge(b, c);
++      if (ef[c * ef_stride]) emit_edge(c, a);
 +   };
 +
 +   for (unsigned i = 0; i < num_draws; i++) {
@@ -129,6 +160,8 @@ index 7284016..efabf92 100644
 +   u_upload_unmap(pctx->stream_uploader);
 +   if (src_transfer)
 +      pipe_buffer_unmap(pctx, src_transfer);
++   if (ef_transfer)
++      pipe_buffer_unmap(pctx, ef_transfer);
 +
 +   struct pipe_draw_info linfo = {};
 +   linfo.mode = MESA_PRIM_LINES;
@@ -156,7 +189,7 @@ index 7284016..efabf92 100644
  template <zink_multidraw HAS_MULTIDRAW, zink_dynamic_state DYNAMIC_STATE, bool BATCH_CHANGED>
  static void
  zink_draw_vbo(struct pipe_context *pctx,
-@@ -950,6 +1090,31 @@ zink_draw_vbo(struct pipe_context *pctx,
+@@ -950,6 +1123,31 @@ zink_draw_vbo(struct pipe_context *pctx,
                const struct pipe_draw_start_count_bias *draws,
                unsigned num_draws)
  {
@@ -229,10 +262,20 @@ index bc0cc58..9c0650c 100644
     if (zink_debug & ZINK_DEBUG_MEM) {
        simple_mtx_init(&screen->debug_mem_lock, mtx_plain);
 diff --git a/src/gallium/drivers/zink/zink_state.c b/src/gallium/drivers/zink/zink_state.c
-index 82b1fbf..fb74424 100644
+index 82b1fbf..dd2f04e 100644
 --- a/src/gallium/drivers/zink/zink_state.c
 +++ b/src/gallium/drivers/zink/zink_state.c
-@@ -613,7 +613,13 @@ zink_create_rasterizer_state(struct pipe_context *pctx,
+@@ -48,6 +48,9 @@ zink_create_vertex_elements_state(struct pipe_context *pctx,
+       return NULL;
+    ves->hw_state.hash = _mesa_hash_pointer(ves);
+ 
++   ves->num_elements = MIN2(num_elements, PIPE_MAX_ATTRIBS);
++   memcpy(ves->elements, elements, ves->num_elements * sizeof(elements[0]));
++
+    int buffer_map[PIPE_MAX_ATTRIBS];
+    for (int j = 0; j < ARRAY_SIZE(buffer_map); ++j)
+       buffer_map[j] = -1;
+@@ -613,7 +616,13 @@ zink_create_rasterizer_state(struct pipe_context *pctx,
     if (rs_state->fill_back != rs_state->fill_front)
        debug_printf("BUG: vulkan doesn't support different front and back fill modes\n");
  
@@ -248,10 +291,21 @@ index 82b1fbf..fb74424 100644
        state->hw_state.polygon_mode = VK_POLYGON_MODE_FILL;
        state->cull_mode = VK_CULL_MODE_NONE;
 diff --git a/src/gallium/drivers/zink/zink_types.h b/src/gallium/drivers/zink/zink_types.h
-index c34b9a2..f93dd4d 100644
+index c34b9a2..784d17c 100644
 --- a/src/gallium/drivers/zink/zink_types.h
 +++ b/src/gallium/drivers/zink/zink_types.h
-@@ -1552,6 +1552,9 @@ struct zink_screen {
+@@ -302,6 +302,10 @@ struct zink_vertex_elements_hw_state {
+ };
+ 
+ struct zink_vertex_elements_state {
++   /* Retained so the wireframe expansion can read per-vertex edge flags: the
++    * driver state below is Vulkan-only and loses the buffer, offset and stride. */
++   unsigned num_elements;
++   struct pipe_vertex_element elements[PIPE_MAX_ATTRIBS];
+    /* decomposed attributes read only a single component for format compatibility */
+    bool has_decomposed_attrs;
+    struct {
+@@ -1552,6 +1556,9 @@ struct zink_screen {
        bool track_renderpasses;
        bool no_linestipple;
        bool no_linesmooth;
@@ -261,7 +315,7 @@ index c34b9a2..f93dd4d 100644
        bool no_hw_gl_point;
        bool can_do_invalid_linear_modifier;
        bool inconsistent_interpolation;
-@@ -1781,6 +1784,7 @@ enum zink_ds3_state {
+@@ -1781,6 +1788,7 @@ enum zink_ds3_state {
  struct zink_context {
     struct pipe_context base;
     struct threaded_context *tc;
