@@ -125,8 +125,15 @@ Two limits, both checked:
   `max_stream_output_buffers` is 0 and the frontend exposes no transform-feedback extension.
   Emulation is conceivable - the blob reports `vertexPipelineStoresAndAtomics`, so a vertex
   shader can store to an SSBO, and injecting stores of the feedback varyings indexed by
-  `gl_VertexID` would give deterministic ordering - but that is a feature of its own, and
-  nothing exercised here uses it.
+  vertex would give deterministic ordering - but that is a feature of its own, and nothing
+  exercised here uses it.
+
+  That enabling capability was then probed rather than assumed. `gpu/vk-ssbo-probe` draws a
+  triangle whose vertex shader writes `100 + gl_VertexIndex` into a storage buffer and reads
+  it back: the blob returns `100 101 102`, so vertex-stage storage-buffer stores genuinely
+  work. A negative control with the store deleted returns `0 0 0`, so the probe
+  discriminates, and lavapipe returns the same values. Transform feedback is therefore
+  emulatable on this driver - it is unused, not impossible.
 
   Tested whether the driver implements it without advertising it, as it turned out to do
   for nothing else: the ICD contains **no transform-feedback command names at all** -
