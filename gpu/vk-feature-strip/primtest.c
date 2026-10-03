@@ -30,14 +30,62 @@ static GLenum pick(const char *n)
     return 0;
 }
 
+/* Count non-black pixels in the 64x64 window. */
+static int lit_pixels(void)
+{
+    unsigned char buf[64 * 64 * 4];
+    int n = 0;
+    glReadPixels(0, 0, 64, 64, GL_RGBA, GL_UNSIGNED_BYTE, buf);
+    for (int i = 0; i < 64 * 64; i++)
+        if (buf[i * 4] || buf[i * 4 + 1] || buf[i * 4 + 2]) n++;
+    return n;
+}
+
+static void big_triangle(void)
+{
+    glBegin(GL_TRIANGLES);
+    glVertex2f(-0.9f, -0.9f);
+    glVertex2f( 0.9f, -0.9f);
+    glVertex2f( 0.0f,  0.9f);
+    glEnd();
+}
+
+/* Does glPolygonMode(GL_LINE) actually change anything? That is what
+ * VkPhysicalDeviceFeatures.fillModeNonSolid buys, so this probes the capability
+ * rather than the report. */
+static int wireframe_probe(void)
+{
+    glClearColor(0, 0, 0, 1);
+    glColor3f(1, 1, 1);
+
+    glClear(GL_COLOR_BUFFER_BIT);
+    glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+    big_triangle();
+    glFinish();
+    int filled = lit_pixels();
+
+    glClear(GL_COLOR_BUFFER_BIT);
+    glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+    big_triangle();
+    glFinish();
+    int lined = lit_pixels();
+    glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+
+    printf("  filled=%d  lined=%d  ->  %s\n", filled, lined,
+           (lined > 0 && lined < filled / 2) ? "wireframe WORKS"
+                                             : "wireframe IGNORED (fill mode has no effect)");
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     if (argc < 2) {
         printf("usage: primtest quads|quad_strip|polygon|line_loop|triangles\n");
         return 2;
     }
+    int is_wireframe = !strcmp(argv[1], "wireframe");
     GLenum mode = pick(argv[1]);
-    if (!mode) { printf("FAIL unknown mode %s\n", argv[1]); return 2; }
+    if (!mode && !is_wireframe) { printf("FAIL unknown mode %s\n", argv[1]); return 2; }
 
     Display *xdpy = XOpenDisplay(NULL);
     if (!xdpy) { printf("FAIL XOpenDisplay (DISPLAY=%s)\n", getenv("DISPLAY")); return 1; }
@@ -75,6 +123,9 @@ int main(int argc, char **argv)
 
     printf("  renderer: %s\n", (const char *)glGetString(GL_RENDERER));
     printf("  version : %s\n", (const char *)glGetString(GL_VERSION));
+
+    if (is_wireframe)
+        return wireframe_probe();
 
     glViewport(0, 0, 64, 64);
     glClearColor(0, 0, 0, 1);

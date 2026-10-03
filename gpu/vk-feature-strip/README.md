@@ -171,3 +171,10 @@ power cycle is needed, so the earlier caution about re-testing it was unnecessar
   `primtest quads|quad_strip|polygon|line_loop|triangles`. Measured: quads and quad strips
   aborted with the pre-fix layer (exit 134) and pass with the patched zink; polygons and line
   loops passed either way.
+- `primtest wireframe` probes a different capability. The blob reports
+  `fillModeNonSolid = false`, and `glPolygonMode(GL_LINE)` has **no effect** - measured with
+  pixel readback: filled 1682 pixels, lined 1682, identical. Crucially the same is true with
+  `PVR_FAKE_FILL=1`, which reports the feature as present: faking it does not create the
+  capability, it only makes zink stop warning and set `polygonMode = LINE` on a device that was
+  created without the feature. So wireframe is broken either way, and the fake hides it - an app
+  asking for wireframe silently gets filled polygons.
