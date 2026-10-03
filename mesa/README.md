@@ -120,37 +120,32 @@ at 255 and adding to it shows nothing.
 
 Two limits, both checked:
 
-- **Transform feedback does not exist on this driver.** zink builds its whole stream-output
-  implementation on `VK_EXT_transform_feedback`, which the blob does not advertise, so
-  `max_stream_output_buffers` is 0 and the frontend exposes no transform-feedback extension.
-  Emulation is conceivable - the blob reports `vertexPipelineStoresAndAtomics`, so a vertex
-  shader can store to an SSBO, and injecting stores of the feedback varyings indexed by
-  vertex would give deterministic ordering - but that is a feature of its own, and nothing
-  exercised here uses it.
+- **Transform feedback is emulated and working.** zink builds stream output on
+  `VK_EXT_transform_feedback`, which this blob does not advertise, so the capture is done
+  with global stores instead: the vertex shader writes the captured varyings to the feedback
+  buffer, whose device address arrives in a push constant, at
+  `base + vertex_index * stride + offset`. Indexing by vertex keeps the capture order
+  deterministic without atomics. Five pieces:
 
-  That enabling capability was then probed rather than assumed. `gpu/vk-ssbo-probe` draws a
-  triangle whose vertex shader writes `100 + gl_VertexIndex` into a storage buffer and reads
-  it back: the blob returns `100 101 102`, so vertex-stage storage-buffer stores genuinely
-  work. A negative control with the store deleted returns `0 0 0`, so the probe
-  discriminates, and lavapipe returns the same values. Transform feedback is therefore
-  emulatable on this driver - it is unused, not impossible.
+  1. `xfb_addr_lo`/`xfb_addr_hi` in `zink_gfx_push_constant` (split, because a `uint64_t` at
+     offset 52 would be misaligned for a push constant).
+  2. `lower_xfb_to_stores`, a NIR pass that emits `nir_store_global` per captured output at
+     the end of the vertex entrypoint. Each component is resolved through
+     `find_var_with_location_frac`, because the varying is scalarised - looking up the
+     location alone returns a one-component variable and only the X component gets stored.
+  3. The address is pushed per draw from the bound stream-output target.
+  4. `max_stream_output_buffers` is reported as 1 when emulating, so the frontend exposes
+     the extension again.
+  5. The Vulkan transform-feedback commands are skipped - they are NULL entry points without
+     the extension, and calling them segfaults.
 
-  Tested whether the driver implements it without advertising it, as it turned out to do
-  for nothing else: the ICD contains **no transform-feedback command names at all** -
-  `BeginTransformFeedback`, `EndTransformFeedback`, `BindTransformFeedbackBuffers` and
-  `DrawIndirectByteCount` all appear zero times - while the commands it does implement do
-  appear, `vkCmdDraw` eight times and `vkCmdDrawIndexed` four. The only TF strings present
-  are `VkPhysicalDeviceTransformFeedbackFeaturesEXT` and its `transformFeedback` field,
-  which the ICD parses when walking a `VkPhysicalDeviceFeatures2` chain. So faking the
-  extension would hand an app entry points the driver does not have.
+  Verified: `gpu/tf-test` draws three vertices and reads the buffer back, getting
+  `1 2 3 4 5 6 7 8 9 10 11 12` - all four components, in order, reproducibly. The frontend
+  now reports `GL_EXT_transform_feedback`.
 
-  A related bug was found and fixed while checking this. zink set `caps->query_so_overflow =
-  true` unconditionally, so Mesa advertised `GL_ARB_transform_feedback_overflow_query` on a
-  driver with no stream output at all - and the query maps to
-  `VK_QUERY_TYPE_TRANSFORM_FEEDBACK_STREAM_EXT`, which needs the missing extension. It now
-  follows `have_EXT_transform_feedback`, and the extension is no longer advertised. That
-  false advertisement is what made an earlier check of mine conclude transform feedback was
-  reachable.
+  Limits: one buffer, no pause/resume, no interleaving, and no stream-output overflow
+  queries (those need `VK_QUERY_TYPE_TRANSFORM_FEEDBACK_STREAM_EXT`, which needs the
+  extension).
 
 - **Transform feedback is skipped**, not emulated: expanding the draw would make TF
   capture the generated lines instead of the app's triangles. `primtest tf` reports
