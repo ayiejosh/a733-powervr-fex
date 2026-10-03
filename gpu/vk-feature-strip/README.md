@@ -179,6 +179,8 @@ power cycle is needed, so the earlier caution about re-testing it was unnecessar
   created without the feature. So the fake hides a real limitation - an app asking for wireframe
   silently gets filled polygons.
   `mesa/zink-quads-without-gs.patch` fixes this too: zink expands a wireframe draw into an
-  indexed line list itself, which measured 1682 filled vs 172 lined pixels for triangles, 1793
-  vs 283 for strips and 1820 vs 294 for fans. Before, filled and lined were identical in every
-  case. `primtest wireframe` is the check.
+  indexed line list itself, and polygon point mode into a point list. `primtest wireframe`
+  covers vertex arrays and index buffers for triangles, strips and fans, plus multi-draw,
+  primitive restart and point mode - nine cases, all ignored before and all working after
+  (triangles 1682 filled vs 172 lined). `primtest tf` reports that transform feedback is not
+  available on this stack at all, so the combination cannot be exercised here.

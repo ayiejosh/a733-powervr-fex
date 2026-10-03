@@ -82,15 +82,39 @@ edges are written to an index buffer and the draw is reissued as a line list. Th
 geometry still runs on the GPU; only index generation is on the CPU. The state path
 stops handing the driver a polygon mode it ignores.
 
-Measured, filled vs lined pixels:
+Polygon **point** mode is the same problem and needs no index work at all - the vertex
+stream is already the polygon's vertices, only the topology is wrong - so that draw is
+simply reissued as a point list.
 
-| topology | before | after |
+Measured, filled vs wireframe/point pixels, `primtest wireframe`:
+
+| case | before | after |
 |---|---|---|
-| `triangles` | 1682 / 1682 - ignored | 1682 / **172** - works |
-| `strip` | 1793 / 1793 - ignored | 1793 / **283** - works |
-| `fan` | 1820 / 1820 - ignored | 1820 / **294** - works |
+| `tri arrays` | 1682 / 1682 ignored | 1682 / **172** works |
+| `tri indexed` | 1815 / 1815 ignored | 1815 / **222** works |
+| `strip arrays` | 1740 / 1740 ignored | 1740 / **235** works |
+| `strip indexed` | 1740 / 1740 ignored | 1740 / **235** works |
+| `fan arrays` | 1815 / 1815 ignored | 1815 / **222** works |
+| `fan indexed` | 1740 / 1740 ignored | 1740 / **235** works |
+| `multidraw` | 1682 / 1682 ignored | 1682 / **172** works |
+| `restart` | n/a | plain 172 = with-restart 172, no edge across the break |
+| `point mode` | 1682 / 1682 ignored | 1682 / **18** works |
 
-`primtest wireframe` covers all three. The five primitive types are unaffected.
+Indexed draws, multi-draw and primitive restart are all handled; a restart starts a new
+primitive rather than drawing an edge across the break.
+
+Two limits, both checked:
+
+- **Transform feedback is skipped**, not emulated: expanding the draw would make TF
+  capture the generated lines instead of the app's triangles. `primtest tf` reports
+  `SKIP: no transform feedback on this stack` - this stack advertises only
+  `GL_ARB_transform_feedback_overflow_query`, which is not transform feedback, and the
+  `GL_MAX_TRANSFORM_FEEDBACK_*` limits do not resolve at all. So the guard protects a
+  combination that cannot occur here.
+- **`GL_EDGE_FLAG` is ignored**: the expansion always emits all three edges, so an app
+  using edge flags to select edges gets the full wireframe. Not emulated.
+
+The five primitive types are unaffected and re-verified passing.
 
 Measured with `gpu/vk-feature-strip/primtest.c` (one primitive per process,
 because an abort takes the whole process down):

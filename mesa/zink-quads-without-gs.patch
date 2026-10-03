@@ -1,5 +1,5 @@
 diff --git a/src/gallium/drivers/zink/zink_draw.cpp b/src/gallium/drivers/zink/zink_draw.cpp
-index 7284016..6673a30 100644
+index 7284016..0c640ff 100644
 --- a/src/gallium/drivers/zink/zink_draw.cpp
 +++ b/src/gallium/drivers/zink/zink_draw.cpp
 @@ -17,6 +17,7 @@
@@ -10,7 +10,7 @@ index 7284016..6673a30 100644
  #include "util/u_prim_restart.h"
  
  static void
-@@ -941,6 +942,113 @@ zink_draw(struct pipe_context *pctx,
+@@ -941,6 +942,145 @@ zink_draw(struct pipe_context *pctx,
        pctx->flush(pctx, NULL, 0);
  }
  
@@ -31,19 +31,25 @@ index 7284016..6673a30 100644
 +                      unsigned num_draws)
 +{
 +   struct pipe_context *pctx = &ctx->base;
-+   unsigned step;
++
 +   switch (info->mode) {
-+   case MESA_PRIM_TRIANGLES:      step = 3; break;
-+   case MESA_PRIM_TRIANGLE_STRIP: step = 1; break;
-+   case MESA_PRIM_TRIANGLE_FAN:   step = 1; break;
++   case MESA_PRIM_TRIANGLES:
++   case MESA_PRIM_TRIANGLE_STRIP:
++   case MESA_PRIM_TRIANGLE_FAN:
++      break;
 +   default:
 +      return false;
 +   }
 +
++   /* Transform feedback would capture the lines this generates rather than the
++    * triangles the app asked for, so leave the draw alone while it is active. */
++   if (ctx->num_so_targets)
++      return false;
++
 +   unsigned total = 0;
 +   for (unsigned i = 0; i < num_draws; i++) {
 +      unsigned n = draws[i].count;
-+      unsigned tris = step == 3 ? n / 3 : (n >= 3 ? n - 2 : 0);
++      unsigned tris = info->mode == MESA_PRIM_TRIANGLES ? n / 3 : (n >= 3 ? n - 2 : 0);
 +      total += tris * 6;
 +   }
 +   if (total == 0)
@@ -71,27 +77,53 @@ index 7284016..6673a30 100644
 +      return false;
 +   }
 +
++   auto idx_at = [&](unsigned d, unsigned k) -> uint32_t {
++      unsigned at = draws[d].start + k;
++      if (src == NULL) return at;
++      if (info->index_size == 4) return ((const uint32_t *)src)[at];
++      if (info->index_size == 2) return ((const uint16_t *)src)[at];
++      return ((const uint8_t *)src)[at];
++   };
++
 +   unsigned w = 0;
++   auto emit = [&](uint32_t a, uint32_t b, uint32_t c) {
++      dst[w++] = a; dst[w++] = b;
++      dst[w++] = b; dst[w++] = c;
++      dst[w++] = c; dst[w++] = a;
++   };
++
 +   for (unsigned i = 0; i < num_draws; i++) {
 +      unsigned n = draws[i].count;
-+      for (unsigned j = 0; j + 3 <= n; j += step) {
-+         /* a fan's triangles all share vertex 0; a strip's slide by one */
-+         unsigned v[3] = { info->mode == MESA_PRIM_TRIANGLE_FAN ? 0u : j, j + 1, j + 2 };
-+         uint32_t idx[3];
-+         for (unsigned k = 0; k < 3; k++) {
-+            unsigned at = draws[i].start + v[k];
-+            if (src == NULL)
-+               idx[k] = at;
-+            else if (info->index_size == 4)
-+               idx[k] = ((const uint32_t *)src)[at];
-+            else if (info->index_size == 2)
-+               idx[k] = ((const uint16_t *)src)[at];
-+            else
-+               idx[k] = ((const uint8_t *)src)[at];
++
++      if (info->mode == MESA_PRIM_TRIANGLES) {
++         for (unsigned j = 0; j + 3 <= n; j += 3)
++            emit(idx_at(i, j), idx_at(i, j + 1), idx_at(i, j + 2));
++         continue;
++      }
++
++      /* Strips and fans walk their vertices, starting a new primitive at every
++       * restart index, so a restart never draws an edge across the break. */
++      uint32_t prev1 = 0, prev2 = 0, anchor = 0;
++      unsigned seg = 0;
++      for (unsigned j = 0; j < n; j++) {
++         uint32_t id = idx_at(i, j);
++         if (info->primitive_restart && id == info->restart_index) {
++            seg = 0;
++            continue;
 +         }
-+         dst[w++] = idx[0]; dst[w++] = idx[1];
-+         dst[w++] = idx[1]; dst[w++] = idx[2];
-+         dst[w++] = idx[2]; dst[w++] = idx[0];
++         if (info->mode == MESA_PRIM_TRIANGLE_STRIP) {
++            if (seg >= 2)
++               emit(prev2, prev1, id);
++            prev2 = prev1;
++            prev1 = id;
++         } else {
++            if (seg == 0)
++               anchor = id;
++            else if (seg >= 2)
++               emit(anchor, prev1, id);
++            prev1 = id;
++         }
++         seg++;
 +      }
 +   }
 +   u_upload_unmap(pctx->stream_uploader);
@@ -124,7 +156,7 @@ index 7284016..6673a30 100644
  template <zink_multidraw HAS_MULTIDRAW, zink_dynamic_state DYNAMIC_STATE, bool BATCH_CHANGED>
  static void
  zink_draw_vbo(struct pipe_context *pctx,
-@@ -950,6 +1058,16 @@ zink_draw_vbo(struct pipe_context *pctx,
+@@ -950,6 +1090,29 @@ zink_draw_vbo(struct pipe_context *pctx,
                const struct pipe_draw_start_count_bias *draws,
                unsigned num_draws)
  {
@@ -136,6 +168,19 @@ index 7284016..6673a30 100644
 +       zink_screen(pctx->screen)->driver_workarounds.no_hw_gl_wireframe) {
 +      if (zink_expand_wireframe(ctx, info, drawid_offset, draws, num_draws))
 +         return;
++   }
++
++   /* Polygon point mode is the same story, and needs no index work at all: the
++    * vertex stream is already the polygon's vertices, only the topology is wrong. */
++   if (!ctx->expanding_wireframe && ctx->rast_state && ctx->num_so_targets == 0 &&
++       ctx->rast_state->base.fill_front == PIPE_POLYGON_MODE_POINT &&
++       zink_screen(pctx->screen)->driver_workarounds.no_hw_gl_point) {
++      struct pipe_draw_info pinfo = *info;
++      pinfo.mode = MESA_PRIM_POINTS;
++      ctx->expanding_wireframe = true;
++      pctx->draw_vbo(pctx, &pinfo, drawid_offset, indirect, draws, num_draws);
++      ctx->expanding_wireframe = false;
++      return;
 +   }
 +
     zink_draw<HAS_MULTIDRAW, DYNAMIC_STATE, BATCH_CHANGED, false>(pctx, info, drawid_offset, indirect, draws, num_draws, NULL, 0);
