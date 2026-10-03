@@ -30,6 +30,257 @@ hard-coded-program path had to go.
   pvr_device_info` is byte-identical between 25.0.7 and 25.3.0, so the copy
   compiles; entries that 25.0.7 cannot represent are removed and listed in the
   file. On 25.3.0 this patch is unnecessary.
+- `zink-quads-without-gs.patch` — **not part of the pvr series.** Applies to the gallium
+  `zink` GL driver in 25.0.7, the system Mesa this board's desktop GL path uses. It removes
+  zink's dependence on a geometry shader. See the section below.
+
+## Zink: primitives without a geometry shader
+
+`zink-quads-without-gs.patch` applies to the **gallium `zink` driver in 25.0.7**, not to pvr,
+and is what makes quad-drawing GL work on this blob.
+
+zink lowers `GL_QUADS` with a self-generated geometry shader (`filled quad gs`). The blob
+cannot execute a GS - its shader compiler calls `abort()` instead of returning an error - so
+the fixed-function quad demos die with `SIGABRT`. The feature-strip layer's `PVR_FAKE_GS=1` is
+what puts zink on that path; see [`../gpu/vk-feature-strip/README.md`](../gpu/vk-feature-strip/README.md)
+and issue #6.
+
+The patch makes zink treat the blob's `geometryShader` as unusable and lower quads, quad
+strips, polygons and line loops with `util_primconvert`, which expands them to triangles on the
+CPU. The draw still runs on the GPU; only index generation is on the CPU. Mesa already ships
+that conversion - `u_indices.c`'s `generate_quads`, reached by virgl and d3d12 through
+`u_primconvert` and by panfrost and lima through `u_vbuf` - and zink was the one driver not
+wired into it. **4 files, +144 -7**, in two parts.
+
+**Part 1 - let the driver start** (`zink_screen.c`): remove an assert and an init gate
+that both assumed `geometryShader` was present.
+
+Two earlier versions were cut after measurement:
+
+1. A `util_primconvert` wiring, on the assumption that quads still reached zink and
+   had to be lowered there. Measured with a marker in the conversion branch: **zero
+   hits** across all five primitive types. Mesa's frontend lowers anything the driver
+   does not advertise before zink ever sees it, so that branch could never run.
+2. Forcing `geometryShader = false` for the driver. Also unnecessary - the PowerVR
+   blob already reports `geometryShader = false`, honestly. It is the feature-strip
+   layer's `PVR_FAKE_GS=1` that reports it as `true`, and the forcing existed only to
+   undo that lie. With no layer, zink sees the truth and takes its ordinary non-GS
+   path on its own.
+
+So nothing is forced and no capability is taken away: a driver that reports
+`geometryShader = true` is unaffected, and one that reports `false` can now start
+instead of being rejected.
+
+**Part 2 - emulate wireframe** (`zink_state.c`, `zink_draw.cpp`, `zink_types.h`).
+This driver also has no `fillModeNonSolid`, and that one cannot be fixed by asking
+nicely: enabling the feature on the device is refused with
+`VK_ERROR_FEATURE_NOT_PRESENT`, and with it merely faked, `glPolygonMode(GL_LINE)` is
+ignored - measured with pixel readback, filled and lined pixel counts identical.
+Vulkan has no way to say "draw these triangles as lines" other than
+`polygonMode = LINE`, so zink now expands the draw itself: each triangle's three
+edges are written to an index buffer and the draw is reissued as a line list. The
+geometry still runs on the GPU; only index generation is on the CPU. The state path
+stops handing the driver a polygon mode it ignores.
+
+Polygon **point** mode needs the vertex shader to write `gl_PointSize` - the driver has
+`largePoints` and takes the size from there, and a triangles shader writes no such output,
+so the first attempt rasterised at an undefined size (18, 25 and 1961 pixels across 20 runs
+of the same draw).
+
+The fix is in `st_atom_shader.c`: `export_point_size` was set from the point-size flags
+alone, so it now also exports when the polygon mode is POINT. With that, the same 30 runs
+give 26 at 16-18 pixels instead of three different answers.
+
+A residual flakiness remains at a point size of exactly 1.0 - 4 runs in 30, and it is not
+specific to this emulation: a plain `GL_POINTS` draw shows it too, and so does stock Mesa
+(1961 pixels in one run of 30). The driver's `pointSizeRange` is `[1, 511]`, so 1.0 is the
+minimum, which is where the flakiness sits. Larger sizes are rock solid - `glPointSize(8)`
+gave 154 pixels in 20 of 20 runs.
+
+Measured, filled vs wireframe/point pixels, `primtest wireframe`:
+
+| case | before | after |
+|---|---|---|
+| `tri arrays` | 1682 / 1682 ignored | 1682 / **172** works |
+| `tri indexed` | 1815 / 1815 ignored | 1815 / **222** works |
+| `strip arrays` | 1740 / 1740 ignored | 1740 / **235** works |
+| `strip indexed` | 1740 / 1740 ignored | 1740 / **235** works |
+| `fan arrays` | 1815 / 1815 ignored | 1815 / **222** works |
+| `fan indexed` | 1740 / 1740 ignored | 1740 / **235** works |
+| `multidraw` | 1682 / 1682 ignored | 1682 / **172** works |
+| `restart` | n/a | plain 172 = with-restart 172, no edge across the break |
+| `point mode` | 1682 / 1682 ignored | 1682 / **18** works |
+| `edge flags` | 1682 / 1682 ignored | 172 all-set vs **58** one-set |
+| `instanced` | works either way | 1 instance 33408, 2 instances 66810 - exactly 2x |
+
+Indexed draws, multi-draw, instancing and primitive restart are all handled; a restart
+starts a new primitive rather than drawing an edge across the break. The instancing case
+is measured with additive blending over a dimmed colour, because a white line already sits
+at 255 and adding to it shows nothing.
+
+Two limits, both checked:
+
+- **Transform feedback is emulated and working.** zink builds stream output on
+  `VK_EXT_transform_feedback`, which this blob does not advertise, so the capture is done
+  with global stores instead: the vertex shader writes the captured varyings to the feedback
+  buffer, whose device address arrives in a push constant, at
+  `base + vertex_index * stride + offset`. Indexing by vertex keeps the capture order
+  deterministic without atomics. Five pieces:
+
+  1. `xfb_addr_lo`/`xfb_addr_hi` in `zink_gfx_push_constant` (split, because a `uint64_t` at
+     offset 52 would be misaligned for a push constant).
+  2. `lower_xfb_to_stores`, a NIR pass that emits `nir_store_global` per captured output at
+     the end of the vertex entrypoint. Each component is resolved through
+     `find_var_with_location_frac`, because the varying is scalarised - looking up the
+     location alone returns a one-component variable and only the X component gets stored.
+  3. The address is pushed per draw from the bound stream-output target.
+  4. `max_stream_output_buffers` is reported as 1 when emulating, so the frontend exposes
+     the extension again.
+  5. The Vulkan transform-feedback commands are skipped - they are NULL entry points without
+     the extension, and calling them segfaults.
+
+  Verified: `gpu/tf-test` draws three vertices and reads the buffer back, getting
+  `1 2 3 4 5 6 7 8 9 10 11 12` - all four components, in order, reproducibly. The frontend
+  now reports `GL_EXT_transform_feedback`.
+
+  Limits: one buffer, no pause/resume, no interleaving, and no stream-output overflow
+  queries (those need `VK_QUERY_TYPE_TRANSFORM_FEEDBACK_STREAM_EXT`, which needs the
+  extension).
+
+- **Transform feedback is skipped**, not emulated: expanding the draw would make TF
+  capture the generated lines instead of the app's triangles. `primtest tf` reports
+  `SKIP: no transform feedback on this stack` - this stack advertises only
+  `GL_ARB_transform_feedback_overflow_query`, which is not transform feedback, and the
+  `GL_MAX_TRANSFORM_FEEDBACK_*` limits do not resolve at all. So the guard protects a
+  combination that cannot occur here.
+- **`GL_EDGE_FLAG` is honoured.** An edge is drawn only when the flag of its first vertex
+  is set, so the expansion reads the per-vertex flags itself. st/mesa appends the edge flag
+  as the last vertex input, which makes it the last element, and `zink_vertex_elements_state`
+  now retains the `pipe_vertex_element` array - the Vulkan-derived state alone loses the
+  buffer, offset and stride, so the array was unreachable before. Measured: a triangle drawn
+  with all flags set gives 172 pixels, with only the first flagged 58 (one edge of three),
+  and an indexed draw 222 against 115.
+- **Line stipple is dropped**: measured, `solid=172 stippled=172` with the expansion - the
+  stipple has no effect. The blob has `bresenhamLines` but not `stippledBresenhamLines`, so
+  zink sets `no_linestipple` and falls back to `lower_line_stipple_gs`.
+
+  That pass is not GS-based out of convenience. It needs both endpoints of each line to
+  accumulate the screen-space stipple counter:
+
+      prev = viewport_map(b, prev_pos, vp_scale);
+      curr = viewport_map(b, curr, pos_out);
+      len  = distance(prev, curr);
+      stipple_counter += len;
+
+  A vertex shader sees one vertex at a time and cannot know the other endpoint; a fragment
+  shader cannot recover it from interpolated values. So stipple needs a primitive-level
+  stage - a geometry or mesh shader - and this driver has neither.
+
+  Note that zink's own `no_linestipple` condition also requires a geometry shader, because
+  its fallback is a GS pass. With the GS honestly absent that condition is false, so zink
+  left hardware stipple enabled and issued state this driver does not implement - the driver
+  warned about it. The patch now sets `no_linestipple` for this driver so stipple is dropped
+  rather than attempted, matching what the GS-faked configuration does.
+
+  And there is nothing to substitute for that stage: this driver advertises no
+  `VK_EXT_geometry_shader`, no `VK_EXT_mesh_shader`, no `VK_NV_mesh_shader`, no
+  `VK_EXT_shader_object` and no `VK_KHR_fragment_shader_barycentric`. Four independent
+  angles, same answer.
+
+  Tested from a third angle before concluding: forcing `no_linestipple` off, so zink enables
+  `VK_DYNAMIC_STATE_LINE_STIPPLE_EXT` and issues `vkCmdSetLineStippleEXT` regardless of the
+  missing feature. The blob ignores it - `solid=172 stippled=172` again, with Mesa warning
+  that incorrect rendering will happen. So it is not merely unadvertised: the state is
+  accepted and dropped. Three independent angles, same answer.
+
+### Running real applications against the patched build
+
+The default build is `USE_LIBGLVND=0`, which produces `libEGL.so.1` and `libGL.so.1`
+directly. Desktop-GL programs that link those (peglgears) use the patched driver, but
+glvnd-based programs - anything linking `libEGL.so.1` through the glvnd dispatcher, which
+includes every GLES2 application - resolve the *system* `libEGL_mesa.so.0` and so load the
+system libgallium, gate and all.
+
+To make the patched build reachable by those, build it as a glvnd vendor library:
+
+    meson configure build -Dglvnd=enabled -Dglx=disabled
+    ninja -C build
+
+`glx=disabled` because this board's X server exports no GLX, and building it needs
+`glvnd/libglxabi.h` which Debian's stub `libglvnd-dev` does not ship. The glvnd ABI headers
+(`libeglabi.h`, `GLdispatchABI.h`) come from upstream libglvnd, and Debian's packages need
+`libglvnd0` for the real `libGLdispatch.so`.
+
+Then point EGL at the vendor library with a JSON manifest:
+
+    { "file_format_version": "1.0.0",
+      "ICD": { "library_path": "/home/radxa/mesa-glvnd/libEGL_mesa.so.0" } }
+
+    __EGL_VENDOR_LIBRARY_FILENAMES=/home/radxa/mesa-glvnd/50_myzink.json \
+    LD_LIBRARY_PATH=/home/radxa/mesa-glvnd:... \
+    LIBGL_DRIVERS_PATH=/home/radxa/mesa-glvnd/dri
+
+**glmark2-es2 on the patched build**, no layer and no fakes - all 30-plus scenes completed,
+exit 0:
+
+| | score |
+|---|---|
+| system Mesa + reference layer (current desktop config) | **511** |
+| patched Mesa, no layer, no `PVR_FAKE_GS`, no `PVR_FAKE_FILL` | **525** |
+
+The suite covers textures and mipmaps, gouraud/phong/blinn-phong/cel shading, bump mapping,
+FBO-based blur and shadow, buffer map and subdata updates, terrain, refraction and shader
+loops. That is a considerably broader exercise than anything `primtest` does, and it is the
+strongest evidence so far that the driver runs Zink - which is what upstream doubted.
+
+**Robustness.** Upstream rejected this driver as "not robust enough to run Zink at all".
+Measured after the patch: 48 consecutive context creations across every mode - the five
+primitive types, the wireframe matrix, edge flags and point mode - with zero failures, and a
+45-second `peglgears` run completing normally. That is not a claim that the driver is robust
+in general, only that it survives sustained use of everything exercised here.
+
+Performance was not measurable: the machine sat at load 8-12 on 8 cores with syncthing at
+36% CPU, and repeated runs of the same binary spanned 1,103 to 46,560 FPS. No number from
+that environment would mean anything, so none is quoted.
+
+The five primitive types are unaffected and re-verified passing.
+
+Measured with `gpu/vk-feature-strip/primtest.c` (one primitive per process,
+because an abort takes the whole process down):
+
+| primitive | pre-fix layer, stock Mesa | patched zink, no layer |
+|---|---|---|
+| `triangles` | OK | OK |
+| `quads` | **SIGABRT, exit 134** | **OK** |
+| `quad_strip` | **SIGABRT, exit 134** | **OK** |
+| `polygon` | OK | OK |
+| `line_loop` | OK | OK |
+
+Only quads and quad strips ever took the geometry-shader path; polygons and line
+loops were already handled without one.
+
+Build (25.0.7, zink only; a different configuration from the pvr build below):
+
+```sh
+git clone --depth 1 -b mesa-25.0.7 https://gitlab.freedesktop.org/mesa/mesa.git
+cd mesa && git apply <this repo>/mesa/zink-quads-without-gs.patch
+meson setup build -Dbuildtype=release -Dgallium-drivers=zink -Dvulkan-drivers= \
+  -Dglx=dri -Dplatforms=x11 -Dopengl=true -Dgles1=false -Dgles2=true -Dllvm=disabled \
+  -Dbuild-tests=false -Dtools= -Dvideo-codecs= -Dvalgrind=disabled
+ninja -C build -j3        # -j3: -j8 gets the compiler OOM-killed on this 5.9 GB board
+```
+
+Verified on this board with the built `libdril_dri.so` and `libgallium-25.0.7.so`, and with
+**no layer and no `PVR_FAKE_GS`**:
+
+| check | before | after |
+|---|---|---|
+| `peglgears` (GL_QUADS) | `SIGABRT`, exit 134 | **209,772 frames in 5.0 s = 41,954 FPS**, exit 0 |
+| geometry shaders compiled (`ZINK_DEBUG=nir`) | 1 | **0** |
+| `eglinfo` | - | `zink Vulkan 1.3(PowerVR B-Series BXM-4-64 MC1)` |
+
+Not verified: a software-rendering baseline for the FPS figure, and the other quad demos
+(`glxgears`, `glxdemo`) cannot obtain a GLX visual on this board at all.
 
 ## Building 25.3.0 here
 

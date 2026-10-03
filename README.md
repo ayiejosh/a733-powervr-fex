@@ -53,6 +53,7 @@ per-component READMEs.)
 |-----|----------|
 | [`kernel/`](kernel/) | **`pvrsrvkm` DRM PRIME-import patch** (still applies on 6.6) + the finding that a **live GPU compositor through `pvrsrvkm` deadlocks the kernel**. |
 | [`gpu/`](gpu/) | **zink OpenGL** on PowerVR Vulkan (off-screen) + **`gpu/dxvk/`: GPU-accelerated Direct3D 9/10/11 (FL 11_0)** via native arm64ec DXVK-Sarek — the headline new capability. |
+| [`mesa/`](mesa/) | **A patched Mesa/zink that actually runs on this blob** — drops the geometry-shader gate that made zink reject the driver, then emulates what the blob lacks: wireframe, polygon point mode, `GL_EDGE_FLAG` and **transform feedback**. Runs the full glmark2-es2 suite with **no feature-strip layer and no `PVR_FAKE_*`**, scoring 525 against 511 for the system configuration. Harnesses: [`gpu/vk-feature-strip/primtest.c`](gpu/vk-feature-strip/primtest.c), [`gpu/tf-test/`](gpu/tf-test/), [`gpu/vk-ssbo-probe/`](gpu/vk-ssbo-probe/). |
 | [`windows/`](windows/) | **Windows apps via Hangover 11.9** — `winrun` (CLI) and `guirun` (GUI, software-GL) launchers; verified 7-Zip / Notepad / WordPad. |
 | [`fex/`](fex/) | FEX setup + the custom Vulkan/GLES thunks; FEX is now the **default** x86-64 binfmt interpreter, with trixie tuning (`TSOEnabled=0` + `Multiblock=1`). |
 | [`box64/`](box64/) | box64 **0.4.3** (built from source) usage + the static-glibc-MT → FEX routing. |

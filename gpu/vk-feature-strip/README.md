@@ -17,7 +17,7 @@ restored to whatever *it* asked for once the call returns.
 
 | env var | default | what it does | risk |
 |---|---|---|---|
-| `PVR_FAKE_GS=1` | off | fakes `geometryShader`; strips it at device creation | **safe.** Mesa only *queries* this bit; nothing turns on real GS pipelines. This is what `glrun` in this repo sets. |
+| `PVR_FAKE_GS=1` | off | fakes `geometryShader`; strips it at device creation | **safe only for apps that never draw quads.** Mesa does more than query this bit: zink generates a real GS pipeline whenever it lowers `GL_QUADS`, and the blob `abort()`s on any GS. This is what `glrun` in this repo sets — see **Known limits** for the failing set and the one-line check. |
 | `PVR_FAKE_R2=1` | off | additionally advertises `VK_EXT_robustness2` and reports `nullDescriptor = VK_TRUE` | **crashes when used.** Satisfies the *screen-creation* check of newer zink, but the blob then segfaults inside `libVK_IMG.so` the first time Mesa actually binds a null descriptor. For getting a newer zink past initialisation only. |
 
 The r2 path needs both: the layer enabled (`PVR_FAKE_GS=1`) **and** `PVR_FAKE_R2=1`.
@@ -124,13 +124,65 @@ is not yet a working end-to-end path for Mesa ≥ 26.
 
 Not verified here: the original pixel-readback result on the contributor's Orange Pi Zero 3W
 (the independent implementation is theirs; this repo's re-test was the probe + glmark2 above).
-Faking real GS pipelines crashing the blob is documented by this repo and was **not** re-tested
-(a driver hang on a headless board means a power cycle).
+
+The GS crash is now measured rather than merely documented — see **Known limits**. It is a
+user-space `SIGABRT`, not a driver hang: `pvrsrvkm` stays loaded, `dmesg` stays clean and no
+power cycle is needed, so the earlier caution about re-testing it was unnecessary.
 
 ## Known limits
 
 - Single instance / single device (one static `g_inst`/`g_dev`, no dispatch-table map keyed by
   handle) — fine for `eglinfo`, `glmark2-es2`, single-instance apps; not general-purpose
   correct for multi-instance applications.
-- With `PVR_FAKE_GS=1`, GL content that actually uses geometry shaders will crash the blob
-  (rare for 2D/desktop GL; the fake is a query-only lie).
+- **FIXED in `vk_layer_pvr_strip.c` — see the note at the end of this list.** With
+  `PVR_FAKE_GS=1`, zink built its own GS pipeline and the blob aborted. The fake is
+  not a query-only lie. zink advertises `MESA_PRIM_QUADS` only when it sees `geometryShader`,
+  and lowers `GL_QUADS` with a self-generated GS (NIR dump name `filled quad gs`); the blob has
+  no GS pipeline support and its shader compiler calls `abort()` instead of returning an error.
+  So the trigger is *not* GL content that uses geometry shaders — fixed-function 1.x/2.x quad
+  demos are enough: `glxgears`, `eglgears_x11`, `glxdemo` and `peglgears` all aborted in
+  issue #6.
+  Check any app before shipping it:
+  `ZINK_DEBUG=nir <app> 2>&1 | grep -c MESA_SHADER_GEOMETRY` — `0` means it runs, non-zero means
+  zink compiled a GS for that program and it aborts here. There is no GS-free fallback:
+  `PVR_STRIP_DISABLE=1` does not make those apps run, it makes zink refuse to initialise
+  (`zink: Imagination proprietary driver w/o geometryShader is unsupported`). The safe set is
+  apps for which zink never generates a GS — `glmark2`, `glmark2-es2`, `glxheads`,
+  `es2gears_x11`.
+- That abort is a plain user-space `SIGABRT` (exit 134) on the driver thread `gdrv0`, inside
+  `BILParseStream()` in `libufwriter.so` called from `libVK_IMG.so`. The kernel stays up,
+  `pvrsrvkm` stays loaded and `dmesg` stays clean — no power cycle needed. Measured on an
+  Orange Pi Zero 3W (issue #6); reproduced here on the Radxa Cubie A7A with `peglgears`
+  (exit 134, `MESA_SHADER_GEOMETRY` = 1, same `BILParseStream()` frame), so it is not
+  board-specific. `glxgears` and `glxdemo` cannot obtain a GLX visual on this board at all,
+  so they never reach zink here either way.
+- **Root cause and fix.** zink computes its screen caps *after* `vkCreateDevice`, and this
+  layer used to restore `geometryShader = true` into the caller's struct once the call
+  returned. zink therefore re-read the feature as present, advertised `MESA_PRIM_QUADS`, took
+  quad draws, generated the GS, and the blob aborted. The restore is gone: the device really is
+  created without `geometryShader`, so reporting it back as enabled was a lie. With the stock,
+  unpatched system zink this turns the abort into 182,040 frames in 5 s (36,407 FPS) with zero
+  GS, and zink still initialises. `mesa/zink-quads-without-gs.patch` fixes the same failure
+  independently by removing zink's need for a GS at all.
+- `primtest.c` is the check for the above: it draws one primitive type through whatever GL
+  driver is configured and reports whether it survived. One primitive per process, because an
+  abort takes the whole process with it.
+  `gcc -O2 -o primtest primtest.c -lEGL -lX11 -lGL`, then
+  `primtest quads|quad_strip|polygon|line_loop|triangles`. Measured: quads and quad strips
+  aborted with the pre-fix layer (exit 134) and pass with the patched zink; polygons and line
+  loops passed either way.
+- `primtest wireframe` probes a different capability. The blob reports
+  `fillModeNonSolid = false`, and `glPolygonMode(GL_LINE)` has **no effect** - measured with
+  pixel readback: filled 1682 pixels, lined 1682, identical. Crucially the same is true with
+  `PVR_FAKE_FILL=1`, which reports the feature as present: faking it does not create the
+  capability, it only makes zink stop warning and set `polygonMode = LINE` on a device that was
+  created without the feature. So the fake hides a real limitation - an app asking for wireframe
+  silently gets filled polygons.
+  `mesa/zink-quads-without-gs.patch` fixes this too: zink expands a wireframe draw into an
+  indexed line list itself, and polygon point mode into a point list. `primtest wireframe`
+  covers vertex arrays and index buffers for triangles, strips and fans, plus multi-draw,
+  primitive restart, point mode and instancing - ten cases, all ignored before and all working
+  after (triangles 1682 filled vs 172 lined). `primtest edgeflag` checks that `GL_EDGE_FLAG`
+  selects edges: 172 pixels with every flag set against 58 with only the first set, and 222
+  against 115 for an indexed draw. `primtest tf` reports that transform feedback is not
+  available on this stack at all, so that combination cannot be exercised here.
