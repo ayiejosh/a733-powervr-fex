@@ -128,6 +128,15 @@ Two limits, both checked:
   `gl_VertexID` would give deterministic ordering - but that is a feature of its own, and
   nothing exercised here uses it.
 
+  Tested whether the driver implements it without advertising it, as it turned out to do
+  for nothing else: the ICD contains **no transform-feedback command names at all** -
+  `BeginTransformFeedback`, `EndTransformFeedback`, `BindTransformFeedbackBuffers` and
+  `DrawIndirectByteCount` all appear zero times - while the commands it does implement do
+  appear, `vkCmdDraw` eight times and `vkCmdDrawIndexed` four. The only TF strings present
+  are `VkPhysicalDeviceTransformFeedbackFeaturesEXT` and its `transformFeedback` field,
+  which the ICD parses when walking a `VkPhysicalDeviceFeatures2` chain. So faking the
+  extension would hand an app entry points the driver does not have.
+
   A related bug was found and fixed while checking this. zink set `caps->query_so_overflow =
   true` unconditionally, so Mesa advertised `GL_ARB_transform_feedback_overflow_query` on a
   driver with no stream output at all - and the query maps to
