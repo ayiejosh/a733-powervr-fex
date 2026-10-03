@@ -166,6 +166,16 @@ Two limits, both checked:
   that incorrect rendering will happen. So it is not merely unadvertised: the state is
   accepted and dropped. Three independent angles, same answer.
 
+**Robustness.** Upstream rejected this driver as "not robust enough to run Zink at all".
+Measured after the patch: 48 consecutive context creations across every mode - the five
+primitive types, the wireframe matrix, edge flags and point mode - with zero failures, and a
+45-second `peglgears` run completing normally. That is not a claim that the driver is robust
+in general, only that it survives sustained use of everything exercised here.
+
+Performance was not measurable: the machine sat at load 8-12 on 8 cores with syncthing at
+36% CPU, and repeated runs of the same binary spanned 1,103 to 46,560 FPS. No number from
+that environment would mean anything, so none is quoted.
+
 The five primitive types are unaffected and re-verified passing.
 
 Measured with `gpu/vk-feature-strip/primtest.c` (one primitive per process,
