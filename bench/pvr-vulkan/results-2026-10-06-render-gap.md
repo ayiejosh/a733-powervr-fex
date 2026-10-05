@@ -63,21 +63,49 @@ Vendor `record` is dead flat 0.019–0.021 ms at every size; open is 0.41–0.82
 **~27 ioctls per frame**, but only ~0.04 ms/frame of kernel time (and that is inflated
 by strace's trap). So the cost is Mesa's command building, not syscall overhead.
 
-**5. Shrinking the render area makes the open stack *slower*** — the signature of
-full-surface work regardless of pixels:
+**5. Render area has NO effect — retracting an earlier claim.** A first pass measured
+`AREA=quarter` at 3.770 ms/frame with `record` blowing up to 1.77 ms, and this was
+written up as "full-surface work regardless of the render area". **That was not
+reproducible.** Repeating the sweep three times gives a flat result:
 
 ```
-512² surface, 60 frames      vendor      open
-AREA=full                    0.774       1.788
-AREA=half   (256² drawn)     0.591       1.879
-AREA=quarter(128² drawn)     0.589       3.770   <-- 2.1x SLOWER
+512² surface, 60 frames   run1                      run2                      run3
+AREA=full                 r=0.427 s=0.161 w=1.165  r=0.417 s=0.159 w=1.163  r=0.421 s=0.164 w=1.148
+AREA=half                 r=0.357 s=0.157 w=1.168  r=0.513 s=0.195 w=1.153  r=0.350 s=0.157 w=1.167
+AREA=quarter              r=0.329 s=0.145 w=1.162  r=0.341 s=0.166 w=1.139  r=0.367 s=0.155 w=1.166
 ```
 
-Vendor scales the correct way (less area = faster). Open inverts it, and its `record`
-blows up to 1.77 ms. Consistent with the driver doing full-surface tile work
-(load/store of the whole 1 MiB surface) regardless of the render area.
+Isolating the render half from the copy removes any doubt — drawing 1/16 of the pixels
+costs exactly the same as drawing all of them:
 
-**6. Per-pixel slope**, subtracting each stack's own empty-pass baseline:
+```
+MODE=render  AREA=full     record=0.411  submit=0.087  gpu_wait=0.916
+MODE=render  AREA=quarter  record=0.320  submit=0.077  gpu_wait=0.913
+MODE=copy    AREA=full     record=0.002  submit=0.063  gpu_wait=0.327
+MODE=copy    AREA=quarter  record=0.002  submit=0.059  gpu_wait=0.328
+```
+
+The correct statement is the opposite of the retracted one: cost is set by the
+**attachment surface size**, not by the pixels drawn and not by the render area. Image
+size does scale it (0.447 → 3.503 ms across 128²→1024²); render area does not. The
+3.770 ms reading was a transient — same class of error as the 3-frame A/B below.
+
+**6. The end-of-tile program was recompiled on every render pass.** `pvr_usc_eot()`
+builds NIR and runs a full PCO compile, and
+`pvr_sub_cmd_gfx_per_job_fragment_programs_create_and_upload()` called it once per pass
+and `ralloc_free`d the result. Confirmed by breakpoint count on `pvr_usc_eot` (gdb,
+pending breakpoint so it resolves on dlopen):
+
+```
+ 10 frames -> breakpoint hit 14 times
+ 30 frames -> breakpoint hit 34 times
+```
+
+`frames + 4` — exactly one compile per render pass. Its inputs (`emit_count`, PBE state
+words, tile-buffer addresses, all device-lifetime) are stable across frames, so it is
+trivially cacheable. Fixed; see the follow-up section.
+
+**7. Per-pixel slope**, subtracting each stack's own empty-pass baseline:
 
 ```
 gpu_wait vs pixels (render-only, 512²->1024²)
@@ -93,14 +121,47 @@ Ranked by size:
 
 1. **CPU command recording, +0.41 ms/frame (39%)** — Mesa pvr builds a 512² frame's
    commands in 0.46 ms where the DDK takes 0.045 ms. Pure userspace; ~27 ioctls/frame
-   are not the cost.
+   are not the cost. **Partly fixed: −0.13 ms of this was a redundant shader compile.**
 2. **Fixed per-pass GPU cost, +0.39 ms/frame (37%)** — an empty pass costs 0.31–0.38 ms
-   on open, 0.000 on vendor. Real GPU work, does not amortize under batching, does not
-   scale with area. Looks like an unconditional full-surface tile load/store per pass.
+   on open, 0.000 on vendor. Real GPU work, does not amortize under batching, and does
+   not scale with render area. It is structural: each pass is submitted as three
+   hardware jobs (geometry + an unconditional partial-render job + fragment) with a
+   syncobj round trip between the first two, and nothing skips an empty pass. Not
+   fixable from the UMD.
 3. **Actual rendering, +0.14 ms/frame (14%)** — 1.2× at 512², rising to ~3.2× at 1024².
 
 Items 1 and 2 are worth ~76% of the gap and both are per-frame overhead, so the fix
 that matters is *fewer/cheaper per-pass operations*, not faster rasterisation.
+
+## Follow-up: the redundant EOT compile, fixed
+
+`pvr_usc_eot()` recompiles the end-of-tile program with PCO on every render pass
+(finding 6). Cached on the device, keyed on everything the compile reads — emit count,
+PBE state words, tile-buffer addresses, MSAA samples, output regs. The per-pass upload
+stays, because the PDS data segment is generated from wherever the program lands in the
+command buffer.
+
+Three files: `pvr_device.h` (cache field), `pvr_arch_device.c` (init/finish),
+`pvr_arch_cmd_buffer.c` (use it). Correctness is unchanged — the shader is a pure
+function of the key, and every run still passes the full 262144-pixel check.
+
+Clean A/B, `vkrender 512 60`, five runs each, same session, only the `.so` swapped:
+
+```
+              record ms (5 runs)                     submit   gpu_wait
+pre   (before)  0.855 0.788 0.406 0.420 0.394       0.157    1.162
+post  (cached)  0.265 0.273 0.298 0.398 0.392       0.164    1.157
+```
+
+**`record` 0.406 → 0.273 ms steady state, −33%.** The first two `pre` runs are warmup
+outliers; the cached build has no equivalent spike, which is the same effect seen from
+the other side. `MODE=empty` is the cleanest signal: `record` 0.394 → 0.149 ms, because
+an empty pass still compiled a full EOT program.
+
+End to end that is ~8% (1.72 → 1.59 ms/frame). Modest, because `gpu_wait` — the
+structural per-pass cost in item 2 — is untouched at ~1.16 ms and now dominates
+completely. **Closing the rest of the gap means changing how many jobs a render pass
+becomes, which is a kernel (`drm/imagination`) change, not a Mesa one.**
 
 ## Reproduce
 
