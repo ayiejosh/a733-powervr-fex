@@ -3,6 +3,14 @@
 Firmware-level trace of one `vkrender 512 512 5` run, `MODE=empty` (no draw, no copy),
 open stack (`powervr` + Mesa pvr). Raw trace: `fwtrace-2026-10-06-open-empty.txt`.
 
+> **Correction, same day.** This first capture enabled 7 of the 16 log groups
+> (`0xC97`), and the 176 us TA→3D gap showed almost nothing. I read that as the
+> firmware being idle and waiting on the kernel. **That was wrong.** With all groups
+> enabled (`0x80007FFF`, `fwtrace-2026-10-06-open-empty-allgroups.txt`) the gap is
+> **41 firmware operations**, not idle time. See "What the gap actually contains"
+> below. The mask matters: a partial mask makes firmware work look like silence.
+>
+
 ## How to reproduce
 
 The mainline driver exposes the firmware trace buffer and its mask:
@@ -101,3 +109,72 @@ So: **beating the vendor is not reachable from Mesa.** The remaining gap is the
 TA→3D transition plus the inter-frame turnaround, which is `drm/imagination` and
 firmware behaviour. The useful next step is an upstream issue with this trace, not
 more UMD tuning.
+
+## What the gap actually contains (all 16 log groups)
+
+The TA→3D gap is **41 firmware operations**, every one of them real work. The
+distinct ones, with the per-step deltas in trace units (~0.195 µs each):
+
+```
+  +35  Is TA: 1, finished: 1 on HW 0 ... FL different between TA/3D: global:1, local:2
+  +32  UFL-TA-Base / FL-TA-Base
+  +31  ALIST0 SP = 0, MLIST0 SP = 0
+  +25  TA RTData finished on HW context 0
+  +26  Perform TPC flush
+  +79  UFO Updates for FWCtx
+  +30  UFO Update
+  +68  Deactivate MemCtx=0xc002c000          <-- same MemCtx as below
+  +24  Ungrab reg set 1 refcount now 0
+  +70  UFO Checks for FWCtx
+  +30  UFO PR-Check
+  +78  Ready-to-run debug OSid = 0, DM = 3
+  +24  Client command header DM = 3
+  +84  Check Pow state: Int: 0x2, Ext: 0x1, Fence Counters: Check: 23 - Update: 25
+  +28  Initiate powoff query for RD-DMs
+  +90  Kick MTS Irq task DM=0
+  +39  KCCB Slot / cCCB Woff update
+  +68  Ready-to-run debug OSid = 0, DM = 3
+  +39  PM running primary config (Core 0)
+  +33  Activate MemCtx=0xc002c000 DM=3 secure=0   <-- same MemCtx as above
+  +28  Setup register set=1 DM=3, PC address=...
+  +29  Grab reg set 1 refcount now 1
+  +92  Store Freelist type 0
+  +50  Load  Freelist type 0
+  +46  Store Freelist type 1
+  +47  Load  Freelist type 1
+  +37  CONTEXT_PB_BASE set to 0x0, FL different between TA/3D: local: 0, global: 0
+  +48  Loading stack-pointers for 1 (0:MidTA,1:3D) on context 1
+  +43  3D Buffers: FWCtx ... on ctx 1
+  +23  3D RTData ready on HW context 1
+ +109  Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x80015000)
+  +22    Phantom 0: USCTiles=6
+  +37  Is TA: 0, finished: 0 on HW 1 ... FL different between TA/3D: global:0, local:0
+  +29  UFL-3D-Base / FL-3D-Base
+  +26  ALIST1 SP = 0, MLIST1 SP = 0
+```
+
+So the per-pass cost is a **full context teardown and rebuild between the TA and the
+3D core**: the same `MemCtx=0xc002c000` is deactivated and then reactivated, the
+register set is ungrabbed and regrabbed, a power-off query runs, an MTS IRQ round
+trip happens, and both freelists are stored and reloaded.
+
+## Runtime PM is not the lever
+
+`Initiate powoff query` looked actionable, so it was tested: forcing the GPU's
+runtime PM to `on` (`/sys/bus/platform/devices/1800000.gpu/power/control`) changes
+nothing.
+
+```
+power/control = auto : gpu_wait 0.820 0.808 0.828 ms
+power/control = on   : gpu_wait 0.809 0.824 0.826 ms
+```
+
+The power-off query is a firmware-internal decision, not driven by Linux runtime PM.
+
+## What this settles
+
+The 176 µs is 41 firmware operations that no layer I can modify controls: not the
+Mesa UMD (it does not choose TA/3D contexts or freelists), not Linux PM (measured
+above), and not the kernel driver's scheduling (the gap is full of firmware work,
+not idle time). Combined with the earlier rounds, the render gap is firmware
+per-pass context management.
