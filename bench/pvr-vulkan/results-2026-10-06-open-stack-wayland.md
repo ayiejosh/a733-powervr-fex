@@ -255,3 +255,89 @@ first target, then the heavy raster scenes (terrain/desktop-blur) where the 4 fp
   that `apt install` must not be used at all here: `dpkg --print-architecture` says `arm64`
   with no foreign architectures, but `/var/lib/dpkg/status` holds **431 `Architecture: amd64`
   and 0 arm64** entries.
+
+---
+
+# ADDENDUM 2 — 2026-10-07: vendor A/B, and FBCDC is the WRONG target
+
+## A. Vendor A/B, same session, same harness
+
+| harness | vendor | open | ratio |
+|---|---|---|---|
+| `glmark2-es2 --benchmark default`, X + glamor | **522** | — | — |
+| `glmark2-es2 -b build:use-vbo=false`, weston + XWayland | **787** | **31** | 25x |
+
+The second row is the one that matters: **identical compositor (weston), identical
+XWayland, identical client, identical GL layer (zink)**. Only the Vulkan driver differs.
+So the gap is not the compositor choice and not X vs Wayland.
+
+Setup: vendor compositor used the BSP GL (`GL renderer: PowerVR B-Series BXM-4-64`,
+`MESA_LOADER_DRIVER_OVERRIDE=sunxi-drm`, `/usr/local/lib/dri`); the vendor *client* used
+`glrun` (zink -> `/usr/share/vulkan/icd.d/img_icd.json`, `IMAGINATION_PROPRIETARY`).
+
+> The vendor measurement is what rebooted the board: the 1600x1200 run drove
+> `PVRDmaBufOpsUnmapCommon` -> `sunxi_iommu_unmap` ->
+> `iommu_master de0_iommu: Runtime PM usage count underflow!` -> `L1 PageTable Invalid`
+> -> panic. That is a vendor `pvrsrvkm` PRIME/dmabuf bug, the 4th vendor-driver reboot
+> this session. The open stack has never done this.
+
+## B. What the 25x actually is
+
+Splitting the open stack's frame with `glmark2-es2 --off-screen` (no presentation):
+
+| size | windowed | off-screen | present cost |
+|---|---|---|---|
+| 320x240 | 18.9 ms | 7.3 ms | 11.6 ms |
+| 800x600 | 35.7 ms | 7.1 ms | 28.6 ms |
+| 1600x1200 | 100 ms | 11.8 ms | 88 ms |
+
+* **Off-screen is flat ~7 ms** -> that is the real GPU work. Vendor total frame is
+  1.27 ms, so rendering is ~5.6x behind.
+* **Present fits `~8.4 ms + 41.5 ms/Mpix`** -> ~100 MB/s. It is 78% of the frame at
+  800x600 and dominates everything.
+
+So **FBCDC (framebuffer compression) is the wrong first target**: it addresses the 7 ms of
+rendering, not the 25 ms of presentation. FBCDC is still a real gap (hardware has it,
+`bxm-4-64.h .has_fbcdc_algorithm`, vendor sets `INICFG_FBCDC_V3_1_EN`, open driver says
+"Currently no support for FBC") but it is second.
+
+## C. What the present path is doing
+
+* `card1` (PowerVR) has **zero connectors** — only `card0`/`sunxi-drm` drives HDMI-A-1.
+  So kmsro is mandatory; the GPU cannot be the KMS device.
+* Weston is **not** using dumb buffers: strace shows no `MODE_CREATE_DUMB`, but
+  `PVR_CREATE_BO` + `PRIME_HANDLE_TO_FD` + `PRIME_FD_TO_HANDLE` — GPU BOs PRIME-shared
+  to card0.
+* Weston presents at only ~40/s (`MODE_ATOMIC` 398 in 10 s) while the client wants more,
+  and the client is **blocked, not CPU-busy**: weston is essentially idle (6 jiffies
+  utime in 8 s), Xwayland ~21% of one core.
+* Client present is real DRI3 (`memfd_create("xshmfence")`, tiny writes, no shm image
+  traffic), so it is not the XPutImage/readback fallback.
+
+### Tried and reverted
+
+Changing kmsro's zink branch from `renderonly_create_kms_dumb_buffer_for_resource` to
+`renderonly_create_gpu_import_for_resource` (the vc4 model) **crashes**: that helper calls
+`resource_get_handle(rsc)` on the GPU resource, but zink calls `create_for_resource`
+*BEFORE* `resource->obj` is created (`zink_resource.c:1840` runs above
+`resource_object_create`). NULL deref in `renderonly_create_gpu_import_for_resource`.
+That ordering is exactly why zink uses the dumb-buffer variant. Doing the vc4 model for
+zink needs a zink-side reorder (create the image, export it, then PRIME into KMS), not a
+kmsro one-liner.
+
+## D. Measurement caveat
+
+This board runs an **x86-emulated Chrome Remote Desktop host** (`FEXInterpreter
+/opt/google/chrome-remote-desktop/chrome-remote-desktop-host`), syncthing, and had
+~2.5 GB swapped out during part of this work. One `top` sample showed `kswapd0` at 92%
+and only 37 MB free. GPU buffers live in system RAM, so memory pressure can pollute
+present-path numbers. Re-measure with those controlled before trusting absolute values;
+the 25x is far too large to be explained by that noise, but the per-pixel constant is not.
+
+## E. Corrected next steps
+
+1. **Present path first** (~25 ms/frame, 78%). Find why weston presents at 40/s and why
+   the client blocks. Candidates: weston's own zink render pass overhead per frame,
+   buffer count / present mode, the kmsro PRIME round-trip per frame.
+2. Then the ~7 ms rendering gap (5.6x vs vendor).
+3. Then FBCDC, then the unconditional partial-render job, then TFBC.
