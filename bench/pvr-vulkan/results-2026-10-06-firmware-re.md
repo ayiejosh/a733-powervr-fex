@@ -201,3 +201,101 @@ is **not** done: the TA→3D transition has not been read end to end, no patch h
 built, and no modified image has been loaded. The next step is to resolve the remaining
 idiom(s) so every site in the 41-operation gap can be read, then reconstruct the
 sequence.
+
+## Solved: the third idiom, and a full trace-site map
+
+The sites that would not decode were being looked for in the wrong place. **The SFID is
+in the `jal` delay slot, after the call, not before it:**
+
+```
+0xc0001c12  lui    $a0, 0x7000        <- marker + nparams
+0xc0001c16  jal    0x1f34             <- trace emit
+0xc0001c1a  addiu  $a0, $a0, 0x1090   <- SFID16, in the delay slot
+```
+
+So the layout is `lui` at -8, `jal` at -4, `addiu` at 0. Searching for the 16-bit value
+as a standalone constant finds real sites only when it happens to be the high half of a
+32-bit word at an even offset; otherwise it is a coincidental match inside other data,
+which is exactly what the "garbage" sites were.
+
+**Robust method:** find every `jal 0x1f34` (bytes `00 f4 9a 0f`), then read the SFID from
+the instruction at `jal + 4`. That is alignment-independent and needs no guessing.
+
+44 call sites found, 43 resolved:
+
+| file | vma | sfid | group | message |
+|---|---|---|---|---|
+| 0x02a0c | 0xc0001654 | 0x1044 | MAIN | GPU init |
+| 0x02fce | 0xc0001c16 | 0x1090 | MAIN | GPU deinit |
+| 0x02ffc | 0xc0001c44 | 0x1091 | MAIN | GPU units deinit |
+| 0x07d80 | 0xc00069c8 | 0x6023 | SPM | SPM State = wait for HW |
+| 0x08f02 | 0xc0007b4a | 0x700e | MTS | Irq Task complete. |
+| 0x0bce6 | 0xc000a92e | 0xa033 | POW | Power controller returned ABORT for last request so retry |
+| 0x0be58 | 0xc000aaa0 | 0xa033 | POW | Power controller returned ABORT for last request so retry |
+| 0x0c3b4 | 0xc000affc | 0xa019 | POW | Null command executed, repeating initiate powoff query |
+| 0x0c4e6 | 0xc000b12e | 0xa00d | POW | Initiate powoff query for RD-DMs. |
+| 0x0de32 | 0xc000ca7a | 0xb01b | HWR | Analysis: Need freelist reconstruction |
+| 0x0e846 | 0xc000d48e | 0x10c7 | MAIN | GPU has locked up |
+| 0x0f752 | 0xc000e39a | 0xb026 | HWR | GPU has overrun its deadline |
+| 0x0f784 | 0xc000e3cc | 0x104b | MAIN | HWR has been triggered - deadline |
+| 0x0f8ce | 0xc000e516 | 0xb027 | HWR | GPU has failed a poll |
+| 0x0f900 | 0xc000e548 | 0x104c | MAIN | HWR has been triggered - poll |
+| 0x101ba | 0xc000ee02 | 0x1006 | MAIN | Compute finished |
+| 0x106e0 | 0xc000f328 | 0x1023 | MAIN | Unsetting BP Registers |
+| 0x11410 | 0xc0010058 | 0x1030 | MAIN | No Depth/Stencil Buffer used for partial render (load) |
+| 0x11730 | 0xc0010378 | 0x102f | MAIN | No ZS Buffer used for partial render (store) |
+| 0x117c4 | 0xc001040c | 0x300b | CSW | *** 3D context store start |
+| 0x12210 | 0xc0010e58 | 0x1004 | MAIN | 3D Transfer finished |
+| 0x122aa | 0xc0010ef2 | 0x3009 | CSW | *** 3D context store complete |
+| 0x1280a | 0xc0011452 | 0x1008 | MAIN | TA finished |
+| 0x1294a | 0xc0011592 | 0x1049 | MAIN | Perform TPC flush. |
+| 0x12a10 | 0xc0011658 | 0x5007 | RTD | Perform VHEAP table store |
+| 0x12a34 | 0xc001167c | 0x1049 | MAIN | Perform TPC flush. |
+| 0x12a42 | 0xc001168a | 0x3010 | CSW | *** TA context store complete |
+| 0x12c66 | 0xc00118ae | 0x3011 | CSW | *** TA context store start |
+| 0x141b8 | 0xc0012e00 | 0x6021 | SPM | SPM State = PR blocked |
+| 0x141d8 | 0xc0012e20 | 0x6025 | SPM | SPM State = PR avoided |
+| 0x156de | 0xc0014326 | 0x6021 | SPM | SPM State = PR blocked |
+| 0x15b1c | 0xc0014764 | 0x6025 | SPM | SPM State = PR avoided |
+| 0x15b88 | 0xc00147d0 | 0x600b | SPM | Partial Render finished |
+| 0x15bba | 0xc0014802 | 0x6026 | SPM | SPM State = PR executed |
+| 0x15cf6 | 0xc001493e | 0x6025 | SPM | SPM State = PR avoided |
+| 0x15f9e | 0xc0014be6 | 0x6020 | SPM | SPM State = none |
+| 0x15fec | 0xc0014c34 | 0x100a | MAIN | Resume TA without partial render |
+| 0x16092 | 0xc0014cda | 0x1009 | MAIN | Restart TA after partial render |
+| 0x16c78 | 0xc00158c0 | 0x1006 | MAIN | Compute finished |
+| 0x16d9e | 0xc00159e6 | 0x3004 | CSW | *** CDM FWCtx store complete |
+
+Only the first 40 rows are shown here; the full list is 43.
+
+## What this map says about the TA→3D transition
+
+The gap is **not** an opaque delay. It is, in the firmware's own vocabulary, a
+**context store sequence**:
+
+```
+*** TA context store start     0xc00118ae
+TA finished                    0xc0011452
+Perform TPC flush.             0xc0011592 / 0xc001167c
+Perform VHEAP table store      0xc0011658
+*** TA context store complete  0xc001168a
+...
+*** 3D context store start     0xc001040c
+*** 3D context store complete  0xc0010ef2
+```
+
+with a power-management decision in the middle (`Initiate powoff query for RD-DMs.`
+0xc000b12e, and `Null command executed, repeating initiate powoff query` 0xc000affc),
+and the SPM partial-render state machine running alongside (`SPM State = PR blocked /
+avoided / executed / none`, `Partial Render finished`, `Resume TA without partial
+render`, `Restart TA after partial render`).
+
+So the 176 µs is TA context store + power query + SPM partial-render arbitration + 3D
+context store. Every one of those is deliberate state management, which is consistent
+with the earlier finding that it does not amortise and does not scale with pixels.
+
+## Next
+
+Read the two context-store routines and the powoff routine end to end from these
+anchors, and identify which parts are conditional and which are unconditional. Still
+read-only; no patch built, no modified image loaded.
