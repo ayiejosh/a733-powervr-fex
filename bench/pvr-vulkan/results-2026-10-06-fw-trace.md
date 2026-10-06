@@ -178,3 +178,63 @@ Mesa UMD (it does not choose TA/3D contexts or freelists), not Linux PM (measure
 above), and not the kernel driver's scheduling (the gap is full of firmware work,
 not idle time). Combined with the earlier rounds, the render gap is firmware
 per-pass context management.
+
+## Can the firmware be changed? Tested, and no.
+
+The question was worth asking, so it was answered rather than assumed.
+
+**The firmware is patchable.** `pvr_fw_validate()` (`pvr_fw.c:88-140`) checks only:
+file size and block multiple, `info_version`, header/layout sizes, the
+`PVR_FW_FLAGS_OPEN_SOURCE` flag, the major version range, and that the BVNC matches
+the GPU. **No signature, no checksum.** A modified image would load.
+
+**But there is no way in.** The image is a stripped MIPS32 ELF
+(`elf32-mips`, `.bootandnmitext`/`.exctext`/`.text`/`.rodata`, ~90 KB of code):
+
+- no symbol table (`readelf -s` returns nothing)
+- **no trace strings either** — the firmware emits numeric IDs and the *kernel*
+  decodes them via `pvr_rogue_fwif_sf.h`, so the human-readable text I had been
+  reading out of `pvr_fw/trace_0` is not in the blob and cannot be used as an anchor
+- `.pdr`/`.mdebug.abi32`/`.reginfo` are present but `.pdr` did not parse as a clean
+  fixed-stride table
+- no MIPS disassembler was installed; `llvm-objdump` from the local llvm-mingw tree
+  reads the ELF but has no MIPS target, and `binutils-mipsel-linux-gnu` would not
+  install (unmet deps). A venv failed on `ensurepip`; `pip install --target` worked
+  and capstone 5.0.7 disassembles MIPS32 fine.
+
+So the tooling exists, but locating one routine in ~90 KB of stripped MIPS with no
+anchors, with no way to debug except "did the GPU survive", is a multi-week project
+with a speculative payoff. Not attempted.
+
+## The firmware config flags: a real knob, and it does not help
+
+The one genuinely kernel-side lever found. `fw_sysdata_init()` (`pvr_fw.c:410`) built
+`config_flags` from scratch and the driver set exactly one bit
+(`DISABLE_DM_OVERLAP`, only when SLC < 4 KB), leaving every other firmware behaviour
+flag at its default with no way to test any of them.
+
+Two module parameters were added to expose them:
+`ctxswitch_profile` (0=unset, 1=fast, 2=medium, 3=slow, 4=nodelay) and
+`config_flags_extra` (raw `ROGUE_FWIF_INICFG_*` bits). Both default to 0, i.e. the
+previous behaviour.
+
+Measured, `MODE=empty`, gpu_wait ms, 5 runs each, and the profile test repeated in
+reverse order to rule out warming:
+
+```
+ctxswitch_profile   unset  0.430 0.412 0.387 0.378 0.370   <- best
+                    fast   0.441 0.480 0.491 0.387 0.386
+                    nodelay 0.419 0.391 0.393 0.399 0.389
+
+config_flags_extra  <none> 0.386 0.375 0.364 0.364
+                    0x100 (DISABLE_CLKGATING_EN) 0.363 0.356 0.359 0.362 0.375
+                    0x10  (POW_RASCALDUST)       driver fails to initialise
+                    0x108                       0.382 0.387 0.387 0.388 0.380
+```
+
+The firmware's own default context-switch profile is already the fastest, and
+disabling clock gating is worth ~2%, inside run-to-run noise. `POW_RASCALDUST` does
+not come up at all.
+
+**Verdict: the firmware is patchable, the config surface is now exposed and tested,
+and neither reaches the per-pass cost.**
