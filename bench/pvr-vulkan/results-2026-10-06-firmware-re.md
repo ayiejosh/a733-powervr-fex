@@ -351,3 +351,66 @@ been built.
 The firmware RE stands on its own as a result: the blob is microMIPS, unencrypted,
 readable with capstone, and its trace call sites are fully mapped by the delay-slot
 method above.
+
+## Experiment: running the vendor firmware under the open driver — FAILED
+
+**Discovery that motivated it.** The two stacks do not run the same firmware:
+
+| section | vendor `rgx.fw.36.56.104.183` | open `rogue_36.56.104.183_v1.fw` |
+|---|---|---|
+| `.text` | **106144** | **93684** |
+| `.pdr` | 8864 | 8128 |
+| `.rodata` | 2208 | 1816 |
+
+Only ~5% of 32-byte blocks are shared, so these are **different builds of the same
+codebase**, not one a subset of the other. The vendor image has **zero** `jal 0x1f34`
+trace sites where the open image has 44 — the vendor build has tracing compiled out.
+The vendor's extra ~12 KB is functional code.
+
+**What was built.** The open image's layout was fully reverse-engineered — file is
+`[code blob][data blob][device_info][header]`, and the six layout entries sum exactly to
+the file size. A new image was constructed taking the vendor's ELF `LOAD` segments and
+placing them at the addresses the open driver expects, with a rebuilt
+`pvr_fw_info_header` (info_version 3, layout_entry_size 24, BVNC 36.56.104.183,
+page_size 4096, flags 1 = OPEN_SOURCE, fw_version 1.1.6603887) and a new five-entry
+layout table. Result: 139264 bytes, 4K-aligned.
+
+**The format work was correct.** The driver accepted it and logged:
+
+```
+powervr 1800000.gpu: [drm] loaded firmware powervr/rogue_36.56.104.183_v1.fw
+powervr 1800000.gpu: [drm] FW version v1.1 (build 6603887 OS)
+```
+
+**Then it faulted immediately:**
+
+```
+Unable to handle kernel paging request at virtual address ffff8000a7a19fd5
+Internal error: Oops: 0000000096000006 [#1] SMP
+swapper pgtable: 4k pages ... pmd=0000000000000000
+```
+
+A paging fault from a kernel thread, right after the firmware was handed control.
+
+**Interpretation.** This is the interface mismatch that was flagged as the risk before
+building. The mainline driver sets up the firmware's world — `rogue_fwif_sysinit`,
+`rogue_fwif_sysdata`, the KCCB, the shared-register block — using *its* copy of the
+firmware interface, which matches the **open-source firmware build**. The vendor build
+expects the DDK's version of those structures. The header and layout can be faked; the
+in-memory interface cannot.
+
+**So: the vendor firmware cannot be run under the open driver by re-wrapping alone.**
+
+## The safety net worked
+
+The self-recovering guard restored the known-good firmware on the next boot, exactly as
+designed:
+
+```
+gpu-fw-guard: restored known-good firmware 2026-10-06T16:07:24+08:00
+gpu-fw-guard: restored known-good firmware 2026-10-06T16:11:21+08:00
+```
+
+The first entry is the deliberate corruption test; the second is the real recovery.
+Current state: live firmware hash matches the backup, `pvrsrvkm` bound, desktop active,
+0 faults. No hands on the board were needed.
