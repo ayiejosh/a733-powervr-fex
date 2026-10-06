@@ -60,8 +60,23 @@ vanished at BATCH=60.
 **4. `record` is 10× the vendor's, and it is userspace, not the kernel.**
 Vendor `record` is dead flat 0.019–0.021 ms at every size; open is 0.41–0.82 ms.
 `strace -f -c -e trace=ioctl`: 671 ioctls / 20 frames vs 1736 / 60 frames →
-**~27 ioctls per frame**, but only ~0.04 ms/frame of kernel time (and that is inflated
-by strace's trap). So the cost is Mesa's command building, not syscall overhead.
+**~27 ioctls per frame**. The cost is Mesa's command building, not syscall overhead.
+
+> **Correction (same day, later round).** The "not syscall overhead" half of that
+> sentence is **wrong** and was based on a bad `strace -T` reading of ~0.1 µs per
+> ioctl, which is implausible for a real syscall. Measured properly, by regressing
+> `submit` against ioctl count across modes, each ioctl costs **~5.7 µs**, and the
+> ioctl count explains the whole `submit` gap:
+>
+> ```
+> submit_ms ≈ 0.033 + 5.7 µs × ioctls_per_frame
+>   MODE=copy    7.0 ioctls -> 0.033 + 0.040 = 0.073   (measured 0.073)
+>   MODE=both   26.6 ioctls -> 0.033 + 0.152 = 0.185   (measured 0.185)
+> ```
+>
+> Vendor: 5 ioctls/frame -> 0.046 ms measured. Open: 26.6 -> 0.185 ms. The 15
+> syncobj ioctls/frame (5 CREATE, 5 TRANSFER, 5 DESTROY) are ~85 µs of that. See
+> `results-2026-10-06-ioctl-cost.md`.
 
 **5. Render area has NO effect — retracting an earlier claim.** A first pass measured
 `AREA=quarter` at 3.770 ms/frame with `record` blowing up to 1.77 ms, and this was
