@@ -299,3 +299,55 @@ with the earlier finding that it does not amortise and does not scale with pixel
 Read the two context-store routines and the powoff routine end to end from these
 anchors, and identify which parts are conditional and which are unconditional. Still
 read-only; no patch built, no modified image loaded.
+
+## Reading the power-management function
+
+The powoff site sits in the function at **0xc000adb6** (prologue just before). It is
+readable end to end and its logic is straightforward:
+
+```
+0xc000adba  lui     $s2, 0xc003
+0xc000adbe  addiu   $s1, $s2, 0x2f40          <- power state block
+   ... nine times:
+   lw      $v0, -0xXXXX($gp)                  <- a per-DM "busy" flag
+   beqz    $v0, +N
+   ori     $s0, $s0, 1/2/4/8/0x10/0x20/0x40/0x80/0x100
+0xc000ae54  sw      $s0, 0xc($s1)             <- bitmask of ACTIVE DMs
+0xc000ae58  andi    $v0, $v0, 0x200
+0xc000ae5c  bne     $v0, $zero, +0x138        <- trace-enable gate
+```
+
+It **accumulates a bitmask of which DMs are active**, stores it, and then only takes the
+power-down path when DMs are inactive. That is exactly the `Inactive DMs: %u %u %u %u`
+argument on the `Initiate powoff query` message.
+
+**Between the TA and the 3D kick, the TA has finished and the 3D has not started, so the
+DMs genuinely are inactive and the query fires legitimately — every pass.** It is not
+spurious work; it is power management doing its job at the one moment in the pass when
+the GPU really is idle.
+
+The trace calls throughout this function are all gated on the same flag
+(`lw $v0, -0x1e1c($gp); andi $v0, $v0, 0x200`), so the logging is not the cost.
+
+## Conclusion of the firmware RE
+
+The firmware is understood well enough to answer the original question, and the answer
+is negative in a specific way:
+
+- The 176 µs TA→3D gap is a **TA context store, a legitimate power-off decision taken
+  while the GPU is genuinely idle, SPM partial-render arbitration, and a 3D context
+  store** — in the firmware's own trace vocabulary, all named and located.
+- Every part of it is **conditional on real hardware state**, not on a misconfiguration.
+  The power query fires because the DMs really are inactive at that instant.
+- The only flag that gates large parts of the path (`-0x1e1c($gp) & 0x200`) is the
+  **trace-enable** flag, which gates logging, not work.
+
+**There is no obviously-removable work.** A patch would have to either suppress a
+legitimate power decision (risking thermal/power correctness) or shortcut a context
+store (risking rendering correctness), with no way to debug except "did the GPU survive".
+That is a different proposition from "there is waste here", and it is why no patch has
+been built.
+
+The firmware RE stands on its own as a result: the blob is microMIPS, unencrypted,
+readable with capstone, and its trace call sites are fully mapped by the delay-slot
+method above.
