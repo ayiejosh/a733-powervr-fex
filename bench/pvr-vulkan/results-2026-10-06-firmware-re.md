@@ -414,3 +414,104 @@ gpu-fw-guard: restored known-good firmware 2026-10-06T16:11:21+08:00
 The first entry is the deliberate corruption test; the second is the real recovery.
 Current state: live firmware hash matches the backup, `pvrsrvkm` bound, desktop active,
 0 faults. No hands on the board were needed.
+
+## Scoping the firmware-layer reimplementation: the first concrete difference
+
+Both sides' interfaces are available: the mainline driver's `pvr_rogue_fwif*.h` (which
+carries `OFFSET_CHECK` compile-time assertions — the driver's own statement of the ABI
+it builds) and the DDK's `include/rogue/rgx_fwif_km.h` from the TI tree.
+
+**DDK `RGXFWIF_SYSINIT`, field order:**
+
+```
+RGX_MIPS_STATE sMIPSState          <-- FIRST, with an assertion that offsetof == 0
+IMG_DEV_PHYSADDR  sFaultPhysAddr
+IMG_DEV_VIRTADDR  sPDSExecBase
+IMG_DEV_VIRTADDR  sUSCExecBase
+IMG_UINT64        sFBCDCStateTableBase / sFBCDCLargeStateTableBase
+IMG_UINT32        aui32TPUTrilinearFracMask[RGXFWIF_TPU_DM_LAST]
+RGXFWIF_SIGBUF_CTL asSigBufCtl[RGXFWIF_DM_MAX]
+RGXFWIF_DMA_ADDR  sCorememDataStore
+RGXFWIF_COUNTER_DUMP_CTL sCounterDumpCtl
+[SUPPORT_FIRMWARE_GCOV] sFirmwareGCOV
+IMG_UINT32        ui32FilterFlags
+PRGXFWIF_RUNTIME_CFG  sRuntimeCfg
+PRGXFWIF_TRACEBUF     sTraceBufCtl
+PRGXFWIF_SYSDATA      sFwSysData
+[SUPPORT_TBI_INTERFACE] sTBIBuf
+PRGXFWIF_GPU_UTIL_FW  sGpuUtilFWCtl
+PRGXFWIF_REG_CFG      sRegCfg
+PRGXFWIF_HWPERF_CTL   sHWPerfCtl
+                      sAlignChecks
+IMG_UINT32            ui32InitialCoreClockSpeed
+[SUPPORT_SOC_TIMER]   ui32InitialSOCClockSpeed
+IMG_UINT32            ui32InitialActivePMLatencyms
+IMG_BOOL              bFirmwareStarted
+IMG_UINT32            ui32MarkerVal
+IMG_UINT32            ui32FirmwareStartedTimeStamp
+FW_PERF_CONF          eFirmwarePerf
+[SUPPORT_FW_OPP_TABLE] sOPPInfo, sCoreClockRate
+[PDUMP]                sPIDFilter
+RGXFWIF_GPIO_VAL_MODE eGPIOValidationMode
+RGX_HWPERF_BVNC       sBvncKmFeatureFlags
+[conditional] security / recovery / virt fields
+IMG_UINT32            ui32TFBCCompressionControl
+```
+
+**Mainline `rogue_fwif_sysinit` (offsets from `pvr_rogue_fwif_check.h`):**
+
+```
+0    fault_phys_addr
+8    pds_exec_base
+16   usc_exec_base
+24   fbcdc_state_table_base
+32   fbcdc_large_state_table_base
+40   texture_heap_base
+48   hw_perf_filter
+56   slc3_fence_dev_addr
+64   tpu_trilinear_frac_mask
+80   sigbuf_ctl
+152  pdvfs_opp_info
+288  coremem_data_store
+304  counter_dump_ctl
+312  filter_flags
+316  runtime_cfg_fw_addr
+320  trace_buf_ctl_fw_addr
+324  fw_sys_data_fw_addr
+328  gpu_util_fw_cb_ctl_fw_addr
+332  reg_cfg_fw_addr
+336  hwperf_ctl_fw_addr
+340  align_checks
+344  initial_core_clock_speed
+348  active_pm_latency_ms
+352  firmware_started
+356  marker_val
+360  firmware_started_timestamp
+364  jones_disable_mask
+368  firmware_perf
+372  core_clock_rate_fw_addr
+376  gpio_validation_mode
+380  bvnc_km_feature_flags
+540  tfbc_compression_control
+```
+
+**The difference is at offset 0.** The DDK's structure begins with `RGX_MIPS_STATE`
+and the DDK header asserts `offsetof(RGXFWIF_SYSINIT, sMIPSState) == 0`. The mainline's
+begins with `fault_phys_addr`, and manages the MIPS state separately. Every field after
+that is therefore shifted by `sizeof(RGX_MIPS_STATE)` relative to what the vendor
+firmware reads.
+
+From `fault_phys_addr` onward the two field *sequences* line up closely (pds_exec_base,
+usc_exec_base, fbcdc tables, trilinear mask, sigbuf, coremem, counter dump, filter
+flags, runtime cfg, trace buf, fw sys data, gpu util, reg cfg, hwperf ctl, align checks,
+initial core clock, active PM latency, firmware started, marker val, timestamp,
+firmware perf, core clock rate, gpio mode, bvnc feature flags, tfbc compression) — so
+this is one structural difference plus whatever the DDK's `SUPPORT_*` conditionals
+contribute, not a wholesale redesign.
+
+**What the reimplementation therefore amounts to:** make the mainline driver's SYSINIT
+layout match the DDK's, starting with the MIPS state at offset 0, then re-check every
+subsequent offset against the DDK field order. That is a bounded, verifiable change to
+one struct plus its `OFFSET_CHECK` list — not a rewrite.
+
+Not started. No code changed.
