@@ -139,3 +139,65 @@ board is 6603887), and its ID packing differs slightly. The kernel driver's own
 The firmware is readable: microMIPS, capstone, and trace IDs as anchors. Function
 bodies can be found from any trace call site. What is not yet done is reading the
 TA→3D transition sequence end to end, and no patch has been attempted.
+
+## Correction: how the IDs are actually referenced
+
+The "16-bit constant" search finds real call sites, but the earlier claim that the
+marker and parameter count are always added by a `lui`/`ori` pair is only half right.
+There are **two idioms**, and the SFID16 lands in a different place in each:
+
+**A. `lui` + `ori`** — the MemCtx path (file 0x689c → vma 0xc00054e2):
+
+```
+0xc00054de  lui   $a0, 0x7001
+0xc00054e2  ori   $a0, $a0, 0x8002      <- SFID16 is the high half of the ori word
+0xc00054e6  jals  0x1f68
+```
+
+**B. `addiu $a0, $v0, <sfid16>`** — the TPC-flush path (file 0x12950 → vma 0xc0011596):
+
+```
+0xc001158e  lw     $a0, -0x16f8($gp)
+0xc0011592  jal    0x1f34
+0xc0011596  addiu  $a0, $v0, 0x1049     <- SFID 0x1049 = "Perform TPC flush."
+```
+
+**The trace emit functions are at 0x1f34, 0x1f68 and 0x1f9c.**
+
+Practical consequence: the `ori`/`addiu` instruction word is 32-bit and self-delimiting,
+so **decoding from `hit - 2` is self-aligning** and gives correct code even where a
+linear sweep of the whole section has desynchronised. Do that rather than sweeping.
+
+## Correction: the boundary test
+
+A linear `skipdata=True` sweep from 0xc0000000 yields 29261 instructions and decodes the
+MemCtx path correctly, but it **does desynchronise**, and using it to decide whether an
+address is a valid instruction boundary gives wrong answers — it reported the MemCtx call
+site as data even though decoding from `hit - 2` produces textbook code.
+
+So: do not use a whole-section sweep to classify hits. Decode from the hit.
+
+## Status of the sites
+
+Working (decode cleanly from `hit - 2`):
+
+- `Perform TPC flush.` — 0x12950, 0x12a3a, 0x12a7d
+- `Deactivate MemCtx` / `Ungrab reg set` — 0x689c / 0x68ba
+
+Not yet resolved — these decode as `.byte` garbage from `hit - 2`, so they are either
+data or use a third idiom:
+
+- `Initiate powoff query` (0x16ce1)
+- `Kick 3D`, `Store Freelist`, `Loading stack-pointers`, `Phantom`
+- `FL different between TA/3D` at 0x1407 and 0x5b67 etc.
+
+`Kick TA` (0x1007) and `Updating Tiles In Flight` (0x1086) are not found as 16-bit
+constants at all.
+
+## Where this leaves it
+
+The firmware is readable and trace call sites can be located and decoded reliably. What
+is **not** done: the TA→3D transition has not been read end to end, no patch has been
+built, and no modified image has been loaded. The next step is to resolve the remaining
+idiom(s) so every site in the 41-operation gap can be read, then reconstruct the
+sequence.
