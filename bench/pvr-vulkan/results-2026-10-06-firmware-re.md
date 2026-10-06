@@ -555,3 +555,48 @@ GPU driver capability or performance problem**.
 overall CPU+GPU benchmark cannot even be run on it. Performance work is premature until X
 comes up on the open stack at all. The firmware-layer reimplementation is therefore not
 the next step — this is.
+
+## Breaking X on the open stack: what was actually wrong
+
+Three separate failures were stacked, and only the last one is about the GPU driver.
+
+**1. Vendor BSP Mesa shadows the system Mesa.** `/usr/local/lib/` carries a Radxa BSP
+Mesa (`libEGL.so.1.0.0`, `libGLESv2.so.2.0.0`) and `/usr/local/lib/dri/` has only three
+DRI drivers (`pvr_dri.so`, `sunxi-drm_dri.so`, `swrast_dri.so`) against 61 in
+`/usr/lib/aarch64-linux-gnu/dri/`. `/usr/local` wins, and its EGL lacks
+`DRI_IMAGE_DRIVER` v1.
+
+**2. glamor has no GL driver for the display on the open stack.**
+- With `/usr/local` EGL: `couldn't get display device` -> glamor fails.
+- With the system EGL: `Refusing to try glamor on llvmpipe` -> glamor refuses software.
+- The vendor stack works because `/usr/local/lib/dri/sunxi-drm_dri.so` is a GL driver
+  for the display device that talks to `pvrsrvkm`. There is no equivalent for `powervr`.
+
+**3. X itself does start.** With the desktop stopped and the open driver bound, an X
+socket appears and `DISPLAY=:0` works. X is up; it is simply unaccelerated.
+
+**And EGL works via zink.** With the system Mesa plus the open Vulkan ICD:
+
+```
+MESA: warning: src/imagination/vulkan/winsys/powervr/pvr_drm.c:351: FINISHME:
+              Core count fetching is unimplemented. Setting 1 for now.
+WARNING: powervr is not a conformant Vulkan implementation, testing use only.
+EGL client extensions string: EGL_EXT_platform_x11, EGL_KHR_platform_x11, ...
+```
+
+So the open GPU **is** reachable through EGL on the open stack, via zink -> open Vulkan.
+The recipe is:
+
+```bash
+export LIBGL_DRIVERS_PATH=/usr/lib/aarch64-linux-gnu/dri
+export LD_LIBRARY_PATH=/usr/lib/aarch64-linux-gnu
+export MESA_LOADER_DRIVER_OVERRIDE=zink
+export PVR_I_WANT_A_BROKEN_VULKAN_DRIVER=1
+export VK_ICD_FILENAMES=/home/radxa/pvr_gen_icd.json
+```
+
+`glmark2-es2` still reports "Could not initialize canvas" under that environment, so the
+system-level score has not been obtained yet. That is now a glmark2 window/surface
+problem rather than a missing GL stack, which is a much smaller thing than it was.
+
+**Net: the open stack has a working EGL -> zink -> Vulkan path. It did not before.**
