@@ -515,3 +515,43 @@ subsequent offset against the DDK field order. That is a bounded, verifiable cha
 one struct plus its `OFFSET_CHECK` list — not a rewrite.
 
 Not started. No code changed.
+
+## The real blocker: the open stack cannot start X
+
+Reframed the objective to system level and measured with a real benchmark instead of the
+512x512 microbench. Vendor stack:
+
+```
+glmark2-es2 --benchmark default      glmark2 Score: 341
+GL_VENDOR:   Mesa
+GL_RENDERER: zink Vulkan 1.3(PowerVR B-Series BXM-4-64 MC1 (IMAGINATION_PROPRIETARY))
+```
+
+**The vendor GL path is Mesa zink -> vendor Vulkan**, not a native vendor GL driver. Both
+stacks share the same GL layer, so glmark2 is a fair comparison.
+
+**The open stack cannot run it, because it cannot start X.**
+
+```
+MESA-LOADER: failed to open kms_swrast: /usr/local/lib/dri/kms_swrast_dri.so: No such file
+libEGL fatal: did not find extension DRI_IMAGE_DRIVER version 1
+```
+
+X uses glamor via `modesetting` on `/dev/dri/card0`. That needs EGL plus DRI drivers.
+
+**Cause: a vendor BSP Mesa install under `/usr/local/` shadows the system Mesa.**
+
+| path | contents |
+|---|---|
+| `/usr/local/lib/dri/` | **3 files**: `pvr_dri.so`, `sunxi-drm_dri.so`, `swrast_dri.so` |
+| `/usr/lib/aarch64-linux-gnu/dri/` | **61 files**, including `kms_swrast_dri.so` |
+| `/usr/local/lib/libEGL.so.1.0.0` | vendor EGL, shadows the system one |
+
+`/usr/local` takes precedence, and its EGL does not support `DRI_IMAGE_DRIVER` version 1,
+so glamor fails and X never starts. This is an installation/packaging conflict, **not a
+GPU driver capability or performance problem**.
+
+**Consequence for the objective.** The open stack is not a daily driver today and the
+overall CPU+GPU benchmark cannot even be run on it. Performance work is premature until X
+comes up on the open stack at all. The firmware-layer reimplementation is therefore not
+the next step — this is.
