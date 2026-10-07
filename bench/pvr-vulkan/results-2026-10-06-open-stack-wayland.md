@@ -1816,3 +1816,62 @@ the trace shows `unsync_fence` is signalled on every check - but it is a genuine
 
 Next step: instrument `submit_queue` to confirm the job completes and the fence is signalled, and
 check whether weston sends frame callbacks to the client at all.
+
+---
+
+# ADDENDUM 27 — 2026-10-08: RETRACTION - native Wayland is FINE. Addenda 26/26b/26c were my error.
+
+**Native Wayland works. There is no livelock.** Measured over a known 5-second wall-clock window by
+counting `wl_surface.commit` in the Wayland protocol trace:
+
+| native Wayland client | frame rate |
+|---|---|
+| `weston-simple-egl -b` (interval 0, uncapped) | **301 fps** |
+| `weston-simple-egl` (interval 1, vsync) | **60 fps** |
+
+60 fps on a 60 Hz output with vsync on, 301 fps uncapped. That is a healthy Wayland path.
+
+## How I got it wrong - three compounding measurement errors
+
+1. **Wrong grep character.** I searched for `wl_surface@N.commit` and `wl_callback@N.done`. The
+   protocol trace prints `wl_surface#N.commit`. So my "0 commits, 0 frame callbacks" conclusion -
+   the entire basis of the "never presents a frame" claim - was a bad regex. The trace actually
+   contained **2055 commits and 2051 buffer releases**.
+2. **Wrong output format.** I grepped for `frames in N seconds = X fps`. The client prints
+   `frames in N seconds: X fps` - a colon. So "no fps output" was also a bad pattern.
+3. **Misread CPU as a hang.** 78% CPU with the main thread in state R is exactly what
+   `weston-simple-egl -b` is *for*: `-b` means "Don't sync to compositor redraw (eglSwapInterval 0)",
+   i.e. deliberately uncapped. Rendering at 300 fps costs CPU. I read it as a spin.
+
+And the `gdb` backtrace - which looked like strong evidence - was a truthful snapshot of
+`eglSwapBuffers` inside `zink_flush`, but that is simply where an uncapped client spends its time.
+A real stack trace in a normal code path is not evidence of a bug.
+
+## Consequences
+
+* **Addenda 26, 26b and 26c are withdrawn**, including "X11 works, Wayland does not". If anything
+  Wayland is the *better* path here: 60 fps vsync / 301 fps uncapped, against 39-42 fps for the
+  X11 glmark2 runs (different scenes, so not a like-for-like comparison, but certainly not a
+  Wayland deficit).
+* The earlier `weston-simple-egl -b` figures of 153-213 fps recorded earlier in the session were
+  **right**, and my addendum-26b claim that they "cannot have measured this configuration" was
+  wrong.
+* The `zink_copy_image_buffer` early-return fix (mesa `863bd72`) **stays**: an unbalanced
+  `util_queue_fence_reset` is a genuine bug regardless of how it was found. It was not the cause of
+  anything observed.
+* `ZINK_FENCE_TRACE` instrumentation stays; it is env-gated and it did correctly report fence
+  states, it just answered a question that was not the real one.
+
+## The lesson, which is now the fourth instance this session
+
+Every one of these was a measurement error, not a driver bug:
+
+| round | false claim | actual error |
+|---|---|---|
+| 8 | 8-bit storage cannot compile | static absence of a case, never probed |
+| 15 | firmware trace gives per-run attribution | ring buffer persists; no epoch separator |
+| 20-22 | native Wayland clients livelock | **two bad grep patterns and a misread CPU figure** |
+
+**Rule: before concluding "X never happens", verify the pattern you are counting actually matches
+the format you are counting.** A zero count from a regex is not evidence until the regex is shown
+to match a known-present example.
