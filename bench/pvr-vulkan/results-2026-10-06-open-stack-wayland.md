@@ -2912,3 +2912,44 @@ unblended triangle, whereas the windowed GL path is a full glmark2 scene with te
 many draw calls. So the two are not comparable, and this needs a controlled test: render the *same*
 scene into a LINEAR image and into an OPTIMAL image and compare. That is the next measurement, and it
 is a driver question, not an Xwayland one.
+
+## Addendum 39b: LINEAR vs OPTIMAL is NOT the difference - controlled test
+
+Addendum 39 proposed that the swapchain images being `DRM_FORMAT_MOD_LINEAR` (the only modifier the
+driver offers) explained the windowed penalty, while zink's off-screen images are OPTIMAL. Tested
+directly by parameterising `vkrender` with `TILING=linear|optimal`, so the **same scene, same
+shaders, same code and same frame count** run into each tiling:
+
+```
+TILING=optimal  1 frame(s) in 4.968 ms (211.1 Mpix/s)  RESULT: PASS - 1048576/1048576 pixels correct
+TILING=linear   1 frame(s) in 4.801 ms (218.4 Mpix/s)  RESULT: PASS - 1048576/1048576 pixels correct
+```
+
+**Identical - LINEAR is if anything marginally faster (218 vs 211 Mpix/s), and both render correctly.**
+
+So tiling is **not** the windowed penalty. That eliminates the last driver-side candidate I had
+identified, and it also retires the counter-evidence worry from addendum 39: `pvranimate`'s fast
+LINEAR rendering was not a special case of a trivial scene after all - LINEAR rendering is simply
+fast on this driver.
+
+## Cumulative state of the 25x windowed gap
+
+Established by the bench's own vendor A/B (addendum 2): vendor **787 FPS** vs open **31 FPS** through
+*identical* weston + Xwayland + client + zink, so the gap is the Vulkan driver.
+
+Everything I have tested to explain it, and the outcome:
+
+| candidate | test | result |
+|---|---|---|
+| compositor work | weston timeline | 0.58 ms - not it |
+| WSI present call | `SWAP_TIMING` | 4.5 ms - not it |
+| X server round-trip | removed it | no FPS change |
+| Xwayland overhead | vendor hits 787 through it | not it |
+| Mesa version | open ICD + system Mesa 25.0.7 zink | 38 FPS - not it |
+| swapchain tiling | controlled `vkrender` test | no difference |
+| client draw path | removing blocking changed nothing | not it |
+
+What remains is a 20x difference in the client's own GL frame time with **the same zink** over two
+different Vulkan drivers. That is now a narrow, well-posed question about the open driver's
+draw/submit path, with every alternative ruled out by measurement rather than assumption - and the
+existing vendor A/B in this repository is the ground truth that the driver is where the gap lives.

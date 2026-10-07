@@ -311,7 +311,11 @@ int main(int argc, char **argv)
         .mipLevels = 1,
         .arrayLayers = 1,
         .samples = (VkSampleCountFlagBits)samples,
-        .tiling = VK_IMAGE_TILING_OPTIMAL,
+        /* TILING=linear|optimal - same scene, same code, only the tiling differs. The
+         * driver offers only DRM_FORMAT_MOD_LINEAR, so WSI/swapchain images are LINEAR
+         * while off-screen images are OPTIMAL; this isolates that difference. */
+        .tiling = (getenv("TILING") && !strcmp(getenv("TILING"), "linear"))
+                     ? VK_IMAGE_TILING_LINEAR : VK_IMAGE_TILING_OPTIMAL,
         .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
         .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
