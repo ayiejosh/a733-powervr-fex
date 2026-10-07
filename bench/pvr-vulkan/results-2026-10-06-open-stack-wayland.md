@@ -1051,3 +1051,51 @@ in either direction.
 Remaining known limit gap: `maxComputeWorkGroupCount` 65535 vs 65536 (Vulkan minimum vs the
 vendor). Not changed - it would need a 65536-workgroup dispatch to prove, and the delta only
 affects an app needing exactly 2^16 workgroups in one dimension.
+
+---
+
+# ADDENDUM 17 — 2026-10-08: the driver's GPU render path is fast; weston's composite is 19x slower than it
+
+## pvranimate is a real GPU render (verified, not assumed)
+
+I nearly recorded that `pvranimate` fills pixels from the CPU (it calls
+`vkGetImageSubresourceLayout` and takes a pitch) - which would have invalidated its 368 Mpix/s
+figure as a *CPU* number. Checked before claiming it: **it is a genuine GPU render** -
+
+```
+209: vkCmdBeginRenderPass(cmd, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
+214: vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+217: vkCmdDraw(cmd, 3, 1, 0, 0);        /* one full-screen triangle */
+```
+
+So the honest GPU-side comparison is:
+
+| workload | Mpix/s | what it is |
+|---|---|---|
+| `pvranimate` full-screen triangle, 4K, page flip | **368** | native Vulkan graphics, no texturing |
+| `vkgears` 800x600 | ~260 | native Vulkan graphics, geometry, no texturing |
+| zink off-screen | 90 | zink over the same driver |
+| **weston's composite** | **19** | zink, one full-window **textured blend** pass |
+
+**The driver renders a full-screen triangle at 4K at 368 Mpix/s, so its graphics path is not
+slow.** weston's composite is 19x slower for a far simpler draw (one quad, 0.48 Mpix of damage),
+on the same GPU through zink.
+
+## So the difference is the workload, and the prime suspect is now sampling/blending
+
+`pvranimate` does not sample a texture and does not blend. weston's pass does both. That is the
+remaining structural difference between a 368 Mpix/s pass and a 19 Mpix/s pass, and it is
+**testable**: render the same full-screen triangle natively with (a) no texture, (b) a texture
+sample, (c) a texture sample with blending, and compare. Not yet run.
+
+Note this also re-frames everything earlier: the ~19 ms "present cost" is not a present cost at
+all - it is the cost of the compositor's textured blend pass, which is the thing every GL
+application waits for.
+
+## Instrument note
+
+`pvr_fw/trace_0` with mask `0xC97` gives init/DM events with firmware timestamps
+(`[214] : Core clock set to 1104000000 Hz` - independently confirming the 1104 MHz reading from
+addendum 13b) but does not expose per-job durations, so it cannot time the composite pass.
+`pvranimate.c:866` is also the source of the earlier "push made BEFORE vkCmdBindPipeline is
+ignored" report, which addendum 15b showed no longer reproduces.
