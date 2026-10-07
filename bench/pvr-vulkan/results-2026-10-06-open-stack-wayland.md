@@ -410,3 +410,55 @@ open driver does not ("Currently no support for FBC").
 
 The render-target path is also LINEAR-only (`pvr_formats.c:476` "We support LINEAR only
 yet"), on a tiler, which is consistent with a low-throughput write path.
+
+---
+
+# ADDENDUM 5 — 2026-10-08: the driver's render+scanout MATCHES the vendor; zink is the gap
+
+## pvranimate: compositor-free render -> page-flip loop
+
+```
+display: 3840x2160@60, 240 frames
+presented 240 frames in 5403.4 ms: 44.4 fps (3 buffers, 0 flip timeouts)
+```
+
+4K at 44.4 FPS = **368 Mpix/s**. Vendor fill is ~380 Mpix/s (800x600 at 787 FPS).
+**The open driver's own rendering + scanout throughput matches the vendor.** With no
+compositor in the way there is no performance gap to close.
+
+And native Vulkan through the *full* stack is fine too: vkgears `-present-mailbox` 613 FPS.
+
+So the entire gap is introduced by **zink** (GL over Vulkan). zink off-screen is 7 ms;
+zink presenting is ~25 ms; native Vulkan presenting is ~1.6 ms.
+
+## pvrscanout: the driver can do OPTIMAL tiling, renderable AND exportable
+
+```
+RGBA8  OPTIMAL  CA+TS  base=yes exportable=yes
+```
+
+So "LINEAR only" (`pvr_formats.c:476`) applies to the `VK_EXT_image_drm_format_modifier`
+path only — `VK_IMAGE_TILING_OPTIMAL` images are renderable and dma-buf exportable.
+The linear-render hypothesis is therefore not forced on us.
+
+## memtypes: GPU bandwidth is FINE; CPU access and allocation are not
+
+| | open | llvmpipe |
+|---|---|---|
+| GPU copy 1 MiB + fence | 0.564 ms (~1.9 GB/s) | 0.520 ms |
+| CPU read 1 MiB | **2.982 ms (335 MB/s)** | 0.128 ms (7798 MB/s) |
+| allocate+bind 1 MiB | **0.854 ms** | 0.004 ms |
+
+The open driver's only memory type is `DEVICE_LOCAL HOST_VISIBLE HOST_COHERENT` — **there
+is no `HOST_CACHED` type**, so any CPU access is ~23x slow. zink does per-frame uploads
+through host-visible memory, which would make it slow in exactly the way native Vulkan
+clients (which upload little) are not. That is the leading explanation for why the gap is
+zink-specific, and it is a driver bug, not a zink one.
+
+## Real bug found by pvranimate
+
+```
+push constants: NOT working - content does not follow the pushed value
+ordering: a push made BEFORE vkCmdBindPipeline is ignored
+  (pixel 66 vs 2 after bind) - the driver uploads push constants while setting up the pipeline
+```
