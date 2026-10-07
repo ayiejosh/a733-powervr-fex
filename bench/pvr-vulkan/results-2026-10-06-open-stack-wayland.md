@@ -707,3 +707,48 @@ is the unconditional-PR issue the driver's own TODO describes. It costs a TA->3D
 per pass for every client *and* the compositor, and since the compositor is the shared
 bottleneck (addendum 9) this is worth attacking. Skipping it safely needs SPM sizing
 knowledge, so it was not attempted yet.
+
+---
+
+# ADDENDUM 11 — 2026-10-08: correction - the X-socket ppoll was a background thread
+
+I had reported that the client "blocks ~19 ms/frame in ppoll on the X11 socket". **That was
+wrong, and it invalidates several conclusions built on it.**
+
+`wsi_common_x11.c` starts a dedicated thread:
+
+```c
+   u_thread_setname("WSI swapchain event");
+   ...
+   xcb_wait_for_special_event(chain->conn, chain->special_event);
+```
+
+That thread blocks on the X socket for the entire life of the swapchain. It is normal and
+idle. The strace numbers were misread because **`strace -f -w -c` sums per-call wall time
+across all threads**, so one thread sleeping forever in a single call dominates the totals -
+which is also why the "totals" exceeded the wall clock of the run.
+
+So: the client's main thread was never shown to block on X, and the ~19 ms windowed-vs-off-screen
+delta remains unexplained. Do not build on the X-socket finding.
+
+## What else this round settled
+
+* **PR elimination (goal item 3) - investigated, correctly not attempted.** The PR exists
+  because SPM is a *runtime firmware decision*: `job->requires_spm_scratch_buffer` is only set
+  for `barrier_store` jobs, but the driver still always submits the PR so that a store exists
+  if SPM is hit. `pvr_sub_cmd_gfx_requires_split_submit()` is `run_frag && layers > 1` - the
+  *multilayer* split submit, a different mechanism. Skipping the PR safely needs SPM sizing
+  knowledge, and getting it wrong loses data in exactly the large-render case validate would
+  not catch. Left alone on purpose.
+* **PVR_JOB_TRACE now measures every client.** Every render submit is 3.00 jobs
+  (geometry + partial-render + fragment) for **all three**: zink, vkgears, and **weston**.
+  weston does ~40 submits/s during a 45 FPS client run - i.e. one render pass per client
+  frame at ~1.8 ms, so it *follows* the client rather than limiting it. The earlier
+  "compositor is the shared bottleneck" claim is therefore also not established.
+* **Present mode is already the fast one.** Instrumented zink: it picks
+  `present_mode=0` (IMMEDIATE) with `type=0` (KOPPER_X11), and on X11 IMMEDIATE makes Mesa
+  set `XCB_PRESENT_OPTION_ASYNC`, so there is no present-completion wait. Another theory gone.
+* **The numeric feature audit has converged.** Every advertised bit-width capability now has
+  matching pco support (`storageBuffer16BitAccess` <-> `i2i16`/`u2u16`/`f2f16`), and every
+  unsupported one is now false (`shaderInt16`, `shaderFloat16`, `shaderInt8`, `shaderInt64`,
+  `shaderFloat64`, plus the 8-bit storage trio). No further over-claims found in this axis.
