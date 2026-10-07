@@ -2675,3 +2675,62 @@ behaviour is inconsistent with that, but its per-frame ioctl *time* (~1.3 ms) is
 ~25 ms frame - so either the ioctl count is not the cost, or the cost is in the unsymbolized X server
 code that this instrument cannot see. Getting further needs either an Xwayland built with symbols or
 a present-path trace from inside it, not more sampling of a stripped binary.
+
+---
+
+# ADDENDUM 37 — 2026-10-08: the client's X11 present path does not block either; symbols are the blocker
+
+## Ruled out: a degraded dmabuf/glamor path in Xwayland
+
+Xwayland's strings contain warnings that suggested it might be falling back:
+`"glamor: 'wl_drm' not supported and linux-dmabuf v4 not supported"`,
+`"No main linux-dmabuf device advertised by compositor"`. Checked:
+
+* weston's log reports **`dmabuf support: modifiers`** - the compositor does advertise it;
+* Xwayland's stderr (`/proc/<pid>/fd/2` -> `/tmp/w.out`) contains **no** dmabuf/glamor warnings at all.
+
+So Xwayland is not taking a degraded present path. Ruled out.
+
+## Ruled out: the client waiting on present completion
+
+Instrumented `x11_acquire_next_image` in `wsi_common_x11.c` - the `xshmfence_await()` at line 2217 is
+the client-side wait for the previous Present to complete:
+
+```
+X11ACQ_TRACE=1  ->  no output
+```
+
+The counter prints every 50 calls, so `xshmfence_await` is called **fewer than 50 times in a 22 s
+run**. The client does not wait for present completion on the X11 path - consistent with zink
+selecting IMMEDIATE present mode (addendum from round 5), which makes Mesa set
+`XCB_PRESENT_OPTION_ASYNC`.
+
+## The blocker: Xwayland has no symbols and cannot easily get them
+
+| route | result |
+|---|---|
+| gdb stack sampling | **113 of 120 samples unsymbolized** (stripped binary, no Mesa fallback) |
+| `/usr/bin/Xwayland` ownership | **not owned by any dpkg package** |
+| Debian debug repo (`xwayland-dbgsym`) | unreachable |
+| `apt-get source xwayland` | no `deb-src` configured |
+| Debian pool | `xwayland_24.1.6-1.dsc` is fetchable - so a **from-source build is possible** |
+
+Building xserver from source (`-Dxorg=false -Dxwayland=true`) is the remaining route to a profileable
+Xwayland. It is a large build with many dependencies and was not attempted in this round.
+
+## Cumulative state
+
+Everything measurable on this side has now been measured and excluded:
+
+| component | measured | verdict |
+|---|---|---|
+| client draw path | removing 21.7 ms of blocking changed nothing | not the limiter |
+| client X11 present-completion wait | <50 calls in 22 s | not waiting |
+| client `ppoll` / `batch_usage_wait` | ~3% / <500 calls | not the limiter |
+| weston composite | 0.58 ms | not the limiter |
+| weston repaint cadence | timeline lossy, unmeasurable | unknown |
+| Xwayland Present | ~200 DRM ioctls/frame, ~1.3 ms ioctl time | **only remaining candidate, unprofilable** |
+
+The one hard fact still unexplained: **X11 clients cap at ~45 FPS while native Wayland reaches 301 FPS
+on the same driver, and Wayland never goes through Xwayland.** The next step is to build Xwayland with
+debug symbols; without that, further work on this specific question is guesswork.
