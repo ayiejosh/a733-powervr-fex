@@ -1237,3 +1237,66 @@ Per-pass cost and the PR job were the leading hypotheses. With GPU execution at 
 remaining ~22 ms is **latency**, and that is where effort should go: the client waits for the
 compositor and vice versa. The next measurement is where inside that round trip the time sits
 (weston's repaint scheduling, Xwayland's present handling, or swapchain buffer handback).
+
+---
+
+# ADDENDUM 20 — 2026-10-08: CORRECTION - the addendum-19 timings are not trustworthy
+
+## Retraction
+
+Addendum 19 published per-phase GPU durations ("client TA 1.58 ms, 3D 0.61 ms; compositor TA
+0.067 ms, 3D 2.67 ms") and concluded "the GPU is idle ~22 ms of every 27 ms frame". **Those
+durations were produced by pairing each `X finished` line with the preceding kick by eye, and
+that pairing is invalid.**
+
+The trace is **lossy for finish events**: in a measured window there were **119 `Kick 3D` lines
+but only 65 `3D finished` lines - 64 kicks never report a finish**. Pairing by position therefore
+attributes a finish to the wrong kick, and the resulting durations are nonsense (a FIFO pairing
+pass produced 9761 ms of 3D in a 660 ms window, i.e. 1780% busy).
+
+**So: kick counts from this trace are reliable; kick-to-finish durations are not.** The
+"GPU idle 22 ms" conclusion is withdrawn. Correct FIFO pairing was attempted as well and is also
+invalid because finishes are simply missing, not merely reordered.
+
+## What IS reliable: kick counts
+
+Kick lines carry `(PID:...)`, and they are all present.
+
+| workload | span | client TA | client 3D | other TA | other 3D |
+|---|---|---|---|---|---|
+| **off-screen** 800x600 @ 182 FPS | 522 ms | 100 | 101 | - | - |
+| **windowed** 800x600 @ 35 FPS | 660 ms | 22 | 22 | 54 (147286) | 119 (147286) |
+
+* Off-screen the client does **exactly 1 TA + 1 3D per frame** (about 95 frames in 522 ms).
+* Windowed the client still does **1 TA + 1 3D per frame** - identical render cost.
+* But a **second process, PID 147286 = Xwayland** (`ps` confirms: `Xwayland :0 -rootless`,
+  parent weston), issues **54 TA + 119 3D in the same window - roughly 5 3D passes per client
+  frame.**
+
+## And Xwayland renders even with no X11 client
+
+Running a **native Wayland** client (`weston-simple-egl -b`, no X11 client at all):
+
+```
+57 Kick TA  PID:147286      <- Xwayland
+57 Kick 3D  PID:147286
+26 Kick TA  PID:206610      <- the native Wayland client
+27 Kick 3D  PID:206610
+ 4 Kick TA  PID:147253      <- weston itself
+ 4 Kick 3D  PID:147253
+```
+
+**Xwayland keeps issuing ~57 TA + 57 3D passes on its own**, independent of whether any X client
+exists - more render passes than the actual client. That is a stable, reproducible fact and it
+looks like the real source of the windowed overhead, not the driver's per-pass cost or the PR job.
+
+(Caveat, stated plainly: without reliable durations I cannot yet say how much GPU *time* that is.
+The kick count is the trustworthy half of the measurement. A duration measurement needs a
+non-lossy source - a larger trace buffer, or the `frame:` counter, or Vulkan timestamps.)
+
+## Next step
+
+Get a trustworthy duration for the Xwayland passes, because the kick counts say Xwayland is doing
+several times the render work of the client while the client is capped near 35-40 FPS. If those
+passes are as expensive as the compositor's single pass measured earlier (~2.7 ms), Xwayland alone
+would account for a large fraction of the frame.
