@@ -2577,3 +2577,56 @@ removed, no FPS change), `batch_usage_wait`, `ppoll`, the present call, and now 
 repaint cadence. What is left is that the client's 45 FPS does not correspond to 45 composites - only
 ~15/s reach the screen - which points at Xwayland's handling of Present rather than at either the
 client or weston's rendering.
+
+---
+
+# ADDENDUM 36 — 2026-10-08: Xwayland's Present path does ~200 DRM ioctls per frame
+
+## First, correcting addendum 35
+
+Addendum 35 concluded "the client runs ahead of weston and weston coalesces" from timeline counts.
+**That conclusion is unsupported**: the same trace has *inconsistent* event counts -
+
+```
+core_commit_damage    176
+core_repaint_begin    226
+core_repaint_posted   226
+core_repaint_finished 401     <- more finishes than begins
+```
+
+401 finishes against 226 begins cannot both be complete. The `timeline` debug stream is lossy and
+internally inconsistent, exactly like the firmware trace in addendum 21, so **counting its events
+does not support conclusions about rates**. Addendum 35's ratio argument is withdrawn.
+
+## What Xwayland is actually doing
+
+`strace -f -e trace=ioctl` on Xwayland during an X11 client run (client at 23 FPS under tracing):
+
+| ioctl | calls in 7 s | per client frame |
+|---|---|---|
+| **`DRM_IOCTL_SYNCOBJ_TRANSFER`** | **13107** | **~82** |
+| `DRM_IOCTL_SYNCOBJ_CREATE` | 9584 | ~60 |
+| `DRM_IOCTL_SYNCOBJ_DESTROY` | 9583 | ~60 |
+| `DRM_IOCTL_SYNCOBJ_TIMELINE_WAIT` | 1902 | ~12 |
+| `DRM_IOCTL_PRIME_HANDLE_TO_FD` | 1600 | ~10 |
+| `DRM_IOCTL_PVR_VM_MAP` / `VM_UNMAP` | 2857 / 2851 | ~18 |
+| `DRM_IOCTL_HL_CB` | 2656 | ~17 |
+| `DRM_IOCTL_GEM_CLOSE` | 2651 | ~17 |
+
+**Roughly 200 DRM ioctls per presented frame, overwhelmingly syncobj create/transfer/destroy.**
+For comparison the *client* does ~12 transfers per frame (addendum 33b) - Xwayland does ~82, on top
+of ~60 create + ~60 destroy.
+
+Xwayland's syscall time is also dominated by this: `ioctl` 1.34 s (51%) and `futex` 1.18 s (44%) in
+an 8 s window, so ~33% of Xwayland's wall time is in syscalls.
+
+## Why this is now the leading candidate
+
+Every other component has been eliminated by measurement, and Xwayland is the one whose behaviour is
+inconsistent with the observed frame rates: the X11 path caps at ~45 FPS while Wayland reaches 301,
+and Wayland never goes through Xwayland at all. The X11 present path additionally does per-frame
+dmabuf export (`PRIME_HANDLE_TO_FD`) and explicit-sync timeline waits that the Wayland path does not.
+
+Caveat, stated up front: an ioctl count is not a time measurement. Xwayland's measured ioctl time is
+~1.3 ms/frame, which is not by itself 25 ms. What the counts establish is **what** the X11 present
+path is doing, not yet that it costs the missing time. The next step is to time it, not to count it.
