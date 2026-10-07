@@ -878,3 +878,46 @@ exceptions, and both are fixed.
   `uint8_t[440]`, so the copy is ~450 bytes per submit. Negligible; not worth touching.
 * **weston re-importing the client buffer per frame** - `PVR_ALLOC_TRACE=1` on weston:
   **0 allocations** over a 20 s client run.
+
+---
+
+# ADDENDUM 14 — 2026-10-08: addendum 10 was WRONG - the 8-bit disable is reverted
+
+**Addendum 10 is superseded. The 8-bit disable was unjustified and has been reverted.**
+
+It was based on static reasoning alone: `extract_u8`/`insert_u8`/`extract_i8`/`insert_i8` have
+no cases in `pco_trans_nir.c`, `trans_conv()`'s default is `UNREACHABLE`, and nothing sets
+`lower_bit_size`. That reasoning was not tested, and it was wrong.
+
+The bench repo's **`vk16` probe actually exercises 8-bit storage and int8/uint8 arithmetic in
+a compute shader**, and every value is correct:
+
+```
+results: f16 1.5*2.25*8 = 27 (want 27), i8 -100/3+128 = 95 (want 95), u8 200+100 = 44 (want 44), f16 cmp = 1 (want 1)
+ok  int8 division truncates and the value survives (95)
+ok  uint8 addition wraps (44)
+```
+
+So the 8-bit ops that matter are emitted; the ones I worried about are simply not reached.
+`storageBuffer8BitAccess`, `uniformAndStorageBuffer8BitAccess`, `storagePushConstant8` and
+`shaderInt8` are restored (mesa `43247f6`), and `vk16` goes 2 failures -> 1 -> **0**.
+
+**This is the second time static absence of a case was mistaken for a bug.** The first was
+`shaderFloat16` - except there the failing test (`--validate`: 20/27 wrong) existed, so that
+fix stands. The rule: a missing case is a hypothesis, not a finding; run the probe that
+exercises it before changing an advertised capability.
+
+## What stands from the audit
+
+| feature | state | evidence |
+|---|---|---|
+| `shaderFloat16` | **false** (deliberate) | 20/27 glmark2 scenes wrong with it on, 0/27 off; +42.8% mean FPS |
+| 8-bit storage, `shaderInt8` | **true** (restored) | `vk16` computes int8/uint8/f16 correctly |
+| `shaderInt16`, `shaderInt64`, `shaderFloat64` | false | genuinely unimplemented |
+| `drawIndirectCount`, `occlusionQueryPrecise`, `variablePointers`, `vulkanMemoryModel` | false | genuinely unimplemented |
+
+## Bench probes are now part of the loop
+
+`vk16`, `bda`, `vk13`, `pctest` all PASS against the current ICD. They caught a regression the
+GL-level tests could not, which is exactly why they exist. `vk16`'s `shaderFloat16`
+expectation was stale and has been updated to expect 0 with the reason inline.
