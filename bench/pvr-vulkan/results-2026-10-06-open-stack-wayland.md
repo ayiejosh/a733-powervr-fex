@@ -1300,3 +1300,41 @@ Get a trustworthy duration for the Xwayland passes, because the kick counts say 
 several times the render work of the client while the client is capped near 35-40 FPS. If those
 passes are as expensive as the compositor's single pass measured earlier (~2.7 ms), Xwayland alone
 would account for a large fraction of the frame.
+
+## Addendum 20b: reliable durations via TA->3D kick pairing
+
+The lossy lines are the `finished` ones. But **both `Kick TA` and `Kick 3D` lines carry `(PID:...)`**,
+so pairing `Kick TA` -> next `Kick 3D` *of the same PID* gives a reliable tiling-phase duration, and
+consecutive `Kick TA` of the same PID gives the render period. Both halves of those pairs are known
+good, so this sidesteps the lossiness entirely.
+
+| workload | PID | TA->3D | period | rate |
+|---|---|---|---|---|
+| off-screen 800x600 (client 182 FPS) | client | **1.67 ms** | **5.20 ms** | 192/s |
+| windowed 800x600 (client 35 FPS) | client | **3.43 ms** | **30.20 ms** | **33/s** |
+| windowed 800x600 | **Xwayland (147286)** | 0.30 ms | **12.17 ms** | **82/s** |
+| native Wayland client | **Xwayland (147286)** | 0.33 ms | **11.12 ms** | **90/s** |
+| native Wayland client | client | 3.36 ms | 23.10 ms | 43/s |
+
+### What this says
+
+1. **Xwayland renders continuously at ~82-90 passes/s, whether or not any X client exists.** It
+   does this with a native Wayland client running and no X11 client at all. Its TA->3D is cheap
+   (0.3 ms) because it is one full-screen quad, so this is not geometry - it is a repaint loop
+   that never stops. On a stack where every pass costs real time, that is continuous GPU work
+   serving nothing.
+2. **The client's own cost doubles when windowed**: TA->3D goes 1.67 ms -> 3.43 ms
+   (off-screen -> windowed) for the *same* scene and size. The scene did not change; contention
+   with Xwayland's loop did.
+3. The client's frame period goes 5.20 ms -> 30.20 ms, i.e. **5.8x**, purely from being windowed.
+
+The earlier claim that this is all "latency" (addendum 19) was not supported; what is supported is
+that a **second process is competing for the GPU continuously** and the client's own phase time
+roughly doubles once it is on screen.
+
+### Next step
+
+Find what Xwayland is repainting at 90/s with no clients. If that loop is unnecessary (its root
+window should be static), stopping it removes continuous GPU contention and is worth more than any
+per-pass micro-optimisation in the driver. Check `xwl_present`/damage handling and whether the root
+window is being invalidated every frame.
