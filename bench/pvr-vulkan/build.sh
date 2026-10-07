@@ -168,3 +168,7 @@ glheadless_link() {
 glheadless_link
 
 echo "built: $(pwd)/vktest, $(pwd)/vkrender and $(pwd)/glheadless"
+
+# samplers: maxPerStageDescriptorSamplers probe. Build variants with -DNS=<n>;
+# the shader needs the same -DNSAMP=<n>.
+glslangValidator -V --target-env vulkan1.2 -DNSAMP=128 -o s128.spv samplers.comp

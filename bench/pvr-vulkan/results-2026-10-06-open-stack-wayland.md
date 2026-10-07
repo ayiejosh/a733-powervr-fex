@@ -1421,3 +1421,48 @@ The remaining honest options for GPU timing:
    which the mainline module does not have (its CCB list ends at 218) and whose payload the closed
    userspace builds. Cross-stack, but it is the only source that would give an app-controlled,
    unambiguous GPU timestamp.
+
+---
+
+# ADDENDUM 22 — 2026-10-08: sampler limits were under-reported 2x; probed to 128
+
+Same pattern as the compute workgroup limit (addendum 16): the driver reported the **Vulkan
+minimum** rather than the silicon's limit.
+
+| limit | open (before) | vendor | open (now) |
+|---|---|---|---|
+| `maxPerStageDescriptorSamplers` | **16** | 32 | **32** |
+| `maxPerStageDescriptorSampledImages` | **16** | - | **32** |
+| `maxDescriptorSetSamplers` | 3*16 = 48 | 256 | 3*32 = 96 |
+| `maxDescriptorSetSampledImages` | 3*16 = 48 | - | 3*32 = 96 |
+
+## Probed, not assumed
+
+New probe `samplers.c` + `samplers.comp`: an N-element `sampler2D` array where texture *i* is a
+1x1 image holding the value *i*, and the shader writes each sampled value to slot *i*. The
+readback therefore proves **both** how many samplers are usable **and** that each index reads the
+right texture - an array that silently aliased or ran short would show wrong values, not zeros.
+
+```
+NS=32    32 correct, 0 untouched, 0 wrong
+NS=64    64 correct, 0 untouched, 0 wrong
+NS=96    96 correct, 0 untouched, 0 wrong
+NS=128  128 correct, 0 untouched, 0 wrong
+```
+
+So **at least 128 samplers work per stage and per set** while the driver advertised 16. Set to 32
+per stage - vendor parity, comfortably inside what was probed - and 3*32 per set.
+
+No regressions: `bda`, `vk13`, `pctest`, `vk16`, `wgsize` all PASS; `glmark2 --validate` still
+0 failures / 27 pass.
+
+## Why this matters for the objective
+
+Under-reporting a limit is not conservative: an application that needs 17-32 samplers in a stage
+**refuses to run at all** on the open stack while working on the vendor stack. This is the third
+instance of the same defect class found by probing rather than reading code (workgroups 128->512,
+samplers 16->32, and the two over-claims in the other direction: fp16 and 8-bit storage).
+
+The general rule now demonstrated four times: **the driver's advertised capability surface must be
+measured, not read.** `wgsize` and `samplers` are the two probes that do it; both found the
+reported value to be the Vulkan minimum rather than the hardware's.
