@@ -970,3 +970,36 @@ hardware path works is the over-claim mistake**, so it needs a probe (a compute 
 
 The `subgroupSize` difference (vendor 1, open 32) and lower descriptor limits explain why some
 applications that work on the vendor stack may refuse to run on the open one.
+
+## Addendum 15b: the push-constants bug does NOT reproduce any more
+
+Two stale notes pointed at it:
+
+* `bda.c:236` - "...they depend on a separate, open driver bug in 64-bit push constant
+  handling..."
+* `pvranimate` previously reported "a push made BEFORE vkCmdBindPipeline is ignored - the
+  driver uploads push constants while setting up the pipeline"
+
+Neither reproduces. `pctest` **PASSES (0 failures)** on every case, including both block
+declarations and the partial updates that the bookkeeping would break:
+
+```
+uvec4     full 16 bytes at offset 0    PASS
+uvec4     4 bytes at offset 0          PASS   got aaaaaaaa 00000000 00000000 00000000
+uvec4     8 bytes at offset 8          PASS   got 00000000 00000000 bbbbbbbb cccccccc
+uint64_t  full 16 bytes at offset 0    PASS
+uint64_t  4 bytes at offset 0          PASS
+uint64_t  8 bytes at offset 8          PASS
+PASS (0 failures)
+```
+
+Code reading agrees: `pvr_cmd_upload_push_consts()` early-returns unless `dirty`, uploads
+`bytes_updated` bytes and clears `dirty`; and the draw path calls it for the
+vertex/geometry and fragment stages **at the top level of the draw**, not inside the
+`dirty.gfx_pipeline_binding` block - so a push both before and after the bind reaches the GPU
+on the next draw. `update_push_constants()` correctly keeps `bytes_updated` as the high-water
+mark, so partial pushes upload the whole touched range.
+
+Conclusion: these two comments are **stale**; the bug was either fixed in an earlier session or
+was misdiagnosed. They should be updated rather than re-investigated. (`bda`'s `--bda-only`
+flag still exists for a different reason and is harmless.)
