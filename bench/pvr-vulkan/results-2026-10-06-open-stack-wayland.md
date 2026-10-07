@@ -2630,3 +2630,48 @@ dmabuf export (`PRIME_HANDLE_TO_FD`) and explicit-sync timeline waits that the W
 Caveat, stated up front: an ioctl count is not a time measurement. Xwayland's measured ioctl time is
 ~1.3 ms/frame, which is not by itself 25 ms. What the counts establish is **what** the X11 present
 path is doing, not yet that it costs the missing time. The next step is to time it, not to count it.
+
+## Addendum 36b: Xwayland cannot be profiled by stack sampling (stripped)
+
+Attempted the same poor-man's profiler that found the client's round-trip - gdb stack sampling, 12
+snapshots of all threads:
+
+```
+#0  ??                        113 of 120 samples
+#0  ioctl                       5
+#0  syscall                     1
+#0  nir_lower_vars_to_ssa       1
+```
+
+**113 of 120 samples land in unsymbolized code.** Xwayland is a stripped system binary, so its own
+X-server frames carry no symbols, and unlike the client (where the interesting frames were in Mesa,
+which we build) there is nothing to fall back on. The technique that worked for the client does not
+work here.
+
+The handful that are attributable are still informative:
+
+* `ioctl` -> `drmIoctl` -> `pvr_drm_winsys_buffer_create` (4) and `pvr_drm_winsys_transfer_submit` (1)
+  - consistent with the ~200 DRM ioctls/frame counted in addendum 36;
+* **`nir_lower_vars_to_ssa` / `pco_preprocess_nir` / `pco_nir_opt`** - Xwayland is **compiling
+  shaders** during the run. A few samples is not proof of per-frame compilation, but it is worth
+  noting because Xwayland's own compositing shaders should be compiled once and cached.
+
+## State after this round
+
+Established by measurement, and each one eliminates a candidate:
+
+| component | status |
+|---|---|
+| client draw path | eliminated - removing 21.7 ms of blocking round-trip changed nothing (34b) |
+| weston composite | 0.58 ms |
+| weston repaint cadence | not measurable from the lossy timeline (36) |
+| the present call | 4.5 ms |
+| client `ppoll`, `batch_usage_wait` | ~3%, <500 calls |
+| **Xwayland Present** | **~200 DRM ioctls/frame, ~1.3 ms of measured ioctl time** |
+
+The one unexplained quantity remains: X11 clients cap at ~45 FPS while native Wayland reaches 301
+FPS on the same driver, and Wayland never goes through Xwayland. Xwayland is the only component whose
+behaviour is inconsistent with that, but its per-frame ioctl *time* (~1.3 ms) is far short of the
+~25 ms frame - so either the ioctl count is not the cost, or the cost is in the unsymbolized X server
+code that this instrument cannot see. Getting further needs either an Xwayland built with symbols or
+a present-path trace from inside it, not more sampling of a stripped binary.
