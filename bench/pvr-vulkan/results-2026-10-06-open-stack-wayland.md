@@ -1972,3 +1972,43 @@ addendum 17), so the composite is ~20x slower than the hardware's demonstrated c
 That makes the question sharp and narrow: **why does one full-window textured blend pass run at
 18 Mpix/s when the same GPU does 368 Mpix/s on a full-screen triangle?** Everything else on the
 windowed path has now been excluded by measurement.
+
+## Addendum 28b: 7-point fit, and CORRECTION - the cross-validation in 28 does not hold
+
+Swept the window size with the `build` scene, windowed vs off-screen, `glmark2-es2` reporting FPS:
+
+| size | Mpix | overhead |
+|---|---|---|
+| 320x240 | 0.077 | 6.9 ms |
+| 480x360 | 0.173 | 13.0 ms |
+| 640x480 | 0.307 | 12.2 ms |
+| 800x600 | 0.480 | 20.8 ms |
+| 1024x768 | 0.786 | 35.7 ms |
+| 1280x720 | 0.922 | 37.3 ms |
+| 1600x1200 | 1.920 | 63.9 ms |
+
+Least squares over all seven:
+
+```
+overhead = 6.30 ms + 31.2 ms/Mpix        r^2 = 0.978
+        => damage-area throughput ~32 Mpix/s = 128 MB/s, plus a 6.3 ms fixed cost
+```
+
+**Correction to addendum 28:** the 56.4 ms/Mpix figure there came from a two-point fit (the 800x600
+cluster plus 320x240) and it happened to predict `weston-simple-egl` well. With the seven-point fit
+that agreement **disappears** - this model predicts ~108-150 fps for `weston-simple-egl` against 301
+measured. So **the cross-validation claimed in addendum 28 is withdrawn**; the model fits glmark2's
+own windowed/off-screen pairs (r^2 = 0.978, which is real) but has not been shown to predict a
+different client.
+
+The likely reason, which is testable and not yet tested: the relevant quantity is the **damaged**
+area, not the window area. `weston-simple-egl` draws a rotating triangle, so weston only composites
+the triangle's bounding box, while `glmark2` damages essentially its whole window. That would
+reconcile the numbers - but it is an explanation, not evidence, until weston's actual damage region
+is measured.
+
+So the honest statement of what is established: **for a client that damages its whole window, the
+windowed penalty is ~6 ms plus 31 ms per Mpix of damage, essentially independent of the scene's
+render cost.** The fixed 6.3 ms component is new information - it is too large to be noise and too
+small to be a vblank, and it is a candidate for the round-trip latency of the
+client -> Xwayland -> weston -> client handoff.
