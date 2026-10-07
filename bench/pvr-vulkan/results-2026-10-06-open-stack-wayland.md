@@ -801,3 +801,21 @@ Per-pass cost is the remaining suspect: weston's single full-window textured-ble
 which this board cannot provide: no `perf`, no `apitrace`, no `renderdoc`, no `valgrind`; only
 `strace` and `gprof` (needs -pg builds). The driver's `pvr_fw/trace_*` debugfs is the remaining
 instrument.
+
+## Addendum 12b: swapchain images are OPTIMAL, not LINEAR
+
+Instrumented `zink_resource_create` to print tiling for the swapchain-sized resource:
+
+```
+[tl] 800x600 linear=0 modifiers=0 m0=0x0 dt=0
+```
+
+So the client's swapchain image is `VK_IMAGE_TILING_OPTIMAL` with **no DRM modifiers at all**
+(the WSI did not take the modifier path here). The "weston samples a LINEAR/untiled texture and
+that is why the composite is slow" hypothesis is therefore **dead**, and so is the earlier
+`supports_modifiers=false` result being about tiling.
+
+Remaining, unexplained: weston's single full-window textured-blend pass costs ~25 ms of GPU
+time on the same GPU where the client's own render pass costs ~5 ms and a native-Vulkan
+full-screen pass costs ~2.7 ms/Mpix. Nothing available on this board can profile a GPU pass -
+no `perf`, no `apitrace`, no `renderdoc`, no `valgrind`; only `strace` and `gprof` (needs -pg).
