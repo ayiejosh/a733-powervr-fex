@@ -1568,3 +1568,29 @@ that enables a path the driver was already written for.
 
 Five of seven were wrong, in the same direction. The two honest ones are exactly the two that
 have a real backing constant or array - which remains the reliable predictor.
+
+## Addendum 24b: the maxColorAttachments fix is now MEASURED
+
+Addendum 24 flagged that the `maxColorAttachments` 4 -> 8 fix rested on static evidence (the
+driver's own constant, its array sizes and asserts, and vendor parity) with no probe. That gap is
+closed.
+
+`mrt.c` + `mrt.vert`/`mrt.frag` renders into **eight 1x1 colour attachments** with a fragment shader
+whose eight outputs each write their own index into red, then reads every attachment back.
+Attachment *i* must read back *i*. It uses `VK_KHR_dynamic_rendering` (which the driver reports) so
+there is no render pass or framebuffer object in the way.
+
+```
+reported maxColorAttachments = 8
+vkCreateGraphicsPipelines (8 colour attachments) -> 0
+8 attachments: 8 correct, 0 still at clear value, 0 wrong
+  attachment 0: ok  red=0 want=0   ...   attachment 7: ok  red=7 want=7
+VERDICT: 8 colour attachments render correctly
+```
+
+The two negative counters matter: **0 still at clear value** proves attachments 4..7 were genuinely
+written (a driver that only bound 4 would leave them cleared), and **0 wrong** rules out aliasing
+between attachment indices.
+
+So `maxColorAttachments = 8` is now supported by measurement as well as by the driver's constant,
+matching the vendor.

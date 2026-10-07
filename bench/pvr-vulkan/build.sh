@@ -176,3 +176,8 @@ glslangValidator -V --target-env vulkan1.2 -DNSAMP=128 -o s128.spv samplers.comp
 # storageimages: maxPerStageDescriptorStorageImages probe. Build with -DNIMG=<n>;
 # the shader needs the same -DNIMG=<n>.
 glslangValidator -V --target-env vulkan1.2 -DNIMG=32 -o si32.spv storageimages.comp
+
+# mrt: 8 colour attachment render probe (validates maxColorAttachments=8).
+glslangValidator -V --target-env vulkan1.2 -o mrt.vert.spv mrt.vert
+glslangValidator -V --target-env vulkan1.2 -o mrt.frag.spv mrt.frag
+link mrt mrt.c
