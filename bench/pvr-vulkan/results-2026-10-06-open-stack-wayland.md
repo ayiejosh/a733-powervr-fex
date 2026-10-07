@@ -1175,3 +1175,65 @@ independent controls, and flipping only the flag puts them in disagreement, whic
 
 The TODO means "enable it on both sides together", not "this flag is mistakenly false". Left
 alone deliberately.
+
+---
+
+# ADDENDUM 19 — 2026-10-08: the firmware trace works, and the bottleneck is NOT GPU throughput
+
+This is the GPU-side instrument that was missing for many rounds. It finally works.
+
+## Enabling it
+
+`fw_trace_mask` bits are `ROGUE_FWIF_LOG_TYPE_*` (`pvr_rogue_fwif.h`), so the useful ones are:
+
+```
+TRACE = 0x1   GROUP_MAIN = 0x2 (TA/3D kick+finish)   GROUP_SPM = 0x100
+echo 0x103 > /sys/kernel/debug/dri/1/pvr_params/fw_trace_mask
+cat /sys/kernel/debug/dri/1/pvr_fw/trace_0        # trace_1 is a second thread, often empty
+```
+
+Each line is `[<timestamp>] : <event> ... (PID:<pid>, ...)` - **the PID is in the line, so events can
+be attributed to the compositor or a client.**
+
+## The timestamp unit
+
+Frame period 24254 units at a measured 178 FPS. The core clock is 1104 MHz, and 1104/256 = 4.3125 MHz.
+24254 x (1/4.3125e6) = 5.63 ms -> **177.6 FPS, matching the measurement**. So **1 unit = 256 core
+clocks = 232 ns** on this part.
+
+## What the GPU is actually doing (windowed, 800x600, client at 37 FPS = 27 ms/frame)
+
+| | TA | 3D | total |
+|---|---|---|---|
+| client (PID 201394) | 6808 u = **1.58 ms** | 2645 u = **0.61 ms** | 2.19 ms |
+| compositor (PID 147286) | 288 u = 0.067 ms | 11506 u = **2.67 ms** | 2.74 ms |
+
+**Total GPU execution is ~5 ms of a 27 ms frame. The other ~22 ms the GPU is idle.** So the
+windowed bottleneck is **not GPU throughput** - it is latency/queueing in the
+client -> Xwayland -> compositor -> client loop.
+
+That also explains the two-client result from addendum 9 (19+18 = 37 FPS vs 40 alone) better than a
+throughput model did: a latency-bound loop does not speed up by adding clients, and it does not slow
+down proportionally either. The per-frame round trip is simply ~27 ms.
+
+Worth noting the compositor's TA is tiny (0.067 ms) but its **3D is 4x the client's** - consistent
+with one big blended quad (poor binning efficiency: the whole screen is one huge triangle) versus
+the client's many small ones. It is the compositor's most expensive single item, but at 2.67 ms it is
+still only 10% of the frame.
+
+## SPM / partial render is not happening
+
+Every single 3D kick in the trace reports **`Partial render:0`**, and there are **no
+`RGXFW_SF_MAIN_TA_RESTART_AFTER_PRENDER` events** ("Restart TA after partial render"). So for these
+workloads SPM is not being entered at all.
+
+This does not by itself unblock PR elimination (the driver still cannot know in advance), but it does
+mean the PR job is pure overhead in the common case - and it moves the PR question down the priority
+list, because GPU execution is not the bottleneck anyway.
+
+## Corrected priority
+
+Per-pass cost and the PR job were the leading hypotheses. With GPU execution at ~5 ms of 27 ms, the
+remaining ~22 ms is **latency**, and that is where effort should go: the client waits for the
+compositor and vice versa. The next measurement is where inside that round trip the time sits
+(weston's repaint scheduling, Xwayland's present handling, or swapchain buffer handback).
