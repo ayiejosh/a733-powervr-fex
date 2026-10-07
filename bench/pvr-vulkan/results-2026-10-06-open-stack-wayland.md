@@ -1466,3 +1466,55 @@ samplers 16->32, and the two over-claims in the other direction: fp16 and 8-bit 
 The general rule now demonstrated four times: **the driver's advertised capability surface must be
 measured, not read.** `wgsize` and `samplers` are the two probes that do it; both found the
 reported value to be the Vulkan minimum rather than the hardware's.
+
+---
+
+# ADDENDUM 23 — 2026-10-08: storage-image limit was 4 (the Vulkan minimum); probed to 32
+
+| limit | open (before) | open (now) |
+|---|---|---|
+| `maxPerStageDescriptorStorageImages` | **4** | **32** |
+| `maxDescriptorSetStorageImages` | 3*4 = 12 | 3*32 = 96 |
+
+4 is exactly the Vulkan minimum, and unlike `maxBoundDescriptorSets` (= 4, which IS backed by
+`PVR_MAX_DESCRIPTOR_SETS` sizing fixed arrays) there is **no backing constant anywhere** for this
+one - so it was a floor, not a limit.
+
+## Probed, not assumed
+
+`storageimages.c` + `.comp`: the shader stores index *i* into storage image *i*, then reads each
+image back into an SSBO. A single buffer readback therefore proves both that image *i* is
+addressable and that it holds the value written to image *i* - aliasing or a short array would
+show wrong values, not zeros.
+
+```
+NIMG=4    4 correct, 0 untouched, 0 wrong
+NIMG=8    8 correct, 0 untouched, 0 wrong
+NIMG=16  16 correct, 0 untouched, 0 wrong
+NIMG=32  32 correct, 0 untouched, 0 wrong
+```
+
+Set to 32 per stage and 3*32 per set, matching the sampler values.
+
+No regressions: `bda`, `vk13`, `pctest`, `vk16`, `wgsize`, `samplers` all PASS;
+`glmark2 --validate` still 0 failures / 27 pass.
+
+## The audit is converging on a clear pattern
+
+Four advertised limits have now been measured, and **every one that sat exactly on the Vulkan
+minimum turned out to be a floor**:
+
+| limit | reported | measured | outcome |
+|---|---|---|---|
+| `maxComputeWorkGroupInvocations` | 128 (= min) | 512 | fixed |
+| `maxPerStageDescriptorSamplers` | 16 (= min) | >=128 | fixed to 32 |
+| `maxPerStageDescriptorStorageImages` | 4 (= min) | >=32 | fixed to 32 |
+| `maxBoundDescriptorSets` | 4 (= min) | 4 | **honest** - backed by `PVR_MAX_DESCRIPTOR_SETS` arrays |
+
+The rule that predicts the outcome: **if a reported limit equals the Vulkan minimum AND the driver
+has no constant or array sized to it, it is almost certainly a floor.** `maxBoundDescriptorSets`
+is the counter-example that proves the test - it is genuinely 4, and changing the number alone
+would overrun fixed arrays.
+
+Remaining unprobed minimum-valued limits: `maxPerStageDescriptorInputAttachments` (4),
+`maxComputeSharedMemorySize` (16 KB), `maxPerStageDescriptorUniformBuffers` (13, above min 12).

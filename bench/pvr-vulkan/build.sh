@@ -172,3 +172,7 @@ echo "built: $(pwd)/vktest, $(pwd)/vkrender and $(pwd)/glheadless"
 # samplers: maxPerStageDescriptorSamplers probe. Build variants with -DNS=<n>;
 # the shader needs the same -DNSAMP=<n>.
 glslangValidator -V --target-env vulkan1.2 -DNSAMP=128 -o s128.spv samplers.comp
+
+# storageimages: maxPerStageDescriptorStorageImages probe. Build with -DNIMG=<n>;
+# the shader needs the same -DNIMG=<n>.
+glslangValidator -V --target-env vulkan1.2 -DNIMG=32 -o si32.spv storageimages.comp
