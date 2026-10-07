@@ -1629,3 +1629,40 @@ different check:
    checking the limits struct against the spec's invariants, which needs no probe at all.
 
 Class 3 is the cheapest to check and had not been done before now.
+
+---
+
+# ADDENDUM 25 — 2026-10-08: two limits violated Vulkan's required minimums
+
+Class 3 (internal contradictions) generalised: instead of only checking the limits against each
+other, dump them and check against **a known-good implementation**. `vkaudit` only prints a subset,
+so I added `vlimits.c`, which prints every limit the spec's invariants depend on. With no Vulkan CTS
+on this board, **llvmpipe** (an independent implementation that passes conformance) is the reference.
+
+| limit | llvmpipe | open pvr (before) | open pvr (now) |
+|---|---|---|---|
+| `maxFragmentInputComponents` | **128** | **64** | **128** |
+| `maxFragmentCombinedOutputResources` | 104 | **4** | **64** |
+| `maxVertexOutputComponents` | 128 | 64 | 64 (legal: minimum is 64) |
+| `maxColorAttachments` | 8 | 8 | 8 |
+| `maxPerStageResources` | 1000000 | 57 | 57 |
+
+* **`maxFragmentInputComponents = 64` is below the required minimum of 128.** This is not a
+  judgement call - the spec mandates >= 128 and llvmpipe reports exactly that.
+* **`maxFragmentCombinedOutputResources = 4`** must be at least the sum of
+  `maxPerStageDescriptorStorageBuffers` (16) + `maxPerStageDescriptorStorageImages` (32) +
+  `maxColorAttachments` (8) = 56. 4 is below `maxColorAttachments` alone. Now 64.
+
+Both were hardcoded with no backing constant. No regressions in any probe or `glmark2 --validate`.
+
+## Updated defect taxonomy
+
+| class | example | how to find it |
+|---|---|---|
+| **over-claim** | fp16, 8-bit storage | probe the capability |
+| **under-report** | workgroups 128, samplers 16, storage images 4, colour attachments 4 | compare to a driver constant, or probe |
+| **internal contradiction** | per-set storage buffers 12 < per-stage 16 | check limits against each other |
+| **below required minimum** | fragment inputs 64 < 128, combined outputs 4 < 56 | **diff against a known-good implementation (llvmpipe)** |
+
+The fourth class is the newest and the cheapest to apply broadly: `vlimits` + llvmpipe gives a
+reference table, and any limit where pvr is *lower* than llvmpipe deserves a look.

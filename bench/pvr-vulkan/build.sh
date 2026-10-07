@@ -181,3 +181,6 @@ glslangValidator -V --target-env vulkan1.2 -DNIMG=32 -o si32.spv storageimages.c
 glslangValidator -V --target-env vulkan1.2 -o mrt.vert.spv mrt.vert
 glslangValidator -V --target-env vulkan1.2 -o mrt.frag.spv mrt.frag
 link mrt mrt.c
+
+# vlimits: dump the limits Vulkan's invariants depend on (vkaudit only prints a subset).
+link vlimits vlimits.c
