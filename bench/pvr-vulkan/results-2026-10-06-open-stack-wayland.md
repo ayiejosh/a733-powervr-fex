@@ -921,3 +921,52 @@ exercises it before changing an advertised capability.
 `vk16`, `bda`, `vk13`, `pctest` all PASS against the current ICD. They caught a regression the
 GL-level tests could not, which is exactly why they exist. `vk16`'s `shaderFloat16`
 expectation was stale and has been updated to expect 0 with the reason inline.
+
+---
+
+# ADDENDUM 15 — 2026-10-08: vkaudit diff vs vendor; timestamps scoped; limits under-reported
+
+Ran `vkaudit` against the fixed ICD and diffed with `audit-2026-09-23-vendor.txt`.
+`audit-open-driver-current.txt` is refreshed with the post-fix surface.
+
+## timestampPeriod = 0 is CORRECT, not a bug
+
+It looked like a spec violation (vendor: 512.0, open: 0.0), but `pvr_query.c` says explicitly
+"We don't currently support timestamp queries. VkQueueFamilyProperties->timestampValidBits = 0",
+and `CmdWriteTimestamp2` is a stub that calls `UNREACHABLE`. With no valid bits, the period is
+moot. **Checked before changing it** - which is the lesson from addendum 14 working.
+
+**But timestamp queries are a real missing capability (the vendor has them), and they are the
+GPU-timing instrument this investigation has been missing all along.** The mechanism is
+identified and bounded:
+
+* firmware has a dedicated CCB command: `RGXFWIF_CCB_CMD_TYPE_VK_TIMESTAMP` (223),
+  "Process a vulkan timestamp", with `PRGXFWIF_TIMESTAMP_ADDR` - the firmware does the work
+* the **mainline kernel module does not have it**: its CCB list stops at 218
+  (`pvr_rogue_fwif.h:1542` is the last), so this is a **cross-stack** change (kernel CCB type +
+  uapi + Mesa `CmdWriteTimestamp2` + query-pool path + `timestampValidBits`/`timestampPeriod`),
+  and testing it needs a module reload.
+
+Scoped, not started: too large to land safely in one round, and it is the single change that
+would also unblock profiling the compositor pass.
+
+## Limits the open driver under-reports vs the vendor
+
+| limit | vendor | open |
+|---|---|---|
+| `maxComputeWorkGroupInvocations` | 512 | **128** |
+| `maxComputeWorkGroupSize` | 512/512/64 | **128/128/64** |
+| `maxPerStageDescriptorSamplers` | 32 | **16** |
+| `maxDescriptorSetSamplers` | 256 | **48** |
+| `maxBoundDescriptorSets` | 8 | **4** |
+| `core.occlusionQueryPrecise` | 1 | 0 |
+| `vk11.variablePointers(-StorageBuffer)` | 1 | 0 |
+| `vk12.bufferDeviceAddressCaptureReplay` | 1 | 0 |
+
+Same silicon, so the vendor's numbers are achievable. 128 is exactly the Vulkan *minimum*, which
+suggests a floor rather than a hardware limit - but **raising a limit without proving the
+hardware path works is the over-claim mistake**, so it needs a probe (a compute dispatch with a
+256/512-invocation workgroup) before any change. Not done yet.
+
+The `subgroupSize` difference (vendor 1, open 32) and lower descriptor limits explain why some
+applications that work on the vendor stack may refuse to run on the open one.
