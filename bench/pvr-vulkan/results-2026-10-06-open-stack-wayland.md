@@ -752,3 +752,52 @@ delta remains unexplained. Do not build on the X-socket finding.
   matching pco support (`storageBuffer16BitAccess` <-> `i2i16`/`u2u16`/`f2f16`), and every
   unsupported one is now false (`shaderInt16`, `shaderFloat16`, `shaderInt8`, `shaderInt64`,
   `shaderFloat64`, plus the 8-bit storage trio). No further over-claims found in this axis.
+
+---
+
+# ADDENDUM 12 — 2026-10-08: the cost is weston's GPU composite, and it is not scanout or CPU
+
+Two clean experiments pin it down.
+
+## Headless compositor: scanout is not the cost
+
+Same client, same zink, but weston on `headless-backend.so` (no KMS, no scanout, no flips),
+1920x1080 output:
+
+| compositor | client FPS |
+|---|---|
+| KMS, 3840x2160 output | 40-45 |
+| **headless, 1920x1080 output** | **40** |
+
+Identical. So the KMS scanout/page-flip path costs nothing here, and **weston's GL composite
+is the cost**. Note also that a 4x smaller output did not help - consistent with cost tracking
+*damage area*, not output size.
+
+## weston is CPU-idle while the client collapses
+
+| client window | client FPS | weston CPU |
+|---|---|---|
+| 320x240 | 95 | 6% of a core |
+| 1600x1200 | 14 | **3% of a core** |
+
+weston's CPU goes *down* while its work per frame goes up by 25x. So it is GPU-bound, not CPU.
+
+## What this rules out for the present/窗口 cost
+
+* KMS scanout and page flips (headless is identical)
+* CPU copies in the compositor (flat 3-6%)
+* output size (4x smaller output, same FPS)
+* present-completion waits (zink picks IMMEDIATE -> `XCB_PRESENT_OPTION_ASYNC`)
+* acquire and present calls themselves (instrumented: acquire ~free, present ~2.6 ms)
+* QueueSubmit (instrumented: <1 ms windowed)
+
+So weston's composite of an 800x600 damage region costs ~25 ms of **GPU** time, i.e.
+~19 Mpix/s, against zink's own off-screen render at 90 Mpix/s and native Vulkan at 368 Mpix/s.
+weston issues 3.00 jobs/submit (geometry + PR + fragment), same as every other client, one
+submit per client frame.
+
+Per-pass cost is the remaining suspect: weston's single full-window textured-blend pass costs
+~5x what the client's own render pass costs, on the same GPU. That needs GPU-side counters,
+which this board cannot provide: no `perf`, no `apitrace`, no `renderdoc`, no `valgrind`; only
+`strace` and `gprof` (needs -pg builds). The driver's `pvr_fw/trace_*` debugfs is the remaining
+instrument.
