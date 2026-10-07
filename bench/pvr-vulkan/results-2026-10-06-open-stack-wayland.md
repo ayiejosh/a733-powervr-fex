@@ -2109,3 +2109,59 @@ measurement agrees on is that **weston does very little work and something seria
 composites/s when a client damages its whole window**. The next measurement has to be *inside*
 weston's repaint path rather than around it - weston is stripped, so that means building weston with
 instrumentation, or using its `weston-debug` facility if it exposes a repaint timeline.
+
+---
+
+# ADDENDUM 30 — 2026-10-08: weston is EXONERATED. The ~20 ms is client-side.
+
+This is the measurement that should have been taken many rounds ago: `weston-debug timeline` gives
+weston's repaint event points with nanosecond timestamps, i.e. the view from *inside* the compositor
+rather than inferred from client frame rates.
+
+```sh
+# weston must be started with --debug
+weston-debug --list                     # log, scene-graph, timeline, proto, drm-backend, gl-renderer
+weston-debug timeline -o /tmp/tl.txt &  # JSON lines: {"T":[sec,nsec],"N":"core_repaint_begin",...}
+```
+
+## The result
+
+Parsed from 1262 events during a windowed 800x600 run (client at 36 FPS):
+
+| term | samples | median |
+|---|---|---|
+| weston's composite (`core_repaint_begin` -> `core_repaint_posted`) | 170 | **0.58 ms** |
+| flip wait (`core_repaint_posted` -> `core_repaint_finished`) | 170 | 6.88 ms |
+| commit -> on screen (`core_commit_damage` -> `core_repaint_posted`) | 117 | 9.61 ms |
+| **weston-owned total (composite + flip)** | | **7.46 ms** |
+| client's actual frame time at 36 FPS | | **27.8 ms** |
+| **not weston's** | | **~20.3 ms** |
+
+**Weston composites a full-window frame in 0.58 ms.** Its entire owned cost - composite plus waiting
+for the flip - is 7.46 ms, which would support **134 composites/s**. The client only achieves 36 FPS.
+So **~20 of the 27.8 ms is spent outside the compositor**, on the client side.
+
+Weston's own timeline confirms it: the largest single gap is
+`core_repaint_exit_loop -> core_commit_damage` = **37.1 ms median**, i.e. weston finishes a repaint
+and then sits waiting for the client's next commit.
+
+## This corrects addenda 9, 12 and 17
+
+Those concluded "the compositor's composite is the shared bottleneck" from indirect reasoning:
+weston's CPU being flat while client FPS fell, and the cost scaling with damage area. The CPU-flat
+observation was right, but the inference was wrong - weston is idle because it is *fast*, not because
+it is GPU-bound. Addendum 12 even said "so it is GPU-bound, not CPU" on the strength of a CPU
+measurement, which cannot establish that.
+
+Direct measurement beats inference: 0.58 ms of composite work cannot be the 20 ms that is missing.
+
+## Where the ~20 ms is
+
+Client-side, and almost certainly the swapchain wait: the client cannot begin its next frame until it
+has a free swapchain image, and that depends on the compositor releasing the previous one. This is
+consistent with the two-client result from round 9 (one client 40 FPS, two clients 19+18 = 37 total -
+each waits on its own buffer, and the totals do not halve because they are not sharing bandwidth).
+
+Next measurement, now narrow: instrument zink's `kopper` Wayland path - `zink_kopper_acquire`,
+the frame-callback wait, and `vkAcquireNextImageKHR` - to see which of them accounts for ~20 ms.
+The driver's own render is 0.58 ms of composite on the same GPU, so this is a zink/WSI question.
