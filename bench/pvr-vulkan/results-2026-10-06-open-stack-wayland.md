@@ -651,3 +651,59 @@ Rates: native Vulkan ~368 Mpix/s, zink's own off-screen render ~90 Mpix/s, westo
 ## Dead end
 
 `ZINK_DEBUG` on the compositor changes nothing useful: none 45, nobgc 42, norp 41, rp 35 FPS.
+
+---
+
+# ADDENDUM 10 — 2026-10-08: second over-claim found (8-bit storage / shaderInt8)
+
+After fp16, the same audit pattern found another advertised-but-unimplemented capability.
+This one is worse: those shaders cannot compile at all.
+
+Advertised as `true` in `pvr_physical_device.c`:
+
+```
+.storageBuffer8BitAccess            = true
+.uniformAndStorageBuffer8BitAccess  = true
+.storagePushConstant8               = true
+.shaderInt8                         = true
+```
+
+But the ops that implement 8-bit storage access are not translated:
+
+| op | cases in `pco_trans_nir.c` |
+|---|---|
+| `extract_u8` / `extract_i8` / `insert_u8` / `insert_i8` | **0** |
+| `vec8` | 1 |
+
+and `trans_conv()`'s default is `UNREACHABLE("Unsupported conversion op.")`.
+
+Nothing lowers them away first:
+
+* pco never sets `nir_shader_compiler_options::lower_bit_size` (grep: no occurrence
+  anywhere in `src/imagination/`), so NIR keeps 8-bit ops
+* `pco_nir.c` has no 8-bit lowering pass
+
+So any shader using 8-bit storage access aborts the process. Disabled all four.
+
+Verified no regression: `--validate` 0 failures / 27 pass, off-screen 179 FPS (baseline 188,
+run variance). GL cannot reach this path - GLSL has no `int8` - which is exactly why the
+27/27 validate result did not catch it. A Vulkan int8 test would confirm it directly.
+
+Re-enable path: implement `extract_u8/i8` and `insert_u8/i8`, which map onto the `bfe`/`bfi`
+the translator already has for `bitfield_extract`/`bitfield_insert`.
+
+## Instrumentation now in the tree: PVR_JOB_TRACE
+
+`pvr_drm_job_render.c` counts hardware jobs per submit. Result, and it is the same for both
+clients:
+
+```
+zink      : submits=1600 jobs=4800 avg=3.00 geom=1600 pr=1600 frag=1600
+vkgears   : submits=10000 jobs=30000 avg=3.00 geom=10000 pr=10000 frag=10000
+```
+
+**Every render submit issues 3 hardware jobs** - geometry + partial-render + fragment - which
+is the unconditional-PR issue the driver's own TODO describes. It costs a TA->3D transition
+per pass for every client *and* the compositor, and since the compositor is the shared
+bottleneck (addendum 9) this is worth attacking. Skipping it safely needs SPM sizing
+knowledge, so it was not attempted yet.
