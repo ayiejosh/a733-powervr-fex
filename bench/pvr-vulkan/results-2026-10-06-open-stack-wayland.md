@@ -1697,3 +1697,47 @@ two that were genuinely below a required minimum were `maxFragmentInputComponent
 Limits that sit exactly on the minimum were checked for backing constants, and the ones that have
 one are honest: `maxPushConstantsSize` (`PVR_MAX_PUSH_CONSTANTS_SIZE`),
 `maxImageArrayLayers` and now `maxFramebufferLayers` (both `rogue_get_render_size_max_z`).
+
+---
+
+# ADDENDUM 26 — 2026-10-08: native Wayland clients LIVELOCK (X11 works)
+
+## The finding
+
+A native Wayland client on the open stack never presents a frame, while an X11/Xwayland client
+through the same weston runs normally.
+
+```
+glmark2-es2 (X11/Xwayland)  -s 800x600 : 38 FPS, works
+weston-simple-egl -b (native Wayland)  : no frame output at all, runs forever
+es2gears_wayland          (native Wayland) : same - no frame output
+```
+
+Both clients initialise the GPU (they hold `/dev/dri/renderD128` fds) and then never present.
+The client is **not blocked** - it is **spinning**:
+
+```
+state=R  wchan=futex_wait_queue      81% of a core
+threads: 1 running (futex), 1 running (no wchan), 5 sleeping in futex_wait_queue
+fds: /dev/dri/renderD128 x5, /memfd:wayland-cursor
+```
+
+That is a **livelock**, not a wait: 81% CPU with the main thread in state R. It reproduces after a
+clean weston restart, so it is not a stale-compositor artefact.
+
+## Why this matters
+
+The objective explicitly includes making the open stack work through Wayland. X11/Xwayland works;
+native Wayland does not. Any native Wayland application (weston clients, GTK/Qt Wayland apps) is
+currently unusable, which also means the Xwayland path is the only working route.
+
+## Cause: not yet determined - do not guess
+
+The difference between the two paths is zink's **kopper backend** (KOPPER_X11 vs KOPPER_WAYLAND),
+not the driver's rendering, so the most likely area is `zink_kopper.c`'s Wayland path. But this
+must be measured, not assumed, and there is one concrete possibility to rule out first: **this may
+be a regression from one of the eleven driver changes made in this session.** The earlier
+`weston-simple-egl -b` measurements (153-213 FPS) predate them.
+
+The definitive test is a `git stash` + rebuild + retest to see whether the livelock predates this
+session's changes. That has not been run yet, so no cause is claimed.

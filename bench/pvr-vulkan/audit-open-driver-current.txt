@@ -31,13 +31,13 @@
   maxImageDimension2D            8192
   maxImageDimensionCube          8192
   maxFramebufferWidth/Height     8192/8192
-  maxColorAttachments            4
+  maxColorAttachments            8
   maxComputeWorkGroupCount       65535 65535 65535
   maxComputeWorkGroupSize        512 512 64
   maxComputeWorkGroupInvocations 512
   maxComputeSharedMemorySize     16384
-  maxDescriptorSetSamplers       48
-  maxPerStageDescriptorSamplers  16
+  maxDescriptorSetSamplers       96
+  maxPerStageDescriptorSamplers  32
   maxVertexInputAttributes       16
   maxViewportDimensions          8192 8192
   maxBoundDescriptorSets         4
