@@ -1338,3 +1338,59 @@ Find what Xwayland is repainting at 90/s with no clients. If that loop is unnece
 window should be static), stopping it removes continuous GPU contention and is worth more than any
 per-pass micro-optimisation in the driver. Check `xwl_present`/damage handling and whether the root
 window is being invalidated every frame.
+
+---
+
+# ADDENDUM 21 — 2026-10-08: RETRACTION - the firmware trace cannot give per-run attribution
+
+**Addenda 19, 20 and 20b are all withdrawn.** The firmware trace is a **persistent ring buffer that
+is never cleared**, and there is no reliable way to separate one run's entries from another's.
+
+## The evidence
+
+With **no client of any kind running**, 12 seconds of idle, and a marker taken fresh from the buffer:
+
+```
+kick lines total in buffer: 174
+kicks after marker while idle: {('221966','TA'):25, ('221966','3D'):25,
+                                ('218628','TA'):57, ('218628','3D'):57,
+                                ('218561','TA'):3,  ('218561','3D'):3}
+```
+
+PID 221966 was the glmark2 client from the **previous** run - it is dead. Its events are still in the
+buffer and they pass the `ts > marker` filter.
+
+Why the filter fails: the marker is taken from the **last line** of the buffer, and that last line is
+**not** the newest entry - it read 355761 while older surviving entries carry larger values. So buffer
+read order is not chronological and a single read cannot be split by timestamp. (`sort -n | tail -1`
+is worse: it picked 87921593, a stale value near a wrap, giving "no kicks at all".)
+
+## What this invalidates
+
+* Addendum 19 - per-phase GPU durations (already withdrawn for the separate lossiness reason).
+* Addendum 20 - "Xwayland issues 54 TA + 119 3D" and the ~5-passes-per-frame claim.
+* Addendum 20b - **"Xwayland renders at 82-90 passes/s even with no X client"**. The clean idle test
+  above shows the GPU is genuinely idle when nothing runs; those counts were stale entries. This
+  claim was wrong and is retracted.
+
+## The one thing that looked self-validating, and why it is still suspect
+
+The off-screen run gave a single PID with 202 kicks, and a rate computed from it (184/s) that
+matched the measured 177 FPS. That is a good sign but **not proof**: if stale entries were included,
+both the count and the span inflate together and the ratio can still look right. It is not safe to
+lean on.
+
+## Conclusion and next step
+
+**Do not use `pvr_fw/trace_*` for quantitative per-run claims until the epoch problem is solved.**
+Options to make it usable, in order of preference:
+
+1. find a way to clear/reset the trace buffer (or to read-and-consume it) - check the firmware trace
+   buffer control block in `pvr_fw_trace.c` (it maps `rogue_fwif_tracebuf_space`; the firmware owns
+   the write offset, so there may be a host-side offset to resync);
+2. read the buffer continuously and diff consecutive reads to isolate new lines;
+3. give up on it and implement **Vulkan timestamps** (firmware CCB type 223), which would provide a
+   proper, app-controlled GPU timing source.
+
+This round produced no performance finding, but it removed three unsound ones and established the
+limit of the instrument - which matters more than a number I cannot trust.
