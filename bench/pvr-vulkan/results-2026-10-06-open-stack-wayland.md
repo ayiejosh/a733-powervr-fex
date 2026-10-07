@@ -550,3 +550,54 @@ zink is fast on Wayland and slow on X11: `weston-simple-egl -b` (native Wayland,
 runs at 153-213 FPS, while the same zink on XWayland is 42. Native Vulkan on XWayland is 543.
 So the target is **zink's X11 present path** — the Vulkan/X11 WSI round-trip on the open
 driver — and not the GPU, not the compositor, and not the driver's rendering.
+
+---
+
+# ADDENDUM 8 — 2026-10-08: FOUND IT. The driver advertises fp16 and renders 20/27 scenes wrong
+
+## The bug
+
+`pvr_physical_device.c` advertised `shaderFloat16 = true`. zink therefore implements GLES
+`mediump` as fp16, and Mesa emits 16-bit NIR ops. The driver's 16-bit path is not correct
+enough for that.
+
+Measured with `glmark2-es2 --off-screen -s 800x600 --validate`:
+
+| ICD | shaderFloat16 | validate |
+|---|---|---|
+| open driver | **true** | **20 failures / 7 pass** |
+| open driver | **false** | **0 failures / 27 pass** |
+| llvmpipe (control) | - | 0 failures / 27 pass |
+
+The llvmpipe row matters: it is the *same zink* over a correct software Vulkan driver, and it
+passes 27/27. So the test is valid, zink is not at fault, and the fault is the driver's fp16.
+
+Failing scenes with fp16 on: texture (nearest/linear/mipmap), blinn-phong-inf, phong, bump
+(high-poly/normals/height), effect2d (both kernels), desktop blur, buffer (all three),
+conditionals(frag=5), function (both), loop (all three). Passing: build (both), gouraud,
+pulsar, shadow, and the simple conditionals.
+
+## It is also faster
+
+Mean FPS over the 19 scenes common to both full runs:
+
+| | fp16 on | fp16 off |
+|---|---|---|
+| mean FPS | 24.0 | **34.3** |
+| ratio | - | **+42.8%** |
+
+Not surprising: every 16-bit op costs pck/unpck conversions in this driver.
+
+## Consequence for the earlier pco work
+
+The 16-bit `flrp` lowering and `b2f16`/`i2f16`/`u2f16` translations added earlier are still
+correct and should stay - they turn hard `UNREACHABLE` aborts into working code if fp16 is
+ever enabled. But they were treating the symptom: the real bug was advertising a capability
+the implementation cannot honour. Advertise fp16 again only when the 16-bit path is complete.
+
+## Method note
+
+This was found by treating `glmark2 --validate` as a real test and getting a control
+(llvmpipe = 27/27). Earlier in the session I twice asserted "correctness restored, 0 failures"
+after counting only the *successes* - the failure count was never measured, and the 20
+failures were present the whole time. Count both, always.
