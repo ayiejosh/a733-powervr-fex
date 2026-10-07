@@ -819,3 +819,50 @@ Remaining, unexplained: weston's single full-window textured-blend pass costs ~2
 time on the same GPU where the client's own render pass costs ~5 ms and a native-Vulkan
 full-screen pass costs ~2.7 ms/Mpix. Nothing available on this board can profile a GPU pass -
 no `perf`, no `apitrace`, no `renderdoc`, no `valgrind`; only `strace` and `gprof` (needs -pg).
+
+---
+
+# ADDENDUM 13 — 2026-10-08: FBCDC is NOT reference-implementable here; feature reporting is clean
+
+## FBCDC (goal item 2) is a from-scratch job, not a port
+
+The DKMS kernel source gives only:
+
+* the enable bit: `rgxsrvinit.c:558` sets `RGXFWIF_INICFG_FBCDC_V3_1_EN` from
+  `pfnHasFBCDCVersion31()`
+* the modifier constants: `include/public/powervr/img_drm_fourcc.h`
+  `DRM_FORMAT_MOD_PVR_FBCDC_8x8_V1/V7/V10` and the `16x4` variants
+
+It contains **no FBD structure, no compression-control-stream allocation, and no
+compression register programming** - that all lives in the closed userspace. So unlike the
+other gaps found this session, there is no reference implementation on this board.
+
+Implementing it means designing the FBD layout without documentation, allocating and
+formatting the compression stream, programming the PBE compression format, enabling the
+init bit, and handling decompression on read. Silent corruption is the failure mode and the
+board has no GPU-side verification tool. **Deprioritised on evidence.**
+
+## The driver's feature reporting is now clean
+
+Audited the remaining gap list against the source:
+
+| feature | advertised | implemented |
+|---|---|---|
+| `drawIndirectCount` | **false** | `CmdDrawIndirectCount` / `CmdDrawIndexedIndirectCount` - **no matches in the tree** |
+| `occlusionQueryPrecise` | **false** | queries exist (`CmdBegin/EndQuery`) but not precise |
+| `variablePointers` | **false** | no implementation |
+| `vulkanMemoryModel` | **false** | no implementation |
+
+So these are **honestly reported as missing**, not over-claimed. Combined with the fp16 and
+8-bit fixes, every capability the driver advertises is now backed by an implementation, and
+every capability it lacks is reported false. The two over-claims found this session were the
+exceptions, and both are fixed.
+
+## Two more perf hypotheses eliminated
+
+* **weston re-importing/allocating the client's buffer per frame** - `PVR_ALLOC_TRACE=1` on
+  weston: **0 allocations** across a 20 s client run. Dead.
+* **SLC / DM-overlap gate** - `fw_sysdata_init` disables DM overlap only when
+  `slc_size_in_kilobytes < 4` (`ROGUE_FWIF_SLC_MIN_SIZE_FOR_DM_OVERLAP_KB`), and there is no
+  `WARN_ON(PVR_FEATURE_VALUE(...))` in dmesg, so the value is being read successfully and the
+  gate is not tripping. Dead.
