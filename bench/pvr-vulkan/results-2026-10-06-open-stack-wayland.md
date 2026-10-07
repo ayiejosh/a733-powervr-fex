@@ -866,3 +866,15 @@ exceptions, and both are fixed.
   `slc_size_in_kilobytes < 4` (`ROGUE_FWIF_SLC_MIN_SIZE_FOR_DM_OVERLAP_KB`), and there is no
   `WARN_ON(PVR_FEATURE_VALUE(...))` in dmesg, so the value is being read successfully and the
   gate is not tripping. Dead.
+
+## Addendum 13b: three more perf suspects eliminated
+
+* **GPU clock** - the open module only ever *reads* it (`clk_get_rate`, no `clk_set_rate`
+  anywhere), which looked alarming. It is fine: `clk_summary` shows the `gpu0` clock at
+  **1104000000 Hz (1104 MHz)** with parent `pll-gpu`, matching the vendor. The 26000000
+  entries are a clk-framework artifact on the *gates* (`gpu0-gate` etc.), not the core clock.
+  The DT default is already correct, so nothing needs setting.
+* **The `/* Massive copy :( */`** in the PR setup - `pvr_winsys_fragment_state::fw_stream` is
+  `uint8_t[440]`, so the copy is ~450 bytes per submit. Negligible; not worth touching.
+* **weston re-importing the client buffer per frame** - `PVR_ALLOC_TRACE=1` on weston:
+  **0 allocations** over a 20 s client run.
