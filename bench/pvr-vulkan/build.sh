@@ -188,3 +188,9 @@ link vlimits vlimits.c
 # linfilter: can the hardware linearly filter R32_SFLOAT? (probes a mandated format feature)
 glslangValidator -V --target-env vulkan1.2 -o linfilter.spv linfilter.comp
 link linfilter linfilter.c
+
+# varyings: maxVertexOutputComponents probe. Build variants with -DNOUT=<n> (multiples of 8);
+# the shaders need the same -DNOUT=<n>.
+glslangValidator -V --target-env vulkan1.2 -DNOUT=32 -o vary32.vert.spv varyings.vert
+glslangValidator -V --target-env vulkan1.2 -DNOUT=32 -o vary32.frag.spv varyings.frag
+link varyings varyings.c

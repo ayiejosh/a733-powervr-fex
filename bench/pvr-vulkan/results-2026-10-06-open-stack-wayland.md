@@ -3143,3 +3143,50 @@ class of bug this session has been finding elsewhere.
 The remaining format diffs are all in the same family - `SAMPLED_IMAGE_FILTER_MINMAX` for R8/R16
 formats, `STORAGE_IMAGE` for `B8G8R8A8_UNORM`, and the `A2R10G10B10_*`/`A2B10G10R10_*` SNORM/USCALED
 variants which are optional - none of which are mandated requirements.
+
+---
+
+# ADDENDUM 43 — 2026-10-08: maxVertexOutputComponents was another floor (64 -> 128)
+
+`maxVertexOutputComponents` was **64** - exactly the Vulkan minimum, with no backing constant, while
+`maxFragmentInputComponents` had already been raised to 128 for the same reason. That is the same
+signature as the four confirmed floors (workgroups, samplers, storage images, colour attachments).
+
+## Probed, not assumed
+
+`varyings.vert`/`.frag` declare N `vec4` outputs, each writing its own index, and the fragment shader
+sums all N and writes `sum/512` into an RGBA8 attachment. The readback must equal
+`sum/512*255`, so a dropped or mis-interpolated varying shows as a wrong number rather than a
+plausible one:
+
+| varyings | components | readback | expected |
+|---|---|---|---|
+| 8 | 32 | 14 | 14 |
+| 16 | 64 | 60 | 60 |
+| 24 | 96 | 137 | 137 |
+| **32** | **128** | **247** | **247** |
+
+**32, 64, 96 and 128 components all build and interpolate correctly**, so 64 was a floor. Now 128,
+matching llvmpipe.
+
+(Note on the harness: the generator emits varyings in blocks of 8, so only multiples of 8 are valid
+test points - runs at 20 and 28 actually declared 24 and 32 and reported the neighbouring value.
+That was a bug in my test, not in the driver, and it is why the table above uses 8/16/24/32.)
+
+No regressions: `bda`, `vk13`, `pctest`, `vk16`, `wgsize`, `samplers`, `storageimages`, `mrt`,
+`linfilter` all PASS; `glmark2 --validate` still 0 failures / 27 pass.
+
+## Limits fixed this session
+
+| limit | was | now | basis |
+|---|---|---|---|
+| `maxComputeWorkGroupInvocations` | 128 | 512 | probed |
+| `maxComputeWorkGroupSize` | 128/128/64 | 512/512/64 | probed |
+| `maxPerStageDescriptorSamplers` | 16 | 32 | probed to 128 |
+| `maxPerStageDescriptorStorageImages` | 4 | 32 | probed |
+| `maxColorAttachments` | 4 (hardcoded) | 8 | driver's own constant |
+| `maxFramebufferLayers` | 256 (hardcoded) | 2048 | device-derived |
+| `maxFragmentInputComponents` | 64 | 128 | spec minimum + llvmpipe |
+| `maxFragmentCombinedOutputResources` | 4 | 64 | spec invariant |
+| `maxDescriptorSetStorageBuffers` | 12 | 48 | spec invariant |
+| **`maxVertexOutputComponents`** | **64** | **128** | **probed** |
