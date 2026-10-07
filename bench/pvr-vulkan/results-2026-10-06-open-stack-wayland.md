@@ -1875,3 +1875,37 @@ Every one of these was a measurement error, not a driver bug:
 **Rule: before concluding "X never happens", verify the pattern you are counting actually matches
 the format you are counting.** A zero count from a regex is not evidence until the regex is shown
 to match a known-present example.
+
+## Addendum 27b: a reliable frame-rate method, and the Wayland baseline
+
+Client stdout on this stack is not trustworthy for frame rate - several clients print nothing at
+all (`es2gears_wayland`, `es2gears_x11`), and formats differ between clients. **Count the protocol
+commits instead**, which cannot be missed or mis-formatted:
+
+```sh
+WAYLAND_DEBUG=1 weston-simple-egl -b > trace 2>&1 &
+sleep 3                       # let it initialise
+N0=$(grep -cE 'wl_surface#[0-9]+\.commit' trace)
+sleep 5                       # measured window
+N1=$(grep -cE 'wl_surface#[0-9]+\.commit' trace)
+echo $(( (N1-N0)/5 )) fps
+```
+
+Use `#`, not `@` - the trace prints `wl_surface#15.commit()`. And check `wl_buffer#N.release`
+alongside it: commits show what the client sent, releases show weston actually consuming them.
+
+### Native Wayland baseline (measured this way)
+
+| client | mode | frame rate |
+|---|---|---|
+| `weston-simple-egl` | `-b` (interval 0) | **301 fps** |
+| `weston-simple-egl` | interval 1 (vsync) | **60 fps** |
+| `es2gears_wayland` | vsync | **30 fps** |
+
+`es2gears_wayland` at 30 fps on a 60 Hz output means it misses every other vblank - its frame
+costs more than 16.6 ms. That is a real (if modest) performance observation and it is consistent
+with the 22 fps recorded for `es2gears_x11` earlier, i.e. Wayland is the faster of the two paths
+here, not the slower one.
+
+So the picture is the opposite of addendum 26: **Wayland is healthy and is the better path**, and
+the X11/Xwayland route is where the extra cost lives.
