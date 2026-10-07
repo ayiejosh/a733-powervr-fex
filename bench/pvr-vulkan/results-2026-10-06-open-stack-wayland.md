@@ -2046,3 +2046,66 @@ have now each failed a cross-check.
 **Lesson, and it is the same one as addenda 21 and 27:** a model that fits its own data is not a
 finding until it predicts a measurement it was not fitted to. Both of addendum 28's cross-check
 claims have now been withdrawn on exactly that ground.
+
+---
+
+# ADDENDUM 29 — 2026-10-08: weston does almost no host work; the cost is a shared serialising resource
+
+## Weston's syscall time, measured directly
+
+`strace -T -p <weston>` during a windowed 800x600 client run (8 s window, client at 36 FPS):
+
+| syscall | calls | total time | share |
+|---|---|---|---|
+| **`epoll_pwait`** | 507 | **7.403 s** | **98%** |
+| `ioctl` (GPU) | 564 | 0.074 s | 1% |
+| `timerfd_settime` | 506 | 0.017 s | - |
+| `sendmsg` / `recvmsg` | 253 / 256 | 0.014 / 0.010 s | - |
+| `read` | 126 | 0.004 s | - |
+
+**Weston spends 98% of its syscall time waiting in `epoll_pwait` and 1% in GPU ioctls.** Combined
+with its CPU being 3-6% (addendum 12), weston does almost no host work at all.
+
+**Stated limitation, because it matters:** GPU work is submitted *asynchronously* - the ioctl returns
+after handing the work to the GPU, and execution happens afterwards. So "1% in ioctl" does **not**
+prove the GPU is idle, and this measurement cannot separate "weston waits for the GPU" from "weston
+waits for the client". It does rule out weston being busy on the host, which is what it was taken
+for.
+
+## The constant-latency model fails
+
+Tested `windowed_ms = offscreen_ms + c` (one handoff latency) against the full scene table:
+
+| scene | win ms | off ms | c |
+|---|---|---|---|
+| build | 27.0 | 5.4 | 21.6 |
+| texture | 27.0 | 4.0 | 23.0 |
+| phong | 29.4 | 9.6 | 19.8 |
+| desktop | 62.5 | 45.5 | 17.0 |
+| terrain | 250.0 | 200.0 | 50.0 |
+
+c ranges 17-50 ms, and across the size sweep it ranges 6.9-63.9 ms. **Not constant** - the added cost
+is genuinely area-dependent, which is what addendum 28b's fit captured. So the fourth model also
+fails in its simple form.
+
+## What does hold, and the strongest clue so far
+
+* The windowed rate for `glmark2` is **scene-independent** (texture renders faster off-screen than
+  build; both are 37 FPS windowed). The client's own render cost is not the limiter for light scenes.
+* **Two concurrent clients do not halve each other.** Round 9 measured one client at 40 FPS and two
+  at 19 + 18 = **37 total**. If a shared resource were divided, the total would stay ~40 and each
+  would get ~20 - but the *total* stayed at one client's rate. That is the signature of a **shared
+  serialising resource** consumed once per composite, not a bandwidth split.
+* Display mode verified as **3840x2160@60** (previously assumed, now checked): `3840x2160@60.0,
+  preferred, current, 533.1 MHz` in the weston log.
+* Weston's repaint timer is armed with absolute `timerfd` times ~184-218 ms apart in the sample,
+  which does not correspond to a 60 Hz cadence and does not cleanly give a repaint period.
+
+## Where this leaves it
+
+Five attempts to model the windowed penalty have now been made (area-proportional, vblank-paced,
+damage-area, constant-latency, plus the scene-independence observation). The one thing every
+measurement agrees on is that **weston does very little work and something serialises at ~37-40
+composites/s when a client damages its whole window**. The next measurement has to be *inside*
+weston's repaint path rather than around it - weston is stripped, so that means building weston with
+instrumentation, or using its `weston-debug` facility if it exposes a repaint timeline.
