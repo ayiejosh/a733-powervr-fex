@@ -1394,3 +1394,30 @@ Options to make it usable, in order of preference:
 
 This round produced no performance finding, but it removed three unsound ones and established the
 limit of the instrument - which matters more than a number I cannot trust.
+
+## Addendum 21b: the job-ref epoch filter was tried too, and also fails
+
+Each trace line carries job refs (`ext:0x... int:0x...`), and `int` looked like a usable epoch
+counter because the kernel does `OSAtomicIncrement(&psDevInfo->iCCBSubmissionOrdinal)` per
+submission. It is not usable across processes:
+
+* idle for 12 s with `int-ref > marker`: **NONE** - looked correct;
+* but **off-screen at 182 FPS with `int-ref > 0x75`: also NONE**, i.e. it filtered out a workload
+  that was definitely running, and
+* the marker itself varies wildly between runs (`0x75` vs `0x03`), because the counter is
+  **per-context**, not global.
+
+So both candidate filters fail: timestamps are not chronological in the buffer, and job refs are
+per-context. **There is no reliable epoch separator available from userspace for this trace.**
+
+That closes the firmware-trace line for now. It cost three retractions, and the lesson is the same
+one as addendum 14: an instrument must be validated before its output is believed - the idle test is
+what exposed it, and running it *first* would have saved the whole detour.
+
+The remaining honest options for GPU timing:
+1. find a host-side way to reset/consume the firmware trace buffer (it maps
+   `rogue_fwif_tracebuf_space`; the firmware owns the write offset);
+2. implement **Vulkan timestamps** - firmware CCB type `RGXFWIF_CCB_CMD_TYPE_VK_TIMESTAMP` (223),
+   which the mainline module does not have (its CCB list ends at 218) and whose payload the closed
+   userspace builds. Cross-stack, but it is the only source that would give an app-controlled,
+   unambiguous GPU timestamp.
