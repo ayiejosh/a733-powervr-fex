@@ -2494,3 +2494,38 @@ avoid re-querying it on every framebuffer validation - either by using the EGL s
 Width/Height, or by caching the reply and invalidating it on ConfigureNotify. That is the next piece
 of work, and unlike everything in the last several rounds it has a clear mechanism and a clear
 expected effect: the ~13+ ms of round-trip per frame should go away.
+
+## Addendum 34b: CORRECTION - the round-trip is real but it is NOT the bottleneck
+
+Addendum 34 said "FOUND IT". That was **premature**. The round-trip is real and was measured, but
+removing it does not improve the frame rate.
+
+**What is real:**
+
+* `XGEOM_TRACE` on `x11_get_drawable_info`: **300 calls, 6518 ms total, 21.7 ms average, 68.3 ms max**
+  in a 25 s run.
+* gdb stack sampling: **6 of 12 samples** inside `kopperGetDrawableInfo` -> `xcb_wait_for_reply`.
+* Root cause: `kopper_update_drawable_info()` gates its fast path on `screen->fd == -1`, and on this
+  stack `screen->fd = 4`, so X11 clients took the legacy path even though the surface is an XCB
+  Vulkan surface (`sType = 1000005000 = VK_STRUCTURE_TYPE_XCB_SURFACE_CREATE_INFO_KHR`, verified).
+* Dropping that stale test eliminates the round-trips entirely (count 0 after, 300+ before).
+
+**What is not:**
+
+| | before | after |
+|---|---|---|
+| geometry round-trips | 300+ | **0** |
+| FPS | 34-38 | **40, 40, 34** (one run 45) |
+| `inside swap` median | 4.34-4.90 ms | 5.01 ms |
+
+**No improvement.** The client's frame time is unchanged, so the 21.7 ms it spent blocked in the
+round-trip was time it would otherwise have spent blocked somewhere else. The frame rate is paced by
+something downstream, and removing client-side work does not raise it.
+
+That is a genuinely useful negative: it means the windowed ceiling is **not** client-side work at
+all - not the draw path, not the round-trip - and every remaining candidate on the client side can be
+deprioritised. It also explains why the frame rate is so insensitive to scene: the client is not the
+limiter.
+
+The fix is kept (it removes 21.7 ms of synchronous blocking per call and `--validate` still passes)
+but it is explicitly **not** a performance win in FPS terms.
