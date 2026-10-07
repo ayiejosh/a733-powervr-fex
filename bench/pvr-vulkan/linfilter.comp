@@ -1,0 +1,7 @@
+#version 450
+layout(local_size_x = 1) in;
+layout(binding = 0) uniform sampler2D tex;
+layout(std430, binding = 1) buffer Out { float v[]; };
+void main() {
+    v[0] = texture(tex, vec2(0.5, 0.5)).r;
+}

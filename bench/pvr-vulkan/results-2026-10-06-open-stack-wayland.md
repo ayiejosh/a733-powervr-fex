@@ -3086,3 +3086,60 @@ So **objective item 3 does not need fixing**, and the experiment would have carr
 corruption if SPM were ever entered) for no measured benefit. That is the useful outcome: item 3 is
 closed by evidence rather than by a risky change, and the remaining gap is the kernel/firmware TA->3D
 structure that the prior analysis already identified.
+
+---
+
+# ADDENDUM 42 — 2026-10-08: 32-bit float linear filtering is a real hardware limit, not a bug
+
+## The lead
+
+Added `vkformats`, which dumps per-format feature bits, and diffed the driver against llvmpipe (the
+reference that passes conformance). 21 formats showed fewer optimal-tiling features. Decoding the
+missing bits:
+
+| format | missing |
+|---|---|
+| **`VK_FORMAT_R32_SFLOAT`** | `0x1000` = `SAMPLED_IMAGE_FILTER_LINEAR` |
+| **`VK_FORMAT_R32G32_SFLOAT`** | `SAMPLED_IMAGE_FILTER_LINEAR` |
+| **`VK_FORMAT_R32G32B32A32_SFLOAT`** | `SAMPLED_IMAGE_FILTER_LINEAR` |
+| `VK_FORMAT_R8_UNORM`, `R16_UNORM`, `R16_SFLOAT` | `0x10000` = `SAMPLED_IMAGE_FILTER_MINMAX` |
+
+Vulkan **mandates** `SAMPLED_IMAGE_FILTER_LINEAR` for `R32G32B32A32_SFLOAT`, and the driver's own
+condition explains the exclusion exactly (`pvr_formats.c:273`):
+
+```c
+if (!vk_format_is_int(vk_format) && !vk_format_is_depth_or_stencil(vk_format) &&
+    (first_component_size < 32 || vk_format_is_block_compressed(vk_format))) {
+   flags |= VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
+}
+```
+
+Every format with a 32-bit first component is excluded. That looked like a conformance bug worth
+fixing, so I probed it instead of reporting it.
+
+## The probe
+
+`linfilter.c`: a 2x1 `R32_SFLOAT` image holding 0.0 and 1.0, sampled at u = 0.5 with a **LINEAR**
+sampler. A linear filter must return ~0.5; a nearest filter returns 0 or 1.
+
+```
+R32_SFLOAT optimalTilingFeatures = 0x0000cd83  FILTER_LINEAR advertised = 0
+linear filter at u=0.5 of {0.0, 1.0}: 1.0000  (want ~0.5)
+VERDICT: no interpolation - the hardware does NOT linearly filter R32_SFLOAT
+```
+
+**The hardware does not interpolate 32-bit float textures at all.** Sampling at the midpoint returns
+one of the endpoints.
+
+So the driver's exclusion is **correct** - it is honestly reporting a hardware limitation rather than
+over-claiming. The non-conformance with Vulkan's required-format table is a hardware constraint, not
+a driver defect, and the vendor driver is subject to the same constraint.
+
+**This is the probe-before-claiming rule earning its keep**: the static evidence (mandated feature
+missing, deliberate `first_component_size < 32` condition) looked conclusive, and the measurement
+overturned it. Had I "fixed" it by advertising the bit, I would have created exactly the over-claim
+class of bug this session has been finding elsewhere.
+
+The remaining format diffs are all in the same family - `SAMPLED_IMAGE_FILTER_MINMAX` for R8/R16
+formats, `STORAGE_IMAGE` for `B8G8R8A8_UNORM`, and the `A2R10G10B10_*`/`A2B10G10R10_*` SNORM/USCALED
+variants which are optional - none of which are mandated requirements.

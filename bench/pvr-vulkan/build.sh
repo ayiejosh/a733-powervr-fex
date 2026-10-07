@@ -184,3 +184,7 @@ link mrt mrt.c
 
 # vlimits: dump the limits Vulkan's invariants depend on (vkaudit only prints a subset).
 link vlimits vlimits.c
+
+# linfilter: can the hardware linearly filter R32_SFLOAT? (probes a mandated format feature)
+glslangValidator -V --target-env vulkan1.2 -o linfilter.spv linfilter.comp
+link linfilter linfilter.c
