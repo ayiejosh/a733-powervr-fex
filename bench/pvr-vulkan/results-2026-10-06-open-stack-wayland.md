@@ -2529,3 +2529,51 @@ limiter.
 
 The fix is kept (it removes 21.7 ms of synchronous blocking per call and `--validate` still passes)
 but it is explicitly **not** a performance win in FPS terms.
+
+---
+
+# ADDENDUM 35 — 2026-10-08: the X11 client is NOT paced by weston's repaint rate
+
+Hypothesis: with the client's own work now proven irrelevant (addendum 34b), X11 clients should be
+paced by the compositor's repaint cadence at ~2 repaints per frame.
+
+Measured with `weston-debug timeline` (counting `core_repaint_begin` over a known wall-clock window)
+alongside the client's own FPS:
+
+```
+client fps                                    : 45
+weston repaints in 7 s                        : 111  ->  15/s
+client commits (core_commit_damage)           : 176
+```
+
+**The client commits 176 times while weston repaints 111 times** - the client runs *ahead* of the
+compositor and weston coalesces. So the client is **not** paced by weston's repaint rate, and the
+"2 repaint cycles per frame" model is **not supported**.
+
+Caveat, and it matters: the `timeline` stream is a debug protocol and its event counts may be lossy
+in the same way the firmware trace was (addendum 21). The *ratio* is the informative part and it is
+consistent in direction with the client committing more often than weston repaints; the absolute
+11 1/7s figure should not be treated as exact.
+
+## Environment note
+
+This round lost time to self-inflicted breakage: several `pkill -f <pattern>` invocations matched the
+shell running them, because the pattern appeared in the heredoc that formed the command line - and
+one of them took **weston down entirely**, which is why an early measurement produced an empty trace
+and a silent client. Restarting weston (`/tmp/w26dbg.sh`, which adds `--debug` for the timeline
+stream) restored it.
+
+Two rules worth keeping:
+
+* use `pkill -x <name>` (exact, 15-char `comm`) rather than `pkill -f`, since `-f` matches the
+  command line of the shell that is issuing it;
+* after a series of kills, verify `weston` and `Xwayland` are actually running before trusting a
+  measurement that came back empty.
+
+## Where the windowed ceiling stands
+
+Client-side is exhausted as an explanation: the draw path, the synchronous X round-trip (21.7 ms,
+removed, no FPS change), `batch_usage_wait`, `ppoll`, the present call, and now the compositor's
+repaint cadence. What is left is that the client's 45 FPS does not correspond to 45 composites - only
+~15/s reach the screen - which points at Xwayland's handling of Present rather than at either the
+client or weston's rendering.
