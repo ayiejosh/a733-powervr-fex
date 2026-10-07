@@ -2380,3 +2380,50 @@ Sixth instance of the same class this session: **the proxy was wrong, not the co
 
 Each time the fix was the same: measure the specific thing being claimed, and verify the
 measurement instrument actually observes it.
+
+## Addendum 33b: the windowed path is WSI-sync-heavy, but that is not 22 ms either
+
+Comparing the ioctl mix (`strace -f -e trace=ioctl`, then counting by name):
+
+| ioctl | windowed (32 FPS) | off-screen (121 FPS) |
+|---|---|---|
+| **`DRM_IOCTL_SYNCOBJ_TRANSFER`** | **3810** | **absent from the top 6** |
+| `SYNCOBJ_DESTROY` | 3550 | 3655 |
+| `SYNCOBJ_CREATE` | 3532 | 3643 |
+| `PVR_VM_UNMAP` / `PVR_VM_MAP` | 2445 each | 9506 each |
+| `HL_CB` | 2288 | 8902 |
+
+`DRM_IOCTL_SYNCOBJ_TRANSFER` is **windowed-only**, and it comes from
+`src/util/u_sync_provider.c:100` (`drmSyncobjTransfer`) - i.e. **Mesa's generic sync provider used by
+the WSI swapchain**, not from anything pvr-specific. Per frame that is ~12 transfers, plus ~11
+syncobj creates/destroys windowed against ~3 off-screen.
+
+**But it does not account for the 22 ms:** each ioctl averages 29 us in the same strace, so ~12 per
+frame is roughly 0.35 ms. The windowed path genuinely is WSI-sync-heavy, and that is a real
+difference between the two paths worth knowing, but it is two orders of magnitude short of the
+missing time.
+
+## Correcting addendum 33's attribution claim
+
+Addendum 33 said "the main thread is not the render thread". That was **wrong**. Counting ioctls per
+TID:
+
+| TID | ioctls | notable |
+|---|---|---|
+| 344654 (**= process PID, main thread**) | 11417 | `PVR_VM_MAP` 2626, `HL_CB` 2457, `SYNCOBJ_CREATE` 1050 |
+| 344656 | 17597 | `SYNCOBJ_TRANSFER` 3423, `SYNCOBJ_DESTROY` 3078, `SYNCOBJ_CREATE` 2745 |
+
+The main thread does 11417 DRM ioctls, so it *is* a render thread. The real problem with the
+main-thread-only profile was different: its ioctls are **fast** (29 us average), so 11417 of them is
+only ~0.33 s in a 12 s run. The main thread is not blocked in syscalls because the *waiting* happens
+elsewhere - most likely on the WSI syncobjects being transferred, which are handled through the
+second thread and the sync provider.
+
+## State of the search
+
+Excluded by measurement: weston's composite (0.58 ms), the present call (4.5 ms), swapchain tiling,
+an extra copy, `batch_usage_wait`, client `ppoll` (~3%), and now the WSI syncobj churn (~0.35 ms).
+Still unaccounted: ~22 ms of the client's 26.3 ms windowed frame.
+
+The remaining candidates are all in the client's GL/draw path, and the next instrument has to time
+zink's own draw and batch-submit functions per frame rather than looking at syscall traces.
