@@ -2165,3 +2165,65 @@ each waits on its own buffer, and the totals do not halve because they are not s
 Next measurement, now narrow: instrument zink's `kopper` Wayland path - `zink_kopper_acquire`,
 the frame-callback wait, and `vkAcquireNextImageKHR` - to see which of them accounts for ~20 ms.
 The driver's own render is 0.58 ms of composite on the same GPU, so this is a zink/WSI question.
+
+---
+
+# ADDENDUM 31 — 2026-10-08: the windowed penalty is in the CLIENT'S DRAW PATH
+
+Instrumented `kopperSwapBuffersWithDamage` (`src/gallium/frontends/dri/kopper.c`) with an
+env-gated `SWAP_TIMING` that reports the frame period and the time spent inside `eglSwapBuffers`.
+That separates "waiting in present" from "rendering" without any inference.
+
+## Result
+
+```
+[swap] frame N: period 26.30 ms, inside swap 4.90 ms, outside 21.40 ms
+```
+
+| term | median |
+|---|---|
+| inside `eglSwapBuffers` (present path) | **4.34-4.90 ms**, tightly bounded (3.95-8.29) |
+| glmark2's own frame time | **26.3 ms** |
+| **outside the swap call - the GL draw path** | **~22 ms** |
+
+So of a 26.3 ms windowed frame: **~4.5 ms is the present call and ~22 ms is the client's own draw
+path.** Combined with addendum 30 (weston's composite is 0.58 ms), the whole windowed penalty is now
+localised:
+
+| component | cost |
+|---|---|
+| weston's composite | 0.58 ms |
+| flip wait | 6.88 ms (weston-owned, overlapped) |
+| client's `eglSwapBuffers` | 4.5 ms |
+| **client's GL draw path** | **~22 ms** |
+| same scene **off-screen** | **5.4 ms total** |
+
+**The client's draw path is ~4x more expensive when rendering into a swapchain image than into an
+off-screen image.** That is the thing to attack, and it is a driver/zink interaction, not a
+compositor or WSI problem.
+
+## Incidental finding: dead code on the kopper path
+
+`kopperSwapBuffersWithDamage` **always** returns at its "no front texture" check - 391 of 391 calls:
+
+```c
+   if (!drawable->textures[ST_ATTACHMENT_FRONT_LEFT]) {
+      return 0;                                  /* always taken for kopper drawables */
+   }
+   /* have to manually swap the pointers here to make frontbuffer readback work */
+   drawable->textures[ST_ATTACHMENT_BACK_LEFT] = drawable->textures[ST_ATTACHMENT_FRONT_LEFT];
+   drawable->textures[ST_ATTACHMENT_FRONT_LEFT] = ptex;
+```
+
+`ST_ATTACHMENT_FRONT_LEFT` is never populated for a kopper drawable, so the pointer swap never
+happens. Not necessarily a bug - the present already happened in `kopper_copy_to_front` above it -
+but it is why the first attempt at this instrumentation produced no output at all: the print was
+placed after that return. **When instrumentation prints nothing, check for an early return before
+concluding the function is not called.**
+
+## Next
+
+Compare the client's draw cost rendering into a swapchain image vs an off-screen image of the same
+size, to find why the former is ~4x more expensive. Candidates: a per-frame layout transition on the
+swapchain image, a different image layout/tiling for swapchain images, or extra synchronisation in
+zink's render-to-swapchain path.
