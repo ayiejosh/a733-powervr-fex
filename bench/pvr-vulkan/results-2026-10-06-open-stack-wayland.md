@@ -2992,3 +2992,63 @@ those two effects compounding: roughly 4x render throughput and a further ~4x wi
 
 So objective item 1 has two separable parts, and the larger one is the render throughput itself, not
 presentation. That is where the remaining rounds should look.
+
+---
+
+# ADDENDUM 41 — 2026-10-08: the driver-side analysis already exists; I should have read it first
+
+After several rounds re-deriving "the gap is the driver, not the compositor or Xwayland", I found
+that this repository **already contains that analysis**, in `render-gap-vendor.txt` and
+`results-2026-10-06-fw-trace.md`, both dated 2026-10-05/06. I had read the vendor audit and the A/B
+table but not these.
+
+## What was already established
+
+Per frame, 512x512x60, warmed (`render-gap-vendor.txt` for the vendor column, `fw-trace` for open):
+
+| | open | vendor | delta |
+|---|---|---|---|
+| `record` | 0.343 ms | 0.030-0.049 ms | +0.31 |
+| `submit` | 0.197 ms | 0.046-0.060 ms | +0.15 |
+| **`gpu_wait`** | **1.181 ms** | **0.600-0.667 ms** | **+0.58** |
+| **total** | **1.721 ms** | **0.668-0.768 ms** | **+1.05** |
+
+Vendor throughput at that size: **341-364 Mpix/s**, three runs, repeatable.
+
+And the conclusion already drawn, verbatim:
+
+> "`record`+`submit` = 0.464 ms is UMD-addressable (the EOT-cache fix already took 0.13 ms of it).
+> **Even driving that entire CPU-side term to the vendor's 0.076 ms would leave the open stack at
+> ~1.26 ms/frame against the vendor's 0.67** - because `gpu_wait` is untouched at 1.18 ms and is now
+> dominated by the per-pass structure above.
+>
+> So: **beating the vendor is not reachable from Mesa.** The remaining gap is the TA->3D transition
+> plus the inter-frame turnaround, which is `drm/imagination` and firmware behaviour. The useful next
+> step is an upstream issue with this trace, not more UMD tuning."
+
+It even enumerates the **41 firmware operations** in the TA->3D gap with per-step deltas
+(`+79 UFO Updates for FWCtx`, `+68 Deactivate MemCtx`, `+70 UFO Checks`, `+78 Ready-to-run`, ...).
+
+## Why this matters for how I spent this session
+
+Rounds 23-34 were largely spent eliminating the compositor, Xwayland, the WSI, the draw path and the
+swapchain tiling as causes of the windowed gap. **That was consistent with this prior finding** - the
+gap is not UMD-side - but I re-derived it the hard way, from the client side, when the repository
+already had the driver-side answer with numbers.
+
+The one thing my rounds added that this analysis did not have: the **windowed** figure. The prior work
+is off-screen (512², no compositor). Adding the windowed path shows the 25x compounds two effects -
+roughly the ~2.3x render-throughput gap above, and a further windowed penalty - and I established by
+measurement that the windowed penalty is not the compositor, the WSI, the draw path or the tiling.
+
+## What this means for the remaining rounds
+
+The prior analysis is explicit that the remaining gap is `drm/imagination` + firmware (TA->3D
+transitions), not Mesa, and that the next step is an upstream issue rather than more UMD tuning. That
+is also the honest conclusion of my own measurements.
+
+So the productive remaining work is **not** more Mesa tuning. It is either:
+1. the kernel/firmware-side per-pass structure (objective item 3 is a contributor here - the PR job
+   adds a per-pass job, and 3.00 jobs/submit is identical windowed and off-screen, so it is real
+   overhead in absolute terms even though it is not the windowed-specific effect), or
+2. the compatibility work, where this session already has concrete wins.
