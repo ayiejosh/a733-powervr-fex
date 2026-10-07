@@ -1741,3 +1741,28 @@ be a regression from one of the eleven driver changes made in this session.** Th
 
 The definitive test is a `git stash` + rebuild + retest to see whether the livelock predates this
 session's changes. That has not been run yet, so no cause is claimed.
+
+## Addendum 26b: the Wayland livelock is NOT a regression - it predates this session
+
+Tested by checking out `b288374`, the commit **before** all eleven driver changes made in this
+session, rebuilding, and running the same client:
+
+| driver | client | CPU | state | frames |
+|---|---|---|---|---|
+| `f5ee3cf` (current, 11 changes) | new pid | 81% of a core | R | none |
+| **`b288374` (pre-session)** | new pid 273291 | **77% of a core** | **R** | **none** |
+
+**The livelock reproduces identically on the pre-session driver**, so it is a pre-existing bug in
+the native Wayland path, not something this session introduced.
+
+(First attempt at this test was invalid and I caught it: `pkill -x weston-simple-` does not match
+because `comm` is truncated to 15 characters, so the *old* client was still running and I measured
+pid 269817 twice. Killed by PID and re-ran with a fresh pid, which is what the table above shows.)
+
+This also means the earlier `weston-simple-egl -b` figures of 153-213 FPS recorded earlier in the
+session were **not** measuring this configuration - a client that never presents a frame cannot run
+at 153 FPS. Those numbers should not be used as a Wayland baseline.
+
+Next step is now well-defined: the livelock is in the native Wayland path only (X11/Xwayland works
+at 38 FPS), the driver is exonerated, so the area is zink's `KOPPER_WAYLAND` path or the
+weston/zink interface - and it is a hard blocker for every native Wayland application.
