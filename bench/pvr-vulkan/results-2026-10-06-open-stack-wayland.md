@@ -1003,3 +1003,51 @@ mark, so partial pushes upload the whole touched range.
 Conclusion: these two comments are **stale**; the bug was either fixed in an earlier session or
 was misdiagnosed. They should be updated rather than re-investigated. (`bda`'s `--bda-only`
 flag still exists for a different reason and is harmless.)
+
+---
+
+# ADDENDUM 16 — 2026-10-08: compute workgroup limit was under-reported 4x; now fixed and matching the vendor
+
+## The finding
+
+`vkaudit` showed the driver reporting limits that were exactly the Vulkan *minimums* while the
+vendor reported far more on the same silicon. The most consequential:
+
+| limit | open (before) | vendor | open (now) |
+|---|---|---|---|
+| `maxComputeWorkGroupInvocations` | **128** | 512 | **512** |
+| `maxComputeWorkGroupSize` | **128 128 64** | 512 512 64 | **512 512 64** |
+| `maxComputeWorkGroupCount` | 65535 65535 65535 | 65536 65536 65536 | 65535 (unchanged) |
+
+## Probed, not assumed
+
+`wgsize` (`wgsize.c` + `wgsize.comp`) is a compute shader whose every invocation writes
+`id ^ 0xa5a5a5a5` to its own slot. The readback therefore proves **both** how many invocations
+actually ran **and** that each wrote the correct slot - a shader that silently dropped
+invocations would leave zeros, and one that wrote the wrong lane would show a mismatch.
+
+```
+local_size_x = 512  ->  512 invocations: 512 correct, 0 untouched(0), 0 wrong
+local_size_y = 512  ->  512 invocations: 512 correct, 0 untouched(0), 0 wrong
+local_size_z = 64   ->   64 correct, rest untouched (Z is capped at 64, as advertised)
+```
+
+So X and Y are 512, Z is 64, and the total is 512 per workgroup - exactly the vendor's numbers.
+Applied in mesa `c8523c2`.
+
+## Why under-reporting is not neutral
+
+It is not a conservative choice. An application that needs more than 128 invocations per
+workgroup (a common requirement for GPU compute) **refuses to run at all** on the open stack
+while working on the vendor stack - a pure compatibility loss for a capability the hardware has.
+This is the mirror image of the over-claim bugs: the fix is to report what the hardware does,
+in either direction.
+
+## No regressions
+
+`bda`, `vk13`, `pctest`, `vk16` all still PASS; `glmark2 --validate` still 0 failures / 27 pass.
+`audit-open-driver-current.txt` refreshed.
+
+Remaining known limit gap: `maxComputeWorkGroupCount` 65535 vs 65536 (Vulkan minimum vs the
+vendor). Not changed - it would need a 65536-workgroup dispatch to prove, and the delta only
+affects an app needing exactly 2^16 workgroups in one dimension.
