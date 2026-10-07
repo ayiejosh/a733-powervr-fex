@@ -1128,3 +1128,50 @@ client frame, ~1.8-5 ms) being a hard ceiling on windowed frame rate.
 
 Attacking the unconditional PR job is therefore the best-justified remaining performance item,
 and the open question that stopped it earlier was whether SPM sizing can be determined up front.
+
+---
+
+# ADDENDUM 18 — 2026-10-08: the PR blocker is now definitive; pixel merging tested and rejected
+
+## PR elimination (goal item 3): SPM really is a firmware runtime decision
+
+The blocker was whether the driver can know up front that SPM will not be entered. Traced it:
+
+* `pvr_arch_calc_fscommon_size_and_tiles_in_flight()` computes `max_tiles_in_flight` from **USC
+  shared memory** (`available_shareds / (fs_common_size * 2) / num_allocs`), capped at
+  `isp_max_tiles_in_flight` (= 6 on bxm-4-64). It is not a partition-store quantity.
+* At job setup: if `max_tiles_in_flight == isp_max_tiles_in_flight`, the driver sets
+  `job->max_tiles_in_flight = 0` with the comment **"Use the default limit based on the
+  partition store"** - i.e. it hands the decision to the firmware, which is exactly when SPM can
+  be entered. Otherwise it pins the value and SPM cannot be.
+
+So the driver knows *that it is deferring to the firmware*, but the partition-store capacity the
+firmware uses is not a quantity the driver holds. **PR elimination therefore cannot be done
+safely from userspace today** - this is now a settled answer rather than an open question, and it
+is consistent with the driver's own TODO wording ("in some cases we could eliminate the pr").
+Closing this line unless the partition-store capacity becomes available.
+
+## Pixel merging: tested, and rejected on measurement
+
+`pvr_arch_cmd_buffer.c` has `job->disable_pixel_merging = true` with "TODO: Enable pixel merging
+when it's safe to do", and the device **has** the enhancement the transfer path gates on
+(`has_ern42307 = true`, `pvr_arch_job_transfer.c:3413`). Since the compositor's workload is one
+full-window blended quad, this looked like a direct win. It is not:
+
+| scene (off-screen 800x600) | before | with merging enabled |
+|---|---|---|
+| `build` | 179 | **165** |
+| `texture` | 218 | **177** |
+| `desktop:blur` | 19 | 20 |
+
+**A regression, so it was reverted** (tree clean, `--validate` still 0/27 failures).
+
+Root cause of why enabling the flag is wrong on its own: the **PPP state already gates** pixel
+merging independently. `pds_tri_merge_disable` is set conditionally for lines, punch-through and
+DWD-with-depth-always (`pvr_arch_cmd_buffer.c:7277-7282`), and the other two sites
+(7285, 7498) build a *mask* with the bit set and then do `merge_word |= state & ~mask` - they
+**preserve** the accumulated value rather than disabling it. So the flag and the TA state are two
+independent controls, and flipping only the flag puts them in disagreement, which is slower.
+
+The TODO means "enable it on both sides together", not "this flag is mistakenly false". Left
+alone deliberately.
