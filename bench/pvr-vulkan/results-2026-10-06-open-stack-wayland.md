@@ -2324,3 +2324,59 @@ What remains is that the client's own GL draw path costs ~22 ms windowed against
 scene off-screen, and none of the obvious mechanisms account for it. The next measurement should be
 inside the draw path itself - per-frame timing of zink's draw/flush/batch-submit on the windowed
 path versus off-screen - rather than around it.
+
+---
+
+# ADDENDUM 33 — 2026-10-08: ruled out batch_usage_wait; and a flaw in my own thread attribution
+
+## Ruled out: `batch_usage_wait` (resource reuse in the draw path)
+
+Instrumented `batch_usage_wait` in `zink_batch.c` (the function that calls `zink_wait_on_batch`)
+with an env-gated `BATCH_WAIT_TRACE` that counts and times every call. Ran both configurations for
+18 s:
+
+```
+win: fps=42  waits=<500
+off: fps=180 waits=<500
+```
+
+**No `[bw]` line was ever printed**, and the counter only reports every 500 calls - so
+`batch_usage_wait` is called fewer than 500 times in 18 seconds in either configuration. It is not
+where the client stalls. Ruled out.
+
+## The client is waiting, not spinning - but my attribution was wrong
+
+| | windowed | off-screen |
+|---|---|---|
+| FPS | 36 | 174 |
+| **client CPU (all threads)** | **25% of a core** | **67% of a core** |
+| threads | 9 | 11 |
+
+Windowed the client uses *less* CPU, so it is waiting rather than spinning - consistent with the
+~22 ms of "outside swap" time from addendum 31.
+
+But the main-thread-only `strace -c` (no `-f`) showed only **0.80 s of syscall time in a 12 s run
+(6.7%)** windowed, with `futex` at 3.3%. **A thread that is blocked for 21 ms of every 28.6 ms frame
+must be inside a syscall most of the time.** It isn't, so the main thread is not the thread doing the
+waiting - the client runs **9 threads**, and I was profiling the wrong one.
+
+**That invalidates the thread attribution in addenda 32/32b as a basis for conclusions about the
+client's blocking** - not the measurements themselves, but the assumption that the main thread
+carries the frame loop. The next attempt has to identify the render thread first (e.g. by finding
+which TID issues the DRM ioctls, or which one accumulates the frame's CPU time) and profile *that*
+one, rather than assuming TID==PID.
+
+## Method note, and it is the recurring one
+
+Sixth instance of the same class this session: **the proxy was wrong, not the code.**
+
+| round | what I measured | why it misled |
+|---|---|---|
+| 20-22 | client stdout / CPU state | bad grep patterns; `-b` means uncapped |
+| 15 | firmware trace per-run attribution | persistent ring buffer |
+| 24 | weston CPU flat | inferred "GPU-bound" from a CPU number |
+| 26 | `strace -f -c` totals | per-thread summation, not wall clock |
+| **27** | **main-thread syscall profile** | **the main thread is not the render thread** |
+
+Each time the fix was the same: measure the specific thing being claimed, and verify the
+measurement instrument actually observes it.
