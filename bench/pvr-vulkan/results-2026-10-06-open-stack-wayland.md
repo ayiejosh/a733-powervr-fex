@@ -2285,3 +2285,42 @@ Attribute the windowed `ppoll` to a thread: if it is the main render thread, it 
 on something (X connection, fence, or frame callback) and that is the 22 ms; if it is the WSI event
 thread again, it is idle background behaviour and must be discarded as it was in addendum 20. Use
 `strace -f` without `-c` and filter by TID rather than aggregating.
+
+## Addendum 32b: ppoll attributed per thread - it is NOT the 22 ms either
+
+The `-c` run suggested ppoll was windowed-specific (1.52 s vs 0.8 ms). Re-ran with
+`strace -f -e trace=ppoll -T` (no `-c`) and attributed every call to its TID:
+
+| TID | calls | total | avg | max | fds polled |
+|---|---|---|---|---|---|
+| 336441 | 10 | 134.6 ms | **13.5 ms** | 59.1 ms | fd 3 |
+| **336419** (main - also does ioctl on fd 7) | 512 | 119.2 ms | 233 us | 33.7 ms | fd 3, **fd 7** |
+| 336483 | 10 | 31.1 ms | 3.1 ms | 15.7 ms | fd 3 |
+| 336482 | 306 | 9.4 ms | 31 us | 1.2 ms | fd 3 |
+| 336440 | 28 | 2.6 ms | 93 us | 2.0 ms | fd 3 |
+
+**Total ppoll across all threads is ~300 ms in a 10 s run (~3%).** The main thread (336419, the one
+that also does DRM ioctls on fd 7) spends only 119 ms in 512 ppoll calls, averaging 233 us. So
+**ppoll is not the missing 22 ms** and the discriminator from addendum 32 does not survive
+attribution.
+
+Note the 5x discrepancy: the `-c` aggregate reported 1.52 s for the same syscall. That is the
+per-thread-summation trap again, in a different guise - `-c` totals are not wall-clock time and
+should not be compared between runs of different length.
+
+## Where this leaves the windowed penalty
+
+Narrowed, with several things now positively excluded by measurement rather than inference:
+
+| excluded | how |
+|---|---|
+| weston's composite | 0.58 ms (weston timeline) |
+| the present call | 4.5 ms (SWAP_TIMING) |
+| swapchain image tiling | `linear=0`, OPTIMAL, no modifiers (SWAPCHAIN_INFO) |
+| an extra copy to the swapchain | `res->obj->image` *is* the swapchain image |
+| `ppoll` / client syscalls | ~3% of runtime, main thread 119 ms/10 s |
+
+What remains is that the client's own GL draw path costs ~22 ms windowed against 5.4 ms for the same
+scene off-screen, and none of the obvious mechanisms account for it. The next measurement should be
+inside the draw path itself - per-frame timing of zink's draw/flush/batch-submit on the windowed
+path versus off-screen - rather than around it.
