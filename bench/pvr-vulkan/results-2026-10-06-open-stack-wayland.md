@@ -1594,3 +1594,38 @@ between attachment indices.
 
 So `maxColorAttachments = 8` is now supported by measurement as well as by the driver's constant,
 matching the vendor.
+
+## Addendum 24c: a spec violation between two advertised limits
+
+While checking whether `maxPerStageDescriptorInputAttachments = 4` was another floor, I audited the
+**consistency** of the limits struct instead - and found a violation rather than an under-report.
+
+Vulkan requires every `maxDescriptorSet*` to be >= its `maxPerStage*` counterpart. The driver had:
+
+| per-stage | per-set | |
+|---|---|---|
+| `maxPerStageDescriptorStorageBuffers` = **16** | `maxDescriptorSetStorageBuffers` = **3*4 = 12** | **VIOLATION** |
+
+12 < 16, so an application using the 16 storage buffers per stage that the per-stage limit permits
+would have exceeded the per-set limit - **the driver's own two advertised numbers contradicted each
+other.** The `3*4` is a stale derivation from when the per-stage value was 4. Now `3*16 = 48`.
+
+All six pairs checked and consistent now: samplers 96/32, uniform buffers 36/13, storage buffers
+48/16, sampled images 96/32, storage images 96/32, input attachments 4/4.
+
+No regressions in any probe or in `glmark2 --validate`.
+
+### Method note
+
+This is the third distinct defect class the same discipline has surfaced, and each needed a
+different check:
+
+1. **over-claim** - an advertised feature with no implementation (fp16, 8-bit storage) - found by
+   running a probe;
+2. **under-report** - a limit set to the Vulkan minimum with no backing constant (workgroups,
+   samplers, storage images, colour attachments) - found by comparing against a driver constant or
+   probing the real capability;
+3. **internal contradiction** - two advertised limits that cannot both be satisfied - found by
+   checking the limits struct against the spec's invariants, which needs no probe at all.
+
+Class 3 is the cheapest to check and had not been done before now.
