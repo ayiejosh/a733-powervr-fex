@@ -194,3 +194,7 @@ link linfilter linfilter.c
 glslangValidator -V --target-env vulkan1.2 -DNOUT=32 -o vary32.vert.spv varyings.vert
 glslangValidator -V --target-env vulkan1.2 -DNOUT=32 -o vary32.frag.spv varyings.frag
 link varyings varyings.c
+
+# inatt: maxPerStageDescriptorInputAttachments probe (2-subpass render pass).
+# Build variants with -DNIN=<n>; subpass 0 needs its own fragment shader with exactly n outputs.
+link inatt inatt.c

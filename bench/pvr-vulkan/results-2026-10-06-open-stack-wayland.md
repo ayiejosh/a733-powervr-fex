@@ -3190,3 +3190,54 @@ No regressions: `bda`, `vk13`, `pctest`, `vk16`, `wgsize`, `samplers`, `storagei
 | `maxFragmentCombinedOutputResources` | 4 | 64 | spec invariant |
 | `maxDescriptorSetStorageBuffers` | 12 | 48 | spec invariant |
 | **`maxVertexOutputComponents`** | **64** | **128** | **probed** |
+
+---
+
+# ADDENDUM 44 — 2026-10-08: input-attachment limit was a floor too (4 -> 8)
+
+`maxPerStageDescriptorInputAttachments` was **4** - the Vulkan minimum, with no backing constant
+(`input_attachments` is a pointer, not a sized array). Same signature as the five floors already
+found.
+
+## Probed, not assumed
+
+`inatt.c`: a 2-subpass render pass where subpass 0 writes `1/255` into each of N colour attachments,
+and subpass 1 reads all N as input attachments, sums them and writes the sum. The readback must
+equal N, so a dropped input attachment shows a wrong number rather than a plausible one:
+
+| N | result |
+|---|---|
+| 4 | **red=4, correct** |
+| 8 | **red=8, correct** |
+| 12 | render pass and pipelines build, then crash at draw time |
+| 16+ | fail earlier |
+
+**So the real per-stage limit is 8 while the driver reported 4.** Now 8, with the per-set value.
+
+(One harness bug found and fixed on the way: subpass 0's shader initially declared all 16 outputs
+with only N written, so it declared more outputs than the subpass had colour attachments. Corrected
+to emit exactly N.)
+
+No regressions: `bda`, `vk13`, `pctest`, `vk16`, `wgsize`, `samplers`, `storageimages`, `mrt`,
+`varyings`, `linfilter` all PASS; `glmark2 --validate` 0 failures / 27 pass.
+
+## The limit audit is now complete
+
+Eleven limits examined. **Six were floors**, two were spec violations, one was a hardcoded value
+contradicting its own constant, and two were honest:
+
+| limit | reported | verdict |
+|---|---|---|
+| `maxComputeWorkGroupInvocations` | 128 | floor -> 512 |
+| `maxComputeWorkGroupSize` | 128/128/64 | floor -> 512/512/64 |
+| `maxPerStageDescriptorSamplers` | 16 | floor -> 32 (probed to 128) |
+| `maxPerStageDescriptorStorageImages` | 4 | floor -> 32 |
+| `maxVertexOutputComponents` | 64 | floor -> 128 |
+| **`maxPerStageDescriptorInputAttachments`** | **4** | **floor -> 8** |
+| `maxColorAttachments` | 4 | hardcoded vs its own constant -> 8 |
+| `maxFramebufferLayers` | 256 | hardcoded vs device value -> 2048 |
+| `maxFragmentInputComponents` | 64 | below spec minimum -> 128 |
+| `maxFragmentCombinedOutputResources` | 4 | spec violation -> 64 |
+| `maxDescriptorSetStorageBuffers` | 12 | spec violation -> 48 |
+| `maxComputeSharedMemorySize` | 16384 | **honest** - vendor also 16384 |
+| `maxBoundDescriptorSets` | 4 | **honest** - backed by `PVR_MAX_DESCRIPTOR_SETS` arrays |
