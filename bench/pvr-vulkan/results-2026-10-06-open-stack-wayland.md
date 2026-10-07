@@ -601,3 +601,53 @@ This was found by treating `glmark2 --validate` as a real test and getting a con
 (llvmpipe = 27/27). Earlier in the session I twice asserted "correctness restored, 0 failures"
 after counting only the *successes* - the failure count was never measured, and the 20
 failures were present the whole time. Count both, always.
+
+---
+
+# ADDENDUM 9 — 2026-10-08: fp16 fix confirmed; the shared bottleneck is the compositor
+
+## The fp16 fix holds
+
+| | score |
+|---|---|
+| glmark2 default, fp16 advertised | 22 |
+| glmark2 default, fp16 disabled | **32 (+45%)** |
+| glmark2 `--validate` | 20 failures -> **0 failures** |
+
+Both correctness and score improved from the same one-line change. The present cost itself
+did **not** move (windowed/off-screen still 44 / 188 FPS), because the `build` scene barely
+uses fp16 - the score gain comes from the shading/texture/buffer scenes that do.
+
+## Feature audit (same class as fp16)
+
+* `fillModeNonSolid = false` - zink declares it a base requirement and warns about it
+* `geometryShader = false`
+* `bufferDeviceAddress = true` but `bufferDeviceAddressCaptureReplay = false` - **correctly**
+  not over-claimed (`pvr_device.c:914` FINISHME is consistent with that)
+* `shaderInt8`, `storageBuffer8BitAccess`, `uniformAndStorageBuffer8BitAccess`,
+  `storagePushConstant8` are all advertised. These are the *same shape* of risk as fp16, but
+  validation now passes 27/27, so there is no failing test to catch them yet. Needs a targeted
+  8-bit test, not glmark2.
+
+## The present cost is a SHARED compositor cost, not a client cost
+
+Two concurrent glmark2 clients, 800x600, clean machine:
+
+| | FPS |
+|---|---|
+| one client alone | 40 |
+| two clients | 19 + 18 = **37 total** |
+
+Fair sharing of a shared ~40/s limit. So the client is not the limit - **weston's compositing
+is**, and it is proportional to the damaged area.
+
+This also resolves an earlier contradiction: `weston-simple-egl -f` at 4K looked fast
+(41-66 FPS) but a rotating triangle *damages* a small area, and weston composites damage only.
+Measuring full-screen client fps does not measure compositor throughput.
+
+Rates: native Vulkan ~368 Mpix/s, zink's own off-screen render ~90 Mpix/s, weston's composite
+~19 Mpix/s (36 ms/Mpix). So zink is ~4x off native Vulkan, and the compositor compounds it.
+
+## Dead end
+
+`ZINK_DEBUG` on the compositor changes nothing useful: none 45, nobgc 42, norp 41, rp 35 FPS.
