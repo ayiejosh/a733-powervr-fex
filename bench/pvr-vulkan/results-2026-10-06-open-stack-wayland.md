@@ -2427,3 +2427,70 @@ Still unaccounted: ~22 ms of the client's 26.3 ms windowed frame.
 
 The remaining candidates are all in the client's GL/draw path, and the next instrument has to time
 zink's own draw and batch-submit functions per frame rather than looking at syscall traces.
+
+---
+
+# ADDENDUM 34 — 2026-10-08: FOUND IT. The windowed cost is a synchronous X round-trip per frame.
+
+## The measurement
+
+No instrumentation needed - a poor-man's profiler: attach gdb and sample the main thread's stack.
+12 samples of a windowed 800x600 run:
+
+```
+#6  xcb_wait_for_reply ()                     <- blocks on the X server
+#7  kopperGetDrawableInfo ()                  (libEGL)
+#8  dri_st_framebuffer_validate ()
+#9  st_framebuffer_validate ()
+#10 st_manager_validate_framebuffers ()
+#11 st_update_framebuffer_state ()
+#12 st_Clear ()                               <- the application's glClear
+```
+
+**6 of 12 samples (50%) are inside `kopperGetDrawableInfo` waiting in `xcb_wait_for_reply`.** Half the
+client's main-thread time is one synchronous X round-trip.
+
+## The code
+
+`src/egl/drivers/dri2/platform_x11.c:112`:
+
+```c
+x11_get_drawable_info(...)
+{
+   cookie = xcb_get_geometry(dri2_dpy->conn, dri2_surf->drawable);
+   reply = xcb_get_geometry_reply(dri2_dpy->conn, cookie, &error);   /* <-- blocks */
+   ...
+}
+```
+
+called from `kopper.c:355` (`get_drawable_info`) via `kopper_update_drawable_info`, which the state
+tracker runs whenever the framebuffer state is validated - i.e. on `glClear`/`glDraw*` after a
+framebuffer change.
+
+So every windowed frame pays: client -> Xwayland -> (weston) -> Xwayland -> client, synchronously,
+just to re-read a window geometry that almost never changes.
+
+## Why this explains everything that came before
+
+* **Why Wayland is fast and X11 is slow**: this is `platform_x11.c`. The Wayland kopper path never
+  calls `xcb_get_geometry`, which is why `weston-simple-egl` reaches 301 FPS while the same driver
+  gives X11 clients ~37.
+* **Why it is scene-independent**: the round-trip cost does not depend on what the scene draws - it
+  is paid once per framebuffer validate. That is exactly the "texture renders faster off-screen than
+  build, yet both are 37 FPS windowed" observation from addendum 28.
+* **Why it scales with window area**: a larger drawable means more data in the reply and more work
+  for Xwayland/weston to service it (the 6.3 ms + 31.2 ms/Mpix fit).
+* **Why two clients do not halve each other**: the round-trips serialise through Xwayland, so the
+  total rate is bounded regardless of client count (40 FPS for one, 19+18 = 37 for two).
+* **Why the client is at 25% CPU and waiting**: it is blocked in `xcb_wait_for_reply`.
+* **Why weston's own composite is only 0.58 ms**: the time is not in weston's rendering at all.
+
+Every previously unexplained observation is explained by one synchronous round-trip per frame.
+
+## Next: the fix
+
+The geometry rarely changes and EGL already tracks the surface dimensions. The obvious fix is to
+avoid re-querying it on every framebuffer validation - either by using the EGL surface's known
+Width/Height, or by caching the reply and invalidating it on ConfigureNotify. That is the next piece
+of work, and unlike everything in the last several rounds it has a clear mechanism and a clear
+expected effect: the ~13+ ms of round-trip per frame should go away.
