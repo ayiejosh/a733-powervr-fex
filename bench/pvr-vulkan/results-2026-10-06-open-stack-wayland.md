@@ -2227,3 +2227,61 @@ Compare the client's draw cost rendering into a swapchain image vs an off-screen
 size, to find why the former is ~4x more expensive. Candidates: a per-frame layout transition on the
 swapchain image, a different image layout/tiling for swapchain images, or extra synchronisation in
 zink's render-to-swapchain path.
+
+---
+
+# ADDENDUM 32 — 2026-10-08: tiling and copy ruled out; ppoll is the discriminator
+
+Following addendum 31 (the windowed penalty is the client's draw path, ~22 ms of 26.3 ms), the two
+obvious explanations for "the same scene is 4x slower into a swapchain image" were tested and both
+are **ruled out**.
+
+## Ruled out: the swapchain image's tiling
+
+New env-gated `SWAPCHAIN_INFO` in `zink_kopper.c` prints the render target's properties at the point
+where the swapchain image is bound:
+
+```
+[swi] swapchain target: fmt=105 800x600 linear=0 modifiers=0 m0=0x0 vkusage=0x97 layout=0
+```
+
+**`linear=0` - it is `VK_IMAGE_TILING_OPTIMAL`, with no DRM modifiers**, i.e. the same tiling class
+as an off-screen render target. So the old "only LINEAR modifiers are supported, and rendering into
+a LINEAR image is slow" theory does not apply here.
+
+## Ruled out: an extra copy
+
+`zink_kopper.c:650` binds the swapchain image directly:
+
+```c
+res->obj->image = cdt->swapchain->images[res->obj->dt_idx].image;
+```
+
+The display-target resource *is* the swapchain image, so there is no blit or copy from an internal
+render target. The `kopper_copy_to_front` on the swap path is the present, and it costs 4.5 ms
+(addendum 31), not 22.
+
+## New discriminator: `ppoll`
+
+`strace -f -c` on the client, windowed vs off-screen:
+
+| syscall | windowed | off-screen |
+|---|---|---|
+| **`ppoll`** | **1274 calls, 1.52 s (1193 us avg)** | **136 calls, 0.8 ms** |
+| `ioctl` | 29740 calls, 0.74 s | 65188 calls, 2.36 s |
+| `futex` | 6806 calls, 11.4 s | 13505 calls, 44.6 s |
+
+`ppoll` is essentially absent off-screen and substantial windowed - the only syscall that behaves
+that way. **Caveat, stated because it burned me before: `strace -f -c` sums per-call time across all
+threads, so the futex totals are dominated by idle worker threads and are NOT comparable between the
+two runs** (off-screen's futex total is larger simply because it ran 4x more frames). Only the
+`ppoll` presence/absence is meaningful, and it needs per-thread attribution before it can be
+interpreted - which is exactly the mistake made in addendum 20, where an idle WSI event thread's
+`ppoll` was mistaken for the main thread blocking.
+
+## Next
+
+Attribute the windowed `ppoll` to a thread: if it is the main render thread, it is the client waiting
+on something (X connection, fence, or frame callback) and that is the 22 ms; if it is the WSI event
+thread again, it is idle background behaviour and must be discarded as it was in addendum 20. Use
+`strace -f` without `-c` and filter by TID rather than aggregating.
