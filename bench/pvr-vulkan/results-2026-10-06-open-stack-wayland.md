@@ -2862,3 +2862,53 @@ Every fix verified still in place:
 
 So the correctness and compatibility work of this session is intact and the performance gain is
 reproducible.
+
+---
+
+# ADDENDUM 39 — 2026-10-08: CORRECTION - Xwayland is exonerated by the bench's own vendor A/B
+
+**Addendum 38 is wrong.** It concluded "the X11 cost is architectural to Xwayland, not a defect in the
+pvr driver". The bench repository has contradicted that since 2026-10-07, in its own addendum 2:
+
+| harness | vendor | open | ratio |
+|---|---|---|---|
+| `glmark2-es2 --benchmark default`, X + glamor | **522** | - | - |
+| `glmark2-es2 -b build:use-vbo=false`, weston + XWayland | **787** | **31** | **25x** |
+
+with the note: *"identical compositor (weston), identical XWayland, identical client, identical GL
+layer (zink). Only the Vulkan driver differs."*
+
+**The vendor reaches 787 FPS through the same weston, the same Xwayland, the same zink, and the same
+client.** So Xwayland cannot be the architectural ceiling - it demonstrably delivers 787 FPS on this
+board. The 25x gap is the **Vulkan driver**, exactly as the bench had already established, and I
+should have checked the existing record before publishing a conclusion that contradicted it.
+
+## What this re-opens, and the leading driver-side candidate
+
+The gap is on the **windowed** path: the open driver gives 31 FPS windowed where it gives 185 FPS
+off-screen, while the vendor gives 787 windowed. Off-screen zink renders into the driver's own
+`VK_IMAGE_TILING_OPTIMAL` image; windowed it renders into the **swapchain** image, and the two differ
+in exactly one way the driver controls:
+
+```c
+pvr_formats.c:489   mp->drmFormatModifier = DRM_FORMAT_MOD_LINEAR;
+pvr_formats.c:504   mp->drmFormatModifier = DRM_FORMAT_MOD_LINEAR;
+pvr_wsi.c:82        pdevice->wsi_device.supports_modifiers = true;
+```
+
+**The driver advertises `VK_EXT_image_drm_format_modifier` but offers only `DRM_FORMAT_MOD_LINEAR`.**
+With `supports_modifiers = true` the WSI takes the modifier path, so every swapchain image is
+**LINEAR**, while zink's off-screen images are OPTIMAL. `pvr_formats.c:476` even says "We support
+LINEAR only yet".
+
+That is a concrete, driver-side, testable difference between the fast path and the slow path, and it
+is the first candidate in this whole investigation that is *inside* the driver.
+
+## Counter-evidence that must be dealt with first
+
+`pvranimate` renders a full-screen triangle into **LINEAR** 4K dma-buf images at 368 Mpix/s, which
+argues that LINEAR rendering is not inherently slow. But `pvranimate` is a single untextured,
+unblended triangle, whereas the windowed GL path is a full glmark2 scene with texturing, blending and
+many draw calls. So the two are not comparable, and this needs a controlled test: render the *same*
+scene into a LINEAR image and into an OPTIMAL image and compare. That is the next measurement, and it
+is a driver question, not an Xwayland one.
