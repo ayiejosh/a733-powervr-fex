@@ -499,3 +499,54 @@ GPU renders into a GPU-allocated dma-buf". Note this is *not* the same as the ea
 GPU-import experiment (which was slower) — that path went through zink's LINEAR *modifier*
 path, whereas `pvrscanout` shows plain `VK_IMAGE_TILING_OPTIMAL` is renderable *and*
 exportable, which is the layout `pvranimate` actually uses.
+
+---
+
+# ADDENDUM 7 — 2026-10-08: it is zink's X11 present path, and nothing else
+
+## The definitive same-configuration comparison
+
+Same window (800x600), same weston + XWayland, same display:
+
+| client | present mode | FPS |
+|---|---|---|
+| vkgears (native Vulkan) | fifo | 59.8 |
+| vkgears (native Vulkan) | mailbox | **543.8** |
+| zink (glmark2) | default | **42** |
+
+13x between two clients through the identical stack. It is zink, unambiguously.
+
+## Not vsync
+
+`vblank_mode=0` -> 45 FPS. `MESA_VK_WSI_PRESENT_MODE=mailbox` -> 42.
+`MESA_VK_WSI_PRESENT_MODE=immediate` -> 43. Real cost, not pacing.
+
+## Not the Mesa version
+
+The vendor 787 FPS figure used *system Mesa 25.0.7* zink (via `glrun`); the open 42 used
+Mesa 26.3. Controlling for that: **open ICD + system Mesa 25.0.7 zink = 38 FPS**. So the
+Mesa version is irrelevant and the comparison was valid.
+
+## It is the X11 socket
+
+`strace -f -e trace=ppoll -T`: **1348 ppoll calls, 9.6 s total, all on `fd=3`** which is
+`socket:[287433]` — the X11 connection. (fd 4..8 are `/dev/dri/renderD128`.) The client is
+blocked ~19 ms/frame on X11 round-trips, which matches the 18.5 ms present delta exactly.
+
+Note this is why `strace -T` on `ioctl` found nothing: the block is not a GPU ioctl.
+
+## Dead ends recorded so they are not retried
+
+* zink `QueueWaitIdle` per frame — it is only in `zink_kopper_present_readback`, a
+  `glReadPixels` path, not the normal present.
+* allocation churn — `PVR_API_TRACE=1` shows **15 allocations for a whole run**
+  (9 x 1921024 = the 800x600 swapchain images). zink is not allocating per frame.
+* `PVR_API_TRACE` exists but only traces `vkAllocateMemory`/`vkCreateBuffer`; it is not a
+  general API tracer.
+
+## Where this leaves it
+
+zink is fast on Wayland and slow on X11: `weston-simple-egl -b` (native Wayland, interval 0)
+runs at 153-213 FPS, while the same zink on XWayland is 42. Native Vulkan on XWayland is 543.
+So the target is **zink's X11 present path** — the Vulkan/X11 WSI round-trip on the open
+driver — and not the GPU, not the compositor, and not the driver's rendering.
