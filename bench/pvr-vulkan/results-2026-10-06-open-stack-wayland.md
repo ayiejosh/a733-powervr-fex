@@ -1766,3 +1766,53 @@ at 153 FPS. Those numbers should not be used as a Wayland baseline.
 Next step is now well-defined: the livelock is in the native Wayland path only (X11/Xwayland works
 at 38 FPS), the driver is exonerated, so the area is zink's `KOPPER_WAYLAND` path or the
 weston/zink interface - and it is a hard blocker for every native Wayland application.
+
+## Addendum 26c: the livelock is a SPIN in zink_flush's sync_flush, on flush_completed
+
+Instrumented both `util_queue_fence_wait` calls reachable from `zink_flush` with an env-gated
+`ZINK_FENCE_TRACE` (which reports whether the fence is signalled at the moment of the wait):
+
+```
+[zf] flush_batch: waiting on unsync_fence  (signalled=1)   <- healthy
+[zf] sync_flush:  waiting on flush_completed (signalled=0)  <- the stall
+...
+4898 iterations in ~8 s  (~612/s)
+```
+
+So the visible stall is `sync_flush()` waiting on `bs->flush_completed` - the flush-queue job
+completion fence - **with the fence not signalled**, and the client iterates it ~612 times a
+second, which is the 78% CPU.
+
+### A real bug found and fixed along the way (but not this one)
+
+`zink_copy_image_buffer()` resets `ctx->unsync_fence` when `unsync` is set and signals it at the
+end, but had an early return in between:
+
+```c
+   if (unsync) { ... util_queue_fence_reset(&ctx->unsync_fence); }
+   if (buf2img) {
+      if (zink_is_swapchain(img)) {
+         if (!zink_kopper_acquire(ctx, img, UINT64_MAX))
+            return;                       /* <-- left unsync_fence reset forever */
+      }
+   ...
+   if (unsync) util_queue_fence_signal(&ctx->unsync_fence);
+```
+
+Left unfixed, the next `flush_batch()` blocks in `util_queue_fence_wait(&ctx->unsync_fence)`
+with no recovery path. Fixed (signal before returning). **It did not resolve the observed hang** -
+the trace shows `unsync_fence` is signalled on every check - but it is a genuine bug and is kept.
+
+### What is now known, and what is not
+
+* The stall is in `sync_flush` on `flush_completed`, i.e. the flush-queue worker is not
+  completing the batch job promptly enough (or at all) for the main thread.
+* `unsync_fence` is healthy.
+* Disabling `threaded_submit` (`ZINK_DEBUG=flushsync`, `GALLIUM_THREAD=0`) does **not** fix it.
+* Not yet established: whether the worker completes the job and the client simply never presents
+  (frame callbacks), or whether the worker genuinely stalls. The worker thread was observed
+  earlier inside `submit_queue -> reset_batch_state_internal -> pvr_cmd_buffer_reset ->
+  pvr_bo_free -> drmIoctl`, i.e. running, which points at the former.
+
+Next step: instrument `submit_queue` to confirm the job completes and the fence is signalled, and
+check whether weston sends frame callbacks to the client at all.
