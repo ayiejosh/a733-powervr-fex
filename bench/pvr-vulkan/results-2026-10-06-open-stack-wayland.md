@@ -1518,3 +1518,53 @@ would overrun fixed arrays.
 
 Remaining unprobed minimum-valued limits: `maxPerStageDescriptorInputAttachments` (4),
 `maxComputeSharedMemorySize` (16 KB), `maxPerStageDescriptorUniformBuffers` (13, above min 12).
+
+---
+
+# ADDENDUM 24 — 2026-10-08: maxColorAttachments was hardcoded 4 while the driver's own constant says 8
+
+| limit | open (before) | vendor | open (now) |
+|---|---|---|---|
+| `maxColorAttachments` | **4** | 8 | **8** |
+
+Not a "floor vs limit" judgement call this time - a **hardcoded number contradicting the driver's
+own constant**:
+
+```
+pvr_limits.h:     #define PVR_MAX_COLOR_ATTACHMENTS PVR_NUM_PBE_EMIT_REGS
+rogue_hw_defs.h:  #define PVR_NUM_PBE_EMIT_REGS 8U
+pvr_physical_device.c: .maxColorAttachments = 4U          <-- ignored the constant
+```
+
+and every array and assert in the render path is already sized for 8:
+
+```
+pvr_job_render.h:  uint64_t pbe_reg_words[PVR_MAX_COLOR_ATTACHMENTS];
+pvr_job_render.h:  uint64_t pr_pbe_reg_words[PVR_MAX_COLOR_ATTACHMENTS];
+pvr_arch_cmd_buffer.c: assert(pbe_emits <= PVR_MAX_COLOR_ATTACHMENTS);
+pvr_arch_hw_pass.c:    live_outputs[PVR_NUM_PBE_EMIT_REGS];
+pvr_arch_hw_pass.c:    assert(num_live_outputs <= PVR_NUM_PBE_EMIT_REGS);
+```
+
+So the code already handled 8; only the advertised number said 4. Now reports 8, matching the
+vendor. No regressions in any probe or in `glmark2 --validate`.
+
+**Caveat stated plainly:** no >4-MRT render probe has been written, so unlike the workgroup /
+sampler / storage-image fixes this one rests on the driver's own constant, its array sizes and
+asserts, and vendor parity - not on a measurement. It is a one-line change to a reported number
+that enables a path the driver was already written for.
+
+## Limits audited so far, and which were actually wrong
+
+| limit | reported | verdict |
+|---|---|---|
+| `maxComputeWorkGroupInvocations` | 128 | **floor** -> 512 (probed) |
+| `maxComputeWorkGroupSize` | 128/128/64 | **floor** -> 512/512/64 (probed) |
+| `maxPerStageDescriptorSamplers` | 16 | **floor** -> 32 (probed to 128) |
+| `maxPerStageDescriptorStorageImages` | 4 | **floor** -> 32 (probed) |
+| `maxColorAttachments` | 4 | **hardcoded, contradicted its own constant** -> 8 |
+| `maxComputeSharedMemorySize` | 16384 | **honest** - vendor is also 16384 |
+| `maxBoundDescriptorSets` | 4 | **honest** - backed by `PVR_MAX_DESCRIPTOR_SETS` arrays |
+
+Five of seven were wrong, in the same direction. The two honest ones are exactly the two that
+have a real backing constant or array - which remains the reliable predictor.
