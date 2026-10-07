@@ -462,3 +462,40 @@ push constants: NOT working - content does not follow the pushed value
 ordering: a push made BEFORE vkCmdBindPipeline is ignored
   (pixel 66 vs 2 after bind) - the driver uploads push constants while setting up the pipeline
 ```
+
+---
+
+# ADDENDUM 6 — 2026-10-08: cached memory type tested — no gain, and it is still unsound
+
+`pvr_physical_device.c:1319-1370` keeps a second `HOST_CACHED` memory type behind
+`PVR_ENABLE_CACHED_MEMORY_TYPE`, with a comment recording that it was unsound (advertised
+coherent; with `VK_KHR_buffer_device_address` zink gives each buffer its own allocation, 20
+of 23 took that type, and GL rendered up to 79440/262144 pixels wrong), and that the real
+flush/invalidate has since landed via `DMA_BUF_IOCTL_SYNC`.
+
+Tested it, on the theory that 335 MB/s CPU reads vs 7798 MB/s would be exactly the kind of
+thing that hits zink's per-frame uploads and not native Vulkan clients:
+
+| | without | with cached type |
+|---|---|---|
+| windowed 800x600 | 42 FPS | **42 FPS** |
+| off-screen | 188 FPS | 188 FPS |
+| `glmark2-es2 --validate` | Success | **Failure** (multiple scenes) |
+
+**No performance change at all, and correctness breaks.** So the earlier decision to keep it
+opt-in is still correct, and the missing cached type is *not* the present-cost cause. Reverted;
+validate returns to all-Success.
+
+## Where the present cost stands
+
+Still unexplained, but now bounded on both sides:
+
+* weston compositing the damage runs at **~133 MB/s** effective (30 ms/Mpix, area-proportional,
+  GPU-side, Xwayland idle, no blocking syscall)
+* `pvranimate` renders 4K into GPU-allocated LINEAR dma-bufs at **368 Mpix/s (~1.5 GB/s)**
+
+That is a ~10x gap between "weston composites into kmsro's dumb scanout buffer" and "the same
+GPU renders into a GPU-allocated dma-buf". Note this is *not* the same as the earlier
+GPU-import experiment (which was slower) — that path went through zink's LINEAR *modifier*
+path, whereas `pvrscanout` shows plain `VK_IMAGE_TILING_OPTIMAL` is renderable *and*
+exportable, which is the layout `pvranimate` actually uses.
