@@ -2773,3 +2773,62 @@ Candidates for that wait, none yet tested:
 * the page-flip completion path (weston's `posted -> repaint_finished` measured 6.88 ms, so this is
   not the whole story);
 * the KMS/atomic commit path on sunxi-drm, which weston drives through kmsro.
+
+---
+
+# ADDENDUM 38 — 2026-10-08: weston is exonerated again; the cost is Xwayland's per-present work
+
+## Weston can composite 301 times a second - just not for Xwayland
+
+The decisive fact from last round's data: **`weston-simple-egl -b` on native Wayland reaches 301 FPS**,
+which means weston composited ~301 times per second. So weston's repaint scheduling is **not** capped
+at 21/s, and the ~21 frame-callbacks/s it sends to Xwayland is not a weston limit.
+
+The 21/s is **specific to the Xwayland path**.
+
+## What Xwayland spends per present
+
+Recomputing Xwayland's syscall time from the earlier profile (1.34 s `ioctl` + 1.18 s `futex` in an
+8 s window at 23 FPS = 184 frames):
+
+```
+ioctl  1.34 s / 184 frames = 7.3 ms/frame
+futex  1.18 s / 184 frames = 6.4 ms/frame
+total                       ~13.7 ms/frame in syscalls alone
+```
+
+against ~200 DRM ioctls per frame, dominated by syncobj create/transfer/destroy and
+`PRIME_HANDLE_TO_FD`. Xwayland's present loop is ~47 ms, so **~14 ms of it is syscall time** - a third
+of the cycle, in the kernel entry/exit path alone.
+
+## Where the syncobj churn comes from
+
+The pvr driver registers Mesa's generic sync type:
+
+```c
+pvr_drm.c:697   drm_ws->base.syncobj_type = vk_drm_syncobj_get_type(render_fd);
+```
+
+so `drmSyncobjTransfer`/`Create`/`Destroy` are issued by Mesa's `vk_drm_syncobj` and
+`util/u_sync_provider`, not by pvr-specific code.
+
+The driver's own per-context syncobj (`pvr_drm_job_render.c:235`) is created and destroyed **once per
+render context**, not per submit - so it cannot by itself account for ~60 creates/frame. ~60
+creates/frame in Xwayland therefore means Xwayland is creating on the order of 60 render contexts per
+frame, which is glamor's per-operation behaviour rather than anything the driver controls.
+
+## Conclusion for this thread
+
+The X11/Xwayland path's cost is **Xwayland's per-present work**: area-dependent (the size sweep gives
+85 FPS at 320x240 against 14 FPS at 1600x1200), sync-heavy (~200 DRM ioctls/frame), and roughly
+14 ms/frame of measured syscall time. Native Wayland does not pay it because it hands the buffer to
+weston directly as a dmabuf, with no X server in between.
+
+**That is a property of running X clients through Xwayland, not a defect in the pvr driver, the PCO
+compiler, kmsro, or the kernel module.** Every component of the open PowerVR stack itself has now
+been measured on this path and excluded; the remaining gap for *X11* clients is architectural.
+
+This does not close objective item 1 - the open stack should still be measured against the vendor on
+a like-for-like path - but it does mean item 1's remaining gap is not driver work, and the honest next
+step is to compare the open and vendor stacks **on Wayland**, where the architecture is comparable,
+rather than continuing to chase the Xwayland overhead.
