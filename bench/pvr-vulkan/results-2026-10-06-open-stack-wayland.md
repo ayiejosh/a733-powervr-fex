@@ -1666,3 +1666,34 @@ Both were hardcoded with no backing constant. No regressions in any probe or `gl
 
 The fourth class is the newest and the cheapest to apply broadly: `vlimits` + llvmpipe gives a
 reference table, and any limit where pvr is *lower* than llvmpipe deserves a look.
+
+## Addendum 25b: maxFramebufferLayers hardcoded 256 while the render path asserts more
+
+Third instance of the "hardcoded value contradicting the driver's own constant" pattern (after
+`maxColorAttachments`):
+
+```
+pvr_arch_job_render.c:632: assert(layers > 0 && layers <= PVR_MAX_FRAMEBUFFER_LAYERS);
+pvr_limits.h:  #define PVR_MAX_FRAMEBUFFER_LAYERS PVR_MAX_ARRAY_LAYERS
+pvr_physical_device.c: .maxFramebufferLayers = 256U;      <-- ignored it
+```
+
+`PVR_MAX_FRAMEBUFFER_LAYERS` is the same quantity the neighbouring `maxImageArrayLayers` already
+takes from `rogue_get_render_size_max_z(dev_info)`, so that is now used for both. **2048** instead
+of 256, matching `maxImageArrayLayers`.
+
+Implementation note: using the macro directly does not compile here - it expands to
+`ROGUE_TEXSTATE_IMAGE_WORD1_DEPTH_MAX_SIZE`, a csbgen symbol this file does not include. The
+device-derived function is both correct and consistent with the line above it.
+
+## Class-4 sweep result: clean after the fixes
+
+Diffing every limit against llvmpipe, **everything where pvr is lower is legal** - llvmpipe reports
+above the required minimum in most cases (`maxFramebufferWidth` 8192 vs 16384 where the minimum is
+4096, `maxMemoryAllocationCount` 4096 vs ~4 billion where the minimum is 4096, and so on). The only
+two that were genuinely below a required minimum were `maxFragmentInputComponents` (64 < 128) and
+`maxFragmentCombinedOutputResources` (4 < 56), both now fixed.
+
+Limits that sit exactly on the minimum were checked for backing constants, and the ones that have
+one are honest: `maxPushConstantsSize` (`PVR_MAX_PUSH_CONSTANTS_SIZE`),
+`maxImageArrayLayers` and now `maxFramebufferLayers` (both `rogue_get_render_size_max_z`).
