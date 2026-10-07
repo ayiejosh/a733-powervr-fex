@@ -1099,3 +1099,32 @@ application waits for.
 addendum 13b) but does not expose per-job durations, so it cannot time the composite pass.
 `pvranimate.c:866` is also the source of the earlier "push made BEFORE vkCmdBindPipeline is
 ignored" report, which addendum 15b showed no longer reproduces.
+
+## Addendum 17b: it is not texture sampling - it is per-render-pass cost
+
+Ran the discriminating test off-screen (no compositor, no WSI, pure driver render) at 800x600:
+
+| scene | FPS |
+|---|---|
+| `build:use-vbo=false` (untextured) | 178 |
+| **`texture`** | **206** |
+| `texture:texture-filter=linear` | 207 |
+| `shading:shading=phong` | 105 |
+| **`desktop:effect=blur:passes=1:separable=true:windows=4`** | **20** |
+
+**Texture sampling is not the bottleneck - the textured scene is the fastest scene of all.**
+The hypothesis from addendum 17 is dead.
+
+What is slow is the **multi-pass** scene: `desktop` (4 windows + a separable blur = many render
+passes and FBO ping-pong) runs at 20 FPS while a single-pass untextured scene runs at 178. That
+is ~50 ms for a scene that draws almost nothing, i.e. **the cost is per render pass, not per
+pixel or per sample**.
+
+This finally gives goal item 3 real weight. Every render submit issues **3.00 hardware jobs**
+(geometry + partial-render + fragment) - a TA->3D transition per pass - and that is exactly the
+per-pass overhead that a multi-pass workload pays N times over. It is also consistent with
+`desktop` being the slowest scene in the full benchmark and with the compositor (one pass per
+client frame, ~1.8-5 ms) being a hard ceiling on windowed frame rate.
+
+Attacking the unconditional PR job is therefore the best-justified remaining performance item,
+and the open question that stopped it earlier was whether SPM sizing can be determined up front.
