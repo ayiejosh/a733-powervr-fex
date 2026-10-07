@@ -370,3 +370,43 @@ Vulkan client through the identical stack pays ~1.6 ms; the GL-over-Vulkan clien
 
 Two real items remain on the WSI side, just smaller than the 28 ms: the 4.2x mailbox gap,
 and the fact that both drivers are vsync-capped at 60 in the default mode.
+
+---
+
+# ADDENDUM 4 — 2026-10-08: it may be one problem, not two
+
+More negatives, and a synthesis.
+
+## Ruled out this round
+
+* **zink implicit_sync drain** — `VK_DRIVER_ID_IMAGINATION_OPEN_SOURCE_MESA` is already in
+  zink's exclusion list (`zink_screen.c:2972`), so the extra `QueueSubmit` +
+  `WaitForFences(ALL_COMMANDS)` in `kopper_present` does *not* run for the open driver.
+  It runs for the *vendor* (not listed) and is still fast.
+* **X11 vs Wayland** — same program both ways: `es2gears_x11` 22 FPS,
+  `es2gears_wayland` 30 FPS. Only 1.36x apart. So it is zink-vs-native-Vulkan, not X-vs-Wayland.
+* **Xwayland copying the frame** — Xwayland CPU is *flat* (17% at 320x240, 14% at 1600x1200)
+  while FPS falls 92 -> 14. Not a CPU copy.
+* **CPU spin** — windowed is 22% CPU and off-screen 70%, yet off-screen is 4.5x faster.
+  The client is *blocked*, not spinning. Wall-clock strace shows 62 futex + 11 ppoll per
+  frame windowed vs 6.5 futex/frame off-screen. (`/usr/bin/time` does not exist on this board.)
+
+## The synthesis
+
+Cost scales cleanly with area, GPU-side, and Xwayland is idle-ish:
+
+| size | windowed | off-screen | present |
+|---|---|---|---|
+| 320x240 | 10.9 ms | 7.3 ms | 3.6 ms |
+| 1600x1200 | 71 ms | 11.8 ms | 59 ms |
+
+slope ~30 ms/Mpix ~ 133 MB/s. But the client's *own* off-screen rendering is 0.48 Mpix in
+7 ms = 68 Mpix/s, also low. Vendor fill is ~380 Mpix/s (800x600 at 787 FPS).
+
+So this is probably **not** a separate "present bug" at all: the open driver's memory
+throughput looks ~6x low across the board. That makes **FBCDC the convergent fix** rather
+than a second, independent problem — the vendor compresses framebuffer traffic and the
+open driver does not ("Currently no support for FBC").
+
+The render-target path is also LINEAR-only (`pvr_formats.c:476` "We support LINEAR only
+yet"), on a tiler, which is consistent with a low-throughput write path.
