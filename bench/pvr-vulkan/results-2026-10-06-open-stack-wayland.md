@@ -341,3 +341,32 @@ the 25x is far too large to be explained by that noise, but the per-pixel consta
    buffer count / present mode, the kmsro PRIME round-trip per frame.
 2. Then the ~7 ms rendering gap (5.6x vs vendor).
 3. Then FBCDC, then the unconditional partial-render job, then TFBC.
+
+---
+
+# ADDENDUM 3 — 2026-10-08: the 28 ms is zink-specific, not the Vulkan present path
+
+`vkgears` is a pure-Vulkan swapchain client — no zink, no GL, same weston+XWayland harness.
+Measured on both drivers, same command:
+
+| vkgears | vendor | open | ratio |
+|---|---|---|---|
+| default (vsync, 60 Hz panel) | 60.0 FPS | 60.0 FPS | 1.0x |
+| `-present-mailbox` (vsync off) | **2589 FPS** | **613 FPS** | **4.2x** |
+
+So the open driver's raw Vulkan WSI/present path is only **4.2x** behind, and in absolute
+terms ~1.25 ms/frame (1.63 vs 0.39 ms) — **not** the ~28 ms glmark2 sees.
+
+That rules the rest of the space out:
+
+* not the compositor harness — vkgears uses the *same* Xwayland + weston path and presents at 613 FPS
+* not the scanout buffer — GPU-import scanout was tried and was *slower* than dumb buffers
+* not syscalls or CPU — slowest ioctl 37 us, weston idle
+* not missing WSI — open driver has xcb/xlib/wayland surface extensions
+
+**Conclusion: the ~28 ms is introduced by zink's present path specifically.** A native
+Vulkan client through the identical stack pays ~1.6 ms; the GL-over-Vulkan client pays
+~28 ms. Next probe is zink's kopper present/flush, not the driver's WSI.
+
+Two real items remain on the WSI side, just smaller than the 28 ms: the 4.2x mailbox gap,
+and the fact that both drivers are vsync-capped at 60 in the default mode.
