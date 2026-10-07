@@ -2012,3 +2012,37 @@ windowed penalty is ~6 ms plus 31 ms per Mpix of damage, essentially independent
 render cost.** The fixed 6.3 ms component is new information - it is too large to be noise and too
 small to be a vblank, and it is a candidate for the round-trip latency of the
 client -> Xwayland -> weston -> client handoff.
+
+## Addendum 28c: the model does NOT generalise - scope it or drop it
+
+Tested the damage-area explanation against two other clients. It fails on both.
+
+| client | damage | measured | model predicts |
+|---|---|---|---|
+| `weston-simple-egl` (rotating triangle, interval 0) | triangle bbox | **301 fps** | 108-150 fps |
+| `weston-simple-shm` (full window, interval 1) | 210x210 = 0.0441 Mpix | **30 fps** | 130 fps |
+
+`weston-simple-shm`'s damage region is visible in the protocol trace (`wl_surface#3.damage(20, 20,
+210, 210)`), so this is not a guess about what it damages - it damages its whole window every frame,
+and it still runs at 30 fps against a predicted 130.
+
+So the fit in addendum 28b is **real for the data it was fitted to** (glmark2's windowed vs
+off-screen pairs, r^2 = 0.978 over seven sizes) but it is **not a general law of the windowed path**,
+and the damage-area hypothesis is **not confirmed**. Two independent clients contradict it in
+opposite directions.
+
+The honest statement is therefore narrower than addendum 28 claimed:
+
+> For `glmark2` at 800x600 and other sizes, the difference between its windowed and off-screen frame
+> rates is described by 6.3 ms + 31.2 ms/Mpix of window area. That is a property of glmark2's
+> windowed path, and it does not transfer to `weston-simple-egl` or `weston-simple-shm`.
+
+What survives from all of this: the windowed rate for glmark2 is **scene-independent** (texture
+renders faster off-screen than build, yet both are 37 fps windowed), which remains a solid and
+useful observation because it rules out the client's own render cost as the limiter. The *mechanism*
+is still unidentified, and three attempts to model it (area-proportional, vblank-paced, damage-area)
+have now each failed a cross-check.
+
+**Lesson, and it is the same one as addenda 21 and 27:** a model that fits its own data is not a
+finding until it predicts a measurement it was not fitted to. Both of addendum 28's cross-check
+claims have now been withdrawn on exactly that ground.
