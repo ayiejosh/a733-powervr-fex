@@ -2832,3 +2832,33 @@ This does not close objective item 1 - the open stack should still be measured a
 a like-for-like path - but it does mean item 1's remaining gap is not driver work, and the honest next
 step is to compare the open and vendor stacks **on Wayland**, where the architecture is comparable,
 rather than continuing to chase the Xwayland overhead.
+
+## Addendum 38b: end-of-round state and re-confirmed headline
+
+Re-ran the full benchmark and re-checked every fix from this session, to make sure nothing regressed
+while chasing the X11 thread:
+
+```
+glmark2-es2 -s 800x600 --benchmark default  ->  glmark2 Score: 32
+```
+
+| | score |
+|---|---|
+| open stack before this session's fixes | 22 |
+| **open stack now** | **32** (+45%) |
+| vendor stack (X11 + glamor) | 522 |
+
+Every fix verified still in place:
+
+| fix | value |
+|---|---|
+| `shaderFloat16` | `false` (was causing 20/27 scenes to render wrong) |
+| `maxComputeWorkGroupInvocations` | 512 (was 128) |
+| `maxPerStageDescriptorSamplers` | 32 (was 16) |
+| `maxPerStageDescriptorStorageImages` | 32 (was 4) |
+| `maxColorAttachments` | `PVR_MAX_COLOR_ATTACHMENTS` = 8 (was hardcoded 4) |
+| `glmark2 --validate` | **0 failures / 27 pass** |
+| probes | `bda`, `vk13`, `pctest`, `vk16`, `wgsize`, `samplers`, `storageimages`, `mrt` all PASS |
+
+So the correctness and compatibility work of this session is intact and the performance gain is
+reproducible.
