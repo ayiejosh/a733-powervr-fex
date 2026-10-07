@@ -2734,3 +2734,42 @@ Everything measurable on this side has now been measured and excluded:
 The one hard fact still unexplained: **X11 clients cap at ~45 FPS while native Wayland reaches 301 FPS
 on the same driver, and Wayland never goes through Xwayland.** The next step is to build Xwayland with
 debug symbols; without that, further work on this specific question is guesswork.
+
+## Addendum 37b: weston paces Xwayland at ~21 frame callbacks/s
+
+No symbols needed for this one - `WAYLAND_DEBUG=1` works on Xwayland because Xwayland is a Wayland
+*client*, and weston launches it, so it inherits the environment. Over a 15 s run with the X11 client
+at 40 FPS (~600 client frames):
+
+| Xwayland's Wayland traffic | count | rate |
+|---|---|---|
+| `wl_surface.commit` | 308 | **21/s** |
+| `wl_surface.frame` (callback requests) | 306 | 20/s |
+| **`wl_callback.done` (frame callbacks received)** | **322** | **21/s** |
+| `wl_buffer.release` | 302 | 20/s |
+| dmabuf buffer params | 186 | 12/s |
+
+**Weston sends Xwayland ~21 frame callbacks per second, and Xwayland commits ~21 times per second,
+while the client itself renders at 40 FPS.** The callback/commit/release relationship is a healthy
+1:1, so nothing is stuck - the loop is simply slow.
+
+This localises the pacing to **weston's frame-callback rate (~21/s)**, not to Xwayland's present
+handling and not to the client. It also explains why the client renders twice as often as Xwayland
+commits: the client runs ahead and its extra frames are coalesced.
+
+## The question is now sharp and narrow
+
+**Why does weston send frame callbacks at ~21/s (47 ms apart, ~3 vblanks at 60 Hz) when its own
+composite takes 0.58 ms?**
+
+That is inconsistent with weston being limited by its rendering, and it is the same ~47 ms that
+appears as `core_repaint_exit_loop -> core_commit_damage` = 37 ms in the weston timeline
+(addendum 30). Two independent instruments agree that weston is waiting about 40-47 ms per cycle
+while doing 0.58 ms of work.
+
+Candidates for that wait, none yet tested:
+* weston's repaint scheduling (its `timerfd` was observed armed ~184-218 ms ahead, which does not
+  match a 60 Hz cadence);
+* the page-flip completion path (weston's `posted -> repaint_finished` measured 6.88 ms, so this is
+  not the whole story);
+* the KMS/atomic commit path on sunxi-drm, which weston drives through kmsro.
