@@ -2953,3 +2953,42 @@ What remains is a 20x difference in the client's own GL frame time with **the sa
 different Vulkan drivers. That is now a narrow, well-posed question about the open driver's
 draw/submit path, with every alternative ruled out by measurement rather than assumption - and the
 existing vendor A/B in this repository is the ground truth that the driver is where the gap lives.
+
+---
+
+# ADDENDUM 40 — 2026-10-08: the driver's per-frame work is identical windowed and off-screen
+
+Added a rate output to `PVR_JOB_TRACE` (the previous counter was cumulative from process start, which
+made cross-run comparison meaningless - see addendum 33b). Same scene, same driver, same client:
+
+| | client FPS | submits/s | jobs/submit |
+|---|---|---|---|
+| **windowed** 800x600 | 42 | **44** | **3.00** |
+| **off-screen** 800x600 | 182 | **183** | **3.00** |
+
+Two things follow:
+
+1. **The driver issues exactly one submit per frame, with exactly 3.00 jobs per submit, in both
+   configurations.** The job path is not doing anything extra when windowed, so the windowed penalty
+   is not extra driver work.
+2. **The driver can sustain 183 submits/s** - proven by the off-screen run - but the windowed client
+   only reaches 44. The limit is therefore between the client and the driver, not inside the
+   submission path.
+
+This also retires the "unconditional partial-render job" (objective item 3) as an explanation for the
+windowed gap: it is present identically in both configurations (3.00 jobs/submit), and the off-screen
+case is 4x faster with the same job count. Item 3 remains a real inefficiency in absolute terms, but
+it is not this gap.
+
+## A reframing that matters
+
+Comparing across stacks: the vendor reaches **787 FPS windowed** (bench addendum 2) while the open
+stack's *off-screen* rate is **182 FPS**. So the vendor's windowed path is **4.3x faster than the open
+driver's off-screen path**, which has no compositor or present in it at all.
+
+That means the open driver is not merely penalised by presentation - **its underlying render throughput
+is already ~4x below the vendor's**, before any windowed effect is added. The 25x windowed figure is
+those two effects compounding: roughly 4x render throughput and a further ~4x windowed penalty.
+
+So objective item 1 has two separable parts, and the larger one is the render throughput itself, not
+presentation. That is where the remaining rounds should look.
