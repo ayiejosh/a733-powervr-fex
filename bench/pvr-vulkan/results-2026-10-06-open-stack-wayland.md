@@ -3052,3 +3052,37 @@ So the productive remaining work is **not** more Mesa tuning. It is either:
    adds a per-pass job, and 3.00 jobs/submit is identical windowed and off-screen, so it is real
    overhead in absolute terms even though it is not the windowed-specific effect), or
 2. the compatibility work, where this session already has concrete wins.
+
+## Addendum 41b: objective item 3 is a non-issue - the firmware no-ops the PR job
+
+Objective item 3 is "the open driver's unconditional partial-render job", with 3.00 jobs/submit
+measured (geometry + PR + fragment). I was about to attempt eliminating it as an experiment. The
+driver's own source documents the answer instead, in `pvr_drm_job_render.c` immediately below the
+fragment job:
+
+```c
+/* Note that, in the case where PRs aren't needed, because we didn't run
+ * out of PB space during the geometry phase, the PR job will still be
+ * scheduled after the geometry job, but no PRs will be performed, as
+ * they aren't needed.
+ */
+```
+
+**The firmware does not perform partial renders when they are not needed.** The PR job is submitted
+as a slot, but when the geometry phase did not exhaust PB space the firmware skips the work.
+
+Consequences:
+
+* The PR costs **a job slot, not rendering work** - so eliminating it would not save the rendering
+  time that `gpu_wait` is dominated by.
+* Geometry, PR and fragment are all inside **one submit**, so the TA->3D transition happens once
+  regardless. Eliminating the PR would not remove a transition, which is what the prior
+  `fw-trace` analysis identified as the cost (41 firmware operations in the TA->3D gap).
+* `has_spm_scratch_buffer` (`requires_spm_scratch_buffer`) is false for normal render passes and only
+  set for `barrier_store` jobs - consistent with the PR being a safety net for the SPM case, not a
+  per-frame cost centre.
+
+So **objective item 3 does not need fixing**, and the experiment would have carried real risk (silent
+corruption if SPM were ever entered) for no measured benefit. That is the useful outcome: item 3 is
+closed by evidence rather than by a risky change, and the remaining gap is the kernel/firmware TA->3D
+structure that the prior analysis already identified.
