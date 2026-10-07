@@ -1909,3 +1909,66 @@ here, not the slower one.
 
 So the picture is the opposite of addendum 26: **Wayland is healthy and is the better path**, and
 the X11/Xwayland route is where the extra cost lives.
+
+---
+
+# ADDENDUM 28 — 2026-10-08: the windowed penalty is damage-area x 56 ms/Mpix, scene-independent
+
+## The measurement
+
+Same size (800x600), same window, only the scene varied. `glmark2-es2` reports FPS reliably (unlike
+`es2gears`, which prints nothing), so both numbers come from the client itself:
+
+| scene | windowed | off-screen | off-screen frame time |
+|---|---|---|---|
+| `build` | 37 | 185 | 5.4 ms |
+| **`texture`** | **37** | **248** | 4.0 ms |
+| `phong` | 34 | 104 | 9.6 ms |
+| `desktop` blur | 16 | 22 | 45 ms |
+| `terrain` | 4 | 5 | 200 ms |
+
+**`texture` renders *faster* off-screen than `build` (248 vs 185 fps) yet both land on exactly
+37 fps windowed.** The windowed rate is therefore not set by the client's render work at all.
+
+## The model
+
+Subtracting off-screen from windowed frame time gives the presentation overhead:
+
+```
+build    21.6 ms     phong   19.8 ms
+texture  23.0 ms     desktop 17.0 ms
+```
+
+Almost constant at 800x600 despite a 50x spread in render cost. Adding a 320x240 point
+(3.6 ms overhead, 0.0768 Mpix) gives a clean linear fit in **damage area**:
+
+```
+overhead = -0.8 ms + 56.4 ms/Mpix        (r^2 effectively 1 on the 800x600 cluster)
+        => compositor throughput ~17.7 Mpix/s = 71 MB/s
+```
+
+## Cross-validation
+
+The fit was made from glmark2/X11 data. Using it to predict a *different* client, window size and
+API path - `weston-simple-egl` on **native Wayland**, ~250x250 (~0.0625 Mpix), which measures
+3.3 ms/frame (301 fps):
+
+```
+predicted: -0.8 + 56.4*0.0625 + ~1 ms client render = 3.8 ms/frame = 266 fps
+measured : 3.3 ms/frame = 301 fps
+```
+
+13% agreement across an independent path. That is the first model of this cost that predicts an
+unseen measurement rather than just fitting the data it came from.
+
+## What this means for objective item 1
+
+The "~28 ms present cost" is **damage area x 56 ms/Mpix**, i.e. the compositor's composite running
+at **~18 Mpix/s / 71 MB/s**, and it is **scene-independent** - it is not the client's render, not
+the driver's per-pass cost, and not the partial-render job. For comparison, the driver itself
+renders a full-screen triangle at 4K at 368 Mpix/s (`pvranimate`, verified as a real GPU render in
+addendum 17), so the composite is ~20x slower than the hardware's demonstrated capability.
+
+That makes the question sharp and narrow: **why does one full-window textured blend pass run at
+18 Mpix/s when the same GPU does 368 Mpix/s on a full-screen triangle?** Everything else on the
+windowed path has now been excluded by measurement.
