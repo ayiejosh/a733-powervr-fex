@@ -905,6 +905,9 @@ int main(int argc, char **argv)
     if (!(do_render && do_copy)) {
         printf("verification skipped: MODE=%s only exercises part of the frame\n",
                do_render ? "render" : "copy");
+        double ms_skip = t1 - t0;
+        printf("%d frame(s) in %.3f ms (%.3f ms/frame, %.1f Mpix/s)\n", iters, ms_skip,
+               ms_skip / iters, (double)size * size * iters / (ms_skip / 1000.0) / 1e6);
         return 0;
     }
     const unsigned char *px = mapped;
