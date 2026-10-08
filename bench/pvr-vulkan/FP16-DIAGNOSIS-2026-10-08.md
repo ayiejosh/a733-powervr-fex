@@ -191,3 +191,55 @@ Dump with `PCO_DEBUG_PRINT=passes,fs,internal,vs,nir,binary` on a glmark2 scene 
 failure, with the cache cleared before each run, and diff the `internal: false` blocks. The user
 (fragment) shaders are what must be compared - an earlier diff showed only internal shaders
 (`eot1.imm` constants) differing, which may itself be the clue or may be incidental.
+
+---
+
+# The compiled user shaders do NOT change with shaderFloat16
+
+Following the tooling fixes (`passes,fs,internal,vs,nir,binary`, cache cleared before every run),
+the dumps were split into whole shader blocks and compared:
+
+```
+fp16 off: 39 user-shader (internal: false) blocks
+fp16 on : 39 user-shader (internal: false) blocks
+diff -r blocks_off blocks_on  ->  EMPTY
+```
+
+**Every user shader PCO compiles is byte-identical with the feature on and off.**
+
+## The apparent internal-shader difference was a diff artifact
+
+A full-dump diff showed ~25000 differing lines, all in internal shaders, e.g. `eot1.imm`
+`bbyp0bm_imm32 ... 0x134800` vs `0x4a400`. That is not fp16 codegen: at the first differing line the
+fp16-OFF dump is already at glmark2's final `FPS:` line, i.e. **the run had ended there**, while the
+fp16-ON dump continued compiling further shaders. Lining up line N of two runs whose internal-shader
+sequences have different lengths compares different instances of the same internal shader (different
+tiles / render targets), not two compilations of one shader.
+
+## What this means
+
+`shaderFloat16` is read by zink, but for these scenes it does **not** change the shaders PCO
+compiles - so the 20 validation failures cannot be a PCO codegen difference. Either zink is not
+selecting fp16 for these shaders at all, or the difference lies outside shader compilation (pipeline
+state, the internal tile/clear shaders, or a format/precision path).
+
+**This redirects the investigation away from PCO** and it means the negative 19-pass bisect was
+never going to find anything: I was bisecting a compiler that produces identical output in both
+configurations.
+
+## Honest status of this thread
+
+Established:
+* `shaderFloat16 = true` gives 7 success / 20 failure, reproducible with a clean cache per run;
+* `shaderFloat16 = false` gives 27 / 0;
+* the user shaders compiled in both cases are byte-identical;
+* PCO's `all` print option omits the `PASSES` bit and hides user shaders entirely, which made two
+  different configurations look identical and cost most of a session;
+* two of my own claims on this thread were wrong (the fp16cmp reproducer, and an earlier
+  "correction" that used the cache inconsistently) and are both retracted.
+
+Not yet established: **what actually differs.** The next instrument should not be the shader
+compiler. The most direct next step is to compare the two rendered images directly - if glmark2 can
+be made to write its framebuffer, or via a GL readback in a program that *does* take the fp16 path -
+and measure the magnitude of the difference: near-identical means precision, wildly different means
+a pipeline/state bug. Until that is measured, no change to PCO is justified.
