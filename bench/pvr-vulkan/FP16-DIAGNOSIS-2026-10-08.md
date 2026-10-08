@@ -81,3 +81,56 @@ The PCO dumps for this work are ~1.2M lines each. They filled `/tmp`, which is a
 because the harness writes tool output to `/tmp` and every command failed with ENOSPC before running.
 `PCO_DEBUG_PRINT=all` output must be bounded (`| head -c`) and written to the SD card
 (`/mnt/sdcard/_REVIEW/emulation/dumps/`), not to `/tmp`.
+
+---
+
+# ANSWERED: it is a miscompile, not precision (minimal reproducer)
+
+`fp16cmp.c` renders one `mediump` fragment shader and reads the framebuffer back with
+`glReadPixels`, at several uniform inputs, with a `highp` control for the same maths.
+
+```
+shader        fp16 OFF              fp16 ON
+highp  (ctl)  u=0.10 -> 255 173  87  u=0.10 -> 255 173  87   (identical)
+mediump       u=0.10 -> 255 173  87  u=0.10 ->   0   0   0   (BLACK)
+```
+
+All six probe inputs: correct gradients with fp16 off, **`0/0/0` for every one with it on**
+(`black_pixels=6`).
+
+* `glGetError = 0x0` in every case, so the pipeline is valid and the draw succeeds.
+* The `highp` control gives a **byte-identical checksum** (`5960197479723617773`) in both modes,
+  which proves the harness is sound and isolates the fault to the `mediump` (fp16) path.
+* The shader's own checksum with fp16 on is `0` - it computes nothing at all.
+
+## So the "precision" hypothesis is refuted
+
+A tolerance argument would show a few LSB of difference. This is total black output at every input:
+**PCO's fp16 emit produces a shader that does not compute its result.** The original framing - that
+advertising `shaderFloat16` makes 20 of 33 glmark2 scenes render wrong - was right.
+
+## Why this matters for the fix
+
+The reproducer is one 12-line fragment shader in a single process, so the compiler can now be
+inspected on a case small enough to read:
+
+```
+fp16cmp's fragment shader:
+  precision mediump float;
+  uniform float u;
+  void main(){
+    mediump float x = u;
+    for (int i=0;i<8;i++) x = x*1.1 + 0.1;
+    gl_FragColor = vec4(x, x*0.5, x*0.25, 1.0);
+  }
+```
+
+Dump its PCO IR with `PCO_DEBUG_PRINT=all` - bounded, to the SD card - and diff fp16 against fp32.
+The `pco_opt*` passes and the fp16 `unpck`/`roundzero` lowering are the places to look, and the
+negative 19-pass bisect already tells us it is shared lowering rather than one optional pass.
+
+**Reproduce with:**
+```
+MESA_SHADER_CACHE_DISABLE=true ./fp16cmp          # fp16 off
+MESA_SHADER_CACHE_DISABLE=true PVRSRV_FP16=1 ./fp16cmp   # fp16 on -> black
+```
