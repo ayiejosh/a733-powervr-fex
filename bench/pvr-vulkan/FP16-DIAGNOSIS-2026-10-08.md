@@ -243,3 +243,46 @@ compiler. The most direct next step is to compare the two rendered images direct
 be made to write its framebuffer, or via a GL readback in a program that *does* take the fp16 path -
 and measure the magnitude of the difference: near-identical means precision, wildly different means
 a pipeline/state bug. Until that is measured, no change to PCO is justified.
+
+---
+
+# CORRECTION: the internal-shader difference is real, but it is a COUNT difference
+
+The previous section called the internal-shader divergence a "diff artifact". It is not - testing it
+properly (split every shader into a block keyed by name, hash the content, compare the sets rather
+than line positions) gives:
+
+| | total blocks | user blocks | internal blocks |
+|---|---|---|---|
+| fp16 off | 24,013 | 39 | **23,974** |
+| fp16 on | 30,058 | 39 | **30,019** |
+
+**User shaders identical (39/39, byte-identical). Internal shaders: ~6,000 more with the flag on**,
+almost all additional `eot1.imm` variants with distinct content hashes.
+
+So:
+* the fp16 flag does **not** change any user shader PCO compiles - that conclusion stands;
+* but the driver **behaves differently**: with the flag on it compiles ~25% more internal shader
+  instances. `eot1.imm` / `emitpix` are the tile end-of-tile pixel-emit programs, so this is a
+  pipeline/tile-state difference, not a codegen difference in any single shader.
+
+That is a real, measured difference and it is the right place to look next - the internal tile/clear
+programs and the state that produces them, not the user shader backend.
+
+## Thread summary (honest)
+
+| claim | status |
+|---|---|
+| `shaderFloat16 = true` -> 7 success / 20 failure, clean cache per run | **established**, reproducible |
+| `shaderFloat16 = false` -> 27 / 0 | **established** |
+| the fp16cmp "minimal reproducer" | **RETRACTED** - cache artifact; the program never takes the fp16 path |
+| an earlier "correction" saying the miscompile does not reproduce | **RETRACTED** - cache used inconsistently between the benchmark and the validation |
+| user shaders change with the flag | **NO** - byte-identical (39/39) |
+| the compiler emits different code for the same shader | **NO** |
+| the driver compiles ~25% more internal tile shaders with the flag on | **YES**, measured by set comparison |
+| `PCO_DEBUG_PRINT=all` shows user shaders | **NO** - `ALL` omits the `PASSES` bit |
+| the 19-pass skip bisect | **uninformative** - it bisected a compiler producing identical user shaders |
+
+**No PCO change is justified by any of this.** The next instrument is a direct comparison of the two
+rendered images (magnitude of difference), plus inspection of why the internal `eot1.imm` compile
+count changes.
