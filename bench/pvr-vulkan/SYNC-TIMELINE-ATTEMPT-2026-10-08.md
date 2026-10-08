@@ -256,3 +256,80 @@ those are measured, further migration attempts are guesses.
 
 **Cost of this thread so far: 4 rounds, 4 landed commits, 3 diagnosed blockers, 0 performance
 change.** Worth stating plainly - the target's ~10 ms/frame remains unclaimed.
+
+---
+
+# Measured: the kernel is fine; the timeline SIGNAL itself fails the submit
+
+Instead of more queue editing, the submitted ops were instrumented and the kernel source read.
+
+## The kernel fully supports timeline syncobjs
+
+`/home/radxa/kernel-src/powervr/pvr_sync.c`:
+
+```c
+pvr_check_sync_op():
+   if (sync_op->flags & ~DRM_PVR_SYNC_OP_FLAGS_MASK) return -EINVAL;
+   handle_type = flags & HANDLE_TYPE_MASK;
+   if (handle_type != SYNCOBJ && handle_type != TIMELINE_SYNCOBJ) return -EINVAL;
+   if (handle_type == SYNCOBJ && value != 0) return -EINVAL;      /* binary must be 0 */
+   return 0;
+```
+
+and it allocates `dma_fence_chain` for points (`pvr_sync_signal_array_add`, `if (point > 0)
+sig_sync->chain = dma_fence_chain_alloc()`). A wait first searches the same submission's signal
+array, then falls back to `drm_syncobj_find_fence(handle, point, ...)`. **So the flag, the point and
+the chaining are all implemented; my usage passes the flag mask (`0x80000001` within `0x8000000f`).**
+
+## The failure, measured
+
+With the GEOM migration plus op tracing (`SYNC_TRACE=1`) and a 15 s timeout:
+
+```
+[q] advance type=0 -> value=1 sync=0xaaab116175e0
+[op] handle=2 flags=80000000 value=1 timeline=1     <- geom SIGNAL, timeline point 1
+[op] handle=7 flags=80000000 value=0 timeline=0     <- frag SIGNAL, binary
+(exactly 2 ops in total; no further submission)
+```
+
+and the client reports:
+
+```
+vkCreateGraphicsPipelines (8 colour attachments) -> 0
+FAIL submit -> -4                                    <- VK_ERROR_DEVICE_LOST
+```
+
+**So this was never a silent hang: the very first submission fails with `VK_ERROR_DEVICE_LOST`, and
+the client then blocks forever because it waits on a fence from a submit that never succeeded.** The
+GPU itself is healthy throughout (`bda` passes immediately afterwards, no fault in `dmesg`).
+
+The failing submission contains **only signals** - no wait at all - so the deadlock is not the
+value chain and not point 0. It is the timeline signal on the first submit.
+
+## Where to look next (narrowed)
+
+The signal path in the kernel is `pvr_sync_signal_array_collect_ops()` ->
+`pvr_sync_signal_array_get()` -> `pvr_sync_signal_array_add()`, which fails with -EINVAL only at
+`drm_syncobj_find(file, handle)` and -ENOMEM at `dma_fence_chain_alloc()`. Both are worth
+distinguishing, and the next measurement is the **errno**, which `pvr_ioctlf` formats into its
+`vk_errorf` message - that message did not appear, which means the -4 is being produced above the
+ioctl, so the next step is to find which layer maps it and print the ioctl errno directly.
+
+## Tree state
+
+Reverted and green at `f660241`: build clean, bda/vk13/pctest/vk16/mrt PASS, `glmark2 --validate`
+27/0.
+
+## Cost, stated plainly (5 rounds on this thread)
+
+| round | outcome |
+|---|---|
+| 57 | `53ccc4b` value plumbing landed |
+| 58 | aborted, recorded plan |
+| 59 | `de755dc` persistent syncobjs landed |
+| 60 | `e9d1b2a` winsys timeline support + `f660241` real crash fix landed |
+| 61 | handle problem solved (`syncobj_type` + `VK_SYNC_IS_TIMELINE`), deadlock found |
+| 62-63 | kernel read (supports timelines), failure measured as DEVICE_LOST on the signal |
+
+**0 performance change so far.** The churn is still there. The honest read: this target is a real
+driver work item, not a tuning knob, and it needs the ioctl errno before the next edit.
