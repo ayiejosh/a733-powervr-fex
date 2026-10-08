@@ -108,6 +108,10 @@ int main(int argc, char **argv)
      * point fill touches three, so "a small non-zero fraction of the target" is
      * the check, and it can only pass if the mode actually changed rasterisation.
      * 0 = line, 1 = point, -1 = untouched (fill). */
+    /* DISCARD=1 enables rasterizerDiscardEnable: geometry and tiling still run, but no
+     * fragments are shaded and nothing reaches the PBE. Separates Tiler from Renderer. */
+    const int discard = getenv("DISCARD") != NULL;
+
     const char *pm_env = getenv("POLYGONMODE");
     int polygon_mode = -1;
     if (pm_env) {
@@ -661,6 +665,7 @@ int main(int argc, char **argv)
     VkPipelineRasterizationStateCreateInfo rs = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
         .depthClampEnable = (depth_clamp == 1) ? VK_TRUE : VK_FALSE,
+        .rasterizerDiscardEnable = discard ? VK_TRUE : VK_FALSE,
         .polygonMode = polygon_mode == 0   ? VK_POLYGON_MODE_LINE
                        : polygon_mode == 1 ? VK_POLYGON_MODE_POINT
                                            : VK_POLYGON_MODE_FILL,
