@@ -6,7 +6,7 @@ Works under either driver - it reads the tracepoints the bound driver actually e
 
 Emits a formatted report and appends one JSON line to harness-log.jsonl.
 """
-import json, os, re, subprocess, sys, time
+import json, os, re, resource, subprocess, sys, time
 
 TRACE = "/sys/kernel/debug/tracing"
 BENCH = os.path.dirname(os.path.abspath(__file__))
@@ -167,7 +167,20 @@ def main():
     # ponytail: let phase 2 finish rather than terminate it - a truncated run
     # never prints its summary, which is where speed and correctness come from.
     # A generous limit only guards against a hang.
-    out, wall = run(count, secs)
+    # CPU split: sample the child's utime/stime. Needs the pid, so run inline.
+    t0 = time.time()
+    pr = subprocess.Popen([f"{BENCH}/{probe}", size, str(count)], cwd=BENCH, env=env,
+                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    ru0 = resource.getrusage(resource.RUSAGE_CHILDREN)
+    while pr.poll() is None:
+        if time.time() - t0 > secs:
+            pr.terminate(); break
+        time.sleep(0.05)
+    out, _ = pr.communicate()
+    wall = time.time() - t0
+    ru1 = resource.getrusage(resource.RUSAGE_CHILDREN)
+    cpu = {"user_ms": round((ru1.ru_utime - ru0.ru_utime) * 1000, 1),
+           "sys_ms": round((ru1.ru_stime - ru0.ru_stime) * 1000, 1)}
 
     jobs, src = parse_jobs(txt)
     frames = re.findall(r"([\d.]+) ms/frame", out)
@@ -175,7 +188,11 @@ def main():
     correct = re.findall(r"RESULT: (PASS|FAIL) - (\d+)/(\d+) pixels correct", out)
     thr = re.findall(r"([\d.]+) M invocation/s", out)
 
+    bpp = re.findall(r"bpp=(\d+)", out)
+    fps = re.findall(r"FPS: (\d+)", out)
     rec = {"probe": probe, "size": size, "driver": drv, "wall_s": round(wall, 2),
+           "cpu": cpu, "bpp": int(bpp[-1]) if bpp else None,
+           "fps": int(fps[-1]) if fps else None,
            "ms_per_frame": float(frames[-1]) if frames else None,
            "mpix_s": float(mpix[-1]) if mpix else None,
            "thr_M_inv_s": float(thr[-1]) if thr else None,
@@ -197,6 +214,16 @@ def main():
         tot = max(tot, d)
     print(f"      {'critical path':>12}  {tot:9.3f} ms")
     print(f"  stages     : {len(jobs)} jobs in the trace window")
+    if cpu:
+        tot_c = cpu["user_ms"] + cpu["sys_ms"]
+        print(f"  cpu        : user {cpu['user_ms']} ms  sys {cpu['sys_ms']} ms"
+              f"  (kernel {100*cpu['sys_ms']/max(tot_c,1e-9):.0f}% of probe CPU)")
+    bw = ""
+    if rec["mpix_s"] and rec["bpp"]:
+        bw = f"   ~{rec['mpix_s']*rec['bpp']:.0f} MB/s written"
+    print(f"  bandwidth  : bpp={rec['bpp']}  {bw}")
+    if rec["fps"]:
+        print(f"  fps        : {rec['fps']}")
     print(f"{'='*74}\n")
 
     with open(f"{BENCH}/harness-log.jsonl", "a") as f:
