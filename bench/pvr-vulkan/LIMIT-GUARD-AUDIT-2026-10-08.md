@@ -47,3 +47,31 @@ pvr_arch_spm.c:519,561       assert(total_render_target_used ... < PVR_MAX_COLOR
 
 These read compiler-generated data rather than an application index, so they are lower risk, but the
 same reasoning applies: an assert is not a guard in a release build.
+
+## Fourth instance
+
+| # | limit | array | index from | symptom |
+|---|---|---|---|---|
+| 4 | `maxColorAttachments` = 8 | VLAs sized by the count; `mrt_setup->mrt_resources[]` | `colorAttachmentCount` (application) | out of bounds by inspection |
+
+`pvr_dynamic_rendering_output_attachments_setup()` sizes
+`VkFormat attachment_formats[colorAttachmentCount]` and
+`uint32_t mrt_attachment_map[colorAttachmentCount]` from the application's value, then scatters
+render targets over `mrt_setup->mrt_resources[]` for every attachment. No guard existed. Now
+rejected with `VK_ERROR_UNKNOWN`.
+
+## Audited and found NOT defective
+
+| site | why it is safe |
+|---|---|
+| `pvr_arch_cmd_buffer.c:4462` `assert(pbe_emits <= PVR_MAX_COLOR_ATTACHMENTS)` | `pbe_emits` increments at most once per attachment, and the second loop already has an explicit `if (pbe_emits < PVR_MAX_COLOR_ATTACHMENTS)` check |
+| `pvr_arch_spm.c:519/561` `assert(total_render_target_used ... < PVR_MAX_COLOR_ATTACHMENTS)` | the `pbe_state_words[]`/`tile_buffer_addrs[]` arrays are sized by the same constant and the counters are bounded by it in the same expressions |
+| `pvr_arch_hw_pass.c:1191` `assert(eot_surface_count <= 16U)` | `eot_surfaces` is allocated `sizeof * eot_surface_count`, so the count sizes its own array; 16 is a hardware limit, not an array bound |
+
+## The pattern, stated once
+
+**An advertised limit is only safe if something in the release build enforces it.** `assert()` is
+not enforcement. Four instances found by grepping each advertised limit for its check; all four had
+either no check or an assert-only check, and all four are now guarded in the place the value enters
+the driver (`pvr_graphics_pipeline_init` for attributes, `CmdBindVertexBuffers`,
+`CmdBindDescriptorSets2KHR`, `pvr_dynamic_rendering_output_attachments_setup`).
