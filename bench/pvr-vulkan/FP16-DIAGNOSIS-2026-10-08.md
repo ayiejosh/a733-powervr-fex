@@ -134,3 +134,60 @@ negative 19-pass bisect already tells us it is shared lowering rather than one o
 MESA_SHADER_CACHE_DISABLE=true ./fp16cmp          # fp16 off
 MESA_SHADER_CACHE_DISABLE=true PVRSRV_FP16=1 ./fp16cmp   # fp16 on -> black
 ```
+
+---
+
+# RETRACTION: the fp16cmp "minimal reproducer" is invalid
+
+I claimed `fp16cmp` was a decisive minimal reproducer (fp16 on -> black, highp control identical).
+**That was wrong.** Re-run with the Mesa shader cache cleared before *every* run:
+
+```
+fp16 off: u=0.10 -> 255 173  87   CHECKSUM 5960197479723617773  black_pixels=0
+fp16 on : u=0.10 -> 255 173  87   CHECKSUM 5960197479723617773  black_pixels=0
+```
+
+**Byte-identical output both ways.** The earlier black screen came from running the two modes
+back-to-back against a shared cache, so the second run reused a cache entry built under the first
+configuration. It was an artifact of my own harness, not the driver.
+
+**Why fp16cmp cannot reproduce it:** its shader is simple enough that zink does not choose fp16 for
+its `mediump` arithmetic, so the `shaderFloat16` flag does not change what is compiled. The program
+therefore never exercised the faulty path - and its "highp control" proved nothing, because the
+mediump path was not taking the fp16 route in either mode.
+
+## What IS real
+
+`glmark2-es2 --validate` with the shader cache cleared before the run:
+
+```
+shaderFloat16 = false   27 success /  0 failure
+shaderFloat16 = true     7 success / 20 failure
+```
+
+Reproduced across consecutive runs (7/20 both times) with a clean cache each time, so **the glmark2
+failure is genuine and not a cache artifact.** It stands as the finding; the minimal reproducer is
+still missing.
+
+## Tooling findings (worth keeping)
+
+* **`PCO_DEBUG_PRINT=all` is broken for this purpose**: `PCO_DEBUG_PRINT_ALL` is defined as
+  `VS | FS | CS` and **omits `PASSES`**, while `pco_should_print_shader_pass()` gates on
+  `if (!PCO_DEBUG_PRINT(PASSES)) return false;` first. So `all` can never print a user shader's
+  passes - which is why every `all` dump contained only internal shaders and two different
+  configurations produced byte-identical dumps.
+* **Use explicit flags:** `PCO_DEBUG_PRINT=passes,fs,internal,vs,nir,binary` does capture user
+  shaders (`internal: false` blocks appear).
+* **Clear the Mesa shader cache before *every* A/B run.** `MESA_SHADER_CACHE_DISABLE=true` is not
+  sufficient on its own for this purpose, and a shared cache will silently answer an experiment with
+  the previous configuration's binaries - for correctness checks as well as benchmarks. This has now
+  produced two false results in this session.
+* Bound all debug dumps (`| head -c`) and write them to `/mnt/sdcard/_REVIEW/emulation/dumps`, not
+  `/tmp` (a 2.9 GB RAM-backed tmpfs).
+
+## Next step, corrected
+
+Dump with `PCO_DEBUG_PRINT=passes,fs,internal,vs,nir,binary` on a glmark2 scene that reproduces the
+failure, with the cache cleared before each run, and diff the `internal: false` blocks. The user
+(fragment) shaders are what must be compared - an earlier diff showed only internal shaders
+(`eot1.imm` constants) differing, which may itself be the clue or may be incidental.
