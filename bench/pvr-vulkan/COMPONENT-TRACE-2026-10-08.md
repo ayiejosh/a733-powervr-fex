@@ -76,3 +76,82 @@ glmark2 off-screen. Without it, the split can only be bounded, not measured: the
 * `weston-debug timeline` is lossy and internally inconsistent (401 `repaint_finished` against 226
   `repaint_begin` in one capture), so its *counts* are not rates. The commit/callback counts above
   come from `WAYLAND_DEBUG`, which is a complete protocol trace.
+
+---
+
+# Addendum: per-step costs measured after the WSI fix (2026-10-08, later)
+
+## The fix that moved the numbers
+
+`x11_surface_get_capabilities()` in Mesa's `wsi_common_x11.c` read the window geometry with a
+**blocking** `xcb_get_geometry_reply()` on every call - purely to fill `currentExtent` /
+`minImageExtent` / `maxImageExtent`. zink calls it once per frame via `zink_kopper_update` ->
+`vkGetPhysicalDeviceSurfaceCapabilitiesKHR` -> `dri_st_framebuffer_validate`.
+
+| | calls | total | avg | max |
+|---|---|---|---|---|
+| before | 200 | 3106 ms | **15.5 ms** | 51.9 ms |
+| after | 300 | 4.2 ms | **0.014 ms** | 0.06 ms |
+
+**1230x faster on the call**, and the `gles-x11` phase breakdown confirms it directly:
+`draw` **17.34 ms -> 0.10 ms**.
+
+Honest accounting: end-to-end FPS rose only **36.3 -> 40.5 (+12%)**, because the round-trip was
+overlapping GPU time - `glFinish` moved 8.47 -> 22.81 ms as the exposed cost.
+
+## Per-step costs now (open stack, 800x600 windowed, gles-x11)
+
+| step | cost |
+|---|---|
+| `glDrawArrays` (draw) | **0.10 ms** |
+| `glFinish` | **22.81 ms** |
+| `eglSwapBuffers` | 1.78 ms |
+| — of which zink `present` | 0.10 ms |
+| — of which zink **`acquire`** | **23.02 ms** |
+
+So the client now blocks ~23 ms per frame **acquiring the next swapchain image**.
+
+## The display loop, measured
+
+| | value |
+|---|---|
+| weston `repaint_begin -> repaint_posted` (composite) | **0.66 ms** |
+| weston `repaint_posted -> repaint_finished` (flip) | **6.78 ms** |
+| weston `repaint_finished -> commit_damage` (waiting for the client) | **46.11 ms** |
+| weston CPU during a client run | **0.00%** |
+| Xwayland CPU during a client run | **56.8% of one core** (utime 1.80 s, stime 3.89 s / 10 s) |
+| client renders | 38-40 fps |
+| Xwayland commits to weston | 19/s |
+
+**Weston does 7.4 ms of work and is idle for 46 ms; Xwayland is the busy one, mostly in kernel
+time.** That is ~15 ms of Xwayland CPU per client frame.
+
+## What Xwayland spends it on (DRM ioctls per client frame)
+
+| ioctl | per frame |
+|---|---|
+| `SYNCOBJ_TRANSFER` | **56.8** (was 73.1) |
+| `SYNCOBJ_CREATE` | **41.6** (was 53.5) |
+| `SYNCOBJ_DESTROY` | **41.7** (was 53.5) |
+| `SYNCOBJ_TIMELINE_WAIT` | ~10 |
+| `PRIME_HANDLE_TO_FD` | ~9 |
+| `PVR_VM_MAP`/`UNMAP`, `HL_CB`, `GEM_CLOSE` | ~12 each |
+
+~250 DRM ioctls per frame; at ~60 us each that is ~10 ms of kernel time per frame, which is
+where the `stime` goes.
+
+## What was missing on the open driver (found this round)
+
+The **powervr** winsys registered only the binary DRM syncobj type and left `sync_types[1] = NULL`,
+while its sibling **pvrsrvkm** winsys builds and registers a timeline type from the same point type
+(`pvr_srv.c`). Registering it cut the syncobj churn by 22% (table above) - real, but the remaining
+~140 syncobj ops per frame are the binary `VkFence`/`VkSemaphore` objects, one DRM syncobj each,
+which a type registration cannot fix.
+
+## The hypothesis this now supports
+
+The vendor is fast through the *same* Xwayland and the *same* zink, so Xwayland's per-frame work must
+be cheaper under the vendor ICD. The open driver implements `vk_sync` as DRM syncobj operations
+(each one an ioctl into the kernel), where the vendor path uses its own driver-native sync type
+(`pvr_srv_sync_type`). **That is the missing piece: a driver-native `vk_sync` implementation for the
+powervr winsys**, rather than Mesa's generic `vk_drm_syncobj`.
