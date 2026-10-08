@@ -24,10 +24,11 @@ def sh(cmd, check=False):
 def driver():
     p = "/sys/bus/platform/devices/1800000.gpu/driver"
     try:
-        d = os.path.basename(os.path.realpath(p))
+        # readlink -f on this symlink returns the DEVICE path when unbound, so
+        # read the link itself. A stale driver name would mislabel every record.
+        return os.path.basename(os.readlink(p).rstrip("/"))
     except OSError:
         return "none"
-    return d
 
 
 def cpu_of(pid):
