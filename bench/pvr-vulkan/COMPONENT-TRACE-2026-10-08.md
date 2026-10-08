@@ -254,3 +254,67 @@ sites and asserts against `VK_SYNC_IS_TIMELINE` at 8.
 dominant term (the copy/flip, ~18x) is blocked on FBCDC. So the sync change is worth doing as
 correctness-of-architecture work, but it is not the lever that closes the gap, and it should not be
 rushed into a 10-file refactor with a silent-corruption failure mode.
+
+---
+
+# Addendum: the shaderFloat16 record corrected, and a measurement trap
+
+## The correction
+
+`shaderFloat16 = false` was kept all session on the stated grounds that enabling it rendered
+**20 of 27 glmark2 scenes wrong**. Re-measured:
+
+```
+glmark2-es2 --validate:
+  shaderFloat16 = false   27 success / 0 failure
+  shaderFloat16 = true    27 success / 0 failure
+```
+
+**The correctness failures do not reproduce.** The withdrawable claim is withdrawn; the flag stays
+false on a different, still-valid ground:
+
+```
+MESA_SHADER_CACHE_DISABLE=true, glmark2 -b build:use-vbo=false, 3 runs:
+  shaderFloat16 = false   45 47 43  (median 45)
+  shaderFloat16 = true    39 38 36  (median 38)
+```
+
+**18% faster with it disabled.** So it is a performance decision, not a correctness one.
+
+## The trap that hid this for an hour
+
+With the shader cache **enabled**, both settings gave an **identical glmark2 Score of 35** and
+identical per-scene FPS - because Mesa's `~/.cache/mesa_shader_cache` (2.1 MB here) served the same
+compiled shaders regardless of the advertised feature. The A/B looked like "no effect" when the
+real effect is 18%.
+
+**Rule: any A/B that toggles a shader-compiler or shader-feature setting must set
+`MESA_SHADER_CACHE_DISABLE=true`, or the cache will silently answer the experiment with the previous
+configuration's binaries.**
+
+## What it actually is
+
+Advertised `shaderFloat16` makes zink implement GLES `mediump` with fp16, so the difference measures
+**PCO's fp16 emit against its fp32 emit** - and fp16 is the slower one. That is a compiler-quality
+finding: PCO's fp16 path costs 18% more than fp32 for the same scenes. Fixing the emit would regain
+the capability (the vendor has it: 54 features on vs our 50) without the performance cost.
+
+## Feature coverage gap (vendor vs open, measured)
+
+```
+vendor 54 features on, open 50.
+VENDOR HAS, OPEN LACKS (8):
+  core.occlusionQueryPrecise          vk11.variablePointers
+  vk11.variablePointersStorageBuffer  vk12.bufferDeviceAddressCaptureReplay
+  vk12.drawIndirectCount              vk12.shaderFloat16
+  vk12.vulkanMemoryModel              vk12.vulkanMemoryModelDeviceScope
+OPEN HAS, VENDOR LACKS (4):
+  vk12.shaderInputAttachmentArrayDynamicIndexing
+  vk12.shaderStorageTexelBufferArrayDynamicIndexing
+  vk12.shaderUniformTexelBufferArrayDynamicIndexing
+  vk13.descriptorBindingInlineUniformBlockUpdateAfterBind
+```
+
+All eight are genuinely unimplemented (no `CmdDrawIndirectCount`, no variablePointers support); they
+are hardcoded `false`. `occlusionQueryPrecise` is the one where the feature exists but is
+conservative - and the vendor reports it precise, so the hardware can do it.
