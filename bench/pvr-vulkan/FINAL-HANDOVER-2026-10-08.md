@@ -320,4 +320,66 @@ Vendor figures reproduced to ~1% across two separate driver switches.
   (`vkheavy`), with `vkrender` correctly unchanged as the control. Correctness green: `bda`, `vk13`,
   `pctest`, `vk16`, `vkrender` 512+2048, **27 glmark2 scenes**.
 * **Scope stated honestly**: no change on the full glmark2 default suite (46 vs 46), because its slowest
-  scenes are multi-pass/multi-window, bound by per-pass cost rather than shader execution.
+  scenes are multi-pass/multi-window, bound by per-pass cost rather than shader execution.\n
+---
+
+## 14. UPDATE (2026-10-09, final): TWO FIXES LANDED, and the honest end-to-end result
+
+### The two committed fixes
+
+**`c2bde57` - PCO `max_unroll_iterations` 16 -> 64.** Loops longer than 16 iterations were not unrolled, and
+PCO's loop body is 33 instructions for 4 operations (12 register moves, 8 predicated conditional/control
+instructions, 2 64-bit counter adds).
+
+**`c251c9b` - block-local immediate hoisting in `pco_const_imms.c`.** A constant not in the hardware
+constant-register table cost one `bbyp0bm_imm32` materialization *per use* - measured at 131 for three
+constants. Now the first use in a block materializes it and later uses move from that register.
+**Block-local is what makes it safe:** a value produced earlier in the same block dominates every later use,
+so no cross-block dominance analysis is needed, and an unrolled loop body is a single block.
+
+### Measured effect, cross-driver, same session
+
+| workload | before | now | vendor | gap before | gap now |
+|---|---|---|---|---|---|
+| **real 32-iteration shader (`vkheavy`)** | 858.5 ms | **255.8 ms** | 180.0 ms | **4.77x** | **1.42x** |
+| integer loop (`cstpi`) | 26.6 M/s | **72.8 M/s** | 146.6 M/s | **5.53x** | **2.01x** |
+| float loop (`cstpf`) | 29.6 M/s | **87.9 M/s** | 145.9 M/s | **4.93x** | **1.66x** |
+| integer, no loop (`cstp`) | 305.9 M/s | 324.4 M/s | 375.0 M/s | 1.23x | **1.16x** |
+| raw render, no loop (`vkrender`) | 306 Mpix/s | **306 Mpix/s** | 757 Mpix/s | 2.47x | **2.47x unchanged** |
+| **full glmark2 suite** | **46** | **49** | - | - | **1.07x** |
+
+**2.7-3.4x where the workload is loop/shader-bound; ~7% end-to-end.** The difference is the point: the suite
+score is dominated by its slowest scenes (`terrain` 5 FPS, `refract` 12, `desktop blur` 24), which are
+multi-pass / multi-window and bound by per-pass kernel cost and per-surface render cost - neither of which
+either fix touches.
+
+**Correctness green for both**: `vkrender` 512 and 2048, `bda`, `vk13`, `pctest`, `vk16`, and
+**`glmark2-es2 --validate` 27 scenes**. Both fixes had a control that behaved as predicted (`vkrender` for the
+unroll fix, `cstpin` for the hoisting fix).
+
+### Why the loop gap is now fully explained
+
+Built `cstpi1` - the same loop with a single distinct operand - to discriminate:
+
+| shader | instructions | vs ideal | moves | open | vendor | gap |
+|---|---|---|---|---|---|---|
+| `cstpi1` (1 operand) | 152 | **1.19x** | 75 (49%) | 112.1 | 155.8 | **1.39x** |
+| `cstpi` (several) | 224 | 1.75x | 146 (65%) | 72.8 | 146.6 | **2.01x** |
+
+**Gap divided by the instruction-count ratio is 1.15-1.28 across probes** - so **instruction count fully
+explains the remaining loop gap**. And the instructions are `one bypass per ALU op (inherent, the vendor pays
+it)` plus **legalization for ISA operand-encoding limits** (`needs_s124` in `pco_legalize.c`) - **not**, as I
+first said, register-allocation waste. That correction is on the record, and it lowered the expected headroom
+of the obvious follow-up.
+
+### What remains, unchanged
+
+* **The per-job kernel sync interface** - **84% of frame time in the kernel**, ~190 syncobj ioctls/frame,
+  ~17 ms/frame. **Proved unreachable from Mesa**: the kernel resolves sync objects by handle and holds its own
+  reference (`pvr_sync.c:82`), so pooling aliases in-flight jobs and the failure mode is a GPU hang. Needs a
+  `drm/imagination` UAPI change. The module builds on this host and the UAPI gap is confirmed; the migration
+  plan is in `SYNC-TIMELINE-ATTEMPT-2026-10-08.md`, with one aborted attempt and a corrected ordering
+  (the event/barrier paths own the same array slots the render path uses, so it cannot be done piecewise).
+* **`vkrender`'s 2.47x per-surface cost** - every source-visible candidate excluded (PBE <10% by a clean
+  non-discard format probe; format-, coverage- and geometry-independent). Needs PVRtune or a vendor
+  command-stream diff, neither available on this board.
