@@ -382,4 +382,80 @@ of the obvious follow-up.
   (the event/barrier paths own the same array slots the render path uses, so it cannot be done piecewise).
 * **`vkrender`'s 2.47x per-surface cost** - every source-visible candidate excluded (PBE <10% by a clean
   non-discard format probe; format-, coverage- and geometry-independent). Needs PVRtune or a vendor
-  command-stream diff, neither available on this board.
+  command-stream diff, neither available on this board.\n
+---
+
+## 15. FINAL STATE (2026-10-09, end of session)
+
+### Four fixes shipped, all in `src/imagination/pco/`
+
+| fix | commit | measured |
+|---|---|---|
+| unroll threshold 16 -> 64 | `c2bde57` | 1.85x (`cstpi`), 2.28x (`cstpf`), 2.85x (`vkheavy`) |
+| block-local immediate hoisting | `c251c9b` | 1.47x (`cstpi`), 1.31x (`cstpf`), 1.18x (`vkheavy`) |
+| unroll threshold 64 -> 256 | `5a1be21` | 2.64x on 128-iteration loops |
+| unroll threshold 256 -> 1024 | `167a943` | 2.68x on 512-iteration loops |
+
+**Combined, on the probes: `cstpi` 26.6 -> 72.8 M inv/s (2.74x), `cstpf` 29.6 -> 87.9 (2.97x),
+`vkheavy` 858.5 -> 255.8 ms (3.36x).** Gap to the vendor on loop-bound compute **5.53x -> 2.02x**.
+**Full glmark2 suite 46 -> 49 (6.5%).**
+
+**Each fix had a control that behaved as predicted**: `vkrender` unchanged for the unroll changes (no loop),
+`cstpin` unchanged for the hoisting (no immediates). **Correctness green throughout**: `vkrender` 512 and
+2048, `bda`, `vk13`, `pctest`, `vk16`, and `glmark2-es2 --validate` 27 scenes.
+
+### Withheld, because measurement did not support it
+
+**`max_unroll_iterations_aggressive = 32768`** - a null for every probe (all loops are below 1024, so the
+normal limit already covers them) **and an unmeasured icache risk for long loops.** Reverted rather than
+shipped.
+
+### Measurement discipline, corrected at the end
+
+**The host carries ~65% of a core of background load at all times and it cannot be removed**: `syncthing`
+(~34%) plus **the DSH agent harness itself (`MainThread`, ~32%)**, which exists because this session is
+running. **Consequently wall-clock FPS cannot resolve any effect below ~35% on this board.**
+
+**Standing rule: measure with throughput (M invocations/s) or per-job kernel timestamps - both repeat to ~1%
+because they are fixed work over its own kernel-timed duration and are insensitive to contention on other
+cores. Use ioctl and job counts (integers). Use wall-clock FPS only above ~35%, and never for a 3-run median
+comparison.**
+
+**Withdrawn on this basis**: the "1.27x on the shader-heavy client scene" (re-measured: current median equals
+baseline, ranges overlap completely) and the "GPU 100% busy" figure (fence-pairing artefact at high job
+counts).
+
+### The move mechanism, analyzed to its end
+
+The register-file moves that dominate PCO's remaining instruction count were chased through **four
+attributions, each partly wrong** - register allocation, legalization for ISA limits, the class table, slot
+contention. **The answer**: `bbyp0s1`/`bbyp0bm` are **encoding mappings in the assembler's ISA table
+(`pco_map.py`)**, emitted when a PCO instruction's operands must be moved to satisfy hardware register
+constraints. **A large part of the 1.1-2.1 moves per operation is therefore likely inherent** - consistent
+with the vendor being only **1.39x** faster than PCO's near-optimal `cstpi1` (1.19x ideal) rather than the
+several-fold gap a removable cost would give. **The measured floor is `cstpi1`'s 1.1 moves/op.**
+
+### What the session did NOT move, with the reason established
+
+1. **Per-job kernel synchronisation - 84% of frame time in the kernel**, ~190 syncobj ioctls/frame,
+   ~17 ms/frame. **Proved unreachable from Mesa**: the kernel resolves sync objects by handle and holds its
+   own reference (`pvr_sync.c:82`), so pooling or recycling aliases in-flight jobs and the failure mode is a
+   **GPU hang**. Needs a `drm/imagination` UAPI change. **The migration plan is complete in
+   `SYNC-TIMELINE-ATTEMPT-2026-10-08.md`**, with one aborted attempt and a corrected ordering: the
+   event/barrier paths **own the same array slots** the render path uses (lines 561-581, 717-753), so it
+   cannot be converted piecewise.
+2. **`vkrender`'s 2.47x per-surface cost** - flat against coverage, format-independent (PBE <10% by a clean
+   non-discard probe), tile geometry/macrotile grid/region-header count/ISP partition/AA mode all correct or
+   excluded. **Needs PVRtune or a vendor command-stream diff; neither exists on this board.**
+3. **The two PCO codegen terms already decomposed** - immediates 1.40x (fixed) and register moves (~2.1x,
+   mostly inherent as above).
+
+### Verification commands, for anyone picking this up
+
+```
+VK_ICD_FILENAMES=/home/radxa/pvr_gen_icd.json PVR_I_WANT_A_BROKEN_VULKAN_DRIVER=1
+probes:  ./cstpi 64 200 | ./cstpf 64 200 | ./cstpi128 64 200 | ./cstpi512 64 200 | ./cstpin 64 200
+         ./vkrender 2048 20 | ./vkrender 2048 2  (the second is the correctness check)
+gate:    ./bda && ./vk13 && ./pctest && ./vk16 && ./vkrender 512 2 && ./vkrender 2048 2
+         glmark2-es2 --validate   (expect 27 scenes)
+```
