@@ -458,4 +458,81 @@ probes:  ./cstpi 64 200 | ./cstpf 64 200 | ./cstpi128 64 200 | ./cstpi512 64 200
          ./vkrender 2048 20 | ./vkrender 2048 2  (the second is the correctness check)
 gate:    ./bda && ./vk13 && ./pctest && ./vk16 && ./vkrender 512 2 && ./vkrender 2048 2
          glmark2-es2 --validate   (expect 27 scenes)
-```
+```\n
+---
+
+## 16. SESSION END STATE (2026-10-09) — what to do next
+
+### The toolset (all committed, all guard-aware)
+
+| tool | what it answers |
+|---|---|
+| `components.sh` | **what's working / what isn't** — 30 checks: modules, vermagic vs running kernel, driver binding, DRM nodes, firmware (+md5), both ICDs **and whether the library each names resolves**, the four Mesa fixes, git state, tracepoints, SDDM, the guard, the harness |
+| `harness.py` | one probe → **driver, speed, correctness, per-stage job durations, critical path, CPU split, bandwidth** — one JSON record per run |
+| `sweep.sh` | the whole probe matrix → one consolidated table |
+| `ab.sh` | **full A/B in one run** — closes the desktop, arm open fully, arm vendor fully, reopens via **trap**, prints the diff |
+
+### The measurement that closed the compute investigation
+
+**Same instruction shape, 1.02x vs 2.14x:**
+
+| probe | final code shape | open | vendor | ratio |
+|---|---|---|---|---|
+| `cstp` | straight-line ALU, no loop | 361.0 | 369.8 | **1.02x - parity** |
+| `cstpin` | 32-iteration loop, registers only | 72.0 | 154.2 | **2.14x** |
+
+**At unroll limit 1024 `cstpin` is fully unrolled, so both are straight-line ALU.** The deficit is therefore
+**instructions per operation** (register moves): ~1.1/op at low pressure, ~2.1/op at high. **Confirmed
+statically (IR move counts) and dynamically (throughput) — two independent methods, same cause.**
+
+### The four shipped fixes
+
+| commit | change | engine |
+|---|---|---|
+| `c2bde57` | unroll 16 → 64 | yes, PCO |
+| `c251c9b` | block-local immediate hoisting | yes, PCO |
+| `5a1be21` | unroll 64 → 256 | yes, PCO |
+| `167a943` | unroll 256 → 1024 | yes, PCO |
+
+**Effect: `cstpi` 26.6 → 72.8, `cstpf` 29.6 → 87.9, `vkheavy` 858.5 → 255.8 ms. Compute gap 5.53x → ~2.1x;
+straight-line compute at parity.** All correctness-green.
+
+### THE LEVERAGE — where the remaining milliseconds are (real client 640x480)
+
+| term | excess | share |
+|---|---|---|
+| client render | 0.5 ms | **1.5%** |
+| present (release wait) | 12.5 ms | **38.5%** |
+| **kernel / sync** | **~19.5 ms** | **60.0%** |
+
+**98.5% of the recoverable cost is not the render.** Two levers, neither the shader:
+
+1. **Kernel/sync (60%)** — ~190 syncobj ioctls/frame, 84% of frame time in the kernel. **Proven unreachable
+   from Mesa**: the kernel resolves sync objects by handle and holds its own reference (`pvr_sync.c:82`), so
+   pooling aliases in-flight jobs → **GPU hang**. **Needs a `drm/imagination` UAPI change**; plan complete in
+   `SYNC-TIMELINE-ATTEMPT-2026-10-08.md` with one aborted attempt and the corrected ordering (the
+   event/barrier paths own the same array slots, so it cannot be converted piecewise).
+2. **Present (38.5%)** — the release wait **is the per-surface render deficit through weston's compositor**:
+   12.5 ms at 640x480 → 66 ms at 1080p; weston composites the 4K output in ~2 passes at the open per-surface
+   rate. **Not reachable from source** — every driver-visible config reads correct or maximal, and the vendor
+   firmware is a different image that is not interchangeable (proven: loads as build 6603887, then DABT).
+
+### Bugs fixed in the user's own scripts this session
+
+* **`switch-open.sh` used `insmod`** — which does not resolve module dependencies, so the open driver could
+  not load at all (`Unknown symbol drm_gem_shmem_*`, `drm_sched_*`). Fixed to **`modprobe powervr`** after
+  installing to `/lib/modules/$(uname -r)/extra/powervr/` + `depmod -a`. **The module also had to be rebuilt
+  because a reboot changed the running kernel.** Verified: `vkrender` 512 PASS under `powervr`.
+* **`harness.py` driver detection** — `realpath()` on `.gpu/driver` returns the device path when unbound, so
+  the bound driver was mislabelled. Fixed with `readlink()`.
+
+### The honest conclusion
+
+**The objective is NOT met.** The open stack is still ~2x down on rendering and ~2.1x on loop-bound compute;
+the real client gap is dominated by kernel-side synchronisation that cannot be fixed from Mesa. **What is
+achieved**: four verified codegen fixes, a compute gap fully attributed (parity where the cost is absent), a
+complete measurement toolset that caught three silent-wrong-answer bugs, and two levers precisely scoped with
+proofs that each is out of Mesa's reach.
+
+**Next session should start with `./components.sh` and `./ab.sh`, then attempt the `drm/imagination` UAPI
+change — only with the budget to finish and verify it.**
