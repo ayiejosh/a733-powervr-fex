@@ -533,3 +533,83 @@ Genuinely closer than the four previous attempts, which all died in the winsys o
 This attempt died in the queue's own teardown paths, and every one of those was mechanical and is
 now fixed. The next session should start from the timeline-mode question above with the five fixes
 in hand, not from scratch.
+
+---
+
+# The migration WORKS - and has no measurable effect. Plus two instrument fixes.
+
+## It works
+
+With the sixth defect fixed, the queue-side timeline migration is **correct**:
+
+```
+glmark2-es2 --validate:  success=27  failure=0
+bda, vk13, pctest, vk16, wgsize, samplers, storageimages, mrt, varyings, inatt, ubos, stgbuf,
+vattrib: all PASS
+```
+
+The winsys was never touched. Six real defects had to be fixed to get here, each found by
+backtrace or instrumentation, not by reasoning:
+
+| # | defect | how it surfaced |
+|---|---|---|
+| 1 | `point_install` called with a NULL point (a replacement silently missed) | instrumented the value: `install geom_point=(nil) value=0` |
+| 2 | `pvr_update_job_syncs` freed the persistent sync the alias arrays point at | `free(): invalid pointer` |
+| 3 | `pvr_clear_last_submits_syncs` double-freed the same | `free(): invalid pointer` |
+| 4 | `err_destroy_geom_sync` called `vk_sync_destroy` on `&point->sync`, an interior pointer | `free(): invalid pointer` + backtrace |
+| 5 | `pvr_queue_finish` double-freed the aliases | `free(): invalid pointer` |
+| 6 | `pvr_process_event_cmd_barrier` destroyed `next_job_wait_sync[stage]`, also an interior pointer | backtrace: `pvr_process_event_cmd_barrier.isra` |
+
+## It does not move the frame rate
+
+Interleaved A/B, 4 pairs, same background load, 800x600:
+
+```
+pair 1: baseline 40   migration 43
+pair 2: baseline 49   migration 46
+pair 3: baseline 40   migration 30     <- background-load outlier
+pair 4: baseline 45   migration 45
+median: baseline ~42.5   migration ~44.5
+```
+
+**Indistinguishable.** Removing the per-job syncobj create/destroy for the geometry path does not
+measurably change windowed FPS, which is consistent with the ground truth that the windowed gap is
+the area-dependent Xwayland copy, not job submission.
+
+Only 1 of 5 job types is migrated, so at most a fifth of the churn is gone even in principle.
+
+**Not shipped.** It is correct but adds 105 lines plus six per-type exemption sites in exchange for
+no measured gain - maintenance risk with no demonstrated benefit. Reverted; tree green at `f660241`.
+
+## Instrument fix 1: single-sample FPS numbers on this board are worthless
+
+This round I briefly concluded the migration was **3x slower** (15 FPS vs 39). That was wrong.
+`FEXInterpreter` was sitting at **100% CPU** and `syncthing` at 32%, and a background `ninja` build
+was also running. Once measured **interleaved** (baseline, migration, baseline, migration, ...) so
+both configurations see the same load, the numbers were identical.
+
+**Rule: never compare two configurations by measuring one after the other on this board.** Background
+load from `FEXInterpreter`, `syncthing`, and stray builds moves the number by more than any change
+being tested. Interleave, and check `ps -eo pcpu --sort=-pcpu` before believing a delta.
+
+## Instrument fix 2: the release build has NDEBUG, so no assert() is live
+
+```
+buildtype = release, b_ndebug = if-release     ->  NDEBUG defined
+```
+
+Recorded in the recovery note in full. Consequences here: `get_timeline_mode()`'s
+`assert(timeline_type == NULL)` cannot fire even though the pvr DRM winsys registers **two**
+TIMELINE-advertising types (`syncobj_type`, which sets the feature whenever the provider has
+`timeline_wait`, and the wrapper); the mode comes out EMULATED by iteration order rather than by
+rule. Two instruments to use instead of reading source:
+
+* **`MESA_VK_ABORT_ON_DEVICE_LOSS=true`** makes `_vk_queue_set_lost()` print the recorded lost-device
+  message and abort - it names the failing call directly.
+* **an assert-enabled build** (`meson setup build-assert -Db_ndebug=false -Dbuildtype=debugoptimized`)
+  makes the violated invariant name itself.
+
+## Status of target (1)
+
+Implemented and proven correct; measured to have no effect on the metric that matters. The remaining
+lever is the area-dependent Xwayland copy path, as recorded before.
