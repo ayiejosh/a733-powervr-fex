@@ -69,3 +69,30 @@ The three steps have to land together.
 Eliminating ~190 of ~250 ioctls per frame removes roughly 10 ms of a 53 ms display loop on the X11
 path - on the order of +15-20%, not the 18x that the copy/flip issue is worth. **It is the correct
 architectural fix for the open driver, but it is not the biggest lever.**
+
+## Churn breakdown, measured (Xwayland, windowed client, 800x600)
+
+Instrumented `pvr_drm_winsys_null_job_submit` (`PVR_SUBMIT_MIX=1`):
+
+```
+null submits: ~16,400 in 22 s = ~745/s = ~17.7 per client frame
+distribution: waits:0=0   1=5302 (33%)   2=10217 (63%)   3+=687 (4%)
+```
+
+| null-path case | ioctls per call | per client frame |
+|---|---|---|
+| waits:1 (33%) | 1 `SYNCOBJ_TRANSFER` (already optimal) | ~5.9 |
+| waits:2 (63%) | `CREATE` + 2 `TRANSFER` + `DESTROY` | ~34 |
+| waits:3+ (4%) | `CREATE` + N `TRANSFER` + `DESTROY` | ~3 |
+
+The waits:2/3+ cases exist because the driver emulates *"signal dst when all waits complete"* by
+transferring each wait into a **temporary syncobj** and then transferring that to the destination -
+a binary syncobj cannot accumulate. A timeline syncobj can, which is exactly what
+`dma_fence_chain` provides kernel-side.
+
+**So of Xwayland's ~250 DRM ioctls per frame, the null path is ~52 (~20%).** The remaining ~80% is the
+queue's per-job sync create/destroy (3 ioctls per job: 1 create + 2 destroys), which is why the local
+null-path fix is not worth landing on its own - it addresses a fifth of the problem.
+
+Both are removed by the same change: **timeline syncobjs end-to-end**, so no create/destroy per job and
+no transfer-based dependency emulation.
