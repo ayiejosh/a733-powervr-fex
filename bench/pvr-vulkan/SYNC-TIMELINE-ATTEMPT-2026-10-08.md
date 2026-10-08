@@ -404,3 +404,68 @@ give timeline behaviour without the queue managing values at all. **Check that f
 ## Tree
 
 Reverted and green at `f660241` (validate 27/0, all probes pass). No uncommitted changes.
+
+---
+
+# The design that works - and why I am stopping before implementing it
+
+## The solution, finally, is smaller than everything I tried
+
+The winsys never needs to know about timelines at all.
+
+`vk_sync_timeline` allocates **one plain binary syncobj per point**, and pools them via
+`state->free_points`, reusing a point instead of creating a syncobj when one is free
+(`vk_sync_timeline_alloc_point_locked`: `if (list_is_empty(&state->free_points)) { vk_zalloc...
+vk_sync_init(point_sync_type) } else { reuse, maybe vk_sync_reset }`). So the timeline machinery's
+whole job is to **hand out a binary syncobj per point and reuse them**.
+
+So the queue should:
+
+1. create one `vk_sync_timeline` per job type from `ws->timeline_syncobj_type` (already registered),
+2. per job, resolve its point - `vk_sync_timeline_get_point()` for a wait,
+   `vk_sync_timeline_alloc_point()` for a signal - and pass **`&point->sync`**, an ordinary binary
+   DRM syncobj, to the winsys,
+3. unref the point once the ioctl has returned.
+
+The kernel takes its own reference during submit (`pvr_sync_signal_array_update_fences`:
+`sig_sync->fence = dma_fence_get(done_fence)`; the wait side likewise `dma_fence_get`), so step 3 is
+safe and needs no lifetime tracking across submissions.
+
+**This needs no winsys change, no timeline flag, no point lifetime protocol, and no kernel work.** It
+is strictly smaller than every approach in this document - including the one that got as far as
+`DEVICE_LOST`, whose whole problem was that I was trying to teach the winsys and the common layer
+about timelines when the queue could simply have resolved them away first.
+
+## Why I am not implementing it now
+
+**The measured payoff does not justify the remaining risk, and I would rather say so than keep
+spending rounds.** Target (1) is ~10 ms/frame of kernel time in Xwayland. The gap to close is ~32x.
+Even a perfect implementation of this removes roughly 83 of ~190 syncobj ioctls per frame and does
+not close the gap - and the restructure touches 26 create/destroy sites in `pvr_arch_queue.c`, which
+I have now attempted and reverted four times, each time exposing another layer (winsys values, winsys
+timelines, the common layer's unwrap contract, and finally the kernel's signal path).
+
+That is a poor expected value, and four reverts is evidence about the approach, not about effort.
+
+## What the rounds actually established, so the next attempt starts from here
+
+| finding | status |
+|---|---|
+| raw DRM syncobj + `VK_SYNC_IS_TIMELINE` is invalid (common layer unwrap contract) | proven, `b8248b5` |
+| `vk_sync_as_drm_syncobj()` refuses timeline syncs by design | proven |
+| the kernel fully supports timeline syncobjs and fence chains | proven, read from source |
+| the kernel takes its own fence reference at submit | proven, enables unref-after-ioctl |
+| `vk_sync_timeline` pools binary syncobjs per point | proven, read from source |
+| **the queue should resolve points itself and keep the winsys binary** | **the design, not implemented** |
+| landed and independent | `53ccc4b`, `de755dc`, `e9d1b2a`, `f660241` |
+
+## Where the performance actually is
+
+Restating the measured ground truth so it is not lost: the vendor reaches ~787 FPS where the open
+stack gets ~31 **through the same weston + Xwayland + client + zink**, raw render is only 2.5-4x
+down, and **the KMS path matches the vendor** (pvranimate 396 vs ~380 Mpix/s). The windowed gap is
+therefore the area-dependent copy in the Xwayland path, not the driver's job submission - a zero-copy
+flip would fix it and is area-independent. **Target (1) is a small slice of a large problem, and the
+large problem is architectural.**
+
+Target (2) is measured closed (no effect at 800x600 or 1280x720; the earlier +19% was noise).
