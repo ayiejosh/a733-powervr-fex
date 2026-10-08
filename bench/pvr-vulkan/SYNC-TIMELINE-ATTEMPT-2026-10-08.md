@@ -113,3 +113,73 @@ to copy is in-tree.
 value is necessary but not sufficient - every consumer of that value must be updated too, and the
 winsys is a consumer. Grep for the value's consumers, not just its producers, before migrating a
 producer.**
+
+---
+
+# Blocker 2: vk_sync_as_drm_syncobj() refuses timeline syncs by design
+
+After step 3 (`e9d1b2a`, winsys timeline support) the GEOM migration still segfaulted. Instrumenting
+located it exactly:
+
+```
+[rsub] si=... gw=(nil) gww=0 gs=... gss=0xaaaaeb0ff200
+[op] op=... sync=0xaaaaeb0ff200 flags=0
+SIGSEGV: x0=0, ldr w0, [x0, #16]      <- reading .syncobj of a NULL vk_drm_syncobj
+```
+
+`sync` was valid. The NULL comes from the accessor itself:
+
+```c
+static inline struct vk_drm_syncobj *
+vk_sync_as_drm_syncobj(struct vk_sync *sync)
+{
+   if (!vk_sync_type_is_drm_syncobj(sync->type))
+      return NULL;                      /* <-- for a timeline sync */
+   return container_of(sync, struct vk_drm_syncobj, base);
+}
+```
+
+`vk_sync_type_is_drm_syncobj()` compares `type->finish` against the **binary** `vk_drm_syncobj_finish`.
+The queue's persistent syncobj is created from `ws->timeline_syncobj_type.sync`, whose finish differs,
+so the accessor returns NULL and dereferencing it faults at `.syncobj` (offset 16, i.e. just past the
+16-byte `vk_sync base`). **The refusal is by design, not a bug in Mesa**: the timeline type is a
+wrapper - `struct vk_sync_timeline_type { struct vk_sync_type sync; const struct vk_sync_type
+*point_sync_type; }` - and `vk_sync_timeline_get_type()` wraps the point type, so a timeline sync
+does not expose a bare syncobj handle through this accessor. Panfrost, the in-tree timeline user,
+passes a raw handle and `timeline_value` and never goes through it.
+
+## Consequence for the plan
+
+The winsys must get the underlying syncobj handle **and** the point some other way, or the queue
+must not use `vk_sync_timeline` at all. Options, cheapest first:
+
+1. **Check what handle the timeline object actually owns.** `vk_sync_timeline` allocates per-point
+   `vk_sync_timeline_point` objects with `point_sync_type`; the base syncobj the kernel needs is
+   likely reachable from `vk_sync_timeline_state` or the first point. If so, the winsys needs a
+   small accessor rather than the binary one - but this depends on the timeline internals being
+   stable, so read them first.
+2. **Skip `vk_sync_timeline` and manage the timeline syncobj directly in the queue**: create one
+   `ws->syncobj_type` syncobj per job type and pass
+   `DRM_PVR_SYNC_OP_FLAG_HANDLE_TYPE_TIMELINE_SYNCOBJ` with the incremented point. A DRM timeline
+   syncobj is a timeline even though its Mesa sync type is the binary one, so
+   `vk_sync_as_drm_syncobj()` keeps working and the existing winsys helper is enough. **This is the
+   lazier option** - it reuses the type the driver already handles and needs no timeline internals.
+
+Option 2 looks correct and much smaller: the kernel decides timeline vs binary from the
+`HANDLE_TYPE_*` flag, not from Mesa's sync type. Worth trying first.
+
+## Fixed along the way (committed, real bugs)
+
+`f660241` - a signal struct whose `.sync` is NULL now means "no signal" in all three submit paths.
+The step-1 API change made these parameters structs, and the queue passes
+`&(const struct vk_sync_signal){ .sync = frag_signal_sync }` unconditionally, so with no fragment
+work the pointer was non-NULL while the sync inside was NULL - a latent segfault in
+`pvr_drm_winsys_render_submit` that this round's instrumentation exposed.
+
+## Round tally for this thread
+
+* `53ccc4b` winsys value plumbing (behaviour-preserving) - landed
+* `de755dc` persistent syncobjs, unused (behaviour-preserving) - landed
+* `e9d1b2a` winsys timeline support (behaviour-preserving) - landed
+* `f660241` NULL-signal guard - landed, a real latent crash fix
+* GEOM migration - attempted twice, reverted twice, both times for a concrete diagnosed reason
