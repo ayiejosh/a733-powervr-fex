@@ -318,3 +318,52 @@ OPEN HAS, VENDOR LACKS (4):
 All eight are genuinely unimplemented (no `CmdDrawIndirectCount`, no variablePointers support); they
 are hardcoded `false`. `occlusionQueryPrecise` is the one where the feature exists but is
 conservative - and the vendor reports it precise, so the hardware can do it.
+
+---
+
+# CORRECTION: the shaderFloat16 "correction" in the previous addendum was WRONG
+
+The addendum above claimed the shaderFloat16 correctness failures do not reproduce and that the
+disable was a performance decision. **Both halves of that were wrong**, and the re-enable it led to
+was reverted.
+
+## The mistake
+
+I disabled the Mesa shader cache for the **performance** A/B but left it **enabled** for the
+**validation**. With the cache enabled, the cached fp32 shaders are reused, so the feature change
+never reaches PCO and validation passes regardless. Doing both with the cache disabled:
+
+```
+MESA_SHADER_CACHE_DISABLE=true, glmark2-es2 --validate:
+  shaderFloat16 = false   27 success /  0 failure
+  shaderFloat16 = true     7 success / 20 failure
+```
+
+**The miscompile is real and the original round-2 finding was right.** Enabling the feature produced
+20 validation failures, which is exactly the failure mode the feature was disabled for.
+
+## What actually does not hold up
+
+The **performance** reason. 8 interleaved run pairs, cache disabled:
+
+```
+  shaderFloat16 = false   mean 41.1  median 41.5  stdev 3.1
+  shaderFloat16 = true    mean 39.8  median 38.5  stdev 3.9
+  difference +1.4 FPS = +3.5%, inside the pooled stdev of 3.5
+```
+
+And PCO's output for the same scenes is near-identical: mean shader code size 40.6 vs 41.2, zero
+spills either way. So the earlier "+42.8% from disabling fp16" does not reproduce at that magnitude.
+
+**Net: `shaderFloat16` is a pure correctness disable. The fix is to repair PCO's fp16 emit, not to
+re-advertise the feature.**
+
+## The generalisable rule
+
+**Never A/B a shader-compiler or shader-feature setting - for correctness checks as well as
+benchmarks - without `MESA_SHADER_CACHE_DISABLE=true`.** The 2.1 MB `~/.cache/mesa_shader_cache` will
+otherwise answer the experiment with the previous configuration's binaries and report "no
+difference" for both performance and correctness.
+
+This is the same failure class as the four earlier retractions: **the instrument did not measure what
+I claimed it measured.** The cache was a stale proxy for the compiler.
