@@ -169,4 +169,98 @@ occupied and the difference is a per-op rate rather than a task count.
 |---|---|
 | **FP32 throughput ~5x lower, integer at parity** | **high** - identical SPIR-V, both drivers, 5x above noise |
 | every software-side candidate excluded | high - each measured |
-| the exact USC mode/register responsible | **open** - needs the vendor's compiled shader |
+| the exact USC mode/register responsible | **open** - needs the vendor's compiled shader |\n
+---
+
+## 12. UPDATE (2026-10-08, final): the bottleneck is the per-job KERNEL interface, and the fix is a UAPI change
+
+**Supersedes sections 6 and 11.** The picture converged on one place.
+
+### What is fixed and committed
+
+**`c2bde57` — PCO's `max_unroll_iterations` 16 -> 64.** Loop-bound shaders were ~5x slow because loops
+>16 iterations are not unrolled and PCO's loop body is 33 instructions for 4 operations (12 register moves,
+8 predicated conditional/control instructions, 2 64-bit counter adds).
+
+| measurement | before | after | gain |
+|---|---|---|---|
+| `cstpi32` (integer, 32-iteration) | 26.7 M/s | 49.8 M/s | **1.87x** |
+| `vkheavy` (real 32-iteration fragment) | 858.5 ms | 597.1 ms | **1.44x** |
+| shader-heavy client scene | 49 FPS | 62 FPS | **~1.27x** |
+| full glmark2 default suite | 46 | 46 | **none** |
+
+**Scope, stated honestly: it is a loop fix, not the whole gap.** Correctness fully green (27 glmark2
+scenes + all probes).
+
+### The dominant remaining bottleneck, quantified
+
+**Xwayland's own `/proc/<pid>/stat` utime/stime split** (25 s runs, 640x480, composited):
+
+| scene | FPS | user | sys | per frame: user / sys |
+|---|---|---|---|---|
+| conditionals | 21 | 16.6% | **44.2%** | 7.90 ms / **21.05 ms** |
+| desktop blur | 20 | 18.8% | **41.4%** | 9.40 ms / **20.72 ms** |
+| terrain | 5 | 5.4% | **15.1%** | 10.77 ms / **30.11 ms** |
+
+**The kernel side is 2.2-2.8x the user side in every scene.** Jobs per frame: `terrain` 45.7, `desktop blur`
+28.0, `refract` 20.4, simple scenes 8.7 - and the slowest scenes are exactly the multi-pass ones.
+
+**Payoff: cutting the per-frame round trips from ~250 to ~50 would remove on the order of 17 ms/frame** -
+the difference between 21 FPS and ~45 FPS on the simple scene.
+
+### Why it cannot be fixed from Mesa - proved, not assumed
+
+**Target (1) of the objective is closed as not viable from userspace.** All variants fail for one reason:
+**the userspace handle is not the only reference to a sync object.**
+
+* **Pooling the per-job syncs aliases in-flight jobs.** The kernel resolves each handle and takes its own
+  reference (`pvr_sync.c:82 drm_syncobj_find`, `:178 dma_fence_get`, released at `:41`/`:43`). Reusing a
+  pooled handle means one object referenced by two jobs with different meanings - **a silent
+  synchronisation break whose failure mode is a GPU hang.**
+* **Pooling the null-job temp syncobj re-points a `drmSyncobjTransfer` dependency.**
+* **Timeline-backing measured worse** (3404 -> 3604 ioctls, waits +50%, +399 RESET).
+* The cost is the **wait** (0.456 ms/pass blocked in `drm_syncobj_array_wait_timeout`), not object churn.
+
+### The single remaining target, with a verified base
+
+**A `drm/imagination` UAPI facility that lets a batch of passes be described once and ordered by the kernel
+or firmware, instead of one handle round trip per job** - the equivalent of the vendor's
+`pvr_srv_sync_type`.
+
+| prerequisite | status |
+|---|---|
+| module builds on this host | **yes** - `make -C /lib/modules/6.1.98-5-aw2511/build M=/home/radxa/kernel-src/powervr modules` completes |
+| UAPI gap confirmed | **yes** - `enum drm_pvr_job_type` has GEOMETRY/FRAGMENT/COMPUTE/TRANSFER_FRAG and no chaining/null type; kernel dispatches on exactly those four (`pvr_job.c:280-289`) |
+| payoff measured | **yes** - ~17 ms/frame |
+| can be done from Mesa | **no** - proved above |
+| within objective scope | **yes** - mainline `powervr` module |
+
+**This is the objective's remaining work. It is a kernel change, it needs a module reload (weston/Xwayland
+down, guard respected), and it should not be started without the context budget to finish and verify it.**
+
+### Claims withdrawn across the session (for the record)
+
+"raw render 2.5-4x down / fill-rate deficit" - it is per-surface, not fill-rate. "PBE write 3.2x" -
+discard-contaminated. "Tiler 1.84x" - discard-based. "shader 12.8x" - invalid discard control. "FP32
+throughput 5x down" - **confounded**; it is loop execution. "FBCDC explains the deficit" - killed by its own
+causal test. "macrotile / tile-size 2.8x lever" - both were empty renders. "`ZINK_EXTRA_IMAGES` helps" -
+noise. "MSAA is expected architecture" - vendor control says otherwise. "the vendor does no explicit-sync
+waits" - **`ACQ_TRACE`/`WSIREL_TRACE` are Mesa env vars the vendor ignores, so the silence proves nothing.**
+"the driver processes empty tiles unnecessarily" - the vendor scales identically.
+
+### Measurement discipline earned (the most reusable output)
+
+1. **Variance is ~25%** - single-sample comparisons under that are unproven; interleaving is mandatory.
+2. **Discard-based controls are invalid cross-driver** - they measure the compiler's ability to eliminate
+   the discard, not the stage under test.
+3. **A speedup without a correctness gate is worse than no measurement** - the mtile and tile-size "2.8x
+   wins" were both empty renders, caught by one correctness command each.
+4. **One control per hypothesis.** The "FP32" conclusion died because the probe varied float-vs-integer
+   *and* loop-vs-no-loop at once; the integer-loop control redirected the whole search.
+5. **A probe must survive both compilers' optimisers** - the vendor constant-folded a mul-only shader that
+   PCO did not, which would have produced a fabricated "40x float ALU deficit".
+6. **Know the instrument's limits.** The per-job kernel timing that cracked the loop problem pairs jobs to
+   completions by fence handle, so it **degrades above a few thousand jobs** - it gave a physically
+   impossible 168 ms median for terrain. Short traces only.
+7. **Documentation explains mechanisms; it does not establish what this driver should cost.** Only a vendor
+   control does.
