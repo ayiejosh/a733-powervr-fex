@@ -469,3 +469,67 @@ flip would fix it and is area-independent. **Target (1) is a small slice of a la
 large problem is architectural.**
 
 Target (2) is measured closed (no effect at 800x600 or 1280x720; the earlier +19% was noise).
+
+---
+
+# IMPLEMENTED: the queue resolves its own points - got further than ever, then DEVICE_LOST
+
+I implemented the design from the previous section: **the queue resolves timeline points itself and
+hands the winsys ordinary binary syncobjs**, so no winsys change is needed at all.
+
+## What was done (105 lines, one file: pvr_arch_queue.c)
+
+* `job_sync[]` created from `timeline_syncobj_type.sync` - a **real** `vk_sync_timeline`.
+* `pvr_queue_alloc_point()`: `queue->job_value[type]++` then
+  `vk_sync_timeline_alloc_point(..., &point)`; returns `&point->sync` as the signal.
+* `pvr_queue_wait_sync()`: `vk_sync_timeline_get_point(..., job_value[type] - 1, &point)`; returns
+  `&point->sync`, or NULL when there is nothing to wait for.
+* After a successful submit: `vk_sync_timeline_point_install()` for the signal point (consuming the
+  reference), `vk_sync_timeline_point_unref()` for the wait point - exactly the pattern
+  `vk_queue.c` uses for application signals, and safe because the kernel takes its own fence
+  reference during the ioctl.
+* The winsys is **untouched** and keeps seeing binary DRM syncobjs.
+
+## Five real bugs found and fixed on the way
+
+Each was a concrete, diagnosed defect rather than a guess:
+
+1. **`point_install` with a NULL point** - my create-site replacement silently missed (it targeted a
+   helper name that no longer existed after an earlier revert), so `geom_point` stayed NULL. Caught
+   by instrumenting the value before the call: `install geom_point=(nil) value=0`.
+2. **`pvr_update_job_syncs()` frees the persistent sync** - `last_job_signal_sync[GEOM]` now aliases
+   `job_sync[GEOM]`, so destroying it freed the timeline. Fixed with a per-type exemption.
+3. **`pvr_clear_last_submits_syncs()` double-free** - it destroys both alias arrays for *all* types.
+   Second exemption.
+4. **`err_destroy_geom_sync` frees an interior pointer** - `geom_signal_sync` is now
+   `&point->sync`, a pointer *into* the timeline's point object, so `vk_sync_destroy()` called
+   `vk_free()` on an interior pointer: `free(): invalid pointer`. Fixed by unref-ing the point.
+5. **`pvr_queue_finish()` double-free** - it destroys `job_sync[i]` *and* both alias arrays.
+   Third exemption.
+
+After those, **the crash was gone and all 13 probes passed** - `bda`, `vk13`, `pctest`, `vk16`,
+`wgsize`, `samplers`, `storageimages`, `mrt`, `varyings`, `inatt`, `ubos`, `stgbuf`, `vattrib`.
+
+## The remaining failure
+
+`glmark2-es2 --validate` then reported **0 success / 27 failure**, and the client log showed:
+
+```
+MESA: error: ZINK: vkQueueSubmit failed (VK_ERROR_DEVICE_LOST)
+```
+
+So the device is being marked lost again, on a different path than before. The prime suspect is the
+**timeline mode**: `vk_sync_signal_unwrap()`/`vk_sync_wait_unwrap()` assert
+`device->timeline_mode == VK_DEVICE_TIMELINE_MODE_EMULATED`, and registering a timeline sync type
+changes what `vk_device_init` chooses. Worth reading `vk_device_init`'s timeline-mode selection
+before editing anything else - the probes exercising compute/render pass, but the zink path goes
+through application semaphores and the unwrap machinery, which is exactly what differs.
+
+**Reverted; tree green at `f660241`** (validate 27/0, all probes pass).
+
+## Where this leaves target (1)
+
+Genuinely closer than the four previous attempts, which all died in the winsys or the common layer.
+This attempt died in the queue's own teardown paths, and every one of those was mechanical and is
+now fixed. The next session should start from the timeline-mode question above with the five fixes
+in hand, not from scratch.
