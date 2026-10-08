@@ -333,3 +333,74 @@ Reverted and green at `f660241`: build clean, bda/vk13/pctest/vk16/mrt PASS, `gl
 
 **0 performance change so far.** The churn is still there. The honest read: this target is a real
 driver work item, not a tuning knob, and it needs the ioctl errno before the next edit.
+
+---
+
+# ROOT CAUSE FOUND: the sync must be a vk_sync_timeline, not a flagged DRM syncobj
+
+Traced `FAIL submit -> -4` to its source. It is **not** the submit ioctl:
+
+1. `mrt.c:143` is `CK(vkQueueSubmit(...))`, so `-4` is what `vkQueueSubmit` returned.
+2. `vk_queue.c:1288` - `vkQueueSubmit` returns `VK_ERROR_DEVICE_LOST` immediately when
+   `vk_device_is_lost(device)` is already true.
+3. So the device was lost *earlier*, and `vk_device.c:417` reports the recorded message.
+
+The only sites that mark the device lost on this path are `vk_queue.c:600` and `:635`:
+
+```c
+result = vk_sync_wait_unwrap(queue->base.device, &submit->waits[i], &wait_point);
+if (unlikely(result != VK_SUCCESS))
+   result = vk_queue_set_lost(queue, "Failed to unwrap sync wait");
+...
+result = vk_sync_signal_unwrap(queue->base.device, &submit->signals[i], &signal_point);
+if (unlikely(result != VK_SUCCESS))
+   result = vk_queue_set_lost(queue, "Failed to unwrap sync signal");
+```
+
+and `vk_sync_signal_unwrap` / `vk_sync_wait_unwrap` only understand Mesa's **two wrapper types**:
+
+```c
+struct vk_sync_timeline *timeline = vk_sync_as_timeline(signal->sync);
+if (timeline) { alloc_point(...); signal->sync = &(*point_out)->sync; signal->signal_value = 0; }
+
+struct vk_sync_binary *binary = vk_sync_as_binary(signal->sync);
+if (binary) { signal->sync = &binary->timeline; signal->signal_value = ++binary->next_point; }
+```
+
+## What this means
+
+`vk_sync_as_timeline()` matches `type->init == vk_sync_timeline_init`; `vk_sync_as_binary()`
+matches `type->init == vk_sync_binary_init`. A sync created from the plain DRM `syncobj_type` with
+`VK_SYNC_IS_TIMELINE` set is **neither**, so it falls through both branches. **That is why the
+previous round's "handle problem solved" conclusion was wrong**: the flag on a raw DRM syncobj
+satisfies the kernel and `vk_sync_as_drm_syncobj()`, but violates the common layer's contract, and
+the common layer is what the driver's `driver_submit` runs underneath.
+
+So the earlier two constraints really do conflict, and the resolution is the third option:
+
+**The queue must use a real `vk_sync_timeline`, and the winsys must resolve the point to a syncobj
+handle** - which is exactly what the point API is for:
+
+```c
+struct vk_sync_timeline_point *point;
+vk_sync_timeline_get_point(device, vk_sync_as_timeline(sync), value, &point);
+/* point->sync is a vk_sync of point_sync_type, i.e. a struct vk_drm_syncobj */
+handle = vk_sync_as_drm_syncobj(&point->sync)->syncobj;
+```
+
+for a wait, and `vk_sync_timeline_alloc_point()` (+ `point_unref` after submission) for a signal.
+The common layer already extracts these points into `submit->_wait_points[]` /
+`submit->_signal_points[]`, so the intended shape is that the driver consumes those rather than
+resolving the timeline itself - worth checking how `pvr_driver_queue_submit` could use them.
+
+## Also learned
+
+`vk_sync_binary` gives **free** timeline emulation to any sync type built on it: unwrapping rewrites
+a binary sync into `binary->timeline` at an auto-incremented point. The DRM syncobj type is not a
+`vk_sync_binary` type, so pvr does not get this. Whether the DRM syncobj type *could* be layered on
+`vk_sync_binary` is a separate, possibly much lazier question than rewriting the queue - it would
+give timeline behaviour without the queue managing values at all. **Check that first next round.**
+
+## Tree
+
+Reverted and green at `f660241` (validate 27/0, all probes pass). No uncommitted changes.
