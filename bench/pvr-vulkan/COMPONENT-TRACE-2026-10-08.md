@@ -207,3 +207,50 @@ no symbols) or a from-source build.
 **Xwayland is at 35.8% of a core (utime 11.1%, stime 24.7%) and weston at 0.00%**, so neither is
 saturated: the display loop is **latency-bound**, and the largest single component is the ~41 ms
 between weston finishing a repaint and the client's release arriving.
+
+---
+
+# Addendum: two more limit floors, and why the sync fix is deferred
+
+## Floors 7 and 8
+
+| limit | was | now | probe |
+|---|---|---|---|
+| `maxPerStageDescriptorUniformBuffers` | **13** | **64** | `ubos` (new) |
+| `maxPerStageDescriptorSampledImages` | **32** | **128** | `samplers` (already existed) |
+
+`13` was the giveaway: every other descriptor limit was a round number (16/32/64) and 13 sits one
+above the spec minimum of 12, with no backing constant. The new `ubos` harness declares an array of
+N uniform blocks where element i holds the value i - an array element is one descriptor, so the
+shader's sum must be the triangular number, which makes a dropped descriptor show as a wrong value:
+
+```
+N=13 got 78 want 78    N=32 got 496 want 496    N=64 got 2016 want 2016
+```
+
+`maxPerStageDescriptorSampledImages = 32` had already been disproved by the existing samplers probe
+(`sampler2D tex[128]` binds 128 combined image samplers = 128 sampled images); I had simply never
+applied it. Both per-set values now derive from the per-stage ones (3x), which also preserves the
+spec invariant `maxDescriptorSet* >= maxPerStageDescriptor*`.
+
+## Every PVR DRM modifier is FBCDC - the 18x lever is header-confirmed
+
+`img_drm_fourcc.h` defines 30+ `DRM_FORMAT_MOD_PVR_*` constants and **every one is FBCDC**
+(`DRM_FORMAT_MOD_PVR_FBCDC_8x8_V1` ... `_LOSSY75_16x4_V14`). There is no plain-tiled PVR modifier.
+
+So the zero-copy flip path (the ~18x windowed factor) requires FBCDC, which requires FBD allocation,
+which the mainline UAPI does not expose - `DRM_IOCTL_PVR_*` has 14 entries and none is an FBD
+allocation. That is a from-scratch kernel + firmware job, not a driver tweak.
+
+## Consequence for the sync work
+
+The remaining tractable item is the `vk_sync` churn: ~250 ioctls per Xwayland frame, of which ~80% is
+the queue's per-job create/destroy and ~20% the null path's temporary syncobjs. Removing it means
+timeline syncobjs end-to-end, which requires value plumbing through `pvr_winsys.h`, both winsyses and
+the three arch job wrappers (~10 files), because the winsys currently hardcodes `.value = 0` at 10
+sites and asserts against `VK_SYNC_IS_TIMELINE` at 8.
+
+**Measured payoff: 37 -> 45-62 FPS on the X11 path (1.2-1.7x).** That is against a 32x gap whose
+dominant term (the copy/flip, ~18x) is blocked on FBCDC. So the sync change is worth doing as
+correctness-of-architecture work, but it is not the lever that closes the gap, and it should not be
+rushed into a 10-file refactor with a silent-corruption failure mode.

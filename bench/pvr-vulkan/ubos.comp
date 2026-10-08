@@ -1,0 +1,13 @@
+#version 450
+layout(local_size_x = 1) in;
+/* An array of uniform blocks: element i is descriptor i, so this uses NUBO
+ * uniform-buffer descriptors in one stage. Each holds its own index; the sum
+ * of 0..NUBO-1 is the expected result. */
+layout(binding = 0) uniform B { uint v; } b[NUBO];
+layout(std430, binding = 1) buffer Out { uint v[]; };
+void main() {
+    uint s = 0u;
+    for (int i = 0; i < NUBO; ++i)
+        s += b[i].v;
+    v[0] = s;
+}
