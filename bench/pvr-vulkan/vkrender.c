@@ -27,6 +27,7 @@
 
 #include "render_frag_spv.h"
 #include "discard_frag_spv.h"
+#include "uniform_frag_spv.h"
 #include "render_vert_spv.h"
 #include "io16_vert_spv.h"
 #include "io16_frag_spv.h"
@@ -114,6 +115,8 @@ int main(int argc, char **argv)
     const int discard = getenv("DISCARD") != NULL;
     /* FRAGDISCARD=1 uses a shader that runs but discards every fragment. */
     const int frag_discard = getenv("FRAGDISCARD") != NULL;
+    /* UNIFORM=1 writes a constant colour: compressible if the GPU compresses render targets. */
+    const int frag_uniform = getenv("UNIFORM") != NULL;
 
     const char *pm_env = getenv("POLYGONMODE");
     int polygon_mode = -1;
@@ -529,8 +532,10 @@ int main(int argc, char **argv)
     VkShaderModuleCreateInfo fsci = {
         .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
         .codeSize = frag_discard ? sizeof(discard_frag_spv)
+                                 : frag_uniform ? sizeof(uniform_frag_spv)
                                  : (io16 ? sizeof(io16_frag_spv) : sizeof(render_frag_spv)),
         .pCode = frag_discard ? (const uint32_t *)discard_frag_spv
+                              : frag_uniform ? (const uint32_t *)uniform_frag_spv
                               : (io16 ? io16_frag_spv : render_frag_spv),
     };
     VkShaderModule fs;
