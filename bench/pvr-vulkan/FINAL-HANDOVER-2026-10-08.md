@@ -116,3 +116,57 @@ verification by design**), `vktex`, `vkheavy`, `cstp`, `pvranimate`; in-driver `
 
 **Reduce the per-tile render cost from 3.47 to 1.06 ms/Mpix.** Both the render gap and the present gap
 shrink together, because the present gap is the same cost applied to weston's 4K composite.
+
+---
+
+## 11. UPDATE (2026-10-08, later): the bottleneck is FOUND - it is FP32 throughput
+
+**Supersedes section 6 ("what is NOT resolved").** The mechanism was found with a confound-free
+cross-driver experiment. Two compute shaders with **identical SPIR-V**, differing only in `float` vs
+`uint`, run on **both** drivers:
+
+| shader (same SPIR-V, both drivers) | open | vendor | ratio |
+|---|---|---|---|
+| integer compute (`cstp`) | 336.0 M inv/s | 375.0 M inv/s | **1.10x** |
+| **float compute, 1 chain (`cstpf`)** | 29.6 M inv/s | 144.8 M inv/s | **4.89x** |
+| **float compute, 4 independent chains (`cstpf4`)** | 10.6 M inv/s | 61.0 M inv/s | **5.75x** |
+
+**The float deficit persists and grows under four independent chains, so it is not latency - it is FP32
+throughput. Integer is at parity in the same pair.**
+
+### Ruled out by measurement, not reasoning
+
+| candidate | how it was excluded |
+|---|---|
+| clock, DRAM, layout, dispatch overhead | integer is at parity in the same experiment |
+| dependency latency | 4 independent chains: deficit persists and grows |
+| register pressure / spilling / occupancy | temps 6/9/11, no spills, workgroup 64 |
+| launch / workgroup / cluster config | **flat across workgroup counts (28.7 -> 29.9 M/s)**; `CR_COMPUTE_CLUSTER` mask 0 (all USCs), `usc_seq_dep=false` |
+| fragment stage, rasterization, PBE, tiles | the effect is in **compute** |
+| sample rate / DOUTU modes | measured null |
+| register-move overhead | **refuted**: the parity shader has a *higher* move ratio (52% vs 45%) |
+| temp-allocation strategy | forced max temps: 860.2 vs 858.6 ms |
+| constant folding / codegen shape | same SPIR-V on both drivers |
+
+### The remaining, specific question
+
+**Why does the hardware execute FP32 at ~5x the vendor's rate under this driver?** The driver's launch
+configuration is correct, the USC is saturated, and every software-side candidate measured has been
+excluded. **The remaining explanation is the shader binary / USC mode PCO emits versus the vendor's
+compiler** - which needs the vendor's compiled shader to compare against, and that is not present on this
+system.
+
+### The three unused USC features (a concrete lead)
+
+Our device declares `max_usc_tasks = 156`, `usc_itr_parallel_instances = 16`, `usc_slots = 64` - and
+**none of the three is referenced anywhere in the driver.** Worth investigating as the missing
+parallelism/rate configuration, though the flat workgroup scaling above suggests the USC is already
+occupied and the difference is a per-op rate rather than a task count.
+
+### Revised confidence
+
+| finding | status |
+|---|---|
+| **FP32 throughput ~5x lower, integer at parity** | **high** - identical SPIR-V, both drivers, 5x above noise |
+| every software-side candidate excluded | high - each measured |
+| the exact USC mode/register responsible | **open** - needs the vendor's compiled shader |
