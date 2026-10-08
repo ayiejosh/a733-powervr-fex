@@ -1,0 +1,21 @@
+#version 450
+layout(local_size_x = 64) in;
+layout(set = 0, binding = 0) buffer Out { uint v[]; } outb;
+layout(push_constant) uniform PC { uint n; } pc;
+void main()
+{
+    uint i = gl_GlobalInvocationID.x;
+    /* 512-iteration loop: beyond the new 256 limit. Tests whether a third cliff
+     * exists and whether the limit should be raised again. */
+    uint x = i * 2654435761u + pc.n;
+    uint a = pc.n | 1u;
+    uint b = pc.n | 2u;
+    uint c = pc.n | 4u;
+    for (int k = 0; k < 512; k++) {
+        x = x * a + b;
+        x = min(x, c);
+        x = max(x, a);
+        x = x ^ (x << 7);
+    }
+    outb.v[i & 0xFFFFu] = x;
+}
