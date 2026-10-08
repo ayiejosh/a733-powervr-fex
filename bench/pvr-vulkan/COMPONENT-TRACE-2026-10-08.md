@@ -155,3 +155,55 @@ be cheaper under the vendor ICD. The open driver implements `vk_sync` as DRM syn
 (each one an ioctl into the kernel), where the vendor path uses its own driver-native sync type
 (`pvr_srv_sync_type`). **That is the missing piece: a driver-native `vk_sync` implementation for the
 powervr winsys**, rather than Mesa's generic `vk_drm_syncobj`.
+
+---
+
+# Addendum: the windowed stall is loop latency, measured on one clock
+
+## Where the client blocks
+
+`AcquireNextImageKHR` itself is the wait (instrumented in zink's kopper and in Mesa's WSI):
+
+```
+[acq] AcquireNextImage waits=350 total=6894.8ms avg=19.70ms max=52.12ms
+[rel] explicit-sync release waits=300 total=6633.5ms avg=22.11ms max=62.18ms images=3
+```
+
+Inside it, `x11_acquire_next_image` -> `x11_wait_for_explicit_sync_release_submission` ->
+`wsi_drm_wait_for_explicit_sync_release` -> `device->sync->timeline_wait(...,
+DRM_SYNCOBJ_WAIT_FLAGS_WAIT_AVAILABLE, ...)`. So the client waits on a DRM syncobj timeline point
+for the compositor to release the buffer. The `shm_fence` path is not used. zink's
+`present_fence` wait is not hit either.
+
+**22.11 ms of a 27 ms frame is this one wait.**
+
+## Weston's repaint cycle, single clock (weston-debug timeline)
+
+| phase | median |
+|---|---|
+| `repaint_begin -> flush_damage` (frame callbacks go out) | 0.52 ms |
+| `flush_damage -> repaint_posted` | 0.11 ms |
+| `repaint_posted -> repaint_finished` (flip) | 6.62 ms |
+| `repaint_finished -> repaint_exit_loop` | 9.08 ms |
+| **`repaint_exit_loop -> commit_damage`** (waiting for the client) | **36.96 ms** |
+| `repaint_finished -> repaint_begin` | 7.22 ms |
+
+Total **53.3 ms = 18.8 repaints/s**. Weston does ~7.4 ms of work per cycle and waits ~37 ms.
+
+The client commits **46 ms after** weston finishes repainting, while its own frame is only 27 ms, so
+roughly **19 ms is release-signal latency** - the path weston -> Xwayland -> X -> the client's
+syncobj. That is the next thing to measure, and it needs either Xwayland instrumentation (stripped,
+no symbols) or a from-source build.
+
+## Ruled out by measurement this round
+
+| hypothesis | test | result |
+|---|---|---|
+| buffer starvation | swapchain depth 3 / 5 / 7 | max wait unchanged at ~60 ms |
+| release mechanism | explicit sync vs forced xshmfence | median 36 vs 35 FPS |
+| Xwayland CPU-bound | CPU accounting | 35.8% of a core, ~10 ms/frame - not saturated |
+| zink present fence | `ACQ_TRACE` on the present_fence path | never hit |
+
+**Xwayland is at 35.8% of a core (utime 11.1%, stime 24.7%) and weston at 0.00%**, so neither is
+saturated: the display loop is **latency-bound**, and the largest single component is the ~41 ms
+between weston finishing a repaint and the client's release arriving.
