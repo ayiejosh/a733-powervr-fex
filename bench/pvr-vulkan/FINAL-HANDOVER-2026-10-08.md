@@ -263,4 +263,61 @@ waits" - **`ACQ_TRACE`/`WSIREL_TRACE` are Mesa env vars the vendor ignores, so t
    completions by fence handle, so it **degrades above a few thousand jobs** - it gave a physically
    impossible 168 ms median for terrain. Short traces only.
 7. **Documentation explains mechanisms; it does not establish what this driver should cost.** Only a vendor
-   control does.
+   control does.\n
+---
+
+## 13. UPDATE (final): the codegen decomposition, and the two open items
+
+### The loop gap is now fully decomposed - both terms are PCO codegen
+
+| contribution | measured by | size |
+|---|---|---|
+| loop not unrolled (>16 iterations) | the cliff at 16; 1.85-2.85x recovery | **FIXED** (`c2bde57`) |
+| immediate rematerialization | `cstpi` (49.6) vs `cstpin` (73.1) M inv/s, cross-driver | **1.40x** |
+| register-file moves in the unrolled body | instruction counts tracking the measured ratios | **~2.1x** |
+
+**Instruction counts track the measured gap across probes** - 2.73x ideal -> 2.97x slow, 1.70x ideal ->
+2.12x slow - so the residual is codegen size, not an execution-rate mystery:
+
+```
+cstpin body:  imadd32  67   the real work (32 x 2 = 64)
+              mbyp     70  ┐
+              bbyp0bm  34  ├ 141 register-file moves - two moves per real operation
+              bbyp0s1  35  ┘
+```
+
+Measured to beat: `cstpin` 73.1 vs vendor 155.0 M inv/s; `cstpi` 49.6 vs 147.2.
+
+**Correction included**: an earlier refutation of the move hypothesis used a *loopless* shader (`cstp`, 52%
+moves, at parity) as its control - comparing a loopless move ratio against a looped one. With a matched
+comparison (both unrolled loop bodies), move count does track the gap.
+
+### Cross-driver state, same session, both drivers
+
+| workload | open | vendor | gap |
+|---|---|---|---|
+| raw render, no loop (`vkrender` 2048) | 13.706 ms / 306 Mpix/s | 5.538 ms / 757 Mpix/s | **2.47x** |
+| real shader, loop (`vkheavy` 2048) | 301.1 ms | 180.0 ms | 1.67x |
+| integer compute, no loop (`cstp`) | 305.9 M/s | 375.0 | 1.23x |
+| float loop compute (`cstpf`) | 67.5 M/s | 145.9 | 2.16x |
+| integer loop compute (`cstpi`) | 49.2 M/s | 146.9 | 2.99x |
+
+Vendor figures reproduced to ~1% across two separate driver switches.
+
+### The two open items
+
+1. **`vkrender`'s 2.47x, with no loop** - so none of the codegen terms above applies to it. The render is
+   per-surface (3.46 ms/Mpix vs the vendor's 1.06, flat against coverage), and every per-surface candidate
+   tested has been refuted (fill rate, bytes/pixel, format, layout, tile geometry, tile size, MSAA, PBE
+   state, FBCDC, empty tiles). **Genuinely unexplained.**
+2. **The per-job sync interface** - 84% of frame time in the kernel (~190 syncobj ioctls/frame). Fix must be
+   kernel-side; all Mesa-side variants are unsound or measured worse (see sections 11-12 and
+   `SYNC-TIMELINE-ATTEMPT-2026-10-08.md`).
+
+### Fixed and verified this session
+
+* **`c2bde57`** - PCO `max_unroll_iterations` 16 -> 64: **1.85x** (`cstpi`), **2.28x** (`cstpf`), **2.85x**
+  (`vkheavy`), with `vkrender` correctly unchanged as the control. Correctness green: `bda`, `vk13`,
+  `pctest`, `vk16`, `vkrender` 512+2048, **27 glmark2 scenes**.
+* **Scope stated honestly**: no change on the full glmark2 default suite (46 vs 46), because its slowest
+  scenes are multi-pass/multi-window, bound by per-pass cost rather than shader execution.
