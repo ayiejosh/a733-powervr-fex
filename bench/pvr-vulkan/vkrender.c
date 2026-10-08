@@ -26,6 +26,7 @@
 #include <vulkan/vulkan.h>
 
 #include "render_frag_spv.h"
+#include "discard_frag_spv.h"
 #include "render_vert_spv.h"
 #include "io16_vert_spv.h"
 #include "io16_frag_spv.h"
@@ -111,6 +112,8 @@ int main(int argc, char **argv)
     /* DISCARD=1 enables rasterizerDiscardEnable: geometry and tiling still run, but no
      * fragments are shaded and nothing reaches the PBE. Separates Tiler from Renderer. */
     const int discard = getenv("DISCARD") != NULL;
+    /* FRAGDISCARD=1 uses a shader that runs but discards every fragment. */
+    const int frag_discard = getenv("FRAGDISCARD") != NULL;
 
     const char *pm_env = getenv("POLYGONMODE");
     int polygon_mode = -1;
@@ -525,8 +528,10 @@ int main(int argc, char **argv)
 
     VkShaderModuleCreateInfo fsci = {
         .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-        .codeSize = io16 ? sizeof(io16_frag_spv) : sizeof(render_frag_spv),
-        .pCode = io16 ? io16_frag_spv : render_frag_spv,
+        .codeSize = frag_discard ? sizeof(discard_frag_spv)
+                                 : (io16 ? sizeof(io16_frag_spv) : sizeof(render_frag_spv)),
+        .pCode = frag_discard ? (const uint32_t *)discard_frag_spv
+                              : (io16 ? io16_frag_spv : render_frag_spv),
     };
     VkShaderModule fs;
     VKCHECK(vkCreateShaderModule(dev, &fsci, NULL, &fs));
