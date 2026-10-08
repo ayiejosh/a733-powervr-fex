@@ -54,3 +54,18 @@ honest (16 works, 17 does not), so this is not a wrong limit - it is a missing g
 
 `vattrib.c` / `vattrib.vert` / `vattrib.frag` are in this directory; build the shaders with
 `glslangValidator -V -DN=<n>` and run `./vattrib vattrib<n>.vert.spv vattrib.frag.spv <n>`.
+
+---
+
+# RESOLVED: single guard, clean rejection
+
+The one guard at the top of `pvr_graphics_pipeline_init` (reject `location >=
+MAX_VERTEX_GENERIC_ATTRIBS` with `VK_ERROR_UNKNOWN`) fixes the whole cascade:
+
+```
+N=16         works
+N=17/18/24/32  clean rejection, exit 1, no SIGSEGV, no heap corruption
+```
+
+Both earlier partial fixes are kept as defence in depth. All 13 probes and `glmark2 --validate`
+(27/0) pass. mesa commit `8c2140c`.
