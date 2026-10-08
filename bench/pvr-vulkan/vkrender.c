@@ -438,6 +438,10 @@ int main(int argc, char **argv)
         area_div = 2;
     else if (area_env && strcmp(area_env, "quarter") == 0)
         area_div = 4;
+    else if (area_env && strcmp(area_env, "sixteenth") == 0)
+        area_div = 16;
+    else if (area_env && strcmp(area_env, "tiny") == 0)
+        area_div = 64;
 
     const char *mode_env = getenv("MODE");
     int do_render = 1, do_copy = 1;
