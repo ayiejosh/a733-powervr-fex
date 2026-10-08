@@ -303,8 +303,18 @@ int main(int argc, char **argv)
         fmt = FMT_R16;
     }
 
+    /* EXPORTABLE=1 allocates the render target as an exportable dma-buf image, i.e. what a
+     * swapchain image is. This tests whether exportable memory renders slower than a plain
+     * off-screen image, which decides whether the composited-path cost is the client's own
+     * render or weston's composite. */
+    int exportable = getenv("EXPORTABLE") != NULL;
+    VkExternalMemoryImageCreateInfo ext_ici = {
+        .sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO,
+        .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
+    };
     VkImageCreateInfo imci = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .pNext = exportable ? &ext_ici : NULL,
         .imageType = VK_IMAGE_TYPE_2D,
         .format = target_format,
         .extent = { size, size, 1 },
@@ -337,8 +347,13 @@ int main(int argc, char **argv)
     if (imti == UINT32_MAX)
         DIE("no device-local memory type for the colour image");
 
+    VkExportMemoryAllocateInfo ext_mai = {
+        .sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO,
+        .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
+    };
     VkMemoryAllocateInfo imai = {
         .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .pNext = exportable ? &ext_mai : NULL,
         .allocationSize = imr.size,
         .memoryTypeIndex = imti,
     };
