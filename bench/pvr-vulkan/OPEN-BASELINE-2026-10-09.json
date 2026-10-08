@@ -1,0 +1,17 @@
+{
+  "_note": "OPEN-driver baseline measured earlier in this session, BEFORE harness.py existed. Not in harness-log.jsonl on purpose: that file holds only harness-produced records. Re-run ./sweep.sh --driver=open when kwin is down to replace this with real harness records.",
+  "_instrument": "throughput probes and per-job kernel timestamps (same quantities the harness reports)",
+  "driver": "powervr + Mesa, four PCO fixes applied",
+  "records": [
+    {"probe":"vkrender","size":2048,"ms_per_frame":13.706,"mpix_s":306.0,"correct":"PASS","critical_ms":13.01,"jobs":3},
+    {"probe":"vkrender","size":512,"ms_per_frame":1.848,"mpix_s":null,"correct":"PASS","critical_ms":null,"jobs":3},
+    {"probe":"vkheavy","size":2048,"ms_per_frame":255.8,"mpix_s":13.9,"correct":null,"critical_ms":253.67,"jobs":3},
+    {"probe":"cstp","size":64,"thr_M_inv_s":324.4},
+    {"probe":"cstpf","size":64,"thr_M_inv_s":87.9},
+    {"probe":"cstpi","size":64,"thr_M_inv_s":72.8},
+    {"probe":"cstpi1","size":64,"thr_M_inv_s":112.1},
+    {"probe":"cstpin","size":64,"thr_M_inv_s":71.3},
+    {"probe":"cstpi128","size":64,"thr_M_inv_s":19.6},
+    {"probe":"cstpi512","size":64,"thr_M_inv_s":5.1}
+  ]
+}
