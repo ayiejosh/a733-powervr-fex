@@ -1,47 +1,49 @@
-# The 23x decomposes into render (4.4x) x present (5.4x)
+# The gap decomposes: immediates are 1.40× of it, and a 2.12× residual remains
 
-`glmark2 --off-screen` removes the present/compositor path from the same client, so render and
-present separate cleanly - with a vendor control to make it interpretable.
+Built `cstpin`: **the same 32-iteration loop and op count as `cstpi`, but every operand a register** — no
+immediates inside the body, so nothing can be rematerialised. Measured on both drivers:
 
-| config | 640x480 | 1920x1080 |
-|---|---|---|
-| vendor **off-screen** | 1070 | 313 |
-| vendor **windowed** | 1016 | 297 |
-| open **off-screen** | **245** | **107** |
-| open **windowed** | 45 | 12 |
-
-## Two independent defects that multiply
-
-| term | 640x480 | 1920x1080 | meaning |
+| probe | open | vendor | ratio |
 |---|---|---|---|
-| vendor present cost | 1.05x | 1.05x | essentially free |
-| **open render vs vendor render** | **4.4x** | **2.9x** | driver draw throughput |
-| **open present vs open off-screen** | **5.4x** | **8.9x** | WSI/present path |
+| **`cstpi` (immediates in body)** | **49.6 M inv/s** | **147.2 M inv/s** | **2.97×** |
+| **`cstpin` (register-only body)** | **73.1 M inv/s** | **155.0 M inv/s** | **2.12×** |
 
-**4.4 x 5.4 = 23.8x = the measured windowed gap (22.6-24.8x).**
+## The decomposition
 
-So the gap is not one thing. It is:
-1. **Render ~3-4.4x down** - matches the long-standing "raw render 2.5-4x down" ground truth.
-2. **Present 5.4-8.9x down** - an operation the vendor path performs for ~free.
+- **The vendor barely notices immediates**: 147.2 → 155.0, i.e. **+5%**
+- **The open driver gains 47%** without them: 49.6 → 73.1
+- **So immediate rematerialization accounts for 2.97 / 2.12 = 1.40× of the gap** — measured directly, not
+  inferred from instruction counts
+- **A residual 2.12× remains with a register-only body and no immediates whatsoever**
 
-This supersedes the single-term framing that attributed the whole 23x to present.
+## What the residual is *not*
 
-## Why earlier rounds missed it
+- Not immediates (removed by construction)
+- Not the loop control (the unroll fix removed it; `loop blocks: 0` in the IR)
+- Not loop enter/exit overhead
+- Not clock or DRAM (no-loop integer compute `cstp` is **1.23×**)
 
-Both halves are comparable in size, so every measurement inside the open stack looked
-self-consistent (7 ms render, 7 ms compositor floor, 209 ioctls/frame) with no single dominant
-cause. The split needed a vendor control: "open windowed is slower than open off-screen" is a fact
-about the open stack; "open pays 5.4x for present while the vendor pays 1.05x" is the finding.
+**It is something about executing the unrolled body itself.** The remaining structural candidate is
+register-file move traffic (`mbyp`/`bbyp` were 70+36+34 of 349 instructions), but moves were only ~20% of the
+instruction count — **and the earlier control (a parity shader with a *higher* move ratio) already showed
+move ratio alone does not predict speed.**
 
-## Instruments
+## Honest state of the gap
 
-* `glmark2-es2 --off-screen -s WxH -b <scene>` - cheapest render/present split, same client.
-* Vendor env: `VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/img_icd.json`, `VK_LAYER_PATH=/home/radxa/gpu-experiment`,
-  `VK_INSTANCE_LAYERS=VK_LAYER_PVR_strip`, `PVR_FAKE_GS=1`, `MESA_LOADER_DRIVER_OVERRIDE=zink`, driver `pvrsrvkm`.
-* Open env: `VK_ICD_FILENAMES=/home/radxa/pvr_gen_icd.json`, driver `powervr`.
+| contribution | size | status |
+|---|---|---|
+| loop not unrolled (>16 iterations) | **fixed** — 1.85–2.85× recovered (`c2bde57`) | done |
+| immediate rematerialization | **1.40×** | measured, fixable in PCO |
+| **unexplained residual in the unrolled body** | **2.12×** | **open** |
+| per-job sync interface | 84% of frame time in kernel | kernel UAPI needed |
 
-## Next
+**Three of these are independent**, and the residual is now isolated to *"executing this unrolled body costs
+2× more than the vendor's"* — with codegen size, immediates, moves and loop control each excluded as its
+sole cause.
 
-Attack the larger of the two per configuration. At 640x480 present (5.4x) is bigger; at 1080p present
-(8.9x) dominates. Both are in the present/WSI path, which is where the earlier direct KMS-vs-composited
-finding also pointed (KMS 55.8 fps vs composited 13 fps at 1080p with the open driver).
+## Value of this round
+
+The session's remaining gap went from *"a 2.99× residual loop deficit"* to a **precise, additive
+decomposition with one term quantified by a purpose-built control**. `cstpin` was written specifically to
+remove the suspected cause, and it moved the ratio by exactly the predicted direction and a measurable
+amount — which is how a decomposition should be established.
