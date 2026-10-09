@@ -14,6 +14,7 @@
 > | "target (2) - extra images give 19%" | **S21** | **measured ~2%, inside the noise** |
 > | "pool or timeline-back the vk_sync objects" | **S18, S19** | pooling is **unsafe** (kernel holds handle refs); the timeline needs the **two-line design** and has failed **three times** |
 > | **the current cross-driver comparison** | **S25** | render **1.68-2.46x**, straight-line compute **1.06x (parity)**, loops **1.63-2.15x**, `vkheavy` **1.42x** |
+> | **the VPU is a speedup (S26)** | **S27** | the **steps** are 1.46x/2.24x faster in isolation, but the **wrapper pipeline is 1.39x SLOWER** end to end - `vpu.sh` is a demonstration, not a speedup |
 > | the four fixes are a client-level win | **S23** | **probe-level only - measured, no client effect on two scenes** |
 >
 > **Everything that survived is in S21-23 with its measurement and its uncertainty. Everything else here is
@@ -981,7 +982,7 @@ a crash.**\n
 |---|---|---|---|---|
 | **CPU** | 8 cores: 2x Cortex-A76 @ 2002 MHz + 6x Cortex-A55 @ 1794 MHz | yes | **yes** | **all pinned at max frequency; NOT a limiter** |
 | **GPU** | PowerVR BXM-4-64 MC1 | yes | yes | **2.4x behind the vendor on render** |
-| **VPU** | `/dev/cedar_dev`, `/dev/cedar_dev_ve2` | `sunxi_ve` | **yes, direct route** | **1.46x decode / 2.24x encode FASTER than software** |
+| **VPU** | `/dev/cedar_dev`, `/dev/cedar_dev_ve2` | `sunxi_ve` | **yes, direct route** | **steps 1.46x/2.24x faster than software in ISOLATION - but see S27: the wrapper pipeline is 1.39x SLOWER end to end** |
 | **NPU** | `/dev/vipcore` + `npu_thermal_zone` | yes | **NO** | untestable - **no userspace exists** |
 
 ### The VPU was idle and is faster than the CPU
@@ -1026,3 +1027,47 @@ available in the distro at all.**
 **The board has two different problems:** an **unused-acceleration** problem (VPU idle, NPU unstakced) and a
 **GPU-implementation** problem (2.4x render, tile-bound raster, outside Mesa). **They need different work**, and
 the benchmark alone could never have shown the first.
+
+---
+
+## 27. CORRECTION TO S26: the VPU pipeline is SLOWER end to end - the isolation numbers were true and the conclusion was not
+
+**S26 records "1.46x decode / 2.24x encode FASTER than software". Those are real measurements OF THE STEPS IN
+ISOLATION. The end-to-end question was measured afterwards and goes the other way:**
+
+| | 300 frames, 720p, 10 s | median |
+|---|---|---|
+| **full VPU pipeline** (ffmpeg demux -> temp .h264 -> `vdecoderdemo`) | 1.539 / 1.597 / 1.560 s | **~1.56 s** |
+| **pure software** (`ffmpeg -i big.mp4 -f rawvideo`) | 1.123 / 1.152 / 1.072 s | **~1.12 s** |
+
+**The pipeline is 1.39x SLOWER.** Outputs also differed: 413,337,600 bytes from the VPU against 414,720,000 from
+software (299 vs 300 frames).
+
+### Why
+
+**`vpu.sh decode-any` adds three things the isolated measurement did not have: an ffmpeg demux pass, a temp
+elementary stream written and read from disk, and a second process with its own startup, allocators and I/O.**
+**The decode step is genuinely faster - that is what 1.46x measured - but the wrapper costs more than the decode
+saves for a file of this size.**
+
+### The corrected claim
+
+* **"the VPU decodes 1.46x faster than software" - TRUE**, measured in isolation.
+* **"the VPU is the faster route for decoding a video file" - FALSE as implemented.**
+
+**A real win needs a path with no wrapper in it** - exactly **a VA-API driver or an ffmpeg hwaccel**, both absent,
+with the VA driver **not obtainable in this distro** and no VA/GStreamer sources anywhere on the machine.
+
+### What still stands from S26
+
+* **the VPU hardware works** - interrupts move, correct frames out;
+* **its decode/encode steps are 1.46x/2.24x faster than the CPU's**;
+* **every standard consumer route is missing** (VA-API, V4L2 M2M, ffmpeg hwaccel, GStreamer);
+* **the NPU has no userspace at all**;
+* **the CPU is at max frequency and is not a limiter**;
+* and **`vpu.sh` is a working demonstration and fallback, NOT a speedup** - its header now says so.
+
+### The pattern, for the eighth time
+
+**A true isolation measurement, and a wrong conclusion drawn from it.** **The VPU can decode faster AND the VPU
+route can be slower** - both are true, and only the second answers "should I use it".
