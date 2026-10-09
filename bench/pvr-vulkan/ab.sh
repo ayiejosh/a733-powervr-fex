@@ -6,6 +6,10 @@
 #
 # The desktop is SDDM (display-manager.service). It is stopped before switching and
 # started again by a trap, so it comes back even if this script is interrupted.
+#
+# DO NOT PIPE THIS SCRIPT. `./ab.sh | head` kills it with SIGPIPE while the desktop is down
+# and the driver is mid-switch, leaving the board unbound and unmeasured - and that is how
+# this board took a fourth kernel Oops. Redirect to a file instead.
 B=/mnt/sdcard/_REVIEW/emulation/trixie-prep/bench/pvr-vulkan
 LOG=$B/ab-$(date +%H%M%S).jsonl
 DM=display-manager
@@ -35,13 +39,25 @@ SPECS="$*"
 for DRV in open vendor; do
   echo
   echo "=== ARM $DRV ==="
+  # ponytail: verify the switch instead of trusting it. Silencing this script's output and
+  # ignoring its exit code is what let a failed switch proceed: the probes then ran against
+  # NO driver and the board crashed. Check the exit code AND that the expected name is bound,
+  # and refuse to measure an arm that did not come up.
   case $DRV in
-    open)   sudo /home/radxa/gpu-open-stack/switch-open.sh >/dev/null 2>&1 ;;
-    vendor) sudo /home/radxa/gpu-open-stack/switch-vendor.sh >/dev/null 2>&1 ;;
+    open)   WANT=powervr;  SW=/home/radxa/gpu-open-stack/switch-open.sh ;;
+    vendor) WANT=pvrsrvkm; SW=/home/radxa/gpu-open-stack/switch-vendor.sh ;;
   esac
+  if ! sudo $SW; then
+    echo "  ABORT: $SW failed (exit $?) - not measuring the $DRV arm"; exit 1
+  fi
   sleep 4
   BOUND=$(ls -l /sys/bus/platform/devices/1800000.gpu/driver 2>/dev/null | sed 's/.*-> //' | xargs basename 2>/dev/null)
-  echo "  bound driver: $BOUND"
+  echo "  bound driver: $BOUND (want $WANT)"
+  if [ "$BOUND" != "$WANT" ]; then
+    echo "  ABORT: expected $WANT but got '${BOUND:-nothing}' - restoring and not measuring"
+    /home/radxa/gpu-open-stack/switch-vendor.sh >/dev/null 2>&1 || true
+    exit 1
+  fi
   for spec in $SPECS; do
     P=$(echo $spec | cut -d: -f1); S=$(echo $spec | cut -d: -f2); C=$(echo $spec | cut -d: -f3)
     python3 $B/harness.py $P $S $C --driver=$DRV >/dev/null 2>&1
