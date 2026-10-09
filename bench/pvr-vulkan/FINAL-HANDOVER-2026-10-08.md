@@ -778,4 +778,40 @@ inversely with frame time: **4.5% at 2048 (5.5 ms)**, **27% at 512 (0.67 ms)**. 
 
 **The objective's headline - a 25x client gap - should be retired in favour of the measured ~2.4x render gap.**
 Closing 2.4x with a known 60% kernel-side component is a different and more tractable problem than 25x, and is
-what the four shipped fixes and the documented levers actually address.
+what the four shipped fixes and the documented levers actually address.\n
+---
+
+## 22. OPERATIONAL WARNING: the driver-switch sequence itself crashes the vendor driver
+
+**Two reboots in this session, and NEITHER was the open driver.**
+
+| time | cause | stack |
+|---|---|---|
+| 09:07 | the rewrapped vendor firmware loaded then faulted (DABT) | **vendor** |
+| 09:49 | **`pvrsrvkm` NULL-deref at `+0x20` in its file-close path** (`PVRDBG: postclose`) | **vendor** |
+
+**The second happened during the round-250/251 CPU measurements**, which repeatedly stopped weston, switched
+`powervr` <-> `pvrsrvkm`, and tore down clients under the vendor driver.
+
+### What to do differently
+
+1. **Batch switch operations.** Measure everything you need on one driver before switching, and switch once.
+2. **Avoid repeated weston teardown while the vendor driver is bound.** The fault is in its close path, so
+   every client teardown under `pvrsrvkm` is exposure.
+3. **Prefer the harness's own `--driver=`** (it checks for kwin and refuses), and **run `./ab.sh` when you need
+   both arms** - it does one controlled switch pair with a trap-restore.
+4. **Expect the vendor stack to be the fragile one.** The objective says so, and both session reboots confirm
+   it. **The open driver has caused none.**
+
+### Recovery is automatic
+
+**Both times the board came back on `pvrsrvkm` with the guard active, kwin up, and the firmware intact at
+`4b70eca8...`.** No intervention was needed. **The guard has been exercised by real faults and has held.**
+
+### Measurement discipline, final form
+
+* **throughput / kernel timestamps / counts** - repeat to ~1%, insensitive to host load
+* **wall-clock FPS** - ~0.2 ms fixed jitter, so **percentage spread scales inversely with frame time**
+  (4.5% at 2048, 27% at 512); needs many interleaved samples and never a 3-run median at small sizes
+* **always check the tool measured what it claims** - two of this session's errors were instrumentation
+  silently not measuring (a mislabelled driver, a missing client process)
