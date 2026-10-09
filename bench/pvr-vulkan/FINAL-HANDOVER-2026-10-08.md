@@ -28,7 +28,7 @@ it landed in the artifact it invalidated** - this document, the README, and the 
 > ## READ THIS FIRST - sections 1-20 contain claims that later sections FALSIFY
 >
 > This document grew over the whole session and **was not rewritten as findings changed**. Sections 1-20
-> carry the *original* framing; sections **21-23 are the corrected record**. Where they disagree, the later
+> carry the *original* framing; sections **21-28 are the corrected record**. Where they disagree, the later
 > section wins. Specifically:
 >
 > | early claim | corrected in | truth |
