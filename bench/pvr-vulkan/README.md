@@ -138,5 +138,7 @@ automatically both times.**
 * **Always check the tool measured what it claims** — two of this session's errors were instrumentation
   silently not measuring (a mislabelled driver, a missing client process).
 
-**For the full record and the corrections, see `FINAL-HANDOVER-2026-10-08.md` - and read its top banner.**
+**For the full record and the corrections, see `FINAL-HANDOVER-2026-10-08.md`. It opens with a one-screen
+BOTTOM LINE (current cross-driver figures, what shipped, what blocks the rest), then a corrections banner -**
+**sections 1-20 carry the original framing, 21-28 are the corrected record, and the later section wins.**
 
