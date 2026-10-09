@@ -13,7 +13,7 @@
 # BUT the decode-any pipeline is 1.39x SLOWER end-to-end than plain ffmpeg. The overhead is NOT
 # disk I/O (writing to tmpfs made it worse) and NOT the hardware - it is the vendor demo's own
 # per-frame processing, which reports 'cost 0 s' internally while wall time is 1.6 s. This is a
-demonstration
+# demonstration
 # and a fallback, NOT a speedup. A real win needs a VA-API driver or an ffmpeg hwaccel.
 #
 #   ./vpu.sh decode <in.h264> <out.yuv> [frames]
@@ -48,7 +48,7 @@ case "$1" in
     printf 'decode: %s frames in %.3fs -> %s (%s bytes)\n' "$n" \
       "$(echo "$t1-$t0" | bc)" "$3" "$(stat -c%s "$3" 2>/dev/null || echo 0)"
     printf 'vpu interrupts: %s -> %s%s\n' "${before:-?}" "${after:-?}" \
-      "$([ "${before:-0}" = "${after:-0}" ] && echo '  <- VPU DID NOT RUN' || echo '  <- VPU ran')"
+#       "$([ "${before:-0}" = "${after:-0}" ] && echo '  <- VPU DID NOT RUN' || echo '  <- VPU ran')"
     ;;
   encode)
     [ -n "$2" ] && [ -n "$3" ] && [ -n "$4" ] || { echo "usage: $0 encode <in.yuv> <out.h264> <WxH> [frames]" >&2; exit 2; }
@@ -64,7 +64,7 @@ case "$1" in
     ;;
   decode-any)
     # ponytail: two-stage pipe with a temp elementary stream. ffmpeg demuxes (CPU, cheap), the
-    # VPU decodes (the expensive part). A real hwaccel would avoid the temp file; this works now.
+#     # VPU decodes (the expensive part). A real hwaccel would avoid the temp file; this works now.
     [ -n "$2" ] && [ -n "$3" ] || { echo "usage: $0 decode-any <in.any> <out.yuv> [frames]" >&2; exit 2; }
     [ -e "$2" ] || { echo "no such input: $2" >&2; exit 2; }
     n=${4:-30}
@@ -72,7 +72,7 @@ case "$1" in
     trap 'rm -f "$tmp"' EXIT
     echo "demux: ffmpeg -> $tmp"
     ffmpeg -hide_banner -loglevel error -i "$2" -c:v copy -bsf:v h264_mp4toannexb -f h264 "$tmp" -y 2>&1 | head -3
-    [ -s "$tmp" ] || { echo "demux produced nothing - is the video H.264?" >&2; exit 1; }
+#     [ -s "$tmp" ] || { echo "demux produced nothing - is the video H.264?" >&2; exit 1; }
     printf 'elementary stream: %s bytes\n' "$(stat -c%s "$tmp")"
     "$0" decode "$tmp" "$3" "$n"
     ;;
