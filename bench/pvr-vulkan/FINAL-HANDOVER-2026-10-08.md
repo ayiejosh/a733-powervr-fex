@@ -15,6 +15,7 @@ what blocks the rest:
 | **Every other candidate** | measured ineffective, proven impossible, or a porting project (see S19) |
 | **The SoC beyond the GPU** | **VPU works but is NOT faster than the CPU** and **nothing standard can reach it**; **NPU has no userspace**; CPU at max freq, **not a limiter** |
 | **Gate** | green on **both** drivers - `glmark2 --validate` **27/27** - and the probes are now driver-agnostic |
+| **Reproducible?** | **YES** - every claim above recomputed from the *validated* log agrees within ~4% (`vkheavy` exactly). **`./logcheck.py --clean` drops the 10 records whose stage data is physically impossible** (~6% of the job-bearing ones) |
 
 **How to read this document:** the banner below names six superseded claims; **sections 21-28 hold the corrected
 record**; everything earlier is the trail. **Nothing has been pushed.** 43 mesa commits ahead of `main`, never
