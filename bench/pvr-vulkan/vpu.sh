@@ -6,7 +6,10 @@
 # VA-API driver (libva looks for sunxi-drm_drv_video.so and does not find it), no V4L2 M2M, no
 # ffmpeg hwaccel and no GStreamer element. So browsers and ffmpeg use the CPU while the VPU idles.
 #
-# Measured: decode 1.46x faster than software, encode 2.24x faster, and the CPU is left free.
+# Measured: the decode and encode STEPS are 1.46x and 2.24x faster than the CPU in isolation.
+# BUT the decode-any pipeline is 1.39x SLOWER end-to-end than plain ffmpeg, because the demux,
+# temp file and second process cost more than the decode saves. This is a working demonstration
+# and a fallback, NOT a speedup. A real win needs a VA-API driver or an ffmpeg hwaccel.
 #
 #   ./vpu.sh decode <in.h264> <out.yuv> [frames]
 #   ./vpu.sh decode-any <in.mp4|mkv|anything> <out.yuv> [frames]
