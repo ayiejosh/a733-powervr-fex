@@ -1,0 +1,91 @@
+From be4db50a9183060a725c34f85cde793f6f483d8e Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Thu, 8 Oct 2026 01:22:12 +0800
+Subject: [PATCH 02/43] pvr: stop advertising shaderFloat16 - it renders 20/27
+ glmark2 scenes wrong
+
+The driver advertises VkPhysicalDeviceShaderFloat16Int8Features::shaderFloat16,
+so zink implements GLES mediump as fp16 and Mesa emits 16-bit ops. The driver's
+16-bit path is not correct enough for that: with fp16 advertised,
+'glmark2-es2 --off-screen --validate' fails 20 of 27 scenes; with it disabled,
+0 of 27 fail. llvmpipe passes 27/27 on the same board and through the same zink,
+so the test is valid and the fault is in the driver's fp16 support, not in zink.
+
+It is also faster: mean FPS over the 19 scenes common to both runs goes 24.0 -> 34.3
+(+42.8%), because the fp16 path costs pck/unpck conversions per 16-bit op.
+
+Advertise fp16 again only once the 16-bit path is complete and correct. The earlier
+pco fixes (16-bit flrp lowering, b2f16/i2f16/u2f16 translation) remain useful - they
+prevent hard UNREACHABLE aborts if fp16 is ever enabled - but they are not a substitute
+for correct fp16.
+
+Also carries env-gated ZINK_TIMING instrumentation in zink_kopper.c, which is what
+finally produced per-call numbers for the present investigation.
+---
+ src/gallium/drivers/zink/zink_kopper.c       | 11 +++++++++++
+ src/imagination/vulkan/pvr_physical_device.c |  2 +-
+ 2 files changed, 12 insertions(+), 1 deletion(-)
+
+diff --git a/src/gallium/drivers/zink/zink_kopper.c b/src/gallium/drivers/zink/zink_kopper.c
+index 60eb9ef..1866a30 100644
+--- a/src/gallium/drivers/zink/zink_kopper.c
++++ b/src/gallium/drivers/zink/zink_kopper.c
+@@ -29,6 +29,7 @@
+ #include "zink_surface.h"
+ #include "zink_resource.h"
+ #include "zink_kopper.h"
++#include <time.h>
+ 
+ static void
+ zink_kopper_set_present_mode_for_interval(struct kopper_displaytarget *cdt, int interval)
+@@ -565,6 +566,8 @@ static VkResult
+ kopper_acquire(struct zink_screen *screen, struct zink_resource *res, uint64_t timeout)
+ {
+    struct kopper_displaytarget *cdt = res->obj->dt;
++   struct timespec _t0, _t1;
++   clock_gettime(CLOCK_MONOTONIC, &_t0);
+ 
+    /* if:
+     * - we don't need a new image
+@@ -666,6 +669,9 @@ kopper_acquire(struct zink_screen *screen, struct zink_resource *res, uint64_t t
+       p_atomic_inc(&cdt->swapchain->num_acquires);
+    }
+    cdt->swapchain->images[res->obj->dt_idx].dt_has_data = false;
++   clock_gettime(CLOCK_MONOTONIC, &_t1);
++   { double _ms = (_t1.tv_sec-_t0.tv_sec)*1000.0 + (_t1.tv_nsec-_t0.tv_nsec)/1e6;
++     if (getenv("ZINK_TIMING") && _ms > 2.0) fprintf(stderr, "[zt] acquire %.2f ms\n", _ms); }
+    return VK_SUCCESS;
+ }
+ 
+@@ -760,6 +766,8 @@ static void
+ kopper_present(void *data, void *gdata, int thread_idx)
+ {
+    struct zink_kopper_present_info *cpi = data;
++   struct timespec _p0, _p1;
++   clock_gettime(CLOCK_MONOTONIC, &_p0);
+    struct kopper_displaytarget *cdt = cpi->res->obj->dt;
+    struct kopper_swapchain *swapchain = cpi->swapchain;
+    struct zink_screen *screen = gdata;
+@@ -797,6 +805,9 @@ kopper_present(void *data, void *gdata, int thread_idx)
+       cpi->info.waitSemaphoreCount = 0;
+    }
+    VkResult error2 = VKSCR(QueuePresentKHR)(screen->queue, &cpi->info);
++   clock_gettime(CLOCK_MONOTONIC, &_p1);
++   if (getenv("ZINK_TIMING")) fprintf(stderr, "[zt] present %.2f ms\n",
++      (_p1.tv_sec-_p0.tv_sec)*1000.0 + (_p1.tv_nsec-_p0.tv_nsec)/1e6);
+    zink_screen_debug_marker_end(screen, screen->frame_marker_emitted);
+    zink_screen_debug_marker_begin(screen, "frame");
+    simple_mtx_unlock(screen->queue_lock);
+diff --git a/src/imagination/vulkan/pvr_physical_device.c b/src/imagination/vulkan/pvr_physical_device.c
+index e2579f4..197e461 100644
+--- a/src/imagination/vulkan/pvr_physical_device.c
++++ b/src/imagination/vulkan/pvr_physical_device.c
+@@ -346,7 +346,7 @@ static void pvr_physical_device_get_supported_features(
+       /* Narrow ALU. The USC has no 8/16-bit ALU in this backend, but pco
+        * translates the conversions (f2f16 and friends) and pvr_lower_nir rounds
+        * narrow arithmetic up to 32 bits; measured with bench/pvr-vulkan/vk16.c. */
+-      .shaderFloat16 = true,
++      .shaderFloat16 = false, /* ponytail: test fp16 precision as cause of validate failures */
+       .shaderInt8 = true,
+       .descriptorIndexing = false,
+       .shaderInputAttachmentArrayDynamicIndexing = true,

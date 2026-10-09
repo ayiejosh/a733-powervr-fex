@@ -1,0 +1,51 @@
+From c8523c2f1308a8ab8a9ffad49410385693ccb8c3 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Thu, 8 Oct 2026 02:21:09 +0800
+Subject: [PATCH 05/43] pvr: report the real compute workgroup limits (128 ->
+ 512), probed not assumed
+
+The driver reported maxComputeWorkGroupInvocations = 128 and maxComputeWorkGroupSize =
+{128,128,64} - exactly the Vulkan minimums, not the silicon's limits. On the same part the
+vendor driver reports 512 and {512,512,64}.
+
+Probed it rather than assuming (bench/pvr-vulkan/wgsize, a compute shader whose invocations
+each write id^0xa5a5a5a5 so the readback proves both the count and that each wrote its own
+slot):
+
+  local_size_x = 512 -> 512 correct, 0 untouched, 0 wrong
+  local_size_y = 512 -> 512 correct, 0 untouched, 0 wrong
+  local_size_z = 64  -> 64 correct (Z is capped at 64, as reported)
+
+So X and Y are 512 and Z is 64, matching the vendor. Under-reporting the limit is not neutral:
+applications that need more than 128 invocations per workgroup refuse to run at all.
+
+No regressions: bda, vk13, pctest and vk16 all still PASS, glmark2 --validate still 0
+failures / 27 pass.
+---
+ src/imagination/vulkan/pvr_physical_device.c | 12 +++++++++---
+ 1 file changed, 9 insertions(+), 3 deletions(-)
+
+diff --git a/src/imagination/vulkan/pvr_physical_device.c b/src/imagination/vulkan/pvr_physical_device.c
+index 197e461..08e31c0 100644
+--- a/src/imagination/vulkan/pvr_physical_device.c
++++ b/src/imagination/vulkan/pvr_physical_device.c
+@@ -807,10 +807,16 @@ static bool pvr_physical_device_get_properties(
+          [1] = (64U * 1024U) - 1,
+          [2] = (64U * 1024U) - 1,
+       },
+-      .maxComputeWorkGroupInvocations = 128U,
++      /* The hardware runs 512 invocations per workgroup, and both X and Y accept 512
++       * (probed by bench/pvr-vulkan/wgsize with local_size_x/y = 512: 512/512
++       * invocations ran and each wrote its own slot; local_size_z = 64 likewise).
++       * The old values were the Vulkan minimum rather than the silicon's limit, which
++       * made applications that need larger workgroups refuse to run. The vendor driver
++       * reports exactly these numbers on the same part. */
++      .maxComputeWorkGroupInvocations = 512U,
+       .maxComputeWorkGroupSize = {
+-        [0] = 128U,
+-        [1] = 128U,
++        [0] = 512U,
++        [1] = 512U,
+         [2] = 64U,
+       },
+ 

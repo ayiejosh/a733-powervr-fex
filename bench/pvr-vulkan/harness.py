@@ -1,0 +1,347 @@
+#!/usr/bin/env python3
+"""One run, everything observed: speed, per-stage job times, CPU, correctness.
+Works under either driver - it reads the tracepoints the bound driver actually emits.
+
+  ./harness.py <probe> <size> <secs> [env...]  [--driver=open|vendor]
+
+Emits a formatted report and appends one JSON line to harness-log.jsonl.
+
+WHAT IT OBSERVES, AND WHAT IT CANNOT
+  speed          measured   ms/frame, Mpix/s, M inv/s, min/median/max + spread
+  correctness    measured   the probe's own verdict and pixel count
+  per-stage jobs measured   from the bound driver's tracepoints: gpu_scheduler (open)
+                            or pvr_fence (vendor). Jobs can be MISPRICED above a few
+                            thousand of them - sanity-check geometry is the smallest
+                            and PR is roughly a third of the fragment before trusting.
+  critical path  measured   from the same trace
+  CPU split      measured   RUSAGE_CHILDREN, LAST REP only, not the median
+  GPU busy       measured   critical path / the probe's OWN ms/frame from the SAME traced
+                            run. NOT the phase-2 median (untraced) and NOT phase-1's wall
+                            time (includes startup + tracing: 201-1602 ms for a 1-23 ms
+                            frame). Both of those give invalid ratios.
+  wait states    measured   /proc/<pid>/task/*/wchan sampled while running: separates
+                            futex (userspace lock contention) from kernel waits. A thread
+                            in futex_wait is NOT in a syscall, so this CORRECTS the
+                            "kernel share" figure rather than repeating it.
+  fb write       DERIVED    mpix_s x bpp - an ideal single write per pixel. Ignores
+                            overdraw and read-modify-write, so a LOWER BOUND, not
+                            measured DRAM traffic.
+  ioctl counts   IMPOSSIBLE no ioctl tracepoints, no perf (perf_event_paranoid=2), and
+                            kprobe_events arms but never fires on this kernel. CPU sys
+                            time is the only proxy; the "~190 ioctls/frame" figure is
+                            an inference from it, not a count.
+
+Run as a user with sudo rights: all trace access goes through sudo to /sys/kernel/debug/tracing.
+"""
+import json, os, re, resource, subprocess, sys, time
+
+TRACE = "/sys/kernel/debug/tracing"
+BENCH = os.path.dirname(os.path.abspath(__file__))
+
+OPEN_ICD = ("/home/radxa/pvr_gen_icd.json",
+            "PVR_I_WANT_A_BROKEN_VULKAN_DRIVER=1")
+VENDOR_ICD = ("/usr/share/vulkan/icd.d/img_icd.json", None)
+
+
+def sh(cmd, check=False):
+    return subprocess.run(["sudo", "sh", "-c", cmd], capture_output=True,
+                          text=True, check=check)
+
+
+def driver():
+    p = "/sys/bus/platform/devices/1800000.gpu/driver"
+    try:
+        # readlink -f on this symlink returns the DEVICE path when unbound, so
+        # read the link itself. A stale driver name would mislabel every record.
+        return os.path.basename(os.readlink(p).rstrip("/"))
+    except OSError:
+        return "none"
+
+
+def cpu_of(pid):
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            v = f.read().split()
+        return int(v[13]), int(v[14])          # utime, stime in ticks
+    except OSError:
+        return None
+
+
+def trace_on(events):
+    sh(f"cd {TRACE}; echo 0 > tracing_on; echo > trace")
+    for e in events:
+        sh(f"for f in {TRACE}/events/{e}/*/enable; do echo 1 > $f 2>/dev/null; done")
+    sh(f"echo 1 > {TRACE}/tracing_on")
+
+
+def trace_off():
+    sh(f"echo 0 > {TRACE}/tracing_on")
+    return sh(f"cat {TRACE}/trace").stdout
+
+
+# ---- stage parsing: whichever driver is bound decides which tracepoints exist ----
+def parse_jobs(txt):
+    """Return [(name, dur_ms)] for open (drm_sched) or vendor (pvr_fence)."""
+    runs, procs = {}, []
+    for l in txt.splitlines():
+        m = re.search(r"(\d+\.\d+): drm_run_job: entity=(\w+), id=(\d+), fence=(\w+)", l)
+        if m:
+            runs.setdefault((m.group(2)[-6:] + "#" + m.group(3),),
+                            (float(m.group(1)), m.group(4)))
+        m = re.search(r"(\d+\.\d+): drm_sched_process_job: fence=(\w+) signaled", l)
+        if m:
+            procs.append((float(m.group(1)), m.group(2)))
+    out = []
+    for (k,), (t, f) in runs.items():
+        c = [x for x, q in procs if q == f and x >= t]
+        if c:
+            out.append((k, (min(c) - t) * 1000))
+    if out:
+        return sorted(out, key=lambda r: -r[1]), "drm_sched"
+    pend, res = {}, []
+    for l in txt.splitlines():
+        m = re.search(r"(\d+\.\d+): (pvr_fence_\w+): .*?timeline=(\S+)", l)
+        if not m:
+            continue
+        t, ev, tl = float(m.group(1)), m.group(2), m.group(3)
+        if ev == "pvr_fence_enable_signaling":
+            pend[tl] = t
+        elif ev == "pvr_fence_signal_fence" and tl in pend:
+            res.append((tl.split("-")[0], (t - pend.pop(tl)) * 1000))
+    return sorted(res, key=lambda r: -r[1]), "pvr_fence"
+
+
+def kwin_alive():
+    for x in ("kwin_x11", "kwin_wayland"):
+        if subprocess.run(["pgrep", "-x", x], capture_output=True).returncode == 0:
+            return True
+    return False
+
+
+def switch_to(want):
+    """Switch kernel driver, honouring the guard's rule: never while kwin is up."""
+    cur = driver()
+    if cur == want:
+        return True, "already bound"
+    if kwin_alive():
+        return False, "kwin is alive - guard would abort; refusing to unbind"
+    sh("pkill -x weston; pkill -x Xwayland; sleep 2")
+    args = (["/home/radxa/gpu-open-stack/switch-vendor.sh", "switch-open.sh"]
+            if want != "pvrsrvkm" else ["switch-open.sh", "switch-vendor.sh"])
+    # the switch scripts are named by target; map explicitly
+    target = {"powervr": "/home/radxa/gpu-open-stack/switch-open.sh",
+              "pvrsrvkm": "/home/radxa/gpu-open-stack/switch-vendor.sh"}[want]
+    r = subprocess.run(["sudo", target], capture_output=True, text=True)
+    time.sleep(4)
+    return driver() == want, (r.stdout + r.stderr).strip().splitlines()[-1] if (r.stdout + r.stderr).strip() else ""
+
+
+def main():
+    argv = [a for a in sys.argv[1:] if not a.startswith("--driver=")]
+    want = next((a.split("=", 1)[1] for a in sys.argv[1:] if a.startswith("--driver=")), None)
+    if want:
+        target = {"open": "powervr", "vendor": "pvrsrvkm"}.get(want, want)
+        ok, why = switch_to(target)
+        print(f"  switch to {want}: {'ok' if ok else 'REFUSED'} ({why})")
+    probe = argv[0] if argv else "vkrender"
+    size = argv[1] if len(argv) > 1 else "2048"
+    count = argv[2] if len(argv) > 2 else "20"   # frames (vk*) or iterations (cst*)
+    secs = 300.0                                  # only a hang guard
+    extra = argv[3:]
+
+    drv = driver()
+    is_open = drv == "powrvr" or drv == "powervr"
+    icd, broken = OPEN_ICD if is_open else VENDOR_ICD
+
+    env = dict(os.environ)
+    env["VK_ICD_FILENAMES"] = icd
+    if broken:
+        env["PVR_I_WANT_A_BROKEN_VULKAN_DRIVER"] = "1"
+    env.pop("DISPLAY", None)
+    env.pop("XAUTHORITY", None)
+    env["MESA_SHADER_CACHE_DISABLE"] = "1"
+    for e in extra:
+        if "=" in e:
+            k, v = e.split("=", 1)
+            env[k] = v
+    if is_open:
+        sh(f"rm -rf /home/radxa/.cache/mesa_shader_cache*")
+
+    events = (["gpu_scheduler"] if is_open else ["pvr_fence"])
+    trace_on(events)
+
+    def run(frames, limit):
+        t0 = time.time()
+        pr = subprocess.Popen([f"{BENCH}/{probe}", size, str(frames)],
+                              cwd=BENCH, env=env,
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                              text=True)
+        while pr.poll() is None:
+            if time.time() - t0 > limit:
+                pr.terminate()
+                break
+            time.sleep(0.2)
+        o, _ = pr.communicate()
+        return o, time.time() - t0
+
+    # Thread wait channels: WHERE the process blocks, sampled while it runs.
+    # ponytail: /proc/<pid>/task/*/wchan needs no privilege and no tracer, and it is the
+    # only way on this board to separate "blocked in a kernel call" from "blocked in a
+    # userspace lock" (futex) - perf and kprobes cannot answer it here.
+    def sample_threads(pid, acc):
+        try:
+            tids = os.listdir(f"/proc/{pid}/task")
+        except OSError:
+            return
+        for t in tids:
+            try:
+                w = open(f"/proc/{pid}/task/{t}/wchan").read().strip() or "(running)"
+            except OSError:
+                continue
+            acc[w] = acc.get(w, 0) + 1
+
+    wait_acc = {}
+
+    # phase 1: ONE frame - fence handles are unique, so job pairing is exact.
+    # ponytail: fence pairing degrades above a few thousand jobs, so the
+    # breakdown must come from a short run. The speed comes from phase 2.
+    trace_on(events)
+    # ponytail: KEEP the phase-1 wall time. The critical path comes from this one-frame
+    # trace while the frame time comes from phase 2's median - comparing them directly is
+    # apples-to-oranges and produced a 105% "utilisation" on a vendor 4096 row. Reporting
+    # phase 1's own duration makes the GPU/frame ratio internally consistent.
+    # ponytail: the probe's OWN reported ms/frame is the only valid denominator. The
+    # phase-1 wall time includes process startup and tracing overhead (201-1602 ms for
+    # one 1-23 ms frame), and the phase-2 median is UNTRACED - so neither is comparable
+    # to a traced critical path. The probe's own figure from the SAME traced run is.
+    p1_out, p1_wall = run("1", 60)
+    _p1_ms = re.findall(r"([\d.]+) ms/frame", p1_out)
+    p1_frame_ms = float(_p1_ms[-1]) if _p1_ms else None
+    txt = trace_off()
+
+    # phase 2: many frames - for speed and correctness only.
+    # ponytail: let phase 2 finish rather than terminate it - a truncated run
+    # never prints its summary, which is where speed and correctness come from.
+    # A generous limit only guards against a hang.
+    # CPU split: sample the child's utime/stime. Needs the pid, so run inline.
+    reps = int(os.environ.get('HARNESS_REPEATS', '3'))
+    samples = []
+    for _rep in range(reps):
+        t0 = time.time()
+        pr = subprocess.Popen([f"{BENCH}/{probe}", size, str(count)], cwd=BENCH, env=env,
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        ru0 = resource.getrusage(resource.RUSAGE_CHILDREN)
+        while pr.poll() is None:
+            if time.time() - t0 > secs:
+                pr.terminate(); break
+            sample_threads(pr.pid, wait_acc)
+            time.sleep(0.05)
+        out, _ = pr.communicate()
+        wall = time.time() - t0
+        _m = re.findall(r'([\d.]+) ms/frame', out)
+        _t = re.findall(r'([\d.]+) M invocation/s', out)
+        if _m: samples.append(float(_m[-1]))
+        elif _t: samples.append(float(_t[-1]))
+    ru1 = resource.getrusage(resource.RUSAGE_CHILDREN)
+    cpu = {"user_ms": round((ru1.ru_utime - ru0.ru_utime) * 1000, 1),
+           "sys_ms": round((ru1.ru_stime - ru0.ru_stime) * 1000, 1)}
+
+    jobs, src = parse_jobs(txt)
+    frames = re.findall(r"([\d.]+) ms/frame", out)
+    mpix = re.findall(r"([\d.]+) Mpix/s", out)
+    correct = re.findall(r"RESULT: (PASS|FAIL) - (\d+)/(\d+) pixels correct", out)
+    thr = re.findall(r"([\d.]+) M invocation/s", out)
+
+    bpp = re.findall(r"bpp=(\d+)", out)
+    fps = re.findall(r"FPS: (\d+)", out)
+    rec = {"probe": probe, "size": size, "driver": drv, "wall_s": round(wall, 2),
+           "cpu": cpu, "bpp": int(bpp[-1]) if bpp else None,
+           "fps": int(fps[-1]) if fps else None,
+           "ms_per_frame": float(frames[-1]) if frames else None,
+           "mpix_s": float(mpix[-1]) if mpix else None,
+           "thr_M_inv_s": float(thr[-1]) if thr else None,
+           "correct": (correct[-1][0] if correct else None),
+           "pixels_ok": (correct[-1][1] + "/" + correct[-1][2]) if correct else None,
+           "jobs": [[n, round(d, 3)] for n, d in jobs[:6]],
+           "phase1_ms": round(p1_wall * 1000, 3) if p1_wall else None,
+           "phase1_frame_ms": p1_frame_ms,
+           "trace": src}
+
+    print(f"\n{'='*74}")
+    print(f"  HARNESS  driver={drv}  probe={probe} size={size}  wall={wall:.1f}s")
+    print(f"{'='*74}")
+    print(f"  speed      : {rec['ms_per_frame']} ms/frame   {rec['mpix_s']} Mpix/s"
+          f"   {rec['thr_M_inv_s']} M inv/s")
+    if len(samples) > 1:
+        _lo, _hi = min(samples), max(samples)
+        _med = sorted(samples)[len(samples) // 2]
+        _sp = 100 * (_hi - _lo) / _med if _med else 0
+        print(f'  samples    : n={len(samples)}  {_lo:.3f}-{_hi:.3f}  median {_med:.3f}  spread {_sp:.1f}%')
+        rec['samples'] = [round(x, 4) for x in samples]
+        rec['spread_pct'] = round(_sp, 1)
+    print(f"  correctness: {rec['correct']}  {rec['pixels_ok'] or ''}")
+    print(f"  jobs ({src}):")
+    tot = 0
+    for n, d in jobs[:6]:
+        print(f"      {n:>12}  {d:9.3f} ms")
+        tot = max(tot, d)
+    print(f"      {'critical path':>12}  {tot:9.3f} ms")
+    # ponytail: fence pairing degrades above a few thousand jobs and then silently emits
+    # mispriced entries - once reporting a physically impossible 168 ms and once making PR
+    # and geometry equal to 0.4%. Two independent stages being equal to within a percent is
+    # that signature, so say so rather than leaving it to be noticed.
+    if len(jobs) >= 2:
+        ds = sorted((d for _, d in jobs), reverse=True)
+        for i in range(len(ds) - 1):
+            if ds[i + 1] > 0 and abs(ds[i] - ds[i + 1]) / ds[i + 1] < 0.01:
+                print(f"  WARNING    : two stages are equal to within 1% ({ds[i]:.3f} vs {ds[i+1]:.3f} ms)"
+                      f" - likely MISPRICED, do not trust this breakdown")
+                break
+    # The breakdown comes from a ONE-FRAME window, so no single stage can outlast the frame.
+    # A job longer than the frame it belongs to is the other mispairing signature (it once
+    # produced a 168 ms median for a scene that renders in about six).
+    if jobs and rec.get("ms_per_frame"):
+        _mx = max(d for _, d in jobs)
+        if _mx > rec["ms_per_frame"] * 1.5:
+            print(f"  WARNING    : a stage is {_mx:.1f} ms but the frame is {rec['ms_per_frame']:.1f} ms"
+                  f" - IMPOSSIBLE in a one-frame window, do not trust this breakdown")
+    print(f"  stages     : {len(jobs)} jobs in the trace window")
+    if jobs and p1_frame_ms:
+        _crit = max(d for _, d in jobs)
+        print(f"  GPU busy   : {100*_crit/p1_frame_ms:.0f}%   (crit {_crit:.3f} ms / traced"
+              f" frame {p1_frame_ms:.3f} ms - MATCHED pair; phase-1 wall was"
+              f" {p1_wall*1000:.0f} ms incl. startup+tracing)")
+        rec["gpu_busy_pct"] = round(100 * _crit / p1_frame_ms, 1)
+    if cpu:
+        tot_c = cpu["user_ms"] + cpu["sys_ms"]
+        # ponytail: RUSAGE_CHILDREN delta covers the LAST rep only (ru0 is re-read per rep, ru1
+        # once after the loop), while speed is a median over all reps. Measured, but name the
+        # provenance - and say so when the last rep was cut short by the timeout.
+        last_cut = (time.time() - t0 > secs) if 't0' in dir() else False
+        print(f"  cpu        : user {cpu['user_ms']} ms  sys {cpu['sys_ms']} ms"
+              f"  (kernel {100*cpu['sys_ms']/max(tot_c,1e-9):.0f}% of probe CPU"
+              f"; from the LAST rep, not the median{', and it was cut short' if last_cut else ''})")
+        # Where the threads block. futex = userspace lock contention, which the "kernel
+        # share" number hides: a thread in futex_wait is NOT consuming kernel time.
+        if wait_acc:
+            tot = sum(wait_acc.values())
+            top = sorted(wait_acc.items(), key=lambda kv: -kv[1])[:4]
+            print(f"  wait states: " + "  ".join(
+                f"{k} {100*v/tot:.0f}%" for k, v in top) + f"   (n={tot} samples)")
+            rec["wait_states"] = {k: round(100*v/tot, 1) for k, v in top}
+    bw = ""
+    # ponytail: DERIVED, not measured. mpix_s * bpp is the ideal single write per pixel - it
+    # ignores overdraw, read-modify-write and tile traffic, so it is a LOWER BOUND. Said so,
+    # because a header reading "bandwidth" invites quoting it as real DRAM traffic.
+    if rec["mpix_s"] and rec["bpp"]:
+        bw = f"~{rec['mpix_s']*rec['bpp']:.0f} MB/s (ideal write, derived)"
+    print(f"  fb write   : bpp={rec['bpp']}  {bw}   [DERIVED from throughput x bpp - NOT measured DRAM traffic]")
+    if rec["fps"]:
+        print(f"  fps        : {rec['fps']}")
+    print(f"{'='*74}\n")
+
+    with open(f"{BENCH}/harness-log.jsonl", "a") as f:
+        f.write(json.dumps(rec) + "\n")
+
+
+main()

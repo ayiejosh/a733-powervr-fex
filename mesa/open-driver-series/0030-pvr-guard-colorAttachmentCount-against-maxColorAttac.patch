@@ -1,0 +1,51 @@
+From 3921940e50615bc0b450e912b79ccc6e40a4d682 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Thu, 8 Oct 2026 13:28:21 +0800
+Subject: [PATCH 30/43] pvr: guard colorAttachmentCount against
+ maxColorAttachments
+
+Fourth instance of the same class: maxColorAttachments is advertised as PVR_MAX_COLOR_ATTACHMENTS
+but nothing enforced it. pvr_dynamic_rendering_output_attachments_setup() sizes two VLAs from the
+application's colorAttachmentCount and later scatters render targets over
+dr_info->mrt_setup->mrt_resources[] for every attachment, so an over-limit count indexes past
+driver state. Now rejected with VK_ERROR_UNKNOWN naming the count.
+
+Also audited this round and found NOT defective, for the record:
+
+* pvr_arch_cmd_buffer.c:4462 assert(pbe_emits <= PVR_MAX_COLOR_ATTACHMENTS) - pbe_emits increments
+  at most once per attachment and the second loop already has an explicit
+  'if (pbe_emits < PVR_MAX_COLOR_ATTACHMENTS)' check, so it cannot exceed the array.
+* pvr_arch_spm.c:519/561 assert(total_render_target_used ... < PVR_MAX_COLOR_ATTACHMENTS) - the
+  pbe_state_words[]/tile_buffer_addrs[] arrays are sized by the same constant and the counters are
+  bounded by it in the same expressions.
+* pvr_arch_hw_pass.c:1191 assert(eot_surface_count <= 16U) - assert-only, but eot_surfaces is
+  allocated with sizeof * eot_surface_count, so the count sizes its own array; the 16 is a hardware
+  limit rather than an array bound.
+
+No regressions: bda, vk13, pctest, vk16, mrt, varyings, vattrib all PASS; glmark2 --validate 27/0.
+---
+ src/imagination/vulkan/pvr_arch_cmd_buffer.c | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/src/imagination/vulkan/pvr_arch_cmd_buffer.c b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
+index e2b892f..07f1e1c 100644
+--- a/src/imagination/vulkan/pvr_arch_cmd_buffer.c
++++ b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
+@@ -4153,6 +4153,17 @@ static VkResult pvr_dynamic_rendering_output_attachments_setup(
+    struct pvr_dynamic_render_info *dr_info,
+    uint32_t *attach_idx)
+ {
++   /* maxColorAttachments is advertised as PVR_MAX_COLOR_ATTACHMENTS, but nothing enforced it
++    * here. This function sizes two VLAs from the application's count and later scatters render
++    * targets over dr_info->mrt_setup->mrt_resources[] for every attachment, so an over-limit
++    * count indexes past driver state. Reject it, as pvr_graphics_pipeline_init now does for
++    * maxVertexInputAttributes. */
++   if (pRenderingInfo->colorAttachmentCount > PVR_MAX_COLOR_ATTACHMENTS)
++      return vk_errorf(cmd_buffer->device, VK_ERROR_UNKNOWN,
++                       "colorAttachmentCount %u exceeds maxColorAttachments (%u)",
++                       pRenderingInfo->colorAttachmentCount,
++                       (unsigned)PVR_MAX_COLOR_ATTACHMENTS);
++
+    VkFormat attachment_formats[pRenderingInfo->colorAttachmentCount];
+    uint32_t mrt_attachment_map[pRenderingInfo->colorAttachmentCount];
+    uint32_t mrt_count = 0, eot_mrt_count = 0, eot_mrt_idx = 0,

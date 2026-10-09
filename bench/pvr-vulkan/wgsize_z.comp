@@ -1,0 +1,7 @@
+#version 450
+layout(local_size_z = WGSIZE) in;
+layout(std430, binding = 0) buffer Out { uint v[]; };
+void main() {
+    uint id = gl_GlobalInvocationID.z;
+    v[id] = id ^ 0xa5a5a5a5u;
+}

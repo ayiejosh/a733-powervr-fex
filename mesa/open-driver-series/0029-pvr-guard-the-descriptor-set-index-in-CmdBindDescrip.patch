@@ -1,0 +1,50 @@
+From b0700b9337d4f9a0f710a0e02eb0e2e2c6be7485 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Thu, 8 Oct 2026 13:21:45 +0800
+Subject: [PATCH 29/43] pvr: guard the descriptor set index in
+ CmdBindDescriptorSets2KHR
+
+Same missing-guard pattern as the vertex-attribute crash and the vertex-binding clamp:
+maxBoundDescriptorSets is advertised as PVR_MAX_DESCRIPTOR_SETS (4), and
+
+  pvr_descriptor_state::sets[PVR_MAX_DESCRIPTOR_SETS]
+  pipeline_layout->set_layouts[]
+
+are both indexed by an application-controlled value:
+
+  unsigned desc_set = u + pBindDescriptorSetsInfo->firstSet;
+
+with no check anywhere. Binding a descriptor set at index >= 4 writes past sets[] and indexes
+past set_layouts[]; the only related guards are asserts elsewhere (pvr_arch_cmd_buffer.c:5640
+and :5665) that are compiled out in a release build and that read compiler-generated data
+rather than the application's index. Out-of-range sets are now skipped.
+
+This is the third instance of the same defect class found by auditing advertised limits for
+enforcement: the value is advertised correctly but only assert()ed, and asserts vanish in
+release builds. See the audit table in the bench record.
+
+No regressions: bda, vk13, pctest, vk16, wgsize, samplers, storageimages, mrt, varyings, ubos,
+stgbuf, vattrib(16) all PASS; glmark2 --validate 27/0.
+---
+ src/imagination/vulkan/pvr_arch_cmd_buffer.c | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/src/imagination/vulkan/pvr_arch_cmd_buffer.c b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
+index b01039a..e2b892f 100644
+--- a/src/imagination/vulkan/pvr_arch_cmd_buffer.c
++++ b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
+@@ -3043,6 +3043,14 @@ void PVR_PER_ARCH(CmdBindDescriptorSets2KHR)(
+                      pBindDescriptorSetsInfo->pDescriptorSets[u]);
+       unsigned desc_set = u + pBindDescriptorSetsInfo->firstSet;
+ 
++      /* desc_set is application-controlled (firstSet + u) and maxBoundDescriptorSets is
++       * advertised as PVR_MAX_DESCRIPTOR_SETS (4), but nothing enforced it here:
++       * pvr_descriptor_state::sets[] has exactly PVR_MAX_DESCRIPTOR_SETS entries and
++       * pipeline_layout->set_layouts[] is sized by the layout, so binding a set at index
++       * >= 4 wrote past both. Skip out-of-range sets instead of corrupting memory. */
++      if (desc_set >= PVR_MAX_DESCRIPTOR_SETS)
++         continue;
++
+       const struct pvr_descriptor_set_layout *set_layout =
+          vk_to_pvr_descriptor_set_layout(
+             pipeline_layout->set_layouts[desc_set]);

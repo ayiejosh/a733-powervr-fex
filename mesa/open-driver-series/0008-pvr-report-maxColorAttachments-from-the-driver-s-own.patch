@@ -1,0 +1,45 @@
+From d6416de7a57db9371723d31cda8a8cf75414c090 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Thu, 8 Oct 2026 03:10:01 +0800
+Subject: [PATCH 08/43] pvr: report maxColorAttachments from the driver's own
+ constant (4 -> 8)
+
+.maxColorAttachments was hardcoded to 4U while the driver's own
+PVR_MAX_COLOR_ATTACHMENTS (= PVR_NUM_PBE_EMIT_REGS = 8, the hardware's PBE emit registers)
+says 8. Every array and assert in the render path is already sized for 8:
+
+  pbe_reg_words[PVR_MAX_COLOR_ATTACHMENTS], pr_pbe_reg_words[...], tile_buffer_ids[...]
+  assert(pbe_emits <= PVR_MAX_COLOR_ATTACHMENTS)
+  assert(num_live_outputs <= PVR_NUM_PBE_EMIT_REGS); live_outputs[PVR_NUM_PBE_EMIT_REGS]
+
+so this is a pure reporting error - the code already handles 8, and the vendor driver reports 8
+on this part. Reporting 4 only prevented applications with more than 4 render targets from
+running at all.
+
+maxColorAttachments now reads 8, matching the vendor. No regressions: bda, vk13, pctest, vk16,
+wgsize, samplers, storageimages all PASS; glmark2 --validate still 0 failures / 27 pass.
+
+Note: a >4-MRT render probe has not been written yet, so this one rests on the driver's own
+constant, its array sizes and asserts, and vendor parity rather than on a measurement.
+---
+ src/imagination/vulkan/pvr_physical_device.c | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/src/imagination/vulkan/pvr_physical_device.c b/src/imagination/vulkan/pvr_physical_device.c
+index 57c2fd8..6a49178 100644
+--- a/src/imagination/vulkan/pvr_physical_device.c
++++ b/src/imagination/vulkan/pvr_physical_device.c
+@@ -878,7 +878,12 @@ static bool pvr_physical_device_get_properties(
+          VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_2_BIT | VK_SAMPLE_COUNT_4_BIT,
+       .framebufferNoAttachmentsSampleCounts =
+          VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_2_BIT | VK_SAMPLE_COUNT_4_BIT,
+-      .maxColorAttachments = 4U,
++      /* Use the driver's own constant, not a hardcoded 4. PVR_MAX_COLOR_ATTACHMENTS is
++       * PVR_NUM_PBE_EMIT_REGS = 8 (the hardware's PBE emit registers), every array and
++       * assert in the render path is already sized for 8 (pbe_reg_words[], pbe_emits,
++       * num_live_outputs), and the vendor driver reports 8 on this part. Reporting 4 only
++       * stopped applications with more than 4 render targets from running. */
++      .maxColorAttachments = PVR_MAX_COLOR_ATTACHMENTS,
+       .sampledImageColorSampleCounts =
+          VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_2_BIT | VK_SAMPLE_COUNT_4_BIT,
+       .sampledImageIntegerSampleCounts =

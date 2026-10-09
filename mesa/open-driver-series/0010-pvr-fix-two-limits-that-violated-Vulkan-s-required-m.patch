@@ -1,0 +1,50 @@
+From 0ef4f87bc775306b562875f29fa79244ab47ebe6 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Thu, 8 Oct 2026 03:19:54 +0800
+Subject: [PATCH 10/43] pvr: fix two limits that violated Vulkan's required
+ minimums
+
+Found by dumping the real limits (new bench/pvr-vulkan/vlimits) and checking them against a
+known-good implementation (llvmpipe) rather than against the driver's source:
+
+  maxFragmentInputComponents        64  -> 128
+  maxFragmentCombinedOutputResources 4  ->  64
+
+* Vulkan requires maxFragmentInputComponents >= 128. llvmpipe reports 128; the driver reported
+  64, below the required minimum.
+* maxFragmentCombinedOutputResources must be at least the sum of
+  maxPerStageDescriptorStorageBuffers (16), maxPerStageDescriptorStorageImages (32) and
+  maxColorAttachments (8) = 56. It was 4 - which is below maxColorAttachments alone - and is
+  now 64.
+
+Both were hardcoded with no backing constant. llvmpipe was used as the reference because the
+board has no Vulkan CTS; it is an independent implementation that passes conformance.
+
+No regressions: bda, vk13, pctest, vk16, wgsize, samplers, storageimages, mrt all PASS;
+glmark2 --validate still 0 failures / 27 pass.
+---
+ src/imagination/vulkan/pvr_physical_device.c | 9 +++++++--
+ 1 file changed, 7 insertions(+), 2 deletions(-)
+
+diff --git a/src/imagination/vulkan/pvr_physical_device.c b/src/imagination/vulkan/pvr_physical_device.c
+index c0806a6..55e2a03 100644
+--- a/src/imagination/vulkan/pvr_physical_device.c
++++ b/src/imagination/vulkan/pvr_physical_device.c
+@@ -806,10 +806,15 @@ static bool pvr_physical_device_get_properties(
+       .maxGeometryTotalOutputComponents = 0U,
+ 
+       /* Fragment Shader Limits */
+-      .maxFragmentInputComponents = 64U,
++      /* Vulkan requires at least 128 here; 64 is below the required minimum (llvmpipe, a
++       * known-good implementation, reports 128). */
++      .maxFragmentInputComponents = 128U,
+       .maxFragmentOutputAttachments = 4U,
+       .maxFragmentDualSrcAttachments = 0U, /* Requires dualSrcBlend */
+-      .maxFragmentCombinedOutputResources = 4U,
++      /* Must be at least the sum of maxPerStageDescriptorStorageBuffers (16),
++       * maxPerStageDescriptorStorageImages (32) and maxColorAttachments (8) = 56; it was 4,
++       * which is also below maxColorAttachments alone. */
++      .maxFragmentCombinedOutputResources = 64U,
+ 
+       /* Compute Shader Limits */
+       .maxComputeSharedMemorySize = 16U * 1024U,

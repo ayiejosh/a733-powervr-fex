@@ -1,0 +1,2492 @@
+[416380704] : Host Sync Partition marker: 44
+[416380730] : KCCB Slot 38: Return value 1
+[416380789] : Bg Task complete DM Bitfield: 1
+[416380814] : Kick MTS Irq task DM=0
+[416380845] : Irq Task (EVENT_STATUS=0x00000000)
+[416380933] : Irq Task complete.
+[416649049] : Bg Task OSid = 0
+[416649087] : KCCB Slot 39: Cmd=0x2abc006b, OSid=0
+[416649143] : Bg Task complete DM Bitfield: 1
+[416649165] : Kick MTS Irq task DM=0
+[416649188] : Irq Task (EVENT_STATUS=0x00000000)
+[416649246] : Irq Task complete.
+[416649274] : Bg Task OSid = 0
+[416649305] : Bg Task complete DM Bitfield: 1
+[416649328] : Kick MTS Irq task DM=0
+[416649355] : Irq Task (EVENT_STATUS=0x00000000)
+[416649413] : Irq Task complete.
+[416649530] : Bg Task OSid = 0
+[416649566] : KCCB Slot 40: Cmd=0x2abc006b, OSid=0
+[416649619] : Bg Task complete DM Bitfield: 1
+[416649640] : Kick MTS Irq task DM=0
+[416649662] : Irq Task (EVENT_STATUS=0x00000000)
+[416649723] : Irq Task complete.
+[416649750] : Bg Task OSid = 0
+[416649781] : Bg Task complete DM Bitfield: 1
+[416649803] : Kick MTS Irq task DM=0
+[416649826] : Irq Task (EVENT_STATUS=0x00000000)
+[416649883] : Irq Task complete.
+[416649909] : GPU units deinit
+[416649960] : GPU deinit
+[190] : State of firmware's private data at boot time: 1 (0 = uninitialised, 1 = initialised); Fw State Flags = 0x00000801
+[218] : OSid 0 fw state transition request: from 2 to 0 (0-offline 1-ready 2-active 3-offloading). Status 1 (1-ok 0-fail)
+[271] : Core clock set to 1104000000 Hz
+[321] : GPU init
+[380] : Host Sync Partition marker: 45
+[431] : Bg Task OSid = 0
+[470] : KCCB Slot 41: Cmd=0x2abc0066, OSid=0
+[537] : KCCB Slot 41: Return value 1
+[592] : Bg Task complete DM Bitfield: 1
+[613] : Kick MTS Irq task DM=0
+[650] : Irq Task (EVENT_STATUS=0x00000000)
+[741] : Irq Task complete.
+[916] : Bg Task OSid = 0
+[948] : KCCB Slot 42: Cmd=0x2abc0075, OSid=0
+[993] : cCCB Woff update = 200, DM = 2, FWCtx = 0xc0085000
+[1061] : Kick MTS Irq task DM=0
+[1097] : cCCB Woff update = 616, DM = 3, FWCtx = 0xc0085098
+[1143] : UFO Checks for FWCtx 0xc0085098 @ 0
+[1171] : UFO PR-Check: [0xc0079000] is 0x00000000 requires >= 0x00000001
+[1219] : Irq Task (EVENT_STATUS=0x00000000)
+[1308] : Ready-to-run debug OSid = 0, DM = 2, item = 0xc0085000
+[1336] : Client command header DM = 2, client CCB = 0xc0070000, cmd = 0xc0070000
+[1437] : GPU Units init (# mask: 0x1)
+[1584] : Load  Freelist 0xc0086000 type: 0 (0:local,1:global) for PMDM0: FL Total Pages 32 (max=32,grow size=0), FL-addr = 0x00000080003b2000, stacktop = 0x000000000000001f, Alloc Page Count = 0, Alloc MMU Page Count = 0
+[1643] : Load  Freelist 0xc002d000 type: 1 (0:local,1:global) for PMDM0: FL Total Pages 448 (max=65536,grow size=256), FL-addr = 0x0000008000048900, stacktop = 0x00000000000001bf, Alloc Page Count = 0, Alloc MMU Page Count = 0
+[1677] : CONTEXT_PB_BASE set to 0x3, FL different between TA/3D: local: 1, global: 1
+[1724] : TA RTData 0xc0088000 loaded on HW context 0
+[1747] : TA Buffers: FWCtx 0xc0085000, RTData 0xc0088000, VHeap 0x00000080003b3000, TPC 0x00000080003b4000 (MemCtx 0xc002c000)
+[1810] : TE Region headers base 0x00000080003b7000 (RGNHDR Init: 1)
+[1851] : Kick TA: FWCtx 0xc0085000 @ 0, RTD 0xc0088000, First kick:1, Last kick:1, CSW resume:0. (PID:684146, prio:1, frame:0, ext:0x00000001, int:0x00000001)
+[1963] : Irq Task complete.
+[1987] : Irq Task (EVENT_STATUS=0x00000020)
+[2029] : TA finished
+[2051] : TA RTData 0xc0088000 finished on HW context 0
+[2075] : Perform TPC flush.
+[2146] : UFO Updates for FWCtx 0xc0085000 @ 152
+[2170] : UFO Update: [0xc0079000] = 0x00000001
+[2282] : UFO Checks for FWCtx 0xc0085098 @ 0
+[2308] : UFO PR-Check: [0xc0079000] is 0x00000001 requires >= 0x00000001
+[2387] : Ready-to-run debug OSid = 0, DM = 3, item = 0xc0085098
+[2413] : Client command header DM = 3, client CCB = 0xc007b000, cmd = 0xc007b030
+[2452] : UFO Updates for FWCtx 0xc0085098 @ 568
+[2478] : UFO Update: [0xc0084000] = 0x00000001
+[2595] : Irq Task complete.
+[2631] : KCCB Slot 43: Cmd=0x2abc0065, OSid=0
+[2670] : cCCB Woff update = 1184, DM = 3, FWCtx = 0xc0085098
+[2756] : Kick MTS Irq task DM=0
+[2781] : Irq Task (EVENT_STATUS=0x00000000)
+[2845] : Ready-to-run debug OSid = 0, DM = 3, item = 0xc0085098
+[2870] : Client command header DM = 3, client CCB = 0xc007b000, cmd = 0xc007b268
+[3003] : Store Freelist 0xc0086000 type: 0 (0:local,1:global) for PMDM0: FL Total Pages 32 (max=32,grow size=0), FL-addr = 0x00000080003b2000, stacktop = 0x000000000000001f, Alloc Page Count = 0, Alloc MMU Page Count = 0
+[3052] : Load  Freelist 0xc0086000 type: 0 (0:local,1:global) for PMDM1: FL Total Pages 32 (max=32,grow size=0), FL-addr = 0x00000080003b2000, stacktop = 0x000000000000001f, Alloc Page Count = 0, Alloc MMU Page Count = 0
+[3090] : Store Freelist 0xc002d000 type: 1 (0:local,1:global) for PMDM0: FL Total Pages 448 (max=65536,grow size=256), FL-addr = 0x0000008000048900, stacktop = 0x00000000000001bf, Alloc Page Count = 0, Alloc MMU Page Count = 0
+[3137] : Load  Freelist 0xc002d000 type: 1 (0:local,1:global) for PMDM1: FL Total Pages 448 (max=65536,grow size=256), FL-addr = 0x0000008000048900, stacktop = 0x00000000000001bf, Alloc Page Count = 0, Alloc MMU Page Count = 0
+[3169] : CONTEXT_PB_BASE set to 0x0, FL different between TA/3D: local: 0, global: 0
+[3212] : Loading stack-pointers for 1 (0:MidTA,1:3D) on context 1, MLIST = 0x00000000, ALIST = 0x0000000000000000
+[3252] : 3D Buffers: FWCtx 0xc0085098, RTData 0xc0088000 on ctx 1, (MemCtx 0xc002c000)
+[3272] : 3D RTData 0xc0088000 ready on HW context 1
+[3375] : Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x80015000)
+[3397] :   Phantom 0: USCTiles=6
+[3440] : Kick 3D: FWCtx 0xc0085098 @ 616, RTD 0xc0088000, Partial render:0, CSW resume:0. (PID:684146, prio:1, frame:0, ext:0x00000003, int:0x00000003)
+[3558] : Irq Task complete.
+[3582] : Irq Task (EVENT_STATUS=0x00000118)
+[3627] : 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+[3673] : 3D RTData 0xc0088000 finished on HW context 1
+[3753] : UFO Updates for FWCtx 0xc0085098 @ 1136
+[3778] : UFO Update: [0xc0084000] = 0x00000002
+[3940] : Irq Task complete.
+[3967] : Bg Task complete DM Bitfield: 1
+[3988] : Kick MTS Irq task DM=0
+[4009] : Irq Task (EVENT_STATUS=0x00000010)
+[4059] : Irq Task complete.
+[4081] : Bg Task OSid = 0
+[4136] : KCCB Slot 44: Cmd=0x2abc0066, OSid=0
+[4195] : KCCB Slot 44: Return value 1
+[4251] : Bg Task complete DM Bitfield: 1
+[4273] : Kick MTS Irq task DM=0
+[4307] : Irq Task (EVENT_STATUS=0x00000010)
+[4402] : Irq Task complete.
+[4962] : Bg Task OSid = 0
+[4997] : KCCB Slot 45: Cmd=0x2abc0066, OSid=0
+[5057] : KCCB Slot 45: Return value 1
+[5113] : Bg Task complete DM Bitfield: 1
+[5136] : Kick MTS Irq task DM=0
+[5167] : Irq Task (EVENT_STATUS=0x00000010)
+[5249] : Irq Task complete.
+[5272] : Bg Task OSid = 0
+[5306] : KCCB Slot 46: Cmd=0x2abc0075, OSid=0
+[5353] : cCCB Woff update = 400, DM = 2, FWCtx = 0xc0085000
+[5421] : Kick MTS Irq task DM=0
+[5458] : cCCB Woff update = 1800, DM = 3, FWCtx = 0xc0085098
+[5506] : UFO Checks for FWCtx 0xc0085098 @ 1184
+[5532] : UFO PR-Check: [0xc0079000] is 0x00000001 requires >= 0x00000002
+[5579] : Irq Task (EVENT_STATUS=0x00000010)
+[5664] : Ready-to-run debug OSid = 0, DM = 2, item = 0xc0085000
+[5690] : Client command header DM = 2, client CCB = 0xc0070000, cmd = 0xc00700c8
+[5792] : CONTEXT_PB_BASE set to 0x0, FL different between TA/3D: local: 0, global: 0
+[5841] : TA RTData 0xc0089000 loaded on HW context 0
+[5865] : TA Buffers: FWCtx 0xc0085000, RTData 0xc0089000, VHeap 0x00000080003b3000, TPC 0x00000080003b4000 (MemCtx 0xc002c000)
+[5928] : TE Region headers base 0x00000080003b7600 (RGNHDR Init: 1)
+[5974] : Kick TA: FWCtx 0xc0085000 @ 200, RTD 0xc0089000, First kick:1, Last kick:1, CSW resume:0. (PID:684146, prio:1, frame:0, ext:0x00000001, int:0x00000001)
+[6087] : Irq Task complete.
+[6112] : Irq Task (EVENT_STATUS=0x00000030)
+[6155] : TA finished
+[6179] : TA RTData 0xc0089000 finished on HW context 0
+[6204] : Perform TPC flush.
+[6279] : UFO Updates for FWCtx 0xc0085000 @ 352
+[6305] : UFO Update: [0xc0079000] = 0x00000002
+[6418] : UFO Checks for FWCtx 0xc0085098 @ 1184
+[6442] : UFO PR-Check: [0xc0079000] is 0x00000002 requires >= 0x00000002
+[6517] : Ready-to-run debug OSid = 0, DM = 3, item = 0xc0085098
+[6543] : Client command header DM = 3, client CCB = 0xc007b000, cmd = 0xc007b4d0
+[6586] : UFO Updates for FWCtx 0xc0085098 @ 1752
+[6612] : UFO Update: [0xc0084000] = 0x00000003
+[6733] : Irq Task complete.
+[6767] : KCCB Slot 47: Cmd=0x2abc0065, OSid=0
+[6806] : cCCB Woff update = 2368, DM = 3, FWCtx = 0xc0085098
+[6886] : Kick MTS Irq task DM=0
+[6909] : Irq Task (EVENT_STATUS=0x00000010)
+[6973] : Ready-to-run debug OSid = 0, DM = 3, item = 0xc0085098
+[6998] : Client command header DM = 3, client CCB = 0xc007b000, cmd = 0xc007b708
+[7107] : CONTEXT_PB_BASE set to 0x0, FL different between TA/3D: local: 0, global: 0
+[7155] : Loading stack-pointers for 1 (0:MidTA,1:3D) on context 1, MLIST = 0x00000000, ALIST = 0x0000000000000000
+[7195] : 3D Buffers: FWCtx 0xc0085098, RTData 0xc0089000 on ctx 1, (MemCtx 0xc002c000)
+[7217] : 3D RTData 0xc0089000 ready on HW context 1
+[7318] : Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x80015000)
+[7340] :   Phantom 0: USCTiles=6
+[7381] : Kick 3D: FWCtx 0xc0085098 @ 1800, RTD 0xc0089000, Partial render:0, CSW resume:0. (PID:684146, prio:1, frame:0, ext:0x00000003, int:0x00000003)
+[7490] : Irq Task complete.
+[7514] : Irq Task (EVENT_STATUS=0x00000118)
+[7559] : 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+[7603] : 3D RTData 0xc0089000 finished on HW context 1
+[7681] : UFO Updates for FWCtx 0xc0085098 @ 2320
+[7709] : UFO Update: [0xc0084000] = 0x00000004
+[7873] : Irq Task complete.
+[7901] : Bg Task complete DM Bitfield: 1
+[7922] : Kick MTS Irq task DM=0
+[7943] : Irq Task (EVENT_STATUS=0x00000010)
+[7997] : Irq Task complete.
+[8018] : Bg Task OSid = 0
+[8067] : KCCB Slot 48: Cmd=0x2abc0066, OSid=0
+[8131] : KCCB Slot 48: Return value 1
+[8186] : Bg Task complete DM Bitfield: 1
+[8209] : Kick MTS Irq task DM=0
+[8239] : Irq Task (EVENT_STATUS=0x00000010)
+[8332] : Irq Task complete.
+[8702] : Bg Task OSid = 0
+[8734] : KCCB Slot 49: Cmd=0x2abc0066, OSid=0
+[8799] : KCCB Slot 49: Return value 1
+[8853] : Bg Task complete DM Bitfield: 1
+[8874] : Kick MTS Irq task DM=0
+[8902] : Irq Task (EVENT_STATUS=0x00000010)
+[8980] : Irq Task complete.
+[9022] : Bg Task OSid = 0
+[9053] : KCCB Slot 50: Cmd=0x2abc0075, OSid=0
+[9097] : cCCB Woff update = 600, DM = 2, FWCtx = 0xc0085000
+[9165] : Kick MTS Irq task DM=0
+[9199] : cCCB Woff update = 2984, DM = 3, FWCtx = 0xc0085098
+[9250] : UFO Checks for FWCtx 0xc0085098 @ 2368
+[9277] : UFO PR-Check: [0xc0079000] is 0x00000002 requires >= 0x00000003
+[9322] : Irq Task (EVENT_STATUS=0x00000010)
+[9409] : Ready-to-run debug OSid = 0, DM = 2, item = 0xc0085000
+[9437] : Client command header DM = 2, client CCB = 0xc0070000, cmd = 0xc0070190
+[9540] : CONTEXT_PB_BASE set to 0x0, FL different between TA/3D: local: 0, global: 0
+[9591] : TA RTData 0xc0088000 loaded on HW context 0
+[9616] : TA Buffers: FWCtx 0xc0085000, RTData 0xc0088000, VHeap 0x00000080003b3000, TPC 0x00000080003b4000 (MemCtx 0xc002c000)
+[9679] : TE Region headers base 0x00000080003b7000 (RGNHDR Init: 1)
+[9725] : Kick TA: FWCtx 0xc0085000 @ 400, RTD 0xc0088000, First kick:1, Last kick:1, CSW resume:0. (PID:684146, prio:1, frame:0, ext:0x00000001, int:0x00000001)
+[9848] : Irq Task complete.
+[9872] : Irq Task (EVENT_STATUS=0x00000030)
+[9917] : TA finished
+[9942] : TA RTData 0xc0088000 finished on HW context 0
+[9966] : Perform TPC flush.
+[10040] : UFO Updates for FWCtx 0xc0085000 @ 552
+[10069] : UFO Update: [0xc0079000] = 0x00000003
+[10188] : UFO Checks for FWCtx 0xc0085098 @ 2368
+[10216] : UFO PR-Check: [0xc0079000] is 0x00000003 requires >= 0x00000003
+[10292] : Ready-to-run debug OSid = 0, DM = 3, item = 0xc0085098
+[10321] : Client command header DM = 3, client CCB = 0xc007b000, cmd = 0xc007b970
+[10358] : UFO Updates for FWCtx 0xc0085098 @ 2936
+[10384] : UFO Update: [0xc0084000] = 0x00000005
+[10502] : Irq Task complete.
+[10535] : KCCB Slot 51: Cmd=0x2abc0065, OSid=0
+[10576] : cCCB Woff update = 3552, DM = 3, FWCtx = 0xc0085098
+[10661] : Kick MTS Irq task DM=0
+[10684] : Irq Task (EVENT_STATUS=0x00000010)
+[10745] : Ready-to-run debug OSid = 0, DM = 3, item = 0xc0085098
+[10770] : Client command header DM = 3, client CCB = 0xc007b000, cmd = 0xc007bba8
+[10877] : CONTEXT_PB_BASE set to 0x0, FL different between TA/3D: local: 0, global: 0
+[10923] : Loading stack-pointers for 1 (0:MidTA,1:3D) on context 1, MLIST = 0x00000000, ALIST = 0x0000000000000000
+[10963] : 3D Buffers: FWCtx 0xc0085098, RTData 0xc0088000 on ctx 1, (MemCtx 0xc002c000)
+[10985] : 3D RTData 0xc0088000 ready on HW context 1
+[11089] : Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x80015000)
+[11112] :   Phantom 0: USCTiles=6
+[11151] : Kick 3D: FWCtx 0xc0085098 @ 2984, RTD 0xc0088000, Partial render:0, CSW resume:0. (PID:684146, prio:1, frame:0, ext:0x00000003, int:0x00000003)
+[11260] : Irq Task complete.
+[11285] : Irq Task (EVENT_STATUS=0x00000118)
+[11330] : 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+[11372] : 3D RTData 0xc0088000 finished on HW context 1
+[11451] : UFO Updates for FWCtx 0xc0085098 @ 3504
+[11476] : UFO Update: [0xc0084000] = 0x00000006
+[11639] : Irq Task complete.
+[11663] : Bg Task complete DM Bitfield: 1
+[11685] : Kick MTS Irq task DM=0
+[11707] : Irq Task (EVENT_STATUS=0x00000010)
+[11758] : Irq Task complete.
+[11779] : Bg Task OSid = 0
+[11828] : KCCB Slot 52: Cmd=0x2abc0066, OSid=0
+[11892] : KCCB Slot 52: Return value 1
+[11943] : Bg Task complete DM Bitfield: 1
+[11964] : Kick MTS Irq task DM=0
+[11996] : Irq Task (EVENT_STATUS=0x00000010)
+[12091] : Irq Task complete.
+[12388] : Bg Task OSid = 0
+[12420] : KCCB Slot 53: Cmd=0x2abc0066, OSid=0
+[12479] : KCCB Slot 53: Return value 1
+[12531] : Bg Task complete DM Bitfield: 1
+[12551] : Kick MTS Irq task DM=0
+[12579] : Irq Task (EVENT_STATUS=0x00000010)
+[12658] : Irq Task complete.
+[12685] : Bg Task OSid = 0
+[12718] : KCCB Slot 54: Cmd=0x2abc0075, OSid=0
+[12763] : cCCB Woff update = 800, DM = 2, FWCtx = 0xc0085000
+[12833] : Kick MTS Irq task DM=0
+[12870] : cCCB Woff update = 4168, DM = 3, FWCtx = 0xc0085098
+[12921] : UFO Checks for FWCtx 0xc0085098 @ 3552
+[12947] : UFO PR-Check: [0xc0079000] is 0x00000003 requires >= 0x00000004
+[12995] : Irq Task (EVENT_STATUS=0x00000010)
+[13088] : Ready-to-run debug OSid = 0, DM = 2, item = 0xc0085000
+[13117] : Client command header DM = 2, client CCB = 0xc0070000, cmd = 0xc0070258
+[13222] : CONTEXT_PB_BASE set to 0x0, FL different between TA/3D: local: 0, global: 0
+[13276] : TA RTData 0xc0089000 loaded on HW context 0
+[13299] : TA Buffers: FWCtx 0xc0085000, RTData 0xc0089000, VHeap 0x00000080003b3000, TPC 0x00000080003b4000 (MemCtx 0xc002c000)
+[13360] : TE Region headers base 0x00000080003b7600 (RGNHDR Init: 1)
+[13403] : Kick TA: FWCtx 0xc0085000 @ 600, RTD 0xc0089000, First kick:1, Last kick:1, CSW resume:0. (PID:684146, prio:1, frame:0, ext:0x00000001, int:0x00000001)
+[13521] : Irq Task complete.
+[13543] : Irq Task (EVENT_STATUS=0x00000030)
+[13584] : TA finished
+[13608] : TA RTData 0xc0089000 finished on HW context 0
+[13633] : Perform TPC flush.
+[13707] : UFO Updates for FWCtx 0xc0085000 @ 752
+[13731] : UFO Update: [0xc0079000] = 0x00000004
+[13840] : UFO Checks for FWCtx 0xc0085098 @ 3552
+[13867] : UFO PR-Check: [0xc0079000] is 0x00000004 requires >= 0x00000004
+[13944] : Ready-to-run debug OSid = 0, DM = 3, item = 0xc0085098
+[13972] : Client command header DM = 3, client CCB = 0xc007b000, cmd = 0xc007be10
+[14011] : UFO Updates for FWCtx 0xc0085098 @ 4120
+[14036] : UFO Update: [0xc0084000] = 0x00000007
+[14157] : Irq Task complete.
+[14192] : KCCB Slot 55: Cmd=0x2abc0065, OSid=0
+[14229] : cCCB Woff update = 4736, DM = 3, FWCtx = 0xc0085098
+[14315] : Kick MTS Irq task DM=0
+[14341] : Irq Task (EVENT_STATUS=0x00000010)
+[14401] : Ready-to-run debug OSid = 0, DM = 3, item = 0xc0085098
+[14425] : Client command header DM = 3, client CCB = 0xc007b000, cmd = 0xc007c048
+[14536] : CONTEXT_PB_BASE set to 0x0, FL different between TA/3D: local: 0, global: 0
+[14583] : Loading stack-pointers for 1 (0:MidTA,1:3D) on context 1, MLIST = 0x00000000, ALIST = 0x0000000000000000
+[14626] : 3D Buffers: FWCtx 0xc0085098, RTData 0xc0089000 on ctx 1, (MemCtx 0xc002c000)
+[14651] : 3D RTData 0xc0089000 ready on HW context 1
+[14757] : Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x80015000)
+[14777] :   Phantom 0: USCTiles=6
+[14821] : Kick 3D: FWCtx 0xc0085098 @ 4168, RTD 0xc0089000, Partial render:0, CSW resume:0. (PID:684146, prio:1, frame:0, ext:0x00000003, int:0x00000003)
+[14935] : Irq Task complete.
+[14959] : Irq Task (EVENT_STATUS=0x00000118)
+[15009] : 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+[15056] : 3D RTData 0xc0089000 finished on HW context 1
+[15132] : UFO Updates for FWCtx 0xc0085098 @ 4688
+[15158] : UFO Update: [0xc0084000] = 0x00000008
+[15322] : Irq Task complete.
+[15348] : Bg Task complete DM Bitfield: 1
+[15368] : Kick MTS Irq task DM=0
+[15389] : Irq Task (EVENT_STATUS=0x00000010)
+[15440] : Irq Task complete.
+[15463] : Bg Task OSid = 0
+[15516] : KCCB Slot 56: Cmd=0x2abc0066, OSid=0
+[15579] : KCCB Slot 56: Return value 1
+[15630] : Bg Task complete DM Bitfield: 1
+[15649] : Kick MTS Irq task DM=0
+[15678] : Irq Task (EVENT_STATUS=0x00000010)
+[15765] : Irq Task complete.
+[16065] : Bg Task OSid = 0
+[16096] : KCCB Slot 57: Cmd=0x2abc0066, OSid=0
+[16158] : KCCB Slot 57: Return value 1
+[16207] : Bg Task complete DM Bitfield: 1
+[16228] : Kick MTS Irq task DM=0
+[16255] : Irq Task (EVENT_STATUS=0x00000010)
+[16335] : Irq Task complete.
+[16356] : Bg Task OSid = 0
+[16388] : KCCB Slot 58: Cmd=0x2abc0075, OSid=0
+[16434] : cCCB Woff update = 1000, DM = 2, FWCtx = 0xc0085000
+[16502] : Kick MTS Irq task DM=0
+[16536] : cCCB Woff update = 5352, DM = 3, FWCtx = 0xc0085098
+[16583] : UFO Checks for FWCtx 0xc0085098 @ 4736
+[16609] : UFO PR-Check: [0xc0079000] is 0x00000004 requires >= 0x00000005
+[16651] : Irq Task (EVENT_STATUS=0x00000010)
+[16743] : Ready-to-run debug OSid = 0, DM = 2, item = 0xc0085000
+[16769] : Client command header DM = 2, client CCB = 0xc0070000, cmd = 0xc0070320
+[16874] : CONTEXT_PB_BASE set to 0x0, FL different between TA/3D: local: 0, global: 0
+[16922] : TA RTData 0xc0088000 loaded on HW context 0
+[16946] : TA Buffers: FWCtx 0xc0085000, RTData 0xc0088000, VHeap 0x00000080003b3000, TPC 0x00000080003b4000 (MemCtx 0xc002c000)
+[17009] : TE Region headers base 0x00000080003b7000 (RGNHDR Init: 1)
+[17055] : Kick TA: FWCtx 0xc0085000 @ 800, RTD 0xc0088000, First kick:1, Last kick:1, CSW resume:0. (PID:684146, prio:1, frame:0, ext:0x00000001, int:0x00000001)
+[17175] : Irq Task complete.
+[17198] : Irq Task (EVENT_STATUS=0x00000030)
+[17237] : TA finished
+[17261] : TA RTData 0xc0088000 finished on HW context 0
+[17286] : Perform TPC flush.
+[17362] : UFO Updates for FWCtx 0xc0085000 @ 952
+[17390] : UFO Update: [0xc0079000] = 0x00000005
+[17509] : UFO Checks for FWCtx 0xc0085098 @ 4736
+[17535] : UFO PR-Check: [0xc0079000] is 0x00000005 requires >= 0x00000005
+[17612] : Ready-to-run debug OSid = 0, DM = 3, item = 0xc0085098
+[17642] : Client command header DM = 3, client CCB = 0xc007b000, cmd = 0xc007c2b0
+[17680] : UFO Updates for FWCtx 0xc0085098 @ 5304
+[17709] : UFO Update: [0xc0084000] = 0x00000009
+[17829] : Irq Task complete.
+[17862] : KCCB Slot 59: Cmd=0x2abc0065, OSid=0
+[17901] : cCCB Woff update = 5920, DM = 3, FWCtx = 0xc0085098
+[17985] : Kick MTS Irq task DM=0
+[18009] : Irq Task (EVENT_STATUS=0x00000010)
+[18068] : Ready-to-run debug OSid = 0, DM = 3, item = 0xc0085098
+[18095] : Client command header DM = 3, client CCB = 0xc007b000, cmd = 0xc007c4e8
+[18208] : CONTEXT_PB_BASE set to 0x0, FL different between TA/3D: local: 0, global: 0
+[18259] : Loading stack-pointers for 1 (0:MidTA,1:3D) on context 1, MLIST = 0x00000000, ALIST = 0x0000000000000000
+[18301] : 3D Buffers: FWCtx 0xc0085098, RTData 0xc0088000 on ctx 1, (MemCtx 0xc002c000)
+[18323] : 3D RTData 0xc0088000 ready on HW context 1
+[18427] : Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x80015000)
+[18449] :   Phantom 0: USCTiles=6
+[18488] : Kick 3D: FWCtx 0xc0085098 @ 5352, RTD 0xc0088000, Partial render:0, CSW resume:0. (PID:684146, prio:1, frame:0, ext:0x00000003, int:0x00000003)
+[18598] : Irq Task complete.
+[18622] : Irq Task (EVENT_STATUS=0x00000118)
+[18668] : 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+[18713] : 3D RTData 0xc0088000 finished on HW context 1
+[18796] : UFO Updates for FWCtx 0xc0085098 @ 5872
+[18826] : UFO Update: [0xc0084000] = 0x0000000a
+[18993] : Irq Task complete.
+[19022] : Bg Task complete DM Bitfield: 1
+[19044] : Kick MTS Irq task DM=0
+[19066] : Irq Task (EVENT_STATUS=0x00000010)
+[19118] : Irq Task complete.
+[19143] : Bg Task OSid = 0
+[19200] : Bg Task complete DM Bitfield: 1
+[19222] : Kick MTS Irq task DM=0
+[19242] : Irq Task (EVENT_STATUS=0x00000010)
+[19307] : Irq Task complete.
+[25119] : Bg Task OSid = 0
+[25152] : KCCB Slot 60: Cmd=0x2abc006a, OSid=0
+[25244] : KCCB Slot 60: Return value 1
+[25302] : Bg Task complete DM Bitfield: 1
+[25324] : Kick MTS Irq task DM=0
+[25353] : Irq Task (EVENT_STATUS=0x00000010)
+[25435] : Irq Task complete.
+[25459] : Bg Task OSid = 0
+[25491] : KCCB Slot 61: Cmd=0x2abc0066, OSid=0
+[25550] : KCCB Slot 61: Return value 1
+[25603] : Bg Task complete DM Bitfield: 1
+[25627] : Kick MTS Irq task DM=0
+[25655] : Irq Task (EVENT_STATUS=0x00000010)
+[25730] : Irq Task complete.
+[25753] : Bg Task OSid = 0
+[25782] : KCCB Slot 62: Cmd=0x2abc0066, OSid=0
+[25844] : KCCB Slot 62: Return value 1
+[25898] : Bg Task complete DM Bitfield: 1
+[25922] : Kick MTS Irq task DM=0
+[25953] : Irq Task (EVENT_STATUS=0x00000010)
+[26035] : Irq Task complete.
+[26060] : Bg Task OSid = 0
+[26092] : KCCB Slot 63: Cmd=0x2abc0066, OSid=0
+[26154] : KCCB Slot 63: Return value 1
+[26209] : Bg Task complete DM Bitfield: 1
+[26231] : Kick MTS Irq task DM=0
+[26259] : Irq Task (EVENT_STATUS=0x00000010)
+[26337] : Irq Task complete.
+[26360] : Bg Task OSid = 0
+[26394] : KCCB Slot 64: Cmd=0x2abc0066, OSid=0
+[26456] : KCCB Slot 64: Return value 1
+[26510] : Bg Task complete DM Bitfield: 1
+[26533] : Kick MTS Irq task DM=0
+[26562] : Irq Task (EVENT_STATUS=0x00000010)
+[26640] : Irq Task complete.
+[26663] : Bg Task OSid = 0
+[26698] : KCCB Slot 65: Cmd=0x2abc0066, OSid=0
+[26758] : KCCB Slot 65: Return value 1
+[26807] : Bg Task complete DM Bitfield: 1
+[26831] : Kick MTS Irq task DM=0
+[26859] : Irq Task (EVENT_STATUS=0x00000010)
+[26940] : Irq Task complete.
+[26965] : Bg Task OSid = 0
+[26999] : KCCB Slot 66: Cmd=0x2abc006a, OSid=0
+[27086] : KCCB Slot 66: Return value 1
+[27141] : Bg Task complete DM Bitfield: 1
+[27164] : Kick MTS Irq task DM=0
+[27193] : Irq Task (EVENT_STATUS=0x00000010)
+[27268] : Irq Task complete.
+[27292] : Bg Task OSid = 0
+[27325] : KCCB Slot 67: Cmd=0x2abc0066, OSid=0
+[27388] : KCCB Slot 67: Return value 1
+[27440] : Bg Task complete DM Bitfield: 1
+[27460] : Kick MTS Irq task DM=0
+[27488] : Irq Task (EVENT_STATUS=0x00000010)
+[27568] : Irq Task complete.
+[27592] : Bg Task OSid = 0
+[27623] : KCCB Slot 68: Cmd=0x2abc0066, OSid=0
+[27681] : KCCB Slot 68: Return value 1
+[27736] : Bg Task complete DM Bitfield: 1
+[27758] : Kick MTS Irq task DM=0
+[27787] : Irq Task (EVENT_STATUS=0x00000010)
+[27866] : Irq Task complete.
+[27890] : Bg Task OSid = 0
+[27922] : KCCB Slot 69: Cmd=0x2abc0066, OSid=0
+[27984] : KCCB Slot 69: Return value 1
+[28038] : Bg Task complete DM Bitfield: 1
+[28060] : Kick MTS Irq task DM=0
+[28085] : Irq Task (EVENT_STATUS=0x00000010)
+[28166] : Irq Task complete.
+[28188] : Bg Task OSid = 0
+[28219] : KCCB Slot 70: Cmd=0x2abc0066, OSid=0
+[28286] : KCCB Slot 70: Return value 1
+[28335] : Bg Task complete DM Bitfield: 1
+[28358] : Kick MTS Irq task DM=0
+[28387] : Irq Task (EVENT_STATUS=0x00000010)
+[28468] : Irq Task complete.
+[28490] : Bg Task OSid = 0
+[28521] : KCCB Slot 71: Cmd=0x2abc0066, OSid=0
+[28582] : KCCB Slot 71: Return value 1
+[28636] : Bg Task complete DM Bitfield: 1
+[28659] : Kick MTS Irq task DM=0
+[28689] : Irq Task (EVENT_STATUS=0x00000010)
+[28770] : Irq Task complete.
+[28795] : Bg Task OSid = 0
+[28829] : KCCB Slot 72: Cmd=0x2abc006a, OSid=0
+[28921] : KCCB Slot 72: Return value 1
+[28973] : Bg Task complete DM Bitfield: 1
+[28996] : Kick MTS Irq task DM=0
+[29023] : Irq Task (EVENT_STATUS=0x00000010)
+[29099] : Irq Task complete.
+[29123] : Bg Task OSid = 0
+[29155] : KCCB Slot 73: Cmd=0x2abc0066, OSid=0
+[29219] : KCCB Slot 73: Return value 1
+[29270] : Bg Task complete DM Bitfield: 1
+[29290] : Kick MTS Irq task DM=0
+[29319] : Irq Task (EVENT_STATUS=0x00000010)
+[29397] : Irq Task complete.
+[29418] : Bg Task OSid = 0
+[29450] : KCCB Slot 74: Cmd=0x2abc0066, OSid=0
+[29512] : KCCB Slot 74: Return value 1
+[29566] : Bg Task complete DM Bitfield: 1
+[29588] : Kick MTS Irq task DM=0
+[29617] : Irq Task (EVENT_STATUS=0x00000010)
+[29693] : Irq Task complete.
+[29716] : Bg Task OSid = 0
+[29747] : KCCB Slot 75: Cmd=0x2abc0066, OSid=0
+[29806] : KCCB Slot 75: Return value 1
+[29858] : Bg Task complete DM Bitfield: 1
+[29878] : Kick MTS Irq task DM=0
+[29906] : Irq Task (EVENT_STATUS=0x00000010)
+[29984] : Irq Task complete.
+[30005] : Bg Task OSid = 0
+[30037] : KCCB Slot 76: Cmd=0x2abc0066, OSid=0
+[30100] : KCCB Slot 76: Return value 1
+[30154] : Bg Task complete DM Bitfield: 1
+[30175] : Kick MTS Irq task DM=0
+[30201] : Irq Task (EVENT_STATUS=0x00000010)
+[30280] : Irq Task complete.
+[30304] : Bg Task OSid = 0
+[30334] : KCCB Slot 77: Cmd=0x2abc0066, OSid=0
+[30394] : KCCB Slot 77: Return value 1
+[30448] : Bg Task complete DM Bitfield: 1
+[30472] : Kick MTS Irq task DM=0
+[30503] : Irq Task (EVENT_STATUS=0x00000010)
+[30585] : Irq Task complete.
+[30608] : Bg Task OSid = 0
+[30641] : KCCB Slot 78: Cmd=0x2abc0066, OSid=0
+[30704] : KCCB Slot 78: Return value 1
+[30758] : Bg Task complete DM Bitfield: 1
+[30780] : Kick MTS Irq task DM=0
+[30806] : Irq Task (EVENT_STATUS=0x00000010)
+[30886] : Irq Task complete.
+[30908] : Bg Task OSid = 0
+[30939] : KCCB Slot 79: Cmd=0x2abc0066, OSid=0
+[30998] : KCCB Slot 79: Return value 1
+[31050] : Bg Task complete DM Bitfield: 1
+[31070] : Kick MTS Irq task DM=0
+[31098] : Irq Task (EVENT_STATUS=0x00000010)
+[31177] : Irq Task complete.
+[31198] : Bg Task OSid = 0
+[31230] : KCCB Slot 80: Cmd=0x2abc0066, OSid=0
+[31288] : KCCB Slot 80: Return value 1
+[31346] : Bg Task complete DM Bitfield: 1
+[31369] : Kick MTS Irq task DM=0
+[31397] : Irq Task (EVENT_STATUS=0x00000010)
+[31476] : Irq Task complete.
+[31498] : Bg Task OSid = 0
+[31530] : KCCB Slot 81: Cmd=0x2abc0066, OSid=0
+[31593] : KCCB Slot 81: Return value 1
+[31647] : Bg Task complete DM Bitfield: 1
+[31670] : Kick MTS Irq task DM=0
+[31696] : Irq Task (EVENT_STATUS=0x00000010)
+[31775] : Irq Task complete.
+[31798] : Bg Task OSid = 0
+[31829] : KCCB Slot 82: Cmd=0x2abc0066, OSid=0
+[31888] : KCCB Slot 82: Return value 1
+[31940] : Bg Task complete DM Bitfield: 1
+[31960] : Kick MTS Irq task DM=0
+[31988] : Irq Task (EVENT_STATUS=0x00000010)
+[32066] : Irq Task complete.
+[32091] : Bg Task OSid = 0
+[32121] : KCCB Slot 83: Cmd=0x2abc0066, OSid=0
+[32181] : KCCB Slot 83: Return value 1
+[32236] : Bg Task complete DM Bitfield: 1
+[32258] : Kick MTS Irq task DM=0
+[32284] : Irq Task (EVENT_STATUS=0x00000010)
+[32365] : Irq Task complete.
+[32388] : Bg Task OSid = 0
+[32422] : KCCB Slot 84: Cmd=0x2abc0066, OSid=0
+[32480] : KCCB Slot 84: Return value 1
+[32538] : Bg Task complete DM Bitfield: 1
+[32560] : Kick MTS Irq task DM=0
+[32585] : Irq Task (EVENT_STATUS=0x00000010)
+[32665] : Irq Task complete.
+[32690] : Bg Task OSid = 0
+[32725] : KCCB Slot 85: Cmd=0x2abc0066, OSid=0
+[32786] : KCCB Slot 85: Return value 1
+[32840] : Bg Task complete DM Bitfield: 1
+[32862] : Kick MTS Irq task DM=0
+[32887] : Irq Task (EVENT_STATUS=0x00000010)
+[32968] : Irq Task complete.
+[32992] : Bg Task OSid = 0
+[33026] : KCCB Slot 86: Cmd=0x2abc0066, OSid=0
+[33088] : KCCB Slot 86: Return value 1
+[33142] : Bg Task complete DM Bitfield: 1
+[33164] : Kick MTS Irq task DM=0
+[33190] : Irq Task (EVENT_STATUS=0x00000010)
+[33269] : Irq Task complete.
+[33295] : Bg Task OSid = 0
+[33325] : KCCB Slot 87: Cmd=0x2abc0066, OSid=0
+[33384] : KCCB Slot 87: Return value 1
+[33437] : Bg Task complete DM Bitfield: 1
+[33460] : Kick MTS Irq task DM=0
+[33487] : Irq Task (EVENT_STATUS=0x00000010)
+[33562] : Irq Task complete.
+[33585] : Bg Task OSid = 0
+[33617] : KCCB Slot 88: Cmd=0x2abc0066, OSid=0
+[33677] : KCCB Slot 88: Return value 1
+[33730] : Bg Task complete DM Bitfield: 1
+[33752] : Kick MTS Irq task DM=0
+[33778] : Irq Task (EVENT_STATUS=0x00000010)
+[33857] : Irq Task complete.
+[33882] : Bg Task OSid = 0
+[33915] : KCCB Slot 89: Cmd=0x2abc0066, OSid=0
+[33978] : KCCB Slot 89: Return value 1
+[34032] : Bg Task complete DM Bitfield: 1
+[34051] : Kick MTS Irq task DM=0
+[34079] : Irq Task (EVENT_STATUS=0x00000010)
+[34159] : Irq Task complete.
+[34184] : Bg Task OSid = 0
+[34217] : KCCB Slot 90: Cmd=0x2abc0066, OSid=0
+[34276] : KCCB Slot 90: Return value 1
+[34328] : Bg Task complete DM Bitfield: 1
+[34350] : Kick MTS Irq task DM=0
+[34382] : Irq Task (EVENT_STATUS=0x00000010)
+[34464] : Irq Task complete.
+[34563] : Bg Task OSid = 0
+[34603] : KCCB Slot 91: Cmd=0x2abc0066, OSid=0
+[34680] : KCCB Slot 91: Return value 1
+[34741] : Bg Task complete DM Bitfield: 1
+[34764] : Kick MTS Irq task DM=0
+[34798] : Irq Task (EVENT_STATUS=0x00000010)
+[34882] : Irq Task complete.
+[35398] : Bg Task OSid = 0
+[35430] : KCCB Slot 92: Cmd=0x2abc0066, OSid=0
+[35494] : KCCB Slot 92: Return value 1
+[35549] : Bg Task complete DM Bitfield: 1
+[35570] : Kick MTS Irq task DM=0
+[35603] : Irq Task (EVENT_STATUS=0x00000010)
+[35691] : Irq Task complete.
+[36180] : Bg Task OSid = 0
+[36212] : KCCB Slot 93: Cmd=0x2abc0066, OSid=0
+[36272] : KCCB Slot 93: Return value 1
+[36324] : Bg Task complete DM Bitfield: 1
+[36350] : Kick MTS Irq task DM=0
+[36379] : Irq Task (EVENT_STATUS=0x00000010)
+[36460] : Irq Task complete.
+[36482] : Bg Task OSid = 0
+[36513] : KCCB Slot 94: Cmd=0x2abc0066, OSid=0
+[36575] : KCCB Slot 94: Return value 1
+[36628] : Bg Task complete DM Bitfield: 1
+[36651] : Kick MTS Irq task DM=0
+[36682] : Irq Task (EVENT_STATUS=0x00000010)
+[36764] : Irq Task complete.
+[37231] : Bg Task OSid = 0
+[37269] : KCCB Slot 95: Cmd=0x2abc0066, OSid=0
+[37330] : KCCB Slot 95: Return value 1
+[37383] : Bg Task complete DM Bitfield: 1
+[37406] : Kick MTS Irq task DM=0
+[37433] : Irq Task (EVENT_STATUS=0x00000010)
+[37508] : Irq Task complete.
+[37531] : Bg Task OSid = 0
+[37562] : KCCB Slot 96: Cmd=0x2abc0066, OSid=0
+[37622] : KCCB Slot 96: Return value 1
+[37676] : Bg Task complete DM Bitfield: 1
+[37698] : Kick MTS Irq task DM=0
+[37723] : Irq Task (EVENT_STATUS=0x00000010)
+[37802] : Irq Task complete.
+[37828] : Bg Task OSid = 0
+[37862] : KCCB Slot 97: Cmd=0x2abc0066, OSid=0
+[37928] : KCCB Slot 97: Return value 1
+[37982] : Bg Task complete DM Bitfield: 1
+[38004] : Kick MTS Irq task DM=0
+[38032] : Irq Task (EVENT_STATUS=0x00000010)
+[38112] : Irq Task complete.
+[38135] : Bg Task OSid = 0
+[38165] : KCCB Slot 98: Cmd=0x2abc0066, OSid=0
+[38226] : KCCB Slot 98: Return value 1
+[38280] : Bg Task complete DM Bitfield: 1
+[38300] : Kick MTS Irq task DM=0
+[38331] : Irq Task (EVENT_STATUS=0x00000010)
+[38409] : Irq Task complete.
+[38433] : Bg Task OSid = 0
+[38466] : KCCB Slot 99: Cmd=0x2abc0066, OSid=0
+[38533] : KCCB Slot 99: Return value 1
+[38587] : Bg Task complete DM Bitfield: 1
+[38609] : Kick MTS Irq task DM=0
+[38636] : Irq Task (EVENT_STATUS=0x00000010)
+[38713] : Irq Task complete.
+[38736] : Bg Task OSid = 0
+[38768] : KCCB Slot 100: Cmd=0x2abc0066, OSid=0
+[38827] : KCCB Slot 100: Return value 1
+[38878] : Bg Task complete DM Bitfield: 1
+[38900] : Kick MTS Irq task DM=0
+[38928] : Irq Task (EVENT_STATUS=0x00000010)
+[39003] : Irq Task complete.
+[39025] : Bg Task OSid = 0
+[39054] : KCCB Slot 101: Cmd=0x2abc0066, OSid=0
+[39115] : KCCB Slot 101: Return value 1
+[39165] : Bg Task complete DM Bitfield: 1
+[39188] : Kick MTS Irq task DM=0
+[39217] : Irq Task (EVENT_STATUS=0x00000010)
+[39297] : Irq Task complete.
+[39322] : Bg Task OSid = 0
+[39353] : KCCB Slot 102: Cmd=0x2abc0066, OSid=0
+[39412] : KCCB Slot 102: Return value 1
+[39461] : Bg Task complete DM Bitfield: 1
+[39481] : Kick MTS Irq task DM=0
+[39509] : Irq Task (EVENT_STATUS=0x00000010)
+[39588] : Irq Task complete.
+[39610] : Bg Task OSid = 0
+[39642] : KCCB Slot 103: Cmd=0x2abc0066, OSid=0
+[39703] : KCCB Slot 103: Return value 1
+[39753] : Bg Task complete DM Bitfield: 1
+[39775] : Kick MTS Irq task DM=0
+[39804] : Irq Task (EVENT_STATUS=0x00000010)
+[39885] : Irq Task complete.
+[39907] : Bg Task OSid = 0
+[39936] : KCCB Slot 104: Cmd=0x2abc0066, OSid=0
+[39996] : KCCB Slot 104: Return value 1
+[40047] : Bg Task complete DM Bitfield: 1
+[40069] : Kick MTS Irq task DM=0
+[40097] : Irq Task (EVENT_STATUS=0x00000010)
+[40177] : Irq Task complete.
+[40197] : Bg Task OSid = 0
+[40229] : KCCB Slot 105: Cmd=0x2abc0066, OSid=0
+[40287] : KCCB Slot 105: Return value 1
+[40345] : Bg Task complete DM Bitfield: 1
+[40368] : Kick MTS Irq task DM=0
+[40396] : Irq Task (EVENT_STATUS=0x00000010)
+[40474] : Irq Task complete.
+[40498] : Bg Task OSid = 0
+[40531] : KCCB Slot 106: Cmd=0x2abc0066, OSid=0
+[40593] : KCCB Slot 106: Return value 1
+[40647] : Bg Task complete DM Bitfield: 1
+[40670] : Kick MTS Irq task DM=0
+[40695] : Irq Task (EVENT_STATUS=0x00000010)
+[40774] : Irq Task complete.
+[40797] : Bg Task OSid = 0
+[40828] : KCCB Slot 107: Cmd=0x2abc0066, OSid=0
+[40887] : KCCB Slot 107: Return value 1
+[40939] : Bg Task complete DM Bitfield: 1
+[40959] : Kick MTS Irq task DM=0
+[40988] : Irq Task (EVENT_STATUS=0x00000010)
+[41066] : Irq Task complete.
+[41087] : Bg Task OSid = 0
+[41119] : KCCB Slot 108: Cmd=0x2abc0066, OSid=0
+[41181] : KCCB Slot 108: Return value 1
+[41235] : Bg Task complete DM Bitfield: 1
+[41257] : Kick MTS Irq task DM=0
+[41282] : Irq Task (EVENT_STATUS=0x00000010)
+[41363] : Irq Task complete.
+[41386] : Bg Task OSid = 0
+[41416] : KCCB Slot 109: Cmd=0x2abc0066, OSid=0
+[41475] : KCCB Slot 109: Return value 1
+[41527] : Bg Task complete DM Bitfield: 1
+[41547] : Kick MTS Irq task DM=0
+[41576] : Irq Task (EVENT_STATUS=0x00000010)
+[41655] : Irq Task complete.
+[41679] : Bg Task OSid = 0
+[41710] : KCCB Slot 110: Cmd=0x2abc0066, OSid=0
+[41768] : KCCB Slot 110: Return value 1
+[41822] : Bg Task complete DM Bitfield: 1
+[41845] : Kick MTS Irq task DM=0
+[41871] : Irq Task (EVENT_STATUS=0x00000010)
+[41950] : Irq Task complete.
+[41975] : Bg Task OSid = 0
+[42010] : KCCB Slot 111: Cmd=0x2abc006a, OSid=0
+[42097] : KCCB Slot 111: Return value 1
+[42151] : Bg Task complete DM Bitfield: 1
+[42175] : Kick MTS Irq task DM=0
+[42199] : Irq Task (EVENT_STATUS=0x00000010)
+[42275] : Irq Task complete.
+[42296] : Bg Task OSid = 0
+[42328] : KCCB Slot 112: Cmd=0x2abc0066, OSid=0
+[42389] : KCCB Slot 112: Return value 1
+[42444] : Bg Task complete DM Bitfield: 1
+[42466] : Kick MTS Irq task DM=0
+[42496] : Irq Task (EVENT_STATUS=0x00000010)
+[42577] : Irq Task complete.
+[42602] : Bg Task OSid = 0
+[42633] : KCCB Slot 113: Cmd=0x2abc006a, OSid=0
+[42718] : KCCB Slot 113: Return value 1
+[42772] : Bg Task complete DM Bitfield: 1
+[42796] : Kick MTS Irq task DM=0
+[42823] : Irq Task (EVENT_STATUS=0x00000010)
+[42901] : Irq Task complete.
+[42924] : Bg Task OSid = 0
+[42957] : KCCB Slot 114: Cmd=0x2abc0066, OSid=0
+[43019] : KCCB Slot 114: Return value 1
+[43072] : Bg Task complete DM Bitfield: 1
+[43092] : Kick MTS Irq task DM=0
+[43120] : Irq Task (EVENT_STATUS=0x00000010)
+[43200] : Irq Task complete.
+[43223] : Bg Task OSid = 0
+[43255] : KCCB Slot 115: Cmd=0x2abc0066, OSid=0
+[43318] : KCCB Slot 115: Return value 1
+[43366] : KCCB Slot 116: Cmd=0x2abc006a, OSid=0
+[43457] : KCCB Slot 116: Return value 1
+[43504] : KCCB Slot 117: Cmd=0x2abc006a, OSid=0
+[43563] : Store Freelist 0xc0086000 type: 0 (0:local,1:global) for PMDM0: FL Total Pages 32 (max=32,grow size=0), FL-addr = 0x00000080003b2000, stacktop = 0x000000000000001f, Alloc Page Count = 0, Alloc MMU Page Count = 0
+[43603] : Store Freelist 0xc002d000 type: 1 (0:local,1:global) for PMDM0: FL Total Pages 448 (max=65536,grow size=256), FL-addr = 0x0000008000048900, stacktop = 0x00000000000001bf, Alloc Page Count = 0, Alloc MMU Page Count = 0
+[43643] : Store Freelist 0xc0086000 type: 0 (0:local,1:global) for PMDM1: FL Total Pages 32 (max=32,grow size=0), FL-addr = 0x00000080003b2000, stacktop = 0x000000000000001f, Alloc Page Count = 0, Alloc MMU Page Count = 0
+[43679] : Store Freelist 0xc002d000 type: 1 (0:local,1:global) for PMDM1: FL Total Pages 448 (max=65536,grow size=256), FL-addr = 0x0000008000048900, stacktop = 0x00000000000001bf, Alloc Page Count = 0, Alloc MMU Page Count = 0
+[43743] : KCCB Slot 117: Return value 1
+[43789] : KCCB Slot 118: Cmd=0x2abc0066, OSid=0
+[43857] : KCCB Slot 118: Return value 1
+[43911] : Bg Task complete DM Bitfield: 1
+[43932] : Kick MTS Irq task DM=0
+[43960] : Irq Task (EVENT_STATUS=0x00000010)
+[44038] : Irq Task complete.
+[44062] : Bg Task OSid = 0
+[44094] : KCCB Slot 119: Cmd=0x2abc0066, OSid=0
+[44152] : KCCB Slot 119: Return value 1
+[44196] : KCCB Slot 120: Cmd=0x2abc0066, OSid=0
+[44261] : KCCB Slot 120: Return value 1
+[44310] : KCCB Slot 121: Cmd=0x2abc006a, OSid=0
+[44389] : KCCB Slot 121: Return value 1
+[44439] : KCCB Slot 122: Cmd=0x2abc0066, OSid=0
+[44505] : KCCB Slot 122: Return value 1
+[44559] : Bg Task complete DM Bitfield: 1
+[44581] : Kick MTS Irq task DM=0
+[44608] : Irq Task (EVENT_STATUS=0x00000010)
+[44686] : Irq Task complete.
+[44710] : Bg Task OSid = 0
+[44738] : Bg Task complete DM Bitfield: 1
+[44760] : Kick MTS Irq task DM=0
+[44780] : Irq Task (EVENT_STATUS=0x00000010)
+[44834] : Irq Task complete.
+[45000] : Bg Task OSid = 0
+[45030] : KCCB Slot 123: Cmd=0x2abc0066, OSid=0
+[45093] : KCCB Slot 123: Return value 1
+[45148] : Bg Task complete DM Bitfield: 1
+[45169] : Kick MTS Irq task DM=0
+[45195] : Irq Task (EVENT_STATUS=0x00000010)
+[45276] : Irq Task complete.
+[45328] : Bg Task OSid = 0
+[45359] : KCCB Slot 124: Cmd=0x2abc006a, OSid=0
+[45453] : KCCB Slot 124: Return value 1
+[45509] : Bg Task complete DM Bitfield: 1
+[45533] : Kick MTS Irq task DM=0
+[45559] : Irq Task (EVENT_STATUS=0x00000010)
+[45643] : Irq Task complete.
+[45666] : Bg Task OSid = 0
+[45697] : KCCB Slot 125: Cmd=0x2abc0066, OSid=0
+[45757] : KCCB Slot 125: Return value 1
+[45804] : KCCB Slot 126: Cmd=0x2abc0066, OSid=0
+[45865] : KCCB Slot 126: Return value 1
+[45912] : KCCB Slot 127: Cmd=0x2abc0066, OSid=0
+[45979] : KCCB Slot 127: Return value 1
+[46037] : Bg Task complete DM Bitfield: 1
+[46060] : Kick MTS Irq task DM=0
+[46088] : Irq Task (EVENT_STATUS=0x00000010)
+[46167] : Irq Task complete.
+[46191] : Bg Task OSid = 0
+[46223] : KCCB Slot 0: Cmd=0x2abc0066, OSid=0
+[46285] : KCCB Slot 0: Return value 1
+[46328] : KCCB Slot 1: Cmd=0x2abc0066, OSid=0
+[46394] : KCCB Slot 1: Return value 1
+[46447] : Bg Task complete DM Bitfield: 1
+[46467] : Kick MTS Irq task DM=0
+[46495] : Irq Task (EVENT_STATUS=0x00000010)
+[46575] : Irq Task complete.
+[46601] : Bg Task OSid = 0
+[46634] : KCCB Slot 2: Cmd=0x2abc0066, OSid=0
+[46705] : KCCB Slot 2: Return value 1
+[46759] : Bg Task complete DM Bitfield: 1
+[46781] : Kick MTS Irq task DM=0
+[46812] : Irq Task (EVENT_STATUS=0x00000010)
+[46903] : Irq Task complete.
+[46928] : Bg Task OSid = 0
+[46962] : KCCB Slot 3: Cmd=0x2abc0066, OSid=0
+[47023] : KCCB Slot 3: Return value 1
+[47078] : Bg Task complete DM Bitfield: 1
+[47099] : Kick MTS Irq task DM=0
+[47125] : Irq Task (EVENT_STATUS=0x00000010)
+[47205] : Irq Task complete.
+[47228] : Bg Task OSid = 0
+[47259] : KCCB Slot 4: Cmd=0x2abc0066, OSid=0
+[47319] : KCCB Slot 4: Return value 1
+[47370] : Bg Task complete DM Bitfield: 1
+[47390] : Kick MTS Irq task DM=0
+[47418] : Irq Task (EVENT_STATUS=0x00000010)
+[47497] : Irq Task complete.
+[47522] : Bg Task OSid = 0
+[47553] : Bg Task complete DM Bitfield: 1
+[47571] : Kick MTS Irq task DM=0
+[47593] : Irq Task (EVENT_STATUS=0x00000010)
+[47648] : Irq Task complete.
+[33554480] : Bg Task OSid = 0
+[33554574] : Bg Task complete DM Bitfield: 1
+[33554605] : Kick MTS Irq task DM=0
+[33554632] : Irq Task (EVENT_STATUS=0x00000010)
+[33554703] : Irq Task complete.
+[67108906] : Bg Task OSid = 0
+[67108969] : Bg Task complete DM Bitfield: 1
+[67108991] : Kick MTS Irq task DM=0
+[67109015] : Irq Task (EVENT_STATUS=0x00000010)
+[67109070] : Irq Task complete.
+[100663340] : Bg Task OSid = 0
+[100663416] : Bg Task complete DM Bitfield: 1
+[100663447] : Kick MTS Irq task DM=0
+[100663479] : Irq Task (EVENT_STATUS=0x00000010)
+[100663550] : Irq Task complete.
+[134217770] : Bg Task OSid = 0
+[134217837] : Bg Task complete DM Bitfield: 1
+[134217855] : Kick MTS Irq task DM=0
+[134217876] : Irq Task (EVENT_STATUS=0x00000010)
+[134217931] : Irq Task complete.
+[167772203] : Bg Task OSid = 0
+[167772278] : Bg Task complete DM Bitfield: 1
+[167772303] : Kick MTS Irq task DM=0
+[167772331] : Irq Task (EVENT_STATUS=0x00000010)
+[167772401] : Irq Task complete.
+[201326636] : Bg Task OSid = 0
+[201326705] : Bg Task complete DM Bitfield: 1
+[201326729] : Kick MTS Irq task DM=0
+[201326755] : Irq Task (EVENT_STATUS=0x00000010)
+[201326824] : Irq Task complete.
+[234881066] : Bg Task OSid = 0
+[234881129] : Bg Task complete DM Bitfield: 1
+[234881150] : Kick MTS Irq task DM=0
+[234881171] : Irq Task (EVENT_STATUS=0x00000010)
+[234881229] : Irq Task complete.
+[268435499] : Bg Task OSid = 0
+[268435575] : Bg Task complete DM Bitfield: 1
+[268435598] : Kick MTS Irq task DM=0
+[268435627] : Irq Task (EVENT_STATUS=0x00000010)
+[268435686] : Irq Task complete.
+[301989929] : Bg Task OSid = 0
+[301989997] : Bg Task complete DM Bitfield: 1
+[301990016] : Kick MTS Irq task DM=0
+[301990037] : Irq Task (EVENT_STATUS=0x00000010)
+[301990093] : Irq Task complete.
+[335544363] : Bg Task OSid = 0
+[335544431] : Bg Task complete DM Bitfield: 1
+[335544454] : Kick MTS Irq task DM=0
+[335544474] : Irq Task (EVENT_STATUS=0x00000010)
+[335544538] : Irq Task complete.
+[369098796] : Bg Task OSid = 0
+[369098861] : Bg Task complete DM Bitfield: 1
+[369098883] : Kick MTS Irq task DM=0
+[369098903] : Irq Task (EVENT_STATUS=0x00000010)
+[369098958] : Irq Task complete.
+[402653225] : Bg Task OSid = 0
+[402653290] : Bg Task complete DM Bitfield: 1
+[402653312] : Kick MTS Irq task DM=0
+[402653331] : Irq Task (EVENT_STATUS=0x00000010)
+[402653387] : Irq Task complete.
+[436207658] : Bg Task OSid = 0
+[436207724] : Bg Task complete DM Bitfield: 1
+[436207742] : Kick MTS Irq task DM=0
+[436207763] : Irq Task (EVENT_STATUS=0x00000010)
+[436207819] : Irq Task complete.
+[469762090] : Bg Task OSid = 0
+[469762157] : Bg Task complete DM Bitfield: 1
+[469762177] : Kick MTS Irq task DM=0
+[469762198] : Irq Task (EVENT_STATUS=0x00000010)
+[469762253] : Irq Task complete.
+[503316526] : Bg Task OSid = 0
+[503316606] : Bg Task complete DM Bitfield: 1
+[503316631] : Kick MTS Irq task DM=0
+[503316664] : Irq Task (EVENT_STATUS=0x00000010)
+[503316749] : Irq Task complete.
+[536870955] : Bg Task OSid = 0
+[536871022] : Bg Task complete DM Bitfield: 1
+[536871044] : Kick MTS Irq task DM=0
+[536871064] : Irq Task (EVENT_STATUS=0x00000010)
+[536871129] : Irq Task complete.
+[570425386] : Bg Task OSid = 0
+[570425452] : Bg Task complete DM Bitfield: 1
+[570425474] : Kick MTS Irq task DM=0
+[570425500] : Irq Task (EVENT_STATUS=0x00000010)
+[570425562] : Irq Task complete.
+[603979818] : Bg Task OSid = 0
+[603979880] : Bg Task complete DM Bitfield: 1
+[603979901] : Kick MTS Irq task DM=0
+[603979922] : Irq Task (EVENT_STATUS=0x00000010)
+[603979977] : Irq Task complete.
+[637534250] : Bg Task OSid = 0
+[637534332] : Bg Task complete DM Bitfield: 1
+[637534359] : Kick MTS Irq task DM=0
+[637534386] : Irq Task (EVENT_STATUS=0x00000010)
+[637534461] : Irq Task complete.
+[671088682] : Bg Task OSid = 0
+[671088748] : Bg Task complete DM Bitfield: 1
+[671088766] : Kick MTS Irq task DM=0
+[671088787] : Irq Task (EVENT_STATUS=0x00000010)
+[671088843] : Irq Task complete.
+[704643115] : Bg Task OSid = 0
+[704643182] : Bg Task complete DM Bitfield: 1
+[704643205] : Kick MTS Irq task DM=0
+[704643225] : Irq Task (EVENT_STATUS=0x00000010)
+[704643282] : Irq Task complete.
+[738197547] : Bg Task OSid = 0
+[738197612] : Bg Task complete DM Bitfield: 1
+[738197633] : Kick MTS Irq task DM=0
+[738197653] : Irq Task (EVENT_STATUS=0x00000010)
+[738197708] : Irq Task complete.
+[771751978] : Bg Task OSid = 0
+[771752042] : Bg Task complete DM Bitfield: 1
+[771752064] : Kick MTS Irq task DM=0
+[771752086] : Irq Task (EVENT_STATUS=0x00000010)
+[771752142] : Irq Task complete.
+[805306410] : Bg Task OSid = 0
+[805306479] : Bg Task complete DM Bitfield: 1
+[805306499] : Kick MTS Irq task DM=0
+[805306521] : Irq Task (EVENT_STATUS=0x00000010)
+[805306578] : Irq Task complete.
+[838860842] : Bg Task OSid = 0
+[838860903] : Bg Task complete DM Bitfield: 1
+[838860921] : Kick MTS Irq task DM=0
+[838860943] : Irq Task (EVENT_STATUS=0x00000010)
+[838860998] : Irq Task complete.
+[872415275] : Bg Task OSid = 0
+[872415342] : Bg Task complete DM Bitfield: 1
+[872415365] : Kick MTS Irq task DM=0
+[872415385] : Irq Task (EVENT_STATUS=0x00000010)
+[872415443] : Irq Task complete.
+[905969708] : Bg Task OSid = 0
+[905969773] : Bg Task complete DM Bitfield: 1
+[905969794] : Kick MTS Irq task DM=0
+[905969814] : Irq Task (EVENT_STATUS=0x00000010)
+[905969870] : Irq Task complete.
+[939524138] : Bg Task OSid = 0
+[939524226] : Bg Task complete DM Bitfield: 1
+[939524262] : Kick MTS Irq task DM=0
+[939524288] : Irq Task (EVENT_STATUS=0x00000010)
+[939524385] : Irq Task complete.
+[973078570] : Bg Task OSid = 0
+[973078636] : Bg Task complete DM Bitfield: 1
+[973078658] : Kick MTS Irq task DM=0
+[973078679] : Irq Task (EVENT_STATUS=0x00000010)
+[973078736] : Irq Task complete.
+[1006633002] : Bg Task OSid = 0
+[1006633078] : Bg Task complete DM Bitfield: 1
+[1006633104] : Kick MTS Irq task DM=0
+[1006633134] : Irq Task (EVENT_STATUS=0x00000010)
+[1006633205] : Irq Task complete.
+[1040187433] : Bg Task OSid = 0
+[1040187499] : Bg Task complete DM Bitfield: 1
+[1040187517] : Kick MTS Irq task DM=0
+[1040187539] : Irq Task (EVENT_STATUS=0x00000010)
+[1040187594] : Irq Task complete.
+[1073741870] : Bg Task OSid = 0
+[1073741945] : Bg Task complete DM Bitfield: 1
+[1073741967] : Kick MTS Irq task DM=0
+[1073741993] : Irq Task (EVENT_STATUS=0x00000010)
+[1073742067] : Irq Task complete.
+[1107296298] : Bg Task OSid = 0
+[1107296363] : Bg Task complete DM Bitfield: 1
+[1107296384] : Kick MTS Irq task DM=0
+[1107296404] : Irq Task (EVENT_STATUS=0x00000010)
+[1107296462] : Irq Task complete.
+[1140850730] : Bg Task OSid = 0
+[1140850791] : Bg Task complete DM Bitfield: 1
+[1140850812] : Kick MTS Irq task DM=0
+[1140850832] : Irq Task (EVENT_STATUS=0x00000010)
+[1140850888] : Irq Task complete.
+[1174405162] : Bg Task OSid = 0
+[1174405225] : Bg Task complete DM Bitfield: 1
+[1174405244] : Kick MTS Irq task DM=0
+[1174405265] : Irq Task (EVENT_STATUS=0x00000010)
+[1174405317] : Irq Task complete.
+[1207959594] : Bg Task OSid = 0
+[1207959660] : Bg Task complete DM Bitfield: 1
+[1207959678] : Kick MTS Irq task DM=0
+[1207959699] : Irq Task (EVENT_STATUS=0x00000010)
+[1207959754] : Irq Task complete.
+[1241514027] : Bg Task OSid = 0
+[1241514110] : Bg Task complete DM Bitfield: 1
+[1241514137] : Kick MTS Irq task DM=0
+[1241514167] : Irq Task (EVENT_STATUS=0x00000010)
+[1241514238] : Irq Task complete.
+[1275068459] : Bg Task OSid = 0
+[1275068524] : Bg Task complete DM Bitfield: 1
+[1275068545] : Kick MTS Irq task DM=0
+[1275068565] : Irq Task (EVENT_STATUS=0x00000010)
+[1275068620] : Irq Task complete.
+[1308622892] : Bg Task OSid = 0
+[1308622970] : Bg Task complete DM Bitfield: 1
+[1308622995] : Kick MTS Irq task DM=0
+[1308623024] : Irq Task (EVENT_STATUS=0x00000010)
+[1308623098] : Irq Task complete.
+[1342177322] : Bg Task OSid = 0
+[1342177389] : Bg Task complete DM Bitfield: 1
+[1342177410] : Kick MTS Irq task DM=0
+[1342177433] : Irq Task (EVENT_STATUS=0x00000010)
+[1342177492] : Irq Task complete.
+[1375731754] : Bg Task OSid = 0
+[1375731821] : Bg Task complete DM Bitfield: 1
+[1375731839] : Kick MTS Irq task DM=0
+[1375731860] : Irq Task (EVENT_STATUS=0x00000010)
+[1375731918] : Irq Task complete.
+[1409286187] : Bg Task OSid = 0
+[1409286252] : Bg Task complete DM Bitfield: 1
+[1409286272] : Kick MTS Irq task DM=0
+[1409286292] : Irq Task (EVENT_STATUS=0x00000010)
+[1409286348] : Irq Task complete.
+[1442840620] : Bg Task OSid = 0
+[1442840685] : Bg Task complete DM Bitfield: 1
+[1442840706] : Kick MTS Irq task DM=0
+[1442840726] : Irq Task (EVENT_STATUS=0x00000010)
+[1442840781] : Irq Task complete.
+[1476395049] : Bg Task OSid = 0
+[1476395113] : Bg Task complete DM Bitfield: 1
+[1476395135] : Kick MTS Irq task DM=0
+[1476395155] : Irq Task (EVENT_STATUS=0x00000010)
+[1476395213] : Irq Task complete.
+[1509949482] : Bg Task OSid = 0
+[1509949547] : Bg Task complete DM Bitfield: 1
+[1509949565] : Kick MTS Irq task DM=0
+[1509949587] : Irq Task (EVENT_STATUS=0x00000010)
+[1509949642] : Irq Task complete.
+[1543503916] : Bg Task OSid = 0
+[1543503994] : Bg Task complete DM Bitfield: 1
+[1543504022] : Kick MTS Irq task DM=0
+[1543504049] : Irq Task (EVENT_STATUS=0x00000010)
+[1543504120] : Irq Task complete.
+[1577058345] : Bg Task OSid = 0
+[1577058415] : Bg Task complete DM Bitfield: 1
+[1577058437] : Kick MTS Irq task DM=0
+[1577058458] : Irq Task (EVENT_STATUS=0x00000010)
+[1577058513] : Irq Task complete.
+[1610612782] : Bg Task OSid = 0
+[1610612864] : Bg Task complete DM Bitfield: 1
+[1610612889] : Kick MTS Irq task DM=0
+[1610612917] : Irq Task (EVENT_STATUS=0x00000010)
+[1610613000] : Irq Task complete.
+[1644167210] : Bg Task OSid = 0
+[1644167274] : Bg Task complete DM Bitfield: 1
+[1644167296] : Kick MTS Irq task DM=0
+[1644167316] : Irq Task (EVENT_STATUS=0x00000010)
+[1644167375] : Irq Task complete.
+[1677721644] : Bg Task OSid = 0
+[1677721727] : Bg Task complete DM Bitfield: 1
+[1677721754] : Kick MTS Irq task DM=0
+[1677721785] : Irq Task (EVENT_STATUS=0x00000010)
+[1677721855] : Irq Task complete.
+[1711276073] : Bg Task OSid = 0
+[1711276137] : Bg Task complete DM Bitfield: 1
+[1711276155] : Kick MTS Irq task DM=0
+[1711276177] : Irq Task (EVENT_STATUS=0x00000010)
+[1711276228] : Irq Task complete.
+[1744830506] : Bg Task OSid = 0
+[1744830572] : Bg Task complete DM Bitfield: 1
+[1744830593] : Kick MTS Irq task DM=0
+[1744830614] : Irq Task (EVENT_STATUS=0x00000010)
+[1744830670] : Irq Task complete.
+[1778384938] : Bg Task OSid = 0
+[1778385005] : Bg Task complete DM Bitfield: 1
+[1778385027] : Kick MTS Irq task DM=0
+[1778385047] : Irq Task (EVENT_STATUS=0x00000010)
+[1778385103] : Irq Task complete.
+[1811939372] : Bg Task OSid = 0
+[1811939454] : Bg Task complete DM Bitfield: 1
+[1811939477] : Kick MTS Irq task DM=0
+[1811939506] : Irq Task (EVENT_STATUS=0x00000010)
+[1811939571] : Irq Task complete.
+[1845493802] : Bg Task OSid = 0
+[1845493865] : Bg Task complete DM Bitfield: 1
+[1845493885] : Kick MTS Irq task DM=0
+[1845493905] : Irq Task (EVENT_STATUS=0x00000010)
+[1845493964] : Irq Task complete.
+[1879048233] : Bg Task OSid = 0
+[1879048298] : Bg Task complete DM Bitfield: 1
+[1879048316] : Kick MTS Irq task DM=0
+[1879048342] : Irq Task (EVENT_STATUS=0x00000010)
+[1879048398] : Irq Task complete.
+[1912602667] : Bg Task OSid = 0
+[1912602733] : Bg Task complete DM Bitfield: 1
+[1912602754] : Kick MTS Irq task DM=0
+[1912602775] : Irq Task (EVENT_STATUS=0x00000010)
+[1912602831] : Irq Task complete.
+[1946157099] : Bg Task OSid = 0
+[1946157168] : Bg Task complete DM Bitfield: 1
+[1946157189] : Kick MTS Irq task DM=0
+[1946157210] : Irq Task (EVENT_STATUS=0x00000010)
+[1946157267] : Irq Task complete.
+[1979711532] : Bg Task OSid = 0
+[1979711605] : Bg Task complete DM Bitfield: 1
+[1979711626] : Kick MTS Irq task DM=0
+[1979711648] : Irq Task (EVENT_STATUS=0x00000010)
+[1979711707] : Irq Task complete.
+[2013265963] : Bg Task OSid = 0
+[2013266030] : Bg Task complete DM Bitfield: 1
+[2013266048] : Kick MTS Irq task DM=0
+[2013266070] : Irq Task (EVENT_STATUS=0x00000010)
+[2013266126] : Irq Task complete.
+[2046820396] : Bg Task OSid = 0
+[2046820472] : Bg Task complete DM Bitfield: 1
+[2046820497] : Kick MTS Irq task DM=0
+[2046820527] : Irq Task (EVENT_STATUS=0x00000010)
+[2046820601] : Irq Task complete.
+[2080374826] : Bg Task OSid = 0
+[2080374892] : Bg Task complete DM Bitfield: 1
+[2080374911] : Kick MTS Irq task DM=0
+[2080374933] : Irq Task (EVENT_STATUS=0x00000010)
+[2080374989] : Irq Task complete.
+[2113929261] : Bg Task OSid = 0
+[2113929340] : Bg Task complete DM Bitfield: 1
+[2113929363] : Kick MTS Irq task DM=0
+[2113929388] : Irq Task (EVENT_STATUS=0x00000010)
+[2113929464] : Irq Task complete.
+[2147483692] : Bg Task OSid = 0
+[2147483757] : Bg Task complete DM Bitfield: 1
+[2147483778] : Kick MTS Irq task DM=0
+[2147483798] : Irq Task (EVENT_STATUS=0x00000010)
+[2147483853] : Irq Task complete.
+[2181038122] : Bg Task OSid = 0
+[2181038194] : Bg Task complete DM Bitfield: 1
+[2181038216] : Kick MTS Irq task DM=0
+[2181038237] : Irq Task (EVENT_STATUS=0x00000010)
+[2181038304] : Irq Task complete.
+[2214592553] : Bg Task OSid = 0
+[2214592625] : Bg Task complete DM Bitfield: 1
+[2214592648] : Kick MTS Irq task DM=0
+[2214592673] : Irq Task (EVENT_STATUS=0x00000010)
+[2214592733] : Irq Task complete.
+[2248146986] : Bg Task OSid = 0
+[2248147049] : Bg Task complete DM Bitfield: 1
+[2248147067] : Kick MTS Irq task DM=0
+[2248147088] : Irq Task (EVENT_STATUS=0x00000010)
+[2248147143] : Irq Task complete.
+[2281701418] : Bg Task OSid = 0
+[2281701483] : Bg Task complete DM Bitfield: 1
+[2281701502] : Kick MTS Irq task DM=0
+[2281701523] : Irq Task (EVENT_STATUS=0x00000010)
+[2281701578] : Irq Task complete.
+[2315255850] : Bg Task OSid = 0
+[2315255916] : Bg Task complete DM Bitfield: 1
+[2315255939] : Kick MTS Irq task DM=0
+[2315255960] : Irq Task (EVENT_STATUS=0x00000010)
+[2315256019] : Irq Task complete.
+[2348810283] : Bg Task OSid = 0
+[2348810355] : Bg Task complete DM Bitfield: 1
+[2348810387] : Kick MTS Irq task DM=0
+[2348810418] : Irq Task (EVENT_STATUS=0x00000010)
+[2348810489] : Irq Task complete.
+[2382364713] : Bg Task OSid = 0
+[2382364776] : Bg Task complete DM Bitfield: 1
+[2382364797] : Kick MTS Irq task DM=0
+[2382364816] : Irq Task (EVENT_STATUS=0x00000010)
+[2382364872] : Irq Task complete.
+[2415919149] : Bg Task OSid = 0
+[2415919229] : Bg Task complete DM Bitfield: 1
+[2415919255] : Kick MTS Irq task DM=0
+[2415919280] : Irq Task (EVENT_STATUS=0x00000010)
+[2415919357] : Irq Task complete.
+[2449473577] : Bg Task OSid = 0
+[2449473644] : Bg Task complete DM Bitfield: 1
+[2449473662] : Kick MTS Irq task DM=0
+[2449473683] : Irq Task (EVENT_STATUS=0x00000010)
+[2449473739] : Irq Task complete.
+[2483028011] : Bg Task OSid = 0
+[2483028091] : Bg Task complete DM Bitfield: 1
+[2483028119] : Kick MTS Irq task DM=0
+[2483028147] : Irq Task (EVENT_STATUS=0x00000010)
+[2483028224] : Irq Task complete.
+[2516582443] : Bg Task OSid = 0
+[2516582508] : Bg Task complete DM Bitfield: 1
+[2516582529] : Kick MTS Irq task DM=0
+[2516582549] : Irq Task (EVENT_STATUS=0x00000010)
+[2516582604] : Irq Task complete.
+[2550136878] : Bg Task OSid = 0
+[2550136955] : Bg Task complete DM Bitfield: 1
+[2550136978] : Kick MTS Irq task DM=0
+[2550137011] : Irq Task (EVENT_STATUS=0x00000010)
+[2550137082] : Irq Task complete.
+[2583691306] : Bg Task OSid = 0
+[2583691371] : Bg Task complete DM Bitfield: 1
+[2583691392] : Kick MTS Irq task DM=0
+[2583691414] : Irq Task (EVENT_STATUS=0x00000010)
+[2583691471] : Irq Task complete.
+[2617245738] : Bg Task OSid = 0
+[2617245813] : Bg Task complete DM Bitfield: 1
+[2617245843] : Kick MTS Irq task DM=0
+[2617245871] : Irq Task (EVENT_STATUS=0x00000010)
+[2617245946] : Irq Task complete.
+[2650800171] : Bg Task OSid = 0
+[2650800236] : Bg Task complete DM Bitfield: 1
+[2650800256] : Kick MTS Irq task DM=0
+[2650800276] : Irq Task (EVENT_STATUS=0x00000010)
+[2650800332] : Irq Task complete.
+[2684354604] : Bg Task OSid = 0
+[2684354669] : Bg Task complete DM Bitfield: 1
+[2684354690] : Kick MTS Irq task DM=0
+[2684354710] : Irq Task (EVENT_STATUS=0x00000010)
+[2684354765] : Irq Task complete.
+[2717909033] : Bg Task OSid = 0
+[2717909098] : Bg Task complete DM Bitfield: 1
+[2717909120] : Kick MTS Irq task DM=0
+[2717909146] : Irq Task (EVENT_STATUS=0x00000010)
+[2717909204] : Irq Task complete.
+[2751463465] : Bg Task OSid = 0
+[2751463531] : Bg Task complete DM Bitfield: 1
+[2751463550] : Kick MTS Irq task DM=0
+[2751463571] : Irq Task (EVENT_STATUS=0x00000010)
+[2751463626] : Irq Task complete.
+[2785017897] : Bg Task OSid = 0
+[2785017967] : Bg Task complete DM Bitfield: 1
+[2785017988] : Kick MTS Irq task DM=0
+[2785018008] : Irq Task (EVENT_STATUS=0x00000010)
+[2785018064] : Irq Task complete.
+[2818572329] : Bg Task OSid = 0
+[2818572394] : Bg Task complete DM Bitfield: 1
+[2818572413] : Kick MTS Irq task DM=0
+[2818572433] : Irq Task (EVENT_STATUS=0x00000010)
+[2818572489] : Irq Task complete.
+[2852126762] : Bg Task OSid = 0
+[2852126826] : Bg Task complete DM Bitfield: 1
+[2852126845] : Kick MTS Irq task DM=0
+[2852126866] : Irq Task (EVENT_STATUS=0x00000010)
+[2852126921] : Irq Task complete.
+[2885681194] : Bg Task OSid = 0
+[2885681259] : Bg Task complete DM Bitfield: 1
+[2885681280] : Kick MTS Irq task DM=0
+[2885681300] : Irq Task (EVENT_STATUS=0x00000010)
+[2885681355] : Irq Task complete.
+[2919235628] : Bg Task OSid = 0
+[2919235707] : Bg Task complete DM Bitfield: 1
+[2919235738] : Kick MTS Irq task DM=0
+[2919235767] : Irq Task (EVENT_STATUS=0x00000010)
+[2919235837] : Irq Task complete.
+[2952790057] : Bg Task OSid = 0
+[2952790121] : Bg Task complete DM Bitfield: 1
+[2952790139] : Kick MTS Irq task DM=0
+[2952790161] : Irq Task (EVENT_STATUS=0x00000010)
+[2952790216] : Irq Task complete.
+[2986344493] : Bg Task OSid = 0
+[2986344573] : Bg Task complete DM Bitfield: 1
+[2986344602] : Kick MTS Irq task DM=0
+[2986344633] : Irq Task (EVENT_STATUS=0x00000010)
+[2986344702] : Irq Task complete.
+[3019898923] : Bg Task OSid = 0
+[3019898989] : Bg Task complete DM Bitfield: 1
+[3019899012] : Kick MTS Irq task DM=0
+[3019899032] : Irq Task (EVENT_STATUS=0x00000010)
+[3019899090] : Irq Task complete.
+[3053453356] : Bg Task OSid = 0
+[3053453435] : Bg Task complete DM Bitfield: 1
+[3053453463] : Kick MTS Irq task DM=0
+[3053453491] : Irq Task (EVENT_STATUS=0x00000010)
+[3053453561] : Irq Task complete.
+[3087007785] : Bg Task OSid = 0
+[3087007849] : Bg Task complete DM Bitfield: 1
+[3087007870] : Kick MTS Irq task DM=0
+[3087007890] : Irq Task (EVENT_STATUS=0x00000010)
+[3087007948] : Irq Task complete.
+[3120562217] : Bg Task OSid = 0
+[3120562282] : Bg Task complete DM Bitfield: 1
+[3120562301] : Kick MTS Irq task DM=0
+[3120562323] : Irq Task (EVENT_STATUS=0x00000010)
+[3120562377] : Irq Task complete.
+[3154116650] : Bg Task OSid = 0
+[3154116718] : Bg Task complete DM Bitfield: 1
+[3154116738] : Kick MTS Irq task DM=0
+[3154116759] : Irq Task (EVENT_STATUS=0x00000010)
+[3154116816] : Irq Task complete.
+[3187671084] : Bg Task OSid = 0
+[3187671151] : Bg Task complete DM Bitfield: 1
+[3187671172] : Kick MTS Irq task DM=0
+[3187671192] : Irq Task (EVENT_STATUS=0x00000010)
+[3187671248] : Irq Task complete.
+[3221225518] : Bg Task OSid = 0
+[3221225597] : Bg Task complete DM Bitfield: 1
+[3221225622] : Kick MTS Irq task DM=0
+[3221225654] : Irq Task (EVENT_STATUS=0x00000010)
+[3221225723] : Irq Task complete.
+[3254779946] : Bg Task OSid = 0
+[3254780009] : Bg Task complete DM Bitfield: 1
+[3254780031] : Kick MTS Irq task DM=0
+[3254780050] : Irq Task (EVENT_STATUS=0x00000010)
+[3254780106] : Irq Task complete.
+[3288334380] : Bg Task OSid = 0
+[3288334465] : Bg Task complete DM Bitfield: 1
+[3288334489] : Kick MTS Irq task DM=0
+[3288334517] : Irq Task (EVENT_STATUS=0x00000010)
+[3288334605] : Irq Task complete.
+[3321888810] : Bg Task OSid = 0
+[3321888879] : Bg Task complete DM Bitfield: 1
+[3321888900] : Kick MTS Irq task DM=0
+[3321888926] : Irq Task (EVENT_STATUS=0x00000010)
+[3321888985] : Irq Task complete.
+[3355443245] : Bg Task OSid = 0
+[3355443322] : Bg Task complete DM Bitfield: 1
+[3355443346] : Kick MTS Irq task DM=0
+[3355443373] : Irq Task (EVENT_STATUS=0x00000010)
+[3355443441] : Irq Task complete.
+[3388997677] : Bg Task OSid = 0
+[3388997741] : Bg Task complete DM Bitfield: 1
+[3388997763] : Kick MTS Irq task DM=0
+[3388997782] : Irq Task (EVENT_STATUS=0x00000010)
+[3388997838] : Irq Task complete.
+[3422552107] : Bg Task OSid = 0
+[3422552178] : Bg Task complete DM Bitfield: 1
+[3422552203] : Kick MTS Irq task DM=0
+[3422552232] : Irq Task (EVENT_STATUS=0x00000010)
+[3422552298] : Irq Task complete.
+[3456106537] : Bg Task OSid = 0
+[3456106604] : Bg Task complete DM Bitfield: 1
+[3456106625] : Kick MTS Irq task DM=0
+[3456106648] : Irq Task (EVENT_STATUS=0x00000010)
+[3456106705] : Irq Task complete.
+[3489660970] : Bg Task OSid = 0
+[3489661034] : Bg Task complete DM Bitfield: 1
+[3489661055] : Kick MTS Irq task DM=0
+[3489661077] : Irq Task (EVENT_STATUS=0x00000010)
+[3489661137] : Irq Task complete.
+[3523215402] : Bg Task OSid = 0
+[3523215472] : Bg Task complete DM Bitfield: 1
+[3523215495] : Kick MTS Irq task DM=0
+[3523215515] : Irq Task (EVENT_STATUS=0x00000010)
+[3523215574] : Irq Task complete.
+[3556769834] : Bg Task OSid = 0
+[3556769902] : Bg Task complete DM Bitfield: 1
+[3556769924] : Kick MTS Irq task DM=0
+[3556769944] : Irq Task (EVENT_STATUS=0x00000010)
+[3556769999] : Irq Task complete.
+[3590324268] : Bg Task OSid = 0
+[3590324349] : Bg Task complete DM Bitfield: 1
+[3590324383] : Kick MTS Irq task DM=0
+[3590324418] : Irq Task (EVENT_STATUS=0x00000010)
+[3590324493] : Irq Task complete.
+[3623878698] : Bg Task OSid = 0
+[3623878760] : Bg Task complete DM Bitfield: 1
+[3623878781] : Kick MTS Irq task DM=0
+[3623878801] : Irq Task (EVENT_STATUS=0x00000010)
+[3623878860] : Irq Task complete.
+[3657433131] : Bg Task OSid = 0
+[3657433207] : Bg Task complete DM Bitfield: 1
+[3657433240] : Kick MTS Irq task DM=0
+[3657433268] : Irq Task (EVENT_STATUS=0x00000010)
+[3657433340] : Irq Task complete.
+[3690987561] : Bg Task OSid = 0
+[3690987628] : Bg Task complete DM Bitfield: 1
+[3690987646] : Kick MTS Irq task DM=0
+[3690987667] : Irq Task (EVENT_STATUS=0x00000010)
+[3690987723] : Irq Task complete.
+[3724541996] : Bg Task OSid = 0
+[3724542075] : Bg Task complete DM Bitfield: 1
+[3724542098] : Kick MTS Irq task DM=0
+[3724542125] : Irq Task (EVENT_STATUS=0x00000010)
+[3724542193] : Irq Task complete.
+[3758096428] : Bg Task OSid = 0
+[3758096493] : Bg Task complete DM Bitfield: 1
+[3758096516] : Kick MTS Irq task DM=0
+[3758096538] : Irq Task (EVENT_STATUS=0x00000010)
+[3758096592] : Irq Task complete.
+[3791650859] : Bg Task OSid = 0
+[3791650937] : Bg Task complete DM Bitfield: 1
+[3791650960] : Kick MTS Irq task DM=0
+[3791650988] : Irq Task (EVENT_STATUS=0x00000010)
+[3791651061] : Irq Task complete.
+[3825205290] : Bg Task OSid = 0
+[3825205355] : Bg Task complete DM Bitfield: 1
+[3825205376] : Kick MTS Irq task DM=0
+[3825205400] : Irq Task (EVENT_STATUS=0x00000010)
+[3825205456] : Irq Task complete.
+[3858759722] : Bg Task OSid = 0
+[3858759785] : Bg Task complete DM Bitfield: 1
+[3858759805] : Kick MTS Irq task DM=0
+[3858759827] : Irq Task (EVENT_STATUS=0x00000010)
+[3858759885] : Irq Task complete.
+[3892314156] : Bg Task OSid = 0
+[3892314235] : Bg Task complete DM Bitfield: 1
+[3892314254] : Kick MTS Irq task DM=0
+[3892314276] : Irq Task (EVENT_STATUS=0x00000010)
+[3892314333] : Irq Task complete.
+[3925868588] : Bg Task OSid = 0
+[3925868653] : Bg Task complete DM Bitfield: 1
+[3925868674] : Kick MTS Irq task DM=0
+[3925868694] : Irq Task (EVENT_STATUS=0x00000010)
+[3925868753] : Irq Task complete.
+[3959423019] : Bg Task OSid = 0
+[3959423097] : Bg Task complete DM Bitfield: 1
+[3959423125] : Kick MTS Irq task DM=0
+[3959423159] : Irq Task (EVENT_STATUS=0x00000010)
+[3959423234] : Irq Task complete.
+[3992977450] : Bg Task OSid = 0
+[3992977516] : Bg Task complete DM Bitfield: 1
+[3992977534] : Kick MTS Irq task DM=0
+[3992977556] : Irq Task (EVENT_STATUS=0x00000010)
+[3992977610] : Irq Task complete.
+[4026531883] : Bg Task OSid = 0
+[4026531972] : Bg Task complete DM Bitfield: 1
+[4026531998] : Kick MTS Irq task DM=0
+[4026532029] : Irq Task (EVENT_STATUS=0x00000010)
+[4026532114] : Irq Task complete.
+[4060086313] : Bg Task OSid = 0
+[4060086380] : Bg Task complete DM Bitfield: 1
+[4060086400] : Kick MTS Irq task DM=0
+[4060086421] : Irq Task (EVENT_STATUS=0x00000010)
+[4060086477] : Irq Task complete.
+[4093640746] : Bg Task OSid = 0
+[4093640820] : Bg Task complete DM Bitfield: 1
+[4093640847] : Kick MTS Irq task DM=0
+[4093640874] : Irq Task (EVENT_STATUS=0x00000010)
+[4093640943] : Irq Task complete.
+[4127195178] : Bg Task OSid = 0
+[4127195243] : Bg Task complete DM Bitfield: 1
+[4127195264] : Kick MTS Irq task DM=0
+[4127195284] : Irq Task (EVENT_STATUS=0x00000010)
+[4127195339] : Irq Task complete.
+[4160749610] : Bg Task OSid = 0
+[4160749672] : Bg Task complete DM Bitfield: 1
+[4160749693] : Kick MTS Irq task DM=0
+[4160749713] : Irq Task (EVENT_STATUS=0x00000010)
+[4160749771] : Irq Task complete.
+[4194304042] : Bg Task OSid = 0
+[4194304105] : Bg Task complete DM Bitfield: 1
+[4194304124] : Kick MTS Irq task DM=0
+[4194304145] : Irq Task (EVENT_STATUS=0x00000010)
+[4194304197] : Irq Task complete.
+[4227858474] : Bg Task OSid = 0
+[4227858540] : Bg Task complete DM Bitfield: 1
+[4227858558] : Kick MTS Irq task DM=0
+[4227858580] : Irq Task (EVENT_STATUS=0x00000010)
+[4227858635] : Irq Task complete.
+[4261412908] : Bg Task OSid = 0
+[4261412976] : Bg Task complete DM Bitfield: 1
+[4261412997] : Kick MTS Irq task DM=0
+[4261413018] : Irq Task (EVENT_STATUS=0x00000010)
+[4261413076] : Irq Task complete.
+[4294967339] : Bg Task OSid = 0
+[4294967404] : Bg Task complete DM Bitfield: 1
+[4294967425] : Kick MTS Irq task DM=0
+[4294967445] : Irq Task (EVENT_STATUS=0x00000010)
+[4294967500] : Irq Task complete.
+[4328521771] : Bg Task OSid = 0
+[4328521860] : Bg Task complete DM Bitfield: 1
+[4328521890] : Kick MTS Irq task DM=0
+[4328521923] : Irq Task (EVENT_STATUS=0x00000010)
+[4328522024] : Irq Task complete.
+[4362076201] : Bg Task OSid = 0
+[4362076268] : Bg Task complete DM Bitfield: 1
+[4362076289] : Kick MTS Irq task DM=0
+[4362076311] : Irq Task (EVENT_STATUS=0x00000010)
+[4362076372] : Irq Task complete.
+[4395630635] : Bg Task OSid = 0
+[4395630713] : Bg Task complete DM Bitfield: 1
+[4395630739] : Kick MTS Irq task DM=0
+[4395630769] : Irq Task (EVENT_STATUS=0x00000010)
+[4395630843] : Irq Task complete.
+[4429185068] : Bg Task OSid = 0
+[4429185137] : Bg Task complete DM Bitfield: 1
+[4429185157] : Kick MTS Irq task DM=0
+[4429185179] : Irq Task (EVENT_STATUS=0x00000010)
+[4429185237] : Irq Task complete.
+[4462739500] : Bg Task OSid = 0
+[4462739566] : Bg Task complete DM Bitfield: 1
+[4462739586] : Kick MTS Irq task DM=0
+[4462739606] : Irq Task (EVENT_STATUS=0x00000010)
+[4462739665] : Irq Task complete.
+[4496293930] : Bg Task OSid = 0
+[4496294003] : Bg Task complete DM Bitfield: 1
+[4496294026] : Kick MTS Irq task DM=0
+[4496294052] : Irq Task (EVENT_STATUS=0x00000010)
+[4496294117] : Irq Task complete.
+[4529848362] : Bg Task OSid = 0
+[4529848428] : Bg Task complete DM Bitfield: 1
+[4529848446] : Kick MTS Irq task DM=0
+[4529848467] : Irq Task (EVENT_STATUS=0x00000010)
+[4529848522] : Irq Task complete.
+[4563402796] : Bg Task OSid = 0
+[4563402878] : Bg Task complete DM Bitfield: 1
+[4563402907] : Kick MTS Irq task DM=0
+[4563402933] : Irq Task (EVENT_STATUS=0x00000010)
+[4563403005] : Irq Task complete.
+[4596957226] : Bg Task OSid = 0
+[4596957292] : Bg Task complete DM Bitfield: 1
+[4596957312] : Kick MTS Irq task DM=0
+[4596957333] : Irq Task (EVENT_STATUS=0x00000010)
+[4596957389] : Irq Task complete.
+[4630511660] : Bg Task OSid = 0
+[4630511744] : Bg Task complete DM Bitfield: 1
+[4630511777] : Kick MTS Irq task DM=0
+[4630511811] : Irq Task (EVENT_STATUS=0x00000010)
+[4630511899] : Irq Task complete.
+[4664066090] : Bg Task OSid = 0
+[4664066155] : Bg Task complete DM Bitfield: 1
+[4664066176] : Kick MTS Irq task DM=0
+[4664066196] : Irq Task (EVENT_STATUS=0x00000010)
+[4664066254] : Irq Task complete.
+[4697620522] : Bg Task OSid = 0
+[4697620602] : Bg Task complete DM Bitfield: 1
+[4697620633] : Kick MTS Irq task DM=0
+[4697620660] : Irq Task (EVENT_STATUS=0x00000010)
+[4697620730] : Irq Task complete.
+[4731174954] : Bg Task OSid = 0
+[4731175019] : Bg Task complete DM Bitfield: 1
+[4731175040] : Kick MTS Irq task DM=0
+[4731175062] : Irq Task (EVENT_STATUS=0x00000010)
+[4731175121] : Irq Task complete.
+[4764729386] : Bg Task OSid = 0
+[4764729458] : Bg Task complete DM Bitfield: 1
+[4764729482] : Kick MTS Irq task DM=0
+[4764729511] : Irq Task (EVENT_STATUS=0x00000010)
+[4764729569] : Irq Task complete.
+[4798283818] : Bg Task OSid = 0
+[4798283885] : Bg Task complete DM Bitfield: 1
+[4798283907] : Kick MTS Irq task DM=0
+[4798283927] : Irq Task (EVENT_STATUS=0x00000010)
+[4798283986] : Irq Task complete.
+[4831838251] : Bg Task OSid = 0
+[4831838316] : Bg Task complete DM Bitfield: 1
+[4831838337] : Kick MTS Irq task DM=0
+[4831838357] : Irq Task (EVENT_STATUS=0x00000010)
+[4831838412] : Irq Task complete.
+[4865392682] : Bg Task OSid = 0
+[4865392752] : Bg Task complete DM Bitfield: 1
+[4865392773] : Kick MTS Irq task DM=0
+[4865392797] : Irq Task (EVENT_STATUS=0x00000010)
+[4865392854] : Irq Task complete.
+[4898947114] : Bg Task OSid = 0
+[4898947180] : Bg Task complete DM Bitfield: 1
+[4898947201] : Kick MTS Irq task DM=0
+[4898947223] : Irq Task (EVENT_STATUS=0x00000010)
+[4898947282] : Irq Task complete.
+[4932501550] : Bg Task OSid = 0
+[4932501634] : Bg Task complete DM Bitfield: 1
+[4932501663] : Kick MTS Irq task DM=0
+[4932501693] : Irq Task (EVENT_STATUS=0x00000010)
+[4932501772] : Irq Task complete.
+[4966055979] : Bg Task OSid = 0
+[4966056046] : Bg Task complete DM Bitfield: 1
+[4966056068] : Kick MTS Irq task DM=0
+[4966056089] : Irq Task (EVENT_STATUS=0x00000010)
+[4966056144] : Irq Task complete.
+[4981352865] : Bg Task OSid = 0
+[4981352904] : KCCB Slot 5: Cmd=0x2abc00ce, OSid=0
+[226] : Core clock set to 1104000000 Hz
+[283] : GPU init
+[340] : Host Sync Partition marker: 46
+[395] : Bg Task OSid = 0
+[436] : KCCB Slot 8: Cmd=0x2abc00ce, OSid=0
+[487] : Host Sync Partition marker: 46
+[518] : KCCB Slot 8: Return value 1
+[580] : Bg Task complete DM Bitfield: 1
+[605] : Kick MTS Irq task DM=0
+[647] : Irq Task (EVENT_STATUS=0x00000000)
+[746] : Irq Task complete.
+[650704] : Bg Task OSid = 0
+[650743] : KCCB Slot 9: Cmd=0x2abc0066, OSid=0
+[650815] : KCCB Slot 9: Return value 1
+[650889] : Bg Task complete DM Bitfield: 1
+[650912] : Kick MTS Irq task DM=0
+[650943] : Irq Task (EVENT_STATUS=0x00000000)
+[651034] : Irq Task complete.
+[651062] : Bg Task OSid = 0
+[651095] : KCCB Slot 10: Cmd=0x2abc006b, OSid=0
+[651158] : Bg Task complete DM Bitfield: 1
+[651183] : Kick MTS Irq task DM=0
+[651209] : Irq Task (EVENT_STATUS=0x00000000)
+[651267] : Irq Task complete.
+[651292] : Bg Task OSid = 0
+[651328] : Bg Task complete DM Bitfield: 1
+[651349] : Kick MTS Irq task DM=0
+[651376] : Irq Task (EVENT_STATUS=0x00000000)
+[651450] : Irq Task complete.
+[651506] : Bg Task OSid = 0
+[651538] : KCCB Slot 11: Cmd=0x2abc006b, OSid=0
+[651583] : Bg Task complete DM Bitfield: 1
+[651604] : Kick MTS Irq task DM=0
+[651628] : Irq Task (EVENT_STATUS=0x00000000)
+[651684] : Irq Task complete.
+[651705] : Bg Task OSid = 0
+[651736] : Bg Task complete DM Bitfield: 1
+[651769] : Kick MTS Irq task DM=0
+[651792] : Irq Task (EVENT_STATUS=0x00000000)
+[651842] : Irq Task complete.
+[651865] : GPU units deinit
+[651913] : GPU deinit
+[188] : State of firmware's private data at boot time: 1 (0 = uninitialised, 1 = initialised); Fw State Flags = 0x00000001
+[221] : OSid 0 fw state transition request: from 2 to 0 (0-offline 1-ready 2-active 3-offloading). Status 1 (1-ok 0-fail)
+[281] : Core clock set to 1104000000 Hz
+[338] : GPU init
+[394] : Host Sync Partition marker: 47
+[457] : Bg Task OSid = 0
+[499] : KCCB Slot 12: Cmd=0x2abc0075, OSid=0
+[550] : cCCB Woff update = 200, DM = 2, FWCtx = 0xc0085000
+[640] : Kick MTS Irq task DM=0
+[681] : cCCB Woff update = 616, DM = 3, FWCtx = 0xc0085098
+[742] : UFO Checks for FWCtx 0xc0085098 @ 0
+[775] : UFO PR-Check: [0xc0079000] is 0x00000000 requires >= 0x00000001
+[838] : Irq Task (EVENT_STATUS=0x00000000)
+[955] : Ready-to-run debug OSid = 0, DM = 2, item = 0xc0085000
+[989] : Client command header DM = 2, client CCB = 0xc0070000, cmd = 0xc0070000
+[1102] : GPU Units init (# mask: 0x1)
+[1262] : Load  Freelist 0xc0086000 type: 0 (0:local,1:global) for PMDM0: FL Total Pages 32 (max=32,grow size=0), FL-addr = 0x00000080003b2000, stacktop = 0x000000000000001f, Alloc Page Count = 0, Alloc MMU Page Count = 0
+[1324] : Load  Freelist 0xc002d000 type: 1 (0:local,1:global) for PMDM0: FL Total Pages 448 (max=65536,grow size=256), FL-addr = 0x0000008000048900, stacktop = 0x00000000000001bf, Alloc Page Count = 0, Alloc MMU Page Count = 0
+[1357] : CONTEXT_PB_BASE set to 0x3, FL different between TA/3D: local: 1, global: 1
+[1410] : TA RTData 0xc0088000 loaded on HW context 0
+[1434] : TA Buffers: FWCtx 0xc0085000, RTData 0xc0088000, VHeap 0x00000080003b3000, TPC 0x00000080003b4000 (MemCtx 0xc002c000)
+[1507] : TE Region headers base 0x00000080003b7000 (RGNHDR Init: 1)
+[1557] : Kick TA: FWCtx 0xc0085000 @ 0, RTD 0xc0088000, First kick:1, Last kick:1, CSW resume:0. (PID:702452, prio:1, frame:0, ext:0x00000001, int:0x00000001)
+[1683] : Irq Task complete.
+[1713] : Irq Task (EVENT_STATUS=0x00000020)
+[1763] : TA finished
+[1791] : TA RTData 0xc0088000 finished on HW context 0
+[1819] : Perform TPC flush.
+[1903] : UFO Updates for FWCtx 0xc0085000 @ 152
+[1930] : UFO Update: [0xc0079000] = 0x00000001
+[2067] : UFO Checks for FWCtx 0xc0085098 @ 0
+[2100] : UFO PR-Check: [0xc0079000] is 0x00000001 requires >= 0x00000001
+[2188] : Ready-to-run debug OSid = 0, DM = 3, item = 0xc0085098
+[2220] : Client command header DM = 3, client CCB = 0xc007b000, cmd = 0xc007b030
+[2285] : UFO Updates for FWCtx 0xc0085098 @ 568
+[2320] : UFO Update: [0xc0084000] = 0x00000001
+[2462] : Irq Task complete.
+[2504] : KCCB Slot 13: Cmd=0x2abc0065, OSid=0
+[2543] : cCCB Woff update = 1184, DM = 3, FWCtx = 0xc0085098
+[2631] : Kick MTS Irq task DM=0
+[2658] : Irq Task (EVENT_STATUS=0x00000000)
+[2725] : Ready-to-run debug OSid = 0, DM = 3, item = 0xc0085098
+[2752] : Client command header DM = 3, client CCB = 0xc007b000, cmd = 0xc007b268
+[2888] : Store Freelist 0xc0086000 type: 0 (0:local,1:global) for PMDM0: FL Total Pages 32 (max=32,grow size=0), FL-addr = 0x00000080003b2000, stacktop = 0x000000000000001f, Alloc Page Count = 0, Alloc MMU Page Count = 0
+[2948] : Load  Freelist 0xc0086000 type: 0 (0:local,1:global) for PMDM1: FL Total Pages 32 (max=32,grow size=0), FL-addr = 0x00000080003b2000, stacktop = 0x000000000000001f, Alloc Page Count = 0, Alloc MMU Page Count = 0
+[2995] : Store Freelist 0xc002d000 type: 1 (0:local,1:global) for PMDM0: FL Total Pages 448 (max=65536,grow size=256), FL-addr = 0x0000008000048900, stacktop = 0x00000000000001bf, Alloc Page Count = 0, Alloc MMU Page Count = 0
+[3041] : Load  Freelist 0xc002d000 type: 1 (0:local,1:global) for PMDM1: FL Total Pages 448 (max=65536,grow size=256), FL-addr = 0x0000008000048900, stacktop = 0x00000000000001bf, Alloc Page Count = 0, Alloc MMU Page Count = 0
+[3077] : CONTEXT_PB_BASE set to 0x0, FL different between TA/3D: local: 0, global: 0
+[3123] : Loading stack-pointers for 1 (0:MidTA,1:3D) on context 1, MLIST = 0x00000000, ALIST = 0x0000000000000000
+[3164] : 3D Buffers: FWCtx 0xc0085098, RTData 0xc0088000 on ctx 1, (MemCtx 0xc002c000)
+[3187] : 3D RTData 0xc0088000 ready on HW context 1
+[3300] : Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x80015000)
+[3327] :   Phantom 0: USCTiles=6
+[3375] : Kick 3D: FWCtx 0xc0085098 @ 616, RTD 0xc0088000, Partial render:0, CSW resume:0. (PID:702452, prio:1, frame:0, ext:0x00000003, int:0x00000003)
+[3493] : Irq Task complete.
+[3522] : Irq Task (EVENT_STATUS=0x00000118)
+[3575] : 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+[3625] : 3D RTData 0xc0088000 finished on HW context 1
+[3718] : UFO Updates for FWCtx 0xc0085098 @ 1136
+[3754] : UFO Update: [0xc0084000] = 0x00000002
+[3960] : Irq Task complete.
+[3990] : Bg Task complete DM Bitfield: 1
+[4016] : Kick MTS Irq task DM=0
+[4042] : Irq Task (EVENT_STATUS=0x00000010)
+[4098] : Irq Task complete.
+[4129] : Bg Task OSid = 0
+[4194] : Bg Task complete DM Bitfield: 1
+[4217] : Kick MTS Irq task DM=0
+[4245] : Irq Task (EVENT_STATUS=0x00000010)
+[4320] : Irq Task complete.
+[4348] : Bg Task OSid = 0
+[4388] : KCCB Slot 14: Cmd=0x2abc0066, OSid=0
+[4463] : KCCB Slot 14: Return value 1
+[4527] : Bg Task complete DM Bitfield: 1
+[4554] : Kick MTS Irq task DM=0
+[4589] : Irq Task (EVENT_STATUS=0x00000010)
+[4685] : Irq Task complete.
+[7838] : Bg Task OSid = 0
+[7876] : KCCB Slot 15: Cmd=0x2abc0066, OSid=0
+[7948] : KCCB Slot 15: Return value 1
+[8006] : Bg Task complete DM Bitfield: 1
+[8032] : Kick MTS Irq task DM=0
+[8066] : Irq Task (EVENT_STATUS=0x00000010)
+[8162] : Irq Task complete.
+[8544] : Bg Task OSid = 0
+[8579] : KCCB Slot 16: Cmd=0x2abc0075, OSid=0
+[8634] : cCCB Woff update = 400, DM = 2, FWCtx = 0xc0085000
+[8717] : Kick MTS Irq task DM=0
+[8759] : cCCB Woff update = 1800, DM = 3, FWCtx = 0xc0085098
+[8814] : UFO Checks for FWCtx 0xc0085098 @ 1184
+[8848] : UFO PR-Check: [0xc0079000] is 0x00000001 requires >= 0x00000002
+[8901] : Irq Task (EVENT_STATUS=0x00000010)
+[9014] : Ready-to-run debug OSid = 0, DM = 2, item = 0xc0085000
+[9044] : Client command header DM = 2, client CCB = 0xc0070000, cmd = 0xc00700c8
+[9166] : CONTEXT_PB_BASE set to 0x0, FL different between TA/3D: local: 0, global: 0
+[9224] : TA RTData 0xc0089000 loaded on HW context 0
+[9252] : TA Buffers: FWCtx 0xc0085000, RTData 0xc0089000, VHeap 0x00000080003b3000, TPC 0x00000080003b4000 (MemCtx 0xc002c000)
+[9324] : TE Region headers base 0x00000080003b7600 (RGNHDR Init: 1)
+[9369] : Kick TA: FWCtx 0xc0085000 @ 200, RTD 0xc0089000, First kick:1, Last kick:1, CSW resume:0. (PID:702452, prio:1, frame:0, ext:0x00000001, int:0x00000001)
+[9510] : Irq Task complete.
+[9534] : Irq Task (EVENT_STATUS=0x00000030)
+[9576] : TA finished
+[9598] : TA RTData 0xc0089000 finished on HW context 0
+[9622] : Perform TPC flush.
+[9698] : UFO Updates for FWCtx 0xc0085000 @ 352
+[9726] : UFO Update: [0xc0079000] = 0x00000002
+[9841] : UFO Checks for FWCtx 0xc0085098 @ 1184
+[9870] : UFO PR-Check: [0xc0079000] is 0x00000002 requires >= 0x00000002
+[9945] : Ready-to-run debug OSid = 0, DM = 3, item = 0xc0085098
+[9971] : Client command header DM = 3, client CCB = 0xc007b000, cmd = 0xc007b4d0
+[10014] : UFO Updates for FWCtx 0xc0085098 @ 1752
+[10042] : UFO Update: [0xc0084000] = 0x00000003
+[10168] : Irq Task complete.
+[10205] : KCCB Slot 17: Cmd=0x2abc0065, OSid=0
+[10244] : cCCB Woff update = 2368, DM = 3, FWCtx = 0xc0085098
+[10329] : Kick MTS Irq task DM=0
+[10354] : Irq Task (EVENT_STATUS=0x00000010)
+[10419] : Ready-to-run debug OSid = 0, DM = 3, item = 0xc0085098
+[10444] : Client command header DM = 3, client CCB = 0xc007b000, cmd = 0xc007b708
+[10557] : CONTEXT_PB_BASE set to 0x0, FL different between TA/3D: local: 0, global: 0
+[10605] : Loading stack-pointers for 1 (0:MidTA,1:3D) on context 1, MLIST = 0x00000000, ALIST = 0x0000000000000000
+[10649] : 3D Buffers: FWCtx 0xc0085098, RTData 0xc0089000 on ctx 1, (MemCtx 0xc002c000)
+[10674] : 3D RTData 0xc0089000 ready on HW context 1
+[10792] : Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x80015000)
+[10814] :   Phantom 0: USCTiles=6
+[10857] : Kick 3D: FWCtx 0xc0085098 @ 1800, RTD 0xc0089000, Partial render:0, CSW resume:0. (PID:702452, prio:1, frame:0, ext:0x00000003, int:0x00000003)
+[10975] : Irq Task complete.
+[10999] : Irq Task (EVENT_STATUS=0x00000118)
+[11055] : 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+[11103] : 3D RTData 0xc0089000 finished on HW context 1
+[11180] : UFO Updates for FWCtx 0xc0085098 @ 2320
+[11205] : UFO Update: [0xc0084000] = 0x00000004
+[11378] : Irq Task complete.
+[11406] : Bg Task complete DM Bitfield: 1
+[11427] : Kick MTS Irq task DM=0
+[11452] : Irq Task (EVENT_STATUS=0x00000010)
+[11509] : Irq Task complete.
+[11532] : Bg Task OSid = 0
+[11587] : Bg Task complete DM Bitfield: 1
+[11609] : Kick MTS Irq task DM=0
+[11632] : Irq Task (EVENT_STATUS=0x00000010)
+[11701] : Irq Task complete.
+[11729] : Bg Task OSid = 0
+[11767] : KCCB Slot 18: Cmd=0x2abc0066, OSid=0
+[11833] : KCCB Slot 18: Return value 1
+[11894] : Bg Task complete DM Bitfield: 1
+[11915] : Kick MTS Irq task DM=0
+[11948] : Irq Task (EVENT_STATUS=0x00000010)
+[12038] : Irq Task complete.
+[14208] : Bg Task OSid = 0
+[14243] : KCCB Slot 19: Cmd=0x2abc0066, OSid=0
+[14315] : KCCB Slot 19: Return value 1
+[14377] : Bg Task complete DM Bitfield: 1
+[14401] : Kick MTS Irq task DM=0
+[14438] : Irq Task (EVENT_STATUS=0x00000010)
+[14528] : Irq Task complete.
+[14845] : Bg Task OSid = 0
+[14881] : KCCB Slot 20: Cmd=0x2abc0075, OSid=0
+[14932] : cCCB Woff update = 600, DM = 2, FWCtx = 0xc0085000
+[15006] : Kick MTS Irq task DM=0
+[15047] : cCCB Woff update = 2984, DM = 3, FWCtx = 0xc0085098
+[15097] : UFO Checks for FWCtx 0xc0085098 @ 2368
+[15126] : UFO PR-Check: [0xc0079000] is 0x00000002 requires >= 0x00000003
+[15175] : Irq Task (EVENT_STATUS=0x00000010)
+[15268] : Ready-to-run debug OSid = 0, DM = 2, item = 0xc0085000
+[15295] : Client command header DM = 2, client CCB = 0xc0070000, cmd = 0xc0070190
+[15412] : CONTEXT_PB_BASE set to 0x0, FL different between TA/3D: local: 0, global: 0
+[15464] : TA RTData 0xc0088000 loaded on HW context 0
+[15494] : TA Buffers: FWCtx 0xc0085000, RTData 0xc0088000, VHeap 0x00000080003b3000, TPC 0x00000080003b4000 (MemCtx 0xc002c000)
+[15566] : TE Region headers base 0x00000080003b7000 (RGNHDR Init: 1)
+[15618] : Kick TA: FWCtx 0xc0085000 @ 400, RTD 0xc0088000, First kick:1, Last kick:1, CSW resume:0. (PID:702452, prio:1, frame:0, ext:0x00000001, int:0x00000001)
+[15750] : Irq Task complete.
+[15778] : Irq Task (EVENT_STATUS=0x00000030)
+[15822] : TA finished
+[15848] : TA RTData 0xc0088000 finished on HW context 0
+[15876] : Perform TPC flush.
+[15961] : UFO Updates for FWCtx 0xc0085000 @ 552
+[15991] : UFO Update: [0xc0079000] = 0x00000003
+[16129] : UFO Checks for FWCtx 0xc0085098 @ 2368
+[16162] : UFO PR-Check: [0xc0079000] is 0x00000003 requires >= 0x00000003
+[16249] : Ready-to-run debug OSid = 0, DM = 3, item = 0xc0085098
+[16276] : Client command header DM = 3, client CCB = 0xc007b000, cmd = 0xc007b970
+[16317] : UFO Updates for FWCtx 0xc0085098 @ 2936
+[16346] : UFO Update: [0xc0084000] = 0x00000005
+[16467] : Irq Task complete.
+[16503] : KCCB Slot 21: Cmd=0x2abc0065, OSid=0
+[16543] : cCCB Woff update = 3552, DM = 3, FWCtx = 0xc0085098
+[16629] : Kick MTS Irq task DM=0
+[16654] : Irq Task (EVENT_STATUS=0x00000010)
+[16719] : Ready-to-run debug OSid = 0, DM = 3, item = 0xc0085098
+[16742] : Client command header DM = 3, client CCB = 0xc007b000, cmd = 0xc007bba8
+[16859] : CONTEXT_PB_BASE set to 0x0, FL different between TA/3D: local: 0, global: 0
+[16913] : Loading stack-pointers for 1 (0:MidTA,1:3D) on context 1, MLIST = 0x00000000, ALIST = 0x0000000000000000
+[16954] : 3D Buffers: FWCtx 0xc0085098, RTData 0xc0088000 on ctx 1, (MemCtx 0xc002c000)
+[16975] : 3D RTData 0xc0088000 ready on HW context 1
+[17089] : Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x80015000)
+[17110] :   Phantom 0: USCTiles=6
+[17160] : Kick 3D: FWCtx 0xc0085098 @ 2984, RTD 0xc0088000, Partial render:0, CSW resume:0. (PID:702452, prio:1, frame:0, ext:0x00000003, int:0x00000003)
+[17277] : Irq Task complete.
+[17303] : Irq Task (EVENT_STATUS=0x00000118)
+[17361] : 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+[17410] : 3D RTData 0xc0088000 finished on HW context 1
+[17493] : UFO Updates for FWCtx 0xc0085098 @ 3504
+[17519] : UFO Update: [0xc0084000] = 0x00000006
+[17702] : Irq Task complete.
+[17730] : Bg Task complete DM Bitfield: 1
+[17753] : Kick MTS Irq task DM=0
+[17777] : Irq Task (EVENT_STATUS=0x00000010)
+[17834] : Irq Task complete.
+[17858] : Bg Task OSid = 0
+[17908] : KCCB Slot 22: Cmd=0x2abc0066, OSid=0
+[17980] : KCCB Slot 22: Return value 1
+[18039] : Bg Task complete DM Bitfield: 1
+[18060] : Kick MTS Irq task DM=0
+[18096] : Irq Task (EVENT_STATUS=0x00000010)
+[18198] : Irq Task complete.
+[18223] : Bg Task OSid = 0
+[18257] : Bg Task complete DM Bitfield: 1
+[18280] : Kick MTS Irq task DM=0
+[18303] : Irq Task (EVENT_STATUS=0x00000010)
+[18365] : Irq Task complete.
+[20068] : Bg Task OSid = 0
+[20103] : KCCB Slot 23: Cmd=0x2abc0066, OSid=0
+[20169] : KCCB Slot 23: Return value 1
+[20228] : Bg Task complete DM Bitfield: 1
+[20250] : Kick MTS Irq task DM=0
+[20285] : Irq Task (EVENT_STATUS=0x00000010)
+[20372] : Irq Task complete.
+[20574] : Bg Task OSid = 0
+[20608] : KCCB Slot 24: Cmd=0x2abc0075, OSid=0
+[20656] : cCCB Woff update = 800, DM = 2, FWCtx = 0xc0085000
+[20725] : Kick MTS Irq task DM=0
+[20759] : cCCB Woff update = 4168, DM = 3, FWCtx = 0xc0085098
+[20808] : UFO Checks for FWCtx 0xc0085098 @ 3552
+[20834] : UFO PR-Check: [0xc0079000] is 0x00000003 requires >= 0x00000004
+[20880] : Irq Task (EVENT_STATUS=0x00000010)
+[20972] : Ready-to-run debug OSid = 0, DM = 2, item = 0xc0085000
+[20998] : Client command header DM = 2, client CCB = 0xc0070000, cmd = 0xc0070258
+[21104] : CONTEXT_PB_BASE set to 0x0, FL different between TA/3D: local: 0, global: 0
+[21154] : TA RTData 0xc0089000 loaded on HW context 0
+[21179] : TA Buffers: FWCtx 0xc0085000, RTData 0xc0089000, VHeap 0x00000080003b3000, TPC 0x00000080003b4000 (MemCtx 0xc002c000)
+[21246] : TE Region headers base 0x00000080003b7600 (RGNHDR Init: 1)
+[21290] : Kick TA: FWCtx 0xc0085000 @ 600, RTD 0xc0089000, First kick:1, Last kick:1, CSW resume:0. (PID:702452, prio:1, frame:0, ext:0x00000001, int:0x00000001)
+[21418] : Irq Task complete.
+[21442] : Irq Task (EVENT_STATUS=0x00000030)
+[21487] : TA finished
+[21512] : TA RTData 0xc0089000 finished on HW context 0
+[21536] : Perform TPC flush.
+[21615] : UFO Updates for FWCtx 0xc0085000 @ 752
+[21643] : UFO Update: [0xc0079000] = 0x00000004
+[21780] : UFO Checks for FWCtx 0xc0085098 @ 3552
+[21811] : UFO PR-Check: [0xc0079000] is 0x00000004 requires >= 0x00000004
+[21907] : Ready-to-run debug OSid = 0, DM = 3, item = 0xc0085098
+[21932] : Client command header DM = 3, client CCB = 0xc007b000, cmd = 0xc007be10
+[21980] : UFO Updates for FWCtx 0xc0085098 @ 4120
+[22009] : UFO Update: [0xc0084000] = 0x00000007
+[22134] : Irq Task complete.
+[22166] : KCCB Slot 25: Cmd=0x2abc0065, OSid=0
+[22211] : cCCB Woff update = 4736, DM = 3, FWCtx = 0xc0085098
+[22295] : Kick MTS Irq task DM=0
+[22317] : Irq Task (EVENT_STATUS=0x00000010)
+[22384] : Ready-to-run debug OSid = 0, DM = 3, item = 0xc0085098
+[22413] : Client command header DM = 3, client CCB = 0xc007b000, cmd = 0xc007c048
+[22543] : CONTEXT_PB_BASE set to 0x0, FL different between TA/3D: local: 0, global: 0
+[22601] : Loading stack-pointers for 1 (0:MidTA,1:3D) on context 1, MLIST = 0x00000000, ALIST = 0x0000000000000000
+[22648] : 3D Buffers: FWCtx 0xc0085098, RTData 0xc0089000 on ctx 1, (MemCtx 0xc002c000)
+[22671] : 3D RTData 0xc0089000 ready on HW context 1
+[22790] : Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x80015000)
+[22811] :   Phantom 0: USCTiles=6
+[22853] : Kick 3D: FWCtx 0xc0085098 @ 4168, RTD 0xc0089000, Partial render:0, CSW resume:0. (PID:702452, prio:1, frame:0, ext:0x00000003, int:0x00000003)
+[22968] : Irq Task complete.
+[22990] : Irq Task (EVENT_STATUS=0x00000118)
+[23037] : 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+[23092] : 3D RTData 0xc0089000 finished on HW context 1
+[23173] : UFO Updates for FWCtx 0xc0085098 @ 4688
+[23202] : UFO Update: [0xc0084000] = 0x00000008
+[23409] : Irq Task complete.
+[23442] : Bg Task complete DM Bitfield: 1
+[23470] : Kick MTS Irq task DM=0
+[23499] : Irq Task (EVENT_STATUS=0x00000010)
+[23561] : Irq Task complete.
+[23588] : Bg Task OSid = 0
+[23647] : Bg Task complete DM Bitfield: 1
+[23669] : Kick MTS Irq task DM=0
+[23694] : Irq Task (EVENT_STATUS=0x00000010)
+[23769] : Irq Task complete.
+[23795] : Bg Task OSid = 0
+[23828] : KCCB Slot 26: Cmd=0x2abc0066, OSid=0
+[23902] : KCCB Slot 26: Return value 1
+[23961] : Bg Task complete DM Bitfield: 1
+[23987] : Kick MTS Irq task DM=0
+[24020] : Irq Task (EVENT_STATUS=0x00000010)
+[24113] : Irq Task complete.
+[26107] : Bg Task OSid = 0
+[26142] : KCCB Slot 27: Cmd=0x2abc0066, OSid=0
+[26215] : KCCB Slot 27: Return value 1
+[26273] : Bg Task complete DM Bitfield: 1
+[26299] : Kick MTS Irq task DM=0
+[26330] : Irq Task (EVENT_STATUS=0x00000010)
+[26415] : Irq Task complete.
+[26679] : Bg Task OSid = 0
+[26718] : KCCB Slot 28: Cmd=0x2abc0075, OSid=0
+[26769] : cCCB Woff update = 1000, DM = 2, FWCtx = 0xc0085000
+[26842] : Kick MTS Irq task DM=0
+[26881] : cCCB Woff update = 5352, DM = 3, FWCtx = 0xc0085098
+[26932] : UFO Checks for FWCtx 0xc0085098 @ 4736
+[26963] : UFO PR-Check: [0xc0079000] is 0x00000004 requires >= 0x00000005
+[27013] : Irq Task (EVENT_STATUS=0x00000010)
+[27114] : Ready-to-run debug OSid = 0, DM = 2, item = 0xc0085000
+[27144] : Client command header DM = 2, client CCB = 0xc0070000, cmd = 0xc0070320
+[27265] : CONTEXT_PB_BASE set to 0x0, FL different between TA/3D: local: 0, global: 0
+[27317] : TA RTData 0xc0088000 loaded on HW context 0
+[27342] : TA Buffers: FWCtx 0xc0085000, RTData 0xc0088000, VHeap 0x00000080003b3000, TPC 0x00000080003b4000 (MemCtx 0xc002c000)
+[27414] : TE Region headers base 0x00000080003b7000 (RGNHDR Init: 1)
+[27465] : Kick TA: FWCtx 0xc0085000 @ 800, RTD 0xc0088000, First kick:1, Last kick:1, CSW resume:0. (PID:702452, prio:1, frame:0, ext:0x00000001, int:0x00000001)
+[27592] : Irq Task complete.
+[27621] : Irq Task (EVENT_STATUS=0x00000030)
+[27671] : TA finished
+[27700] : TA RTData 0xc0088000 finished on HW context 0
+[27727] : Perform TPC flush.
+[27807] : UFO Updates for FWCtx 0xc0085000 @ 952
+[27834] : UFO Update: [0xc0079000] = 0x00000005
+[27967] : UFO Checks for FWCtx 0xc0085098 @ 4736
+[27995] : UFO PR-Check: [0xc0079000] is 0x00000005 requires >= 0x00000005
+[28078] : Ready-to-run debug OSid = 0, DM = 3, item = 0xc0085098
+[28110] : Client command header DM = 3, client CCB = 0xc007b000, cmd = 0xc007c2b0
+[28153] : UFO Updates for FWCtx 0xc0085098 @ 5304
+[28183] : UFO Update: [0xc0084000] = 0x00000009
+[28313] : Irq Task complete.
+[28351] : KCCB Slot 29: Cmd=0x2abc0065, OSid=0
+[28392] : cCCB Woff update = 5920, DM = 3, FWCtx = 0xc0085098
+[28486] : Kick MTS Irq task DM=0
+[28514] : Irq Task (EVENT_STATUS=0x00000010)
+[28581] : Ready-to-run debug OSid = 0, DM = 3, item = 0xc0085098
+[28609] : Client command header DM = 3, client CCB = 0xc007b000, cmd = 0xc007c4e8
+[28726] : CONTEXT_PB_BASE set to 0x0, FL different between TA/3D: local: 0, global: 0
+[28788] : Loading stack-pointers for 1 (0:MidTA,1:3D) on context 1, MLIST = 0x00000000, ALIST = 0x0000000000000000
+[28836] : 3D Buffers: FWCtx 0xc0085098, RTData 0xc0088000 on ctx 1, (MemCtx 0xc002c000)
+[28861] : 3D RTData 0xc0088000 ready on HW context 1
+[28985] : Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x80015000)
+[29006] :   Phantom 0: USCTiles=6
+[29052] : Kick 3D: FWCtx 0xc0085098 @ 5352, RTD 0xc0088000, Partial render:0, CSW resume:0. (PID:702452, prio:1, frame:0, ext:0x00000003, int:0x00000003)
+[29177] : Irq Task complete.
+[29203] : Irq Task (EVENT_STATUS=0x00000118)
+[29255] : 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+[29304] : 3D RTData 0xc0088000 finished on HW context 1
+[29393] : UFO Updates for FWCtx 0xc0085098 @ 5872
+[29422] : UFO Update: [0xc0084000] = 0x0000000a
+[29607] : Irq Task complete.
+[29634] : Bg Task complete DM Bitfield: 1
+[29656] : Kick MTS Irq task DM=0
+[29682] : Irq Task (EVENT_STATUS=0x00000010)
+[29745] : Irq Task complete.
+[29771] : Bg Task OSid = 0
+[29825] : Bg Task complete DM Bitfield: 1
+[29846] : Kick MTS Irq task DM=0
+[29872] : Irq Task (EVENT_STATUS=0x00000010)
+[29947] : Irq Task complete.
+[46889] : Bg Task OSid = 0
+[46926] : KCCB Slot 30: Cmd=0x2abc006a, OSid=0
+[47022] : KCCB Slot 30: Return value 1
+[47080] : Bg Task complete DM Bitfield: 1
+[47107] : Kick MTS Irq task DM=0
+[47141] : Irq Task (EVENT_STATUS=0x00000010)
+[47230] : Irq Task complete.
+[47257] : Bg Task OSid = 0
+[47292] : KCCB Slot 31: Cmd=0x2abc0066, OSid=0
+[47361] : KCCB Slot 31: Return value 1
+[47415] : Bg Task complete DM Bitfield: 1
+[47439] : Kick MTS Irq task DM=0
+[47468] : Irq Task (EVENT_STATUS=0x00000010)
+[47555] : Irq Task complete.
+[47580] : Bg Task OSid = 0
+[47614] : KCCB Slot 32: Cmd=0x2abc0066, OSid=0
+[47680] : KCCB Slot 32: Return value 1
+[47734] : Bg Task complete DM Bitfield: 1
+[47760] : Kick MTS Irq task DM=0
+[47795] : Irq Task (EVENT_STATUS=0x00000010)
+[47881] : Irq Task complete.
+[47905] : Bg Task OSid = 0
+[47942] : KCCB Slot 33: Cmd=0x2abc0066, OSid=0
+[48008] : KCCB Slot 33: Return value 1
+[48065] : Bg Task complete DM Bitfield: 1
+[48089] : Kick MTS Irq task DM=0
+[48119] : Irq Task (EVENT_STATUS=0x00000010)
+[48200] : Irq Task complete.
+[48224] : Bg Task OSid = 0
+[48259] : KCCB Slot 34: Cmd=0x2abc0066, OSid=0
+[48326] : KCCB Slot 34: Return value 1
+[48383] : Bg Task complete DM Bitfield: 1
+[48406] : Kick MTS Irq task DM=0
+[48438] : Irq Task (EVENT_STATUS=0x00000010)
+[48519] : Irq Task complete.
+[48544] : Bg Task OSid = 0
+[48578] : KCCB Slot 35: Cmd=0x2abc0066, OSid=0
+[48646] : KCCB Slot 35: Return value 1
+[48703] : Bg Task complete DM Bitfield: 1
+[48727] : Kick MTS Irq task DM=0
+[48761] : Irq Task (EVENT_STATUS=0x00000010)
+[48844] : Irq Task complete.
+[48933] : Bg Task OSid = 0
+[48969] : KCCB Slot 36: Cmd=0x2abc006a, OSid=0
+[49064] : KCCB Slot 36: Return value 1
+[49122] : Bg Task complete DM Bitfield: 1
+[49147] : Kick MTS Irq task DM=0
+[49178] : Irq Task (EVENT_STATUS=0x00000010)
+[49263] : Irq Task complete.
+[49289] : Bg Task OSid = 0
+[49326] : KCCB Slot 37: Cmd=0x2abc0066, OSid=0
+[49392] : KCCB Slot 37: Return value 1
+[49449] : Bg Task complete DM Bitfield: 1
+[49473] : Kick MTS Irq task DM=0
+[49506] : Irq Task (EVENT_STATUS=0x00000010)
+[49598] : Irq Task complete.
+[49624] : Bg Task OSid = 0
+[49658] : KCCB Slot 38: Cmd=0x2abc0066, OSid=0
+[49728] : KCCB Slot 38: Return value 1
+[49788] : Bg Task complete DM Bitfield: 1
+[49810] : Kick MTS Irq task DM=0
+[49843] : Irq Task (EVENT_STATUS=0x00000010)
+[49933] : Irq Task complete.
+[49955] : Bg Task OSid = 0
+[49987] : KCCB Slot 39: Cmd=0x2abc0066, OSid=0
+[50057] : KCCB Slot 39: Return value 1
+[50112] : Bg Task complete DM Bitfield: 1
+[50138] : Kick MTS Irq task DM=0
+[50166] : Irq Task (EVENT_STATUS=0x00000010)
+[50248] : Irq Task complete.
+[50271] : Bg Task OSid = 0
+[50305] : KCCB Slot 40: Cmd=0x2abc0066, OSid=0
+[50374] : KCCB Slot 40: Return value 1
+[50431] : Bg Task complete DM Bitfield: 1
+[50455] : Kick MTS Irq task DM=0
+[50485] : Irq Task (EVENT_STATUS=0x00000010)
+[50567] : Irq Task complete.
+[50594] : Bg Task OSid = 0
+[50629] : KCCB Slot 41: Cmd=0x2abc0066, OSid=0
+[50694] : KCCB Slot 41: Return value 1
+[50749] : Bg Task complete DM Bitfield: 1
+[50775] : Kick MTS Irq task DM=0
+[50804] : Irq Task (EVENT_STATUS=0x00000010)
+[50898] : Irq Task complete.
+[50960] : Bg Task OSid = 0
+[50998] : KCCB Slot 42: Cmd=0x2abc006a, OSid=0
+[51097] : KCCB Slot 42: Return value 1
+[51155] : Bg Task complete DM Bitfield: 1
+[51178] : Kick MTS Irq task DM=0
+[51207] : Irq Task (EVENT_STATUS=0x00000010)
+[51301] : Irq Task complete.
+[51325] : Bg Task OSid = 0
+[51359] : KCCB Slot 43: Cmd=0x2abc0066, OSid=0
+[51421] : KCCB Slot 43: Return value 1
+[51478] : Bg Task complete DM Bitfield: 1
+[51502] : Kick MTS Irq task DM=0
+[51531] : Irq Task (EVENT_STATUS=0x00000010)
+[51623] : Irq Task complete.
+[51652] : Bg Task OSid = 0
+[51685] : KCCB Slot 44: Cmd=0x2abc0066, OSid=0
+[51757] : KCCB Slot 44: Return value 1
+[51814] : Bg Task complete DM Bitfield: 1
+[51838] : Kick MTS Irq task DM=0
+[51867] : Irq Task (EVENT_STATUS=0x00000010)
+[51949] : Irq Task complete.
+[51972] : Bg Task OSid = 0
+[52012] : KCCB Slot 45: Cmd=0x2abc0066, OSid=0
+[52084] : KCCB Slot 45: Return value 1
+[52143] : Bg Task complete DM Bitfield: 1
+[52169] : Kick MTS Irq task DM=0
+[52202] : Irq Task (EVENT_STATUS=0x00000010)
+[52290] : Irq Task complete.
+[52317] : Bg Task OSid = 0
+[52351] : KCCB Slot 46: Cmd=0x2abc0066, OSid=0
+[52416] : KCCB Slot 46: Return value 1
+[52475] : Bg Task complete DM Bitfield: 1
+[52496] : Kick MTS Irq task DM=0
+[52526] : Irq Task (EVENT_STATUS=0x00000010)
+[52616] : Irq Task complete.
+[52642] : Bg Task OSid = 0
+[52676] : KCCB Slot 47: Cmd=0x2abc0066, OSid=0
+[52739] : KCCB Slot 47: Return value 1
+[52800] : Bg Task complete DM Bitfield: 1
+[52823] : Kick MTS Irq task DM=0
+[52854] : Irq Task (EVENT_STATUS=0x00000010)
+[52939] : Irq Task complete.
+[53054] : Bg Task OSid = 0
+[53090] : KCCB Slot 48: Cmd=0x2abc0066, OSid=0
+[53162] : KCCB Slot 48: Return value 1
+[53220] : Bg Task complete DM Bitfield: 1
+[53243] : Kick MTS Irq task DM=0
+[53278] : Irq Task (EVENT_STATUS=0x00000010)
+[53362] : Irq Task complete.
+[53390] : Bg Task OSid = 0
+[53430] : KCCB Slot 49: Cmd=0x2abc0066, OSid=0
+[53499] : KCCB Slot 49: Return value 1
+[53561] : Bg Task complete DM Bitfield: 1
+[53584] : Kick MTS Irq task DM=0
+[53615] : Irq Task (EVENT_STATUS=0x00000010)
+[53701] : Irq Task complete.
+[53726] : Bg Task OSid = 0
+[53761] : KCCB Slot 50: Cmd=0x2abc0066, OSid=0
+[53833] : KCCB Slot 50: Return value 1
+[53894] : Bg Task complete DM Bitfield: 1
+[53918] : Kick MTS Irq task DM=0
+[53950] : Irq Task (EVENT_STATUS=0x00000010)
+[54042] : Irq Task complete.
+[54068] : Bg Task OSid = 0
+[54103] : KCCB Slot 51: Cmd=0x2abc0066, OSid=0
+[54167] : KCCB Slot 51: Return value 1
+[54225] : Bg Task complete DM Bitfield: 1
+[54250] : Kick MTS Irq task DM=0
+[54280] : Irq Task (EVENT_STATUS=0x00000010)
+[54368] : Irq Task complete.
+[54392] : Bg Task OSid = 0
+[54426] : KCCB Slot 52: Cmd=0x2abc0066, OSid=0
+[54497] : KCCB Slot 52: Return value 1
+[54552] : Bg Task complete DM Bitfield: 1
+[54574] : Kick MTS Irq task DM=0
+[54604] : Irq Task (EVENT_STATUS=0x00000010)
+[54686] : Irq Task complete.
+[54709] : Bg Task OSid = 0
+[54742] : KCCB Slot 53: Cmd=0x2abc0066, OSid=0
+[54812] : KCCB Slot 53: Return value 1
+[54871] : Bg Task complete DM Bitfield: 1
+[54897] : Kick MTS Irq task DM=0
+[54931] : Irq Task (EVENT_STATUS=0x00000010)
+[55016] : Irq Task complete.
+[55078] : Bg Task OSid = 0
+[55110] : KCCB Slot 54: Cmd=0x2abc0066, OSid=0
+[55175] : KCCB Slot 54: Return value 1
+[55233] : Bg Task complete DM Bitfield: 1
+[55258] : Kick MTS Irq task DM=0
+[55289] : Irq Task (EVENT_STATUS=0x00000010)
+[55374] : Irq Task complete.
+[55400] : Bg Task OSid = 0
+[55433] : KCCB Slot 55: Cmd=0x2abc0066, OSid=0
+[55496] : KCCB Slot 55: Return value 1
+[55551] : Bg Task complete DM Bitfield: 1
+[55575] : Kick MTS Irq task DM=0
+[55612] : Irq Task (EVENT_STATUS=0x00000010)
+[55693] : Irq Task complete.
+[55717] : Bg Task OSid = 0
+[55747] : KCCB Slot 56: Cmd=0x2abc0066, OSid=0
+[55815] : KCCB Slot 56: Return value 1
+[55870] : Bg Task complete DM Bitfield: 1
+[55895] : Kick MTS Irq task DM=0
+[55924] : Irq Task (EVENT_STATUS=0x00000010)
+[56008] : Irq Task complete.
+[56032] : Bg Task OSid = 0
+[56063] : KCCB Slot 57: Cmd=0x2abc0066, OSid=0
+[56131] : KCCB Slot 57: Return value 1
+[56190] : Bg Task complete DM Bitfield: 1
+[56213] : Kick MTS Irq task DM=0
+[56244] : Irq Task (EVENT_STATUS=0x00000010)
+[56326] : Irq Task complete.
+[56349] : Bg Task OSid = 0
+[56383] : KCCB Slot 58: Cmd=0x2abc0066, OSid=0
+[56445] : KCCB Slot 58: Return value 1
+[56499] : Bg Task complete DM Bitfield: 1
+[56521] : Kick MTS Irq task DM=0
+[56550] : Irq Task (EVENT_STATUS=0x00000010)
+[56628] : Irq Task complete.
+[56654] : Bg Task OSid = 0
+[56685] : KCCB Slot 59: Cmd=0x2abc0066, OSid=0
+[56754] : KCCB Slot 59: Return value 1
+[56808] : Bg Task complete DM Bitfield: 1
+[56828] : Kick MTS Irq task DM=0
+[56856] : Irq Task (EVENT_STATUS=0x00000010)
+[56935] : Irq Task complete.
+[56961] : Bg Task OSid = 0
+[56995] : KCCB Slot 60: Cmd=0x2abc0066, OSid=0
+[57058] : KCCB Slot 60: Return value 1
+[57113] : Bg Task complete DM Bitfield: 1
+[57136] : Kick MTS Irq task DM=0
+[57164] : Irq Task (EVENT_STATUS=0x00000010)
+[57247] : Irq Task complete.
+[57460] : Bg Task OSid = 0
+[57495] : KCCB Slot 61: Cmd=0x2abc0066, OSid=0
+[57561] : KCCB Slot 61: Return value 1
+[57625] : Bg Task complete DM Bitfield: 1
+[57651] : Kick MTS Irq task DM=0
+[57688] : Irq Task (EVENT_STATUS=0x00000010)
+[57776] : Irq Task complete.
+[58981] : Bg Task OSid = 0
+[59015] : KCCB Slot 62: Cmd=0x2abc0066, OSid=0
+[59081] : KCCB Slot 62: Return value 1
+[59148] : Bg Task complete DM Bitfield: 1
+[59171] : Kick MTS Irq task DM=0
+[59204] : Irq Task (EVENT_STATUS=0x00000010)
+[59292] : Irq Task complete.
+[60413] : Bg Task OSid = 0
+[60454] : KCCB Slot 63: Cmd=0x2abc0066, OSid=0
+[60521] : KCCB Slot 63: Return value 1
+[60581] : Bg Task complete DM Bitfield: 1
+[60606] : Kick MTS Irq task DM=0
+[60639] : Irq Task (EVENT_STATUS=0x00000010)
+[60726] : Irq Task complete.
+[60760] : Bg Task OSid = 0
+[60797] : KCCB Slot 64: Cmd=0x2abc0066, OSid=0
+[60866] : KCCB Slot 64: Return value 1
+[60920] : Bg Task complete DM Bitfield: 1
+[60941] : Kick MTS Irq task DM=0
+[60978] : Irq Task (EVENT_STATUS=0x00000010)
+[61067] : Irq Task complete.
+[62075] : Bg Task OSid = 0
+[62112] : KCCB Slot 65: Cmd=0x2abc0066, OSid=0
+[62180] : KCCB Slot 65: Return value 1
+[62238] : Bg Task complete DM Bitfield: 1
+[62259] : Kick MTS Irq task DM=0
+[62288] : Irq Task (EVENT_STATUS=0x00000010)
+[62370] : Irq Task complete.
+[62394] : Bg Task OSid = 0
+[62427] : KCCB Slot 66: Cmd=0x2abc0066, OSid=0
+[62499] : KCCB Slot 66: Return value 1
+[62554] : Bg Task complete DM Bitfield: 1
+[62579] : Kick MTS Irq task DM=0
+[62608] : Irq Task (EVENT_STATUS=0x00000010)
+[62694] : Irq Task complete.
+[62720] : Bg Task OSid = 0
+[62758] : KCCB Slot 67: Cmd=0x2abc0066, OSid=0
+[62821] : KCCB Slot 67: Return value 1
+[62884] : Bg Task complete DM Bitfield: 1
+[62906] : Kick MTS Irq task DM=0
+[62939] : Irq Task (EVENT_STATUS=0x00000010)
+[63022] : Irq Task complete.
+[63048] : Bg Task OSid = 0
+[63083] : KCCB Slot 68: Cmd=0x2abc0066, OSid=0
+[63147] : KCCB Slot 68: Return value 1
+[63205] : Bg Task complete DM Bitfield: 1
+[63225] : Kick MTS Irq task DM=0
+[63253] : Irq Task (EVENT_STATUS=0x00000010)
+[63331] : Irq Task complete.
+[63356] : Bg Task OSid = 0
+[63387] : KCCB Slot 69: Cmd=0x2abc0066, OSid=0
+[63454] : KCCB Slot 69: Return value 1
+[63507] : Bg Task complete DM Bitfield: 1
+[63527] : Kick MTS Irq task DM=0
+[63554] : Irq Task (EVENT_STATUS=0x00000010)
+[63635] : Irq Task complete.
+[63661] : Bg Task OSid = 0
+[63694] : KCCB Slot 70: Cmd=0x2abc0066, OSid=0
+[63758] : KCCB Slot 70: Return value 1
+[63816] : Bg Task complete DM Bitfield: 1
+[63838] : Kick MTS Irq task DM=0
+[63868] : Irq Task (EVENT_STATUS=0x00000010)
+[63953] : Irq Task complete.
+[64048] : Bg Task OSid = 0
+[64084] : KCCB Slot 71: Cmd=0x2abc0066, OSid=0
+[64151] : KCCB Slot 71: Return value 1
+[64206] : Bg Task complete DM Bitfield: 1
+[64229] : Kick MTS Irq task DM=0
+[64258] : Irq Task (EVENT_STATUS=0x00000010)
+[64341] : Irq Task complete.
+[64445] : Bg Task OSid = 0
+[64479] : KCCB Slot 72: Cmd=0x2abc0066, OSid=0
+[64538] : KCCB Slot 72: Return value 1
+[64593] : Bg Task complete DM Bitfield: 1
+[64614] : Kick MTS Irq task DM=0
+[64645] : Irq Task (EVENT_STATUS=0x00000010)
+[64725] : Irq Task complete.
+[64747] : Bg Task OSid = 0
+[64781] : KCCB Slot 73: Cmd=0x2abc0066, OSid=0
+[64848] : KCCB Slot 73: Return value 1
+[64906] : Bg Task complete DM Bitfield: 1
+[64929] : Kick MTS Irq task DM=0
+[64959] : Irq Task (EVENT_STATUS=0x00000010)
+[65045] : Irq Task complete.
+[65071] : Bg Task OSid = 0
+[65104] : KCCB Slot 74: Cmd=0x2abc0066, OSid=0
+[65169] : KCCB Slot 74: Return value 1
+[65223] : Bg Task complete DM Bitfield: 1
+[65246] : Kick MTS Irq task DM=0
+[65277] : Irq Task (EVENT_STATUS=0x00000010)
+[65363] : Irq Task complete.
+[65390] : Bg Task OSid = 0
+[65429] : KCCB Slot 75: Cmd=0x2abc0066, OSid=0
+[65495] : KCCB Slot 75: Return value 1
+[65555] : Bg Task complete DM Bitfield: 1
+[65577] : Kick MTS Irq task DM=0
+[65609] : Irq Task (EVENT_STATUS=0x00000010)
+[65699] : Irq Task complete.
+[65726] : Bg Task OSid = 0
+[65763] : KCCB Slot 76: Cmd=0x2abc0066, OSid=0
+[65830] : KCCB Slot 76: Return value 1
+[65885] : Bg Task complete DM Bitfield: 1
+[65908] : Kick MTS Irq task DM=0
+[65936] : Irq Task (EVENT_STATUS=0x00000010)
+[66022] : Irq Task complete.
+[66046] : Bg Task OSid = 0
+[66084] : KCCB Slot 77: Cmd=0x2abc0066, OSid=0
+[66145] : KCCB Slot 77: Return value 1
+[66203] : Bg Task complete DM Bitfield: 1
+[66227] : Kick MTS Irq task DM=0
+[66259] : Irq Task (EVENT_STATUS=0x00000010)
+[66340] : Irq Task complete.
+[66368] : Bg Task OSid = 0
+[66402] : KCCB Slot 78: Cmd=0x2abc0066, OSid=0
+[66475] : KCCB Slot 78: Return value 1
+[66535] : Bg Task complete DM Bitfield: 1
+[66557] : Kick MTS Irq task DM=0
+[66588] : Irq Task (EVENT_STATUS=0x00000010)
+[66686] : Irq Task complete.
+[66716] : Bg Task OSid = 0
+[66755] : KCCB Slot 79: Cmd=0x2abc0066, OSid=0
+[66821] : KCCB Slot 79: Return value 1
+[66878] : Bg Task complete DM Bitfield: 1
+[66902] : Kick MTS Irq task DM=0
+[66931] : Irq Task (EVENT_STATUS=0x00000010)
+[67015] : Irq Task complete.
+[67096] : Bg Task OSid = 0
+[67132] : KCCB Slot 80: Cmd=0x2abc0066, OSid=0
+[67195] : KCCB Slot 80: Return value 1
+[67253] : Bg Task complete DM Bitfield: 1
+[67279] : Kick MTS Irq task DM=0
+[67310] : Irq Task (EVENT_STATUS=0x00000010)
+[67402] : Irq Task complete.
+[67628] : Bg Task OSid = 0
+[67662] : KCCB Slot 81: Cmd=0x2abc006a, OSid=0
+[67763] : KCCB Slot 81: Return value 1
+[67824] : Bg Task complete DM Bitfield: 1
+[67849] : Kick MTS Irq task DM=0
+[67879] : Irq Task (EVENT_STATUS=0x00000010)
+[67965] : Irq Task complete.
+[67990] : Bg Task OSid = 0
+[68022] : KCCB Slot 82: Cmd=0x2abc0066, OSid=0
+[68085] : KCCB Slot 82: Return value 1
+[68141] : Bg Task complete DM Bitfield: 1
+[68162] : Kick MTS Irq task DM=0
+[68190] : Irq Task (EVENT_STATUS=0x00000010)
+[68282] : Irq Task complete.
+[68307] : Bg Task OSid = 0
+[68342] : KCCB Slot 83: Cmd=0x2abc006a, OSid=0
+[68445] : KCCB Slot 83: Return value 1
+[68505] : Bg Task complete DM Bitfield: 1
+[68531] : Kick MTS Irq task DM=0
+[68565] : Irq Task (EVENT_STATUS=0x00000010)
+[68656] : Irq Task complete.
+[68682] : Bg Task OSid = 0
+[68719] : KCCB Slot 84: Cmd=0x2abc0066, OSid=0
+[68786] : KCCB Slot 84: Return value 1
+[68849] : Bg Task complete DM Bitfield: 1
+[68875] : Kick MTS Irq task DM=0
+[68910] : Irq Task (EVENT_STATUS=0x00000010)
+[69003] : Irq Task complete.
+[69028] : Bg Task OSid = 0
+[69067] : KCCB Slot 85: Cmd=0x2abc0066, OSid=0
+[69138] : KCCB Slot 85: Return value 1
+[69201] : Bg Task complete DM Bitfield: 1
+[69227] : Kick MTS Irq task DM=0
+[69258] : Irq Task (EVENT_STATUS=0x00000010)
+[69346] : Irq Task complete.
+[69374] : Bg Task OSid = 0
+[69409] : KCCB Slot 86: Cmd=0x2abc006a, OSid=0
+[69509] : KCCB Slot 86: Return value 1
+[69561] : KCCB Slot 87: Cmd=0x2abc006a, OSid=0
+[69629] : Store Freelist 0xc0086000 type: 0 (0:local,1:global) for PMDM0: FL Total Pages 32 (max=32,grow size=0), FL-addr = 0x00000080003b2000, stacktop = 0x000000000000001f, Alloc Page Count = 0, Alloc MMU Page Count = 0
+[69676] : Store Freelist 0xc002d000 type: 1 (0:local,1:global) for PMDM0: FL Total Pages 448 (max=65536,grow size=256), FL-addr = 0x0000008000048900, stacktop = 0x00000000000001bf, Alloc Page Count = 0, Alloc MMU Page Count = 0
+[69719] : Store Freelist 0xc0086000 type: 0 (0:local,1:global) for PMDM1: FL Total Pages 32 (max=32,grow size=0), FL-addr = 0x00000080003b2000, stacktop = 0x000000000000001f, Alloc Page Count = 0, Alloc MMU Page Count = 0
+[69760] : Store Freelist 0xc002d000 type: 1 (0:local,1:global) for PMDM1: FL Total Pages 448 (max=65536,grow size=256), FL-addr = 0x0000008000048900, stacktop = 0x00000000000001bf, Alloc Page Count = 0, Alloc MMU Page Count = 0
+[69828] : KCCB Slot 87: Return value 1
+[69884] : KCCB Slot 88: Cmd=0x2abc0066, OSid=0
+[69954] : KCCB Slot 88: Return value 1
+[70011] : Bg Task complete DM Bitfield: 1
+[70035] : Kick MTS Irq task DM=0
+[70068] : Irq Task (EVENT_STATUS=0x00000010)
+[70161] : Irq Task complete.
+[70186] : Bg Task OSid = 0
+[70221] : KCCB Slot 89: Cmd=0x2abc0066, OSid=0
+[70285] : KCCB Slot 89: Return value 1
+[70340] : KCCB Slot 90: Cmd=0x2abc0066, OSid=0
+[70407] : KCCB Slot 90: Return value 1
+[70458] : KCCB Slot 91: Cmd=0x2abc006a, OSid=0
+[70551] : KCCB Slot 91: Return value 1
+[70606] : KCCB Slot 92: Cmd=0x2abc0066, OSid=0
+[70676] : KCCB Slot 92: Return value 1
+[70732] : Bg Task complete DM Bitfield: 1
+[70755] : Kick MTS Irq task DM=0
+[70785] : Irq Task (EVENT_STATUS=0x00000010)
+[70878] : Irq Task complete.
+[70902] : Bg Task OSid = 0
+[70937] : KCCB Slot 93: Cmd=0x2abc0066, OSid=0
+[71007] : KCCB Slot 93: Return value 1
+[71067] : Bg Task complete DM Bitfield: 1
+[71091] : Kick MTS Irq task DM=0
+[71122] : Irq Task (EVENT_STATUS=0x00000010)
+[71202] : Irq Task complete.
+[71228] : Bg Task OSid = 0
+[71260] : Bg Task complete DM Bitfield: 1
+[71283] : Kick MTS Irq task DM=0
+[71305] : Irq Task (EVENT_STATUS=0x00000010)
+[71361] : Irq Task complete.
+[71623] : Bg Task OSid = 0
+[71657] : KCCB Slot 94: Cmd=0x2abc006a, OSid=0
+[71758] : KCCB Slot 94: Return value 1
+[71820] : Bg Task complete DM Bitfield: 1
+[71847] : Kick MTS Irq task DM=0
+[71876] : Irq Task (EVENT_STATUS=0x00000010)
+[71961] : Irq Task complete.
+[71986] : Bg Task OSid = 0
+[72026] : KCCB Slot 95: Cmd=0x2abc0066, OSid=0
+[72093] : KCCB Slot 95: Return value 1
+[72157] : Bg Task complete DM Bitfield: 1
+[72182] : Kick MTS Irq task DM=0
+[72217] : Irq Task (EVENT_STATUS=0x00000010)
+[72315] : Irq Task complete.
+[72342] : Bg Task OSid = 0
+[72388] : KCCB Slot 96: Cmd=0x2abc0066, OSid=0
+[72463] : KCCB Slot 96: Return value 1
+[72529] : Bg Task complete DM Bitfield: 1
+[72553] : Kick MTS Irq task DM=0
+[72588] : Irq Task (EVENT_STATUS=0x00000010)
+[72679] : Irq Task complete.
+[72705] : Bg Task OSid = 0
+[72740] : KCCB Slot 97: Cmd=0x2abc0066, OSid=0
+[72803] : KCCB Slot 97: Return value 1
+[72863] : Bg Task complete DM Bitfield: 1
+[72887] : Kick MTS Irq task DM=0
+[72918] : Irq Task (EVENT_STATUS=0x00000010)
+[73016] : Irq Task complete.
+[73041] : Bg Task OSid = 0
+[73075] : KCCB Slot 98: Cmd=0x2abc0066, OSid=0
+[73139] : KCCB Slot 98: Return value 1
+[73199] : Bg Task complete DM Bitfield: 1
+[73224] : Kick MTS Irq task DM=0
+[73258] : Irq Task (EVENT_STATUS=0x00000010)
+[73352] : Irq Task complete.
+[73378] : Bg Task OSid = 0
+[73412] : KCCB Slot 99: Cmd=0x2abc0066, OSid=0
+[73487] : KCCB Slot 99: Return value 1
+[73540] : KCCB Slot 100: Cmd=0x2abc0066, OSid=0
+[73610] : KCCB Slot 100: Return value 1
+[73668] : Bg Task complete DM Bitfield: 1
+[73694] : Kick MTS Irq task DM=0
+[73724] : Irq Task (EVENT_STATUS=0x00000010)
+[73813] : Irq Task complete.
+[73840] : Bg Task OSid = 0
+[73878] : KCCB Slot 101: Cmd=0x2abc0066, OSid=0
+[73941] : KCCB Slot 101: Return value 1
+[74005] : Bg Task complete DM Bitfield: 1
+[74029] : Kick MTS Irq task DM=0
+[74063] : Irq Task (EVENT_STATUS=0x00000010)
+[74146] : Irq Task complete.
+[74175] : Bg Task OSid = 0
+[74207] : Bg Task complete DM Bitfield: 1
+[74230] : Kick MTS Irq task DM=0
+[74256] : Irq Task (EVENT_STATUS=0x00000010)
+[74316] : Irq Task complete.
+[74350] : Bg Task OSid = 0
+[74382] : KCCB Slot 102: Cmd=0x2abc0066, OSid=0
+[74451] : KCCB Slot 102: Return value 1
+[74509] : Bg Task complete DM Bitfield: 1
+[74533] : Kick MTS Irq task DM=0
+[74562] : Irq Task (EVENT_STATUS=0x00000010)
+[74644] : Irq Task complete.

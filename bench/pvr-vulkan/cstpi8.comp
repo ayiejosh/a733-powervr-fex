@@ -1,0 +1,18 @@
+#version 450
+layout(local_size_x = 64) in;
+layout(set = 0, binding = 0) buffer Out { uint v[]; } outb;
+layout(push_constant) uniform PC { uint n; } pc;
+void main()
+{
+    uint i = gl_GlobalInvocationID.x;
+    uint x = i * 2654435761u;
+    x ^= x >> 13; x *= 2246822519u; x ^= x >> 15;
+    x += pc.n;
+    for (int k = 0; k < 8; k++) {
+        x = x * 2654435761u + 0x9E3779B9u;
+        x = min(x, 0xFFFFFF00u);
+        x = max(x, 0x000000FFu);
+        x = x ^ (x << 7);
+    }
+    outb.v[i & 0xFFFFu] = x;
+}

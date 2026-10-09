@@ -1,0 +1,79 @@
+From 98be6a3401832089067c924b917df3bd83825d6a Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Thu, 8 Oct 2026 04:19:05 +0800
+Subject: [PATCH 13/43] kopper: add SWAP_TIMING instrumentation; find the
+ windowed cost is in the client's draw path
+
+Instrumented kopperSwapBuffersWithDamage to report the frame period and the time spent
+inside eglSwapBuffers, which separates 'waiting in present' from 'rendering'.
+
+Findings:
+* The function ALWAYS returns at the 'no front texture' check (391/391 calls) -
+  drawable->textures[ST_ATTACHMENT_FRONT_LEFT] is never set for kopper drawables, so the
+  pointer-swap tail below it is dead code on this path. That is also why the first attempt
+  at this instrumentation produced nothing: the print was placed after that return.
+* inside eglSwapBuffers is 4.3-4.9 ms median and tightly bounded (3.95-8.29 ms).
+* glmark2 reports 26.3 ms/frame, so ~22 ms is spent OUTSIDE the swap call, in the client's
+  GL draw path.
+
+Combined with weston-debug timeline showing weston's composite is 0.58 ms, the windowed
+penalty is now localised to the client's own draw path - not the compositor, not the
+present call, and not the flip.
+
+Env-gated on SWAP_TIMING, so it costs nothing when unset. glmark2 --validate still 0
+failures / 27 pass.
+---
+ src/gallium/frontends/dri/kopper.c | 26 ++++++++++++++++++++++++++
+ 1 file changed, 26 insertions(+)
+
+diff --git a/src/gallium/frontends/dri/kopper.c b/src/gallium/frontends/dri/kopper.c
+index c565d77..09f79d4 100644
+--- a/src/gallium/frontends/dri/kopper.c
++++ b/src/gallium/frontends/dri/kopper.c
+@@ -522,6 +522,15 @@ kopper_destroy_drawable(struct dri_drawable *drawable)
+ int64_t
+ kopperSwapBuffersWithDamage(struct dri_drawable *drawable, uint32_t flush_flags, int nrects, const int *rects)
+ {
++   /* ponytail: SWAP_TIMING - separate time spent INSIDE eglSwapBuffers (the present path)
++    * from the frame period, so the client-side cost can be attributed. */
++   struct timespec _s0, _s1;
++   static struct timespec _last;
++   static int _n;
++   clock_gettime(CLOCK_MONOTONIC, &_s0);
++   double _period = 0.0;
++   if (_last.tv_sec)
++      _period = (_s0.tv_sec-_last.tv_sec)*1000.0 + (_s0.tv_nsec-_last.tv_nsec)/1e6;
+    struct dri_context *ctx = dri_get_current();
+    struct pipe_resource *ptex;
+ 
+@@ -557,6 +566,14 @@ kopperSwapBuffersWithDamage(struct dri_drawable *drawable, uint32_t flush_flags,
+    if (drawable->is_window && !zink_kopper_check(ptex))
+       return -1;
+    if (!drawable->textures[ST_ATTACHMENT_FRONT_LEFT]) {
++      if (getenv("SWAP_TIMING")) {
++         clock_gettime(CLOCK_MONOTONIC, &_s1);
++         double inside = (_s1.tv_sec-_s0.tv_sec)*1000.0 + (_s1.tv_nsec-_s0.tv_nsec)/1e6;
++         if (++_n > 20 && _n % 20 == 0)
++            fprintf(stderr, "[swap] frame %d: period %.2f ms, inside swap %.2f ms, outside %.2f ms\n",
++                    _n, _period, inside, _period - inside);
++      }
++      clock_gettime(CLOCK_MONOTONIC, &_last);
+       return 0;
+    }
+ 
+@@ -564,6 +581,15 @@ kopperSwapBuffersWithDamage(struct dri_drawable *drawable, uint32_t flush_flags,
+    drawable->textures[ST_ATTACHMENT_BACK_LEFT] = drawable->textures[ST_ATTACHMENT_FRONT_LEFT];
+    drawable->textures[ST_ATTACHMENT_FRONT_LEFT] = ptex;
+ 
++   if (getenv("SWAP_TIMING")) {
++      clock_gettime(CLOCK_MONOTONIC, &_s1);
++      double inside = (_s1.tv_sec-_s0.tv_sec)*1000.0 + (_s1.tv_nsec-_s0.tv_nsec)/1e6;
++      if (++_n > 20 && _n % 20 == 0)
++         fprintf(stderr, "[swap] frame %d: period %.2f ms, inside swap %.2f ms, outside %.2f ms\n",
++                 _n, _period, inside, _period - inside);
++   }
++   clock_gettime(CLOCK_MONOTONIC, &_last);
++
+    return 0;
+ }
+ 

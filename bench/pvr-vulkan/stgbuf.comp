@@ -1,0 +1,12 @@
+#version 450
+layout(local_size_x = 1) in;
+/* An array of storage blocks: element i is descriptor i, so this uses N storage-buffer
+ * descriptors in one stage. Element i holds i, so the sum must be the triangular number. */
+layout(std430, binding = 0) buffer B { uint v; } b[N];
+layout(std430, binding = 1) buffer Out { uint v[]; };
+void main() {
+    uint s = 0u;
+    for (int i = 0; i < N; ++i)
+        s += b[i].v;
+    v[0] = s;
+}

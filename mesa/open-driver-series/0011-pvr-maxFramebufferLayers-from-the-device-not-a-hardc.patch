@@ -1,0 +1,39 @@
+From f5ee3cf16be3ea864a05a0fdba3113e51a314b7d Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Thu, 8 Oct 2026 03:22:46 +0800
+Subject: [PATCH 11/43] pvr: maxFramebufferLayers from the device, not a
+ hardcoded 256 (-> 2048)
+
+Same pattern as maxColorAttachments: pvr_arch_job_render.c asserts
+layers <= PVR_MAX_FRAMEBUFFER_LAYERS, so the render path already accepts more than the 256
+hardcoded in the limits struct. PVR_MAX_FRAMEBUFFER_LAYERS == PVR_MAX_ARRAY_LAYERS, which is
+the same quantity the neighbouring maxImageArrayLayers already takes from
+rogue_get_render_size_max_z(dev_info) - so use that, which also avoids pulling the csbgen
+texstate header into this file (my first attempt used the macro directly and failed to build
+on ROGUE_TEXSTATE_IMAGE_WORD1_DEPTH_MAX_SIZE).
+
+maxFramebufferLayers now reads 2048, matching maxImageArrayLayers.
+
+No regressions: bda, vk13, pctest, vk16, wgsize, samplers, storageimages, mrt all PASS;
+glmark2 --validate still 0 failures / 27 pass; windowed 39 FPS unchanged.
+---
+ src/imagination/vulkan/pvr_physical_device.c | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/src/imagination/vulkan/pvr_physical_device.c b/src/imagination/vulkan/pvr_physical_device.c
+index 55e2a03..86617f5 100644
+--- a/src/imagination/vulkan/pvr_physical_device.c
++++ b/src/imagination/vulkan/pvr_physical_device.c
+@@ -872,7 +872,11 @@ static bool pvr_physical_device_get_properties(
+ 
+       .maxFramebufferWidth = max_render_size,
+       .maxFramebufferHeight = max_render_size,
+-      .maxFramebufferLayers = 256U,
++      /* Use the driver's own constant: pvr_arch_job_render.c asserts
++       * layers <= PVR_MAX_FRAMEBUFFER_LAYERS, so the render path already accepts more than
++       * the 256 hardcoded here. PVR_MAX_FRAMEBUFFER_LAYERS == PVR_MAX_ARRAY_LAYERS, which is
++       * the same device-derived maximum used for maxImageArrayLayers below. */
++      .maxFramebufferLayers = rogue_get_render_size_max_z(dev_info),
+ 
+       /* Note: update nir_shader_compiler_options.max_samples when changing this.
+        * 2x is included because the driver implements it: pvr_cr_isp_aa_mode_type()

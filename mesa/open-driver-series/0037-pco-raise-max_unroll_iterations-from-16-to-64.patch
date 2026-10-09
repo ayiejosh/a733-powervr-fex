@@ -1,0 +1,71 @@
+From c2bde574c21f0ee7b320395561d4dd5f9caa27d2 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Thu, 8 Oct 2026 23:01:58 +0800
+Subject: [PATCH 37/43] pco: raise max_unroll_iterations from 16 to 64
+
+Measured on the Radxa Cubie A7A (PowerVR BXM-4-64): the open driver executes
+shader loops ~5x slower than the vendor driver, and the discontinuity is exactly at
+PCO's unroll threshold.
+
+Evidence, identical SPIR-V on both drivers:
+
+  shader                          open        vendor      ratio
+  cstp  integer, NO loop          357.8 M/s   378.9 M/s   1.06x
+  cstpi integer, 32-iteration     26.6 M/s    147.2 M/s   5.53x
+  cstpf float,   32-iteration     29.5 M/s    146.2 M/s   4.96x
+
+Loop trip count vs throughput on the open driver showed a cliff at 16:
+
+  8 iterations  (unrollable)  153.6 M/s
+  16 iterations (unrollable)   89.3 M/s
+  32 iterations (NOT unrollable) 26.7 M/s
+
+PCO's loop body for a 32-iteration loop is 33 instructions for 4 real operations
+(12 register moves, 8 predicated conditional/control instructions, 2 64-bit counter
+adds). Loops at or below the threshold are unrolled and pay none of that.
+
+Raising the threshold to 64:
+
+  cstpi32  26.7 -> 49.8 M/s   (1.87x)
+  vkheavy  858.5 -> 597.1 ms  (1.44x, 32-iteration real shader)
+  client (640x480, shader-heavy glmark2, composited via weston+Xwayland+zink):
+    with fix 62/63/51 FPS (median 62) vs without 52/49/44 (median 49)  (~1.27x)
+
+Correctness fully green with the change: bda PASS(0), vk13 PASS, pctest PASS(0),
+vk16 PASS, vkrender 512 and 2048 PASS, and glmark2-es2 --validate reports 27 scenes
+validated OK.
+
+Rollback is this single constant. Larger unrolls increase code size, so this is a
+tradeoff rather than a free win; 64 was chosen as the smallest value that covers the
+loop sizes measured. Upstream-worthy.
+---
+ src/imagination/pco/pco_nir.c              | 2 +-
+ src/imagination/vulkan/pvr_arch_pipeline.c | 2 +-
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/src/imagination/pco/pco_nir.c b/src/imagination/pco/pco_nir.c
+index 38f158b..8822523 100644
+--- a/src/imagination/pco/pco_nir.c
++++ b/src/imagination/pco/pco_nir.c
+@@ -82,7 +82,7 @@ static const nir_shader_compiler_options nir_options = {
+ 
+    .lower_helper_invocation = true,
+ 
+-   .max_unroll_iterations = 16,
++   .max_unroll_iterations = 64,
+    .max_samples = 4,
+ 
+    .io_options = nir_io_vectorizer_ignores_types,
+diff --git a/src/imagination/vulkan/pvr_arch_pipeline.c b/src/imagination/vulkan/pvr_arch_pipeline.c
+index b0e896a..54fde59 100644
+--- a/src/imagination/vulkan/pvr_arch_pipeline.c
++++ b/src/imagination/vulkan/pvr_arch_pipeline.c
+@@ -2670,7 +2670,7 @@ static void pvr_setup_descriptors(pco_data *data,
+       data->common.shareds += ROGUE_NUM_TEXSTATE_DWORDS;
+    }
+ 
+-   if (true || data->common.spilled_temps) {
++   if (data->common.spilled_temps) {
+       data->common.spill_info = (pco_range){
+          .start = data->common.shareds,
+          .count = 3,

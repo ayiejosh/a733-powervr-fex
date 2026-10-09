@@ -26,6 +26,9 @@
 #include <vulkan/vulkan.h>
 
 #include "render_frag_spv.h"
+#include "discard_frag_spv.h"
+#include "uniform_frag_spv.h"
+#include "patterndiscard_frag_spv.h"
 #include "render_vert_spv.h"
 #include "io16_vert_spv.h"
 #include "io16_frag_spv.h"
@@ -108,6 +111,17 @@ int main(int argc, char **argv)
      * point fill touches three, so "a small non-zero fraction of the target" is
      * the check, and it can only pass if the mode actually changed rasterisation.
      * 0 = line, 1 = point, -1 = untouched (fill). */
+    /* DISCARD=1 enables rasterizerDiscardEnable: geometry and tiling still run, but no
+     * fragments are shaded and nothing reaches the PBE. Separates Tiler from Renderer. */
+    const int discard = getenv("DISCARD") != NULL;
+    /* FRAGDISCARD=1 uses a shader that runs but discards every fragment. */
+    const int frag_discard = getenv("FRAGDISCARD") != NULL;
+    /* UNIFORM=1 writes a constant colour: compressible if the GPU compresses render targets. */
+    const int frag_uniform = getenv("UNIFORM") != NULL;
+    /* PATTERNDISCARD=1: same ALU as the pattern shader, then discard - the correct
+     * control for PBE write cost. */
+    const int frag_pdiscard = getenv("PATTERNDISCARD") != NULL;
+
     const char *pm_env = getenv("POLYGONMODE");
     int polygon_mode = -1;
     if (pm_env) {
@@ -303,15 +317,29 @@ int main(int argc, char **argv)
         fmt = FMT_R16;
     }
 
+    /* EXPORTABLE=1 allocates the render target as an exportable dma-buf image, i.e. what a
+     * swapchain image is. This tests whether exportable memory renders slower than a plain
+     * off-screen image, which decides whether the composited-path cost is the client's own
+     * render or weston's composite. */
+    int exportable = getenv("EXPORTABLE") != NULL;
+    VkExternalMemoryImageCreateInfo ext_ici = {
+        .sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO,
+        .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
+    };
     VkImageCreateInfo imci = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .pNext = exportable ? &ext_ici : NULL,
         .imageType = VK_IMAGE_TYPE_2D,
         .format = target_format,
         .extent = { size, size, 1 },
         .mipLevels = 1,
         .arrayLayers = 1,
         .samples = (VkSampleCountFlagBits)samples,
-        .tiling = VK_IMAGE_TILING_OPTIMAL,
+        /* TILING=linear|optimal - same scene, same code, only the tiling differs. The
+         * driver offers only DRM_FORMAT_MOD_LINEAR, so WSI/swapchain images are LINEAR
+         * while off-screen images are OPTIMAL; this isolates that difference. */
+        .tiling = (getenv("TILING") && !strcmp(getenv("TILING"), "linear"))
+                     ? VK_IMAGE_TILING_LINEAR : VK_IMAGE_TILING_OPTIMAL,
         .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
         .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
@@ -333,8 +361,13 @@ int main(int argc, char **argv)
     if (imti == UINT32_MAX)
         DIE("no device-local memory type for the colour image");
 
+    VkExportMemoryAllocateInfo ext_mai = {
+        .sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO,
+        .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
+    };
     VkMemoryAllocateInfo imai = {
         .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .pNext = exportable ? &ext_mai : NULL,
         .allocationSize = imr.size,
         .memoryTypeIndex = imti,
     };
@@ -405,6 +438,10 @@ int main(int argc, char **argv)
         area_div = 2;
     else if (area_env && strcmp(area_env, "quarter") == 0)
         area_div = 4;
+    else if (area_env && strcmp(area_env, "sixteenth") == 0)
+        area_div = 16;
+    else if (area_env && strcmp(area_env, "tiny") == 0)
+        area_div = 64;
 
     const char *mode_env = getenv("MODE");
     int do_render = 1, do_copy = 1;
@@ -502,8 +539,14 @@ int main(int argc, char **argv)
 
     VkShaderModuleCreateInfo fsci = {
         .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-        .codeSize = io16 ? sizeof(io16_frag_spv) : sizeof(render_frag_spv),
-        .pCode = io16 ? io16_frag_spv : render_frag_spv,
+        .codeSize = frag_discard ? sizeof(discard_frag_spv)
+                                 : frag_pdiscard ? sizeof(patterndiscard_frag_spv)
+                                 : frag_uniform ? sizeof(uniform_frag_spv)
+                                 : (io16 ? sizeof(io16_frag_spv) : sizeof(render_frag_spv)),
+        .pCode = frag_discard ? (const uint32_t *)discard_frag_spv
+                              : frag_pdiscard ? (const uint32_t *)patterndiscard_frag_spv
+                              : frag_uniform ? (const uint32_t *)uniform_frag_spv
+                              : (io16 ? io16_frag_spv : render_frag_spv),
     };
     VkShaderModule fs;
     VKCHECK(vkCreateShaderModule(dev, &fsci, NULL, &fs));
@@ -642,6 +685,7 @@ int main(int argc, char **argv)
     VkPipelineRasterizationStateCreateInfo rs = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
         .depthClampEnable = (depth_clamp == 1) ? VK_TRUE : VK_FALSE,
+        .rasterizerDiscardEnable = discard ? VK_TRUE : VK_FALSE,
         .polygonMode = polygon_mode == 0   ? VK_POLYGON_MODE_LINE
                        : polygon_mode == 1 ? VK_POLYGON_MODE_POINT
                                            : VK_POLYGON_MODE_FILL,
@@ -886,6 +930,9 @@ int main(int argc, char **argv)
     if (!(do_render && do_copy)) {
         printf("verification skipped: MODE=%s only exercises part of the frame\n",
                do_render ? "render" : "copy");
+        double ms_skip = t1 - t0;
+        printf("%d frame(s) in %.3f ms (%.3f ms/frame, %.1f Mpix/s)\n", iters, ms_skip,
+               ms_skip / iters, (double)size * size * iters / (ms_skip / 1000.0) / 1e6);
         return 0;
     }
     const unsigned char *px = mapped;

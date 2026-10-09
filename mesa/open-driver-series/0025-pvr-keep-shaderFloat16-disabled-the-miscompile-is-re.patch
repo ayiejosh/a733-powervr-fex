@@ -1,0 +1,67 @@
+From 9b2c57554d83b638de5d71fc4186273f5ea497ed Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Thu, 8 Oct 2026 11:37:26 +0800
+Subject: [PATCH 25/43] pvr: keep shaderFloat16 disabled - the miscompile is
+ real; my previous 'correction' was wrong
+
+I re-enabled shaderFloat16 last commit on the grounds that neither the correctness nor the
+performance reason reproduced. The re-enable was wrong and this reverts it.
+
+The error was a methodological inconsistency of mine: I disabled the Mesa shader cache for
+the performance A/B but left it ENABLED for the validation, so validation reused cached fp32
+shaders and passed. With the cache disabled consistently:
+
+  MESA_SHADER_CACHE_DISABLE=true, glmark2-es2 --validate:
+    shaderFloat16 = false   27 success /  0 failure
+    shaderFloat16 = true     7 success / 20 failure
+
+So PCO's fp16 path does miscompile, as originally recorded. What genuinely does NOT hold up
+is the performance reason: 8 interleaved run pairs give 41.1 vs 39.8 FPS (+3.5%, within the
+pooled stdev of 3.5) and PCO's output is near-identical (mean code 40.6 vs 41.2, zero
+spills). So this is a pure correctness disable.
+
+The lesson is recorded in the comment where the next person will hit it: never A/B a
+shader-compiler setting without MESA_SHADER_CACHE_DISABLE=true, for correctness checks as
+well as benchmark runs.
+---
+ src/imagination/vulkan/pvr_physical_device.c | 24 ++++++++++++--------
+ 1 file changed, 15 insertions(+), 9 deletions(-)
+
+diff --git a/src/imagination/vulkan/pvr_physical_device.c b/src/imagination/vulkan/pvr_physical_device.c
+index e586eac..c100c9c 100644
+--- a/src/imagination/vulkan/pvr_physical_device.c
++++ b/src/imagination/vulkan/pvr_physical_device.c
+@@ -346,18 +346,24 @@ static void pvr_physical_device_get_supported_features(
+       /* Narrow ALU. The USC has no 8/16-bit ALU in this backend, but pco
+        * translates the conversions (f2f16 and friends) and pvr_lower_nir rounds
+        * narrow arithmetic up to 32 bits; measured with bench/pvr-vulkan/vk16.c. */
+-      /* Disabled on measured performance grounds: with the Mesa shader cache disabled,
+-       * glmark2 -b build:use-vbo=false gives a 45 FPS median with this false and 38 with it
+-       * true (18% faster disabled). zink implements GLES mediump with fp16 when this is
+-       * advertised, so PCO's fp16 emit costs more than its fp32 path - a compiler-quality
+-       * finding, not just a capability toggle.
++      /* Disabled: PCO's fp16 path miscompiles. Re-confirmed with the Mesa shader cache
++       * DISABLED - which is essential and cost me a wrong conclusion once already:
+        *
+-       * The correctness failures originally recorded here (20 of 27 glmark2 scenes wrong) do
+-       * NOT reproduce: glmark2-es2 --validate reports 27 success / 0 failure with this both
+-       * false and true. So the performance reason stands; the correctness reason is withdrawn.
++       *   MESA_SHADER_CACHE_DISABLE=true, glmark2-es2 --validate:
++       *     shaderFloat16 = false   27 success /  0 failure
++       *     shaderFloat16 = true     7 success / 20 failure
++       *
++       * With the cache ENABLED the same comparison reports 27/0 BOTH ways, because the cached
++       * fp32 shaders are reused and the feature change never reaches the compiler. Never A/B
++       * a shader-compiler setting without MESA_SHADER_CACHE_DISABLE=true.
++       *
++       * The performance reason recorded here originally does NOT hold up: 8 interleaved run
++       * pairs give 41.1 vs 39.8 FPS (+3.5%, within the pooled stdev of 3.5), and PCO's output
++       * is near-identical (mean code size 40.6 vs 41.2, zero spills). So this is a pure
++       * correctness disable, and the fix is to repair PCO's fp16 emit.
+        *
+        * PVRSRV_FP16=1 re-enables it for diagnosis. */
+-      .shaderFloat16 = getenv("PVRSRV_FP16") ? true : false, /* ponytail: test fp16 precision as cause of validate failures */
++      .shaderFloat16 = getenv("PVRSRV_FP16") ? true : false,
+       .shaderInt8 = true,
+       .descriptorIndexing = false,
+       .shaderInputAttachmentArrayDynamicIndexing = true,

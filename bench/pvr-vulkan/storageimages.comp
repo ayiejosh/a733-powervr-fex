@@ -1,0 +1,15 @@
+#version 450
+layout(local_size_x = 1) in;
+layout(binding = 0, rgba8) uniform image2D img[NIMG];
+layout(std430, binding = 1) buffer Out { uint v[]; };
+void main() {
+    /* store the index into each image, then read it back: the SSBO readback proves both
+     * that image i is addressable and that it holds the value written to image i. */
+    for (int i = 0; i < NIMG; ++i)
+        imageStore(img[i], ivec2(0, 0), vec4(float(i) / 255.0, 0.0, 0.0, 1.0));
+    memoryBarrierImage();
+    for (int i = 0; i < NIMG; ++i) {
+        vec4 c = imageLoad(img[i], ivec2(0, 0));
+        v[i] = uint(c.r * 255.0 + 0.5);
+    }
+}

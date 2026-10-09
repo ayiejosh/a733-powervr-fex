@@ -168,3 +168,33 @@ glheadless_link() {
 glheadless_link
 
 echo "built: $(pwd)/vktest, $(pwd)/vkrender and $(pwd)/glheadless"
+
+# samplers: maxPerStageDescriptorSamplers probe. Build variants with -DNS=<n>;
+# the shader needs the same -DNSAMP=<n>.
+glslangValidator -V --target-env vulkan1.2 -DNSAMP=128 -o s128.spv samplers.comp
+
+# storageimages: maxPerStageDescriptorStorageImages probe. Build with -DNIMG=<n>;
+# the shader needs the same -DNIMG=<n>.
+glslangValidator -V --target-env vulkan1.2 -DNIMG=32 -o si32.spv storageimages.comp
+
+# mrt: 8 colour attachment render probe (validates maxColorAttachments=8).
+glslangValidator -V --target-env vulkan1.2 -o mrt.vert.spv mrt.vert
+glslangValidator -V --target-env vulkan1.2 -o mrt.frag.spv mrt.frag
+link mrt mrt.c
+
+# vlimits: dump the limits Vulkan's invariants depend on (vkaudit only prints a subset).
+link vlimits vlimits.c
+
+# linfilter: can the hardware linearly filter R32_SFLOAT? (probes a mandated format feature)
+glslangValidator -V --target-env vulkan1.2 -o linfilter.spv linfilter.comp
+link linfilter linfilter.c
+
+# varyings: maxVertexOutputComponents probe. Build variants with -DNOUT=<n> (multiples of 8);
+# the shaders need the same -DNOUT=<n>.
+glslangValidator -V --target-env vulkan1.2 -DNOUT=32 -o vary32.vert.spv varyings.vert
+glslangValidator -V --target-env vulkan1.2 -DNOUT=32 -o vary32.frag.spv varyings.frag
+link varyings varyings.c
+
+# inatt: maxPerStageDescriptorInputAttachments probe (2-subpass render pass).
+# Build variants with -DNIN=<n>; subpass 0 needs its own fragment shader with exactly n outputs.
+link inatt inatt.c

@@ -1,0 +1,99 @@
+From c251c9bc0ebcb2ec194bcd7a31723c9eee55c096 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 9 Oct 2026 00:23:35 +0800
+Subject: [PATCH 38/43] pco: hoist repeated immediates into a register within a
+ block
+
+A constant that is not in the hardware constant-register table costs one
+materialization (bbyp0bm_imm32) per use. For a 32-iteration loop that was 131 such
+instructions for three constants, measured at 2.73x the ideal instruction count.
+
+pco_const_imms() already rewrites MOVI32 into constant-register reads where the table
+has the value; it cannot help for arbitrary 32-bit constants. This adds block-local
+hoisting alongside it: within a single block, the first MOVI32 for a given
+non-table immediate stays, and later MOVI32s for the same value become moves from
+that register. Block-local is what makes it safe - a value produced earlier in the
+same block dominates every later use, so no cross-block dominance analysis is needed
+- and it covers the case that matters, an unrolled loop body, which is a single block.
+
+Measured on the Radxa Cubie A7A, identical SPIR-V with the vendor as control:
+
+  probe                          before      after     gain
+  cstpi (integer, immediates)    49.2 M/s    72.8 M/s  1.47x
+  cstpf (float, immediates)      65.9 M/s    87.9 M/s  1.31x
+  cstpin (control: no immediates) 73.1 M/s   71.3 M/s  unchanged, as predicted
+  cstp  (integer, no loop)       305.9 M/s   324.4 M/s unchanged
+  vkheavy (real 32-iteration)    301.1 ms    255.8 ms  1.18x
+
+cstpi reaches parity with cstpin (72.8 vs 71.3), which is the predicted outcome: the
+hoisting should make the immediate case cost what the register case costs.
+
+Correctness fully green: vkrender 512 (262144/262144) and 2048 (4194304/4194304),
+bda PASS(0), vk13 PASS, pctest PASS(0), vk16 PASS, and glmark2-es2 --validate reports
+27 scenes validated OK.
+
+Combined with c2bde57 (unroll 16 -> 64) the totals against the original driver are
+vkheavy 858.5 -> 255.8 ms (3.36x), cstpi 26.6 -> 72.8 M/s (2.74x) and cstpf
+29.6 -> 87.9 M/s (2.97x), closing the gap to the vendor from 4.77x/5.53x/4.93x to
+1.42x/2.02x/1.66x respectively. Rollback is this one file.
+---
+ src/imagination/pco/pco_const_imms.c | 46 ++++++++++++++++++++++++++++
+ 1 file changed, 46 insertions(+)
+
+diff --git a/src/imagination/pco/pco_const_imms.c b/src/imagination/pco/pco_const_imms.c
+index 6860e04..fdbf035 100644
+--- a/src/imagination/pco/pco_const_imms.c
++++ b/src/imagination/pco/pco_const_imms.c
+@@ -174,6 +174,52 @@ bool pco_const_imms(pco_shader *shader)
+    bool progress = false;
+ 
+    pco_foreach_func_in_shader (func, shader) {
++      /* Block-local hoisting: an immediate that is not in the hardware constant
++       * table costs one materialization per use. Within a single block it is safe
++       * to materialize it once and move from that register afterwards, because a
++       * value produced earlier in the same block dominates every later use. This
++       * is the common case for an unrolled loop body, where the same constants
++       * recur many times. */
++      pco_foreach_block_in_func (block, func) {
++         struct hoisted_imm {
++            uint32_t val;
++            pco_ref reg;
++         } hoisted[16];
++         unsigned num_hoisted = 0;
++
++         pco_foreach_instr_in_block_safe (instr, block) {
++            if (instr->op != PCO_OP_MOVI32)
++               continue;
++
++            uint32_t imm = pco_ref_get_imm(instr->src[0]);
++
++            /* Values the hardware can read from a constant register are already
++             * handled below - leave them alone. */
++            if (constreg_lookup(imm))
++               continue;
++
++            for (unsigned i = 0; i < num_hoisted; i++) {
++               if (hoisted[i].val != imm)
++                  continue;
++
++               /* Already materialized in this block: move from it instead. */
++               pco_builder hb =
++                  pco_builder_create(func, pco_cursor_before_instr(instr));
++               pco_mov(&hb, instr->dest[0], hoisted[i].reg);
++               pco_instr_delete(instr);
++               progress = true;
++               goto next_instr;
++            }
++
++            if (num_hoisted < ARRAY_SIZE(hoisted)) {
++               hoisted[num_hoisted].val = imm;
++               hoisted[num_hoisted].reg = instr->dest[0];
++               num_hoisted++;
++            }
++next_instr: ;
++         }
++      }
++
+       pco_foreach_instr_in_func_safe (instr, func) {
+          if (instr->op != PCO_OP_MOVI32)
+             continue;

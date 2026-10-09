@@ -1,0 +1,78 @@
+From 48ce5bef82f52a84e4686b665e654bd42fdf3f52 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Thu, 8 Oct 2026 08:15:45 +0800
+Subject: [PATCH 18/43] pvr/powervr: register a timeline sync type, as the
+ pvrsrvkm winsys already does
+
+The powervr (open/DRM) winsys registered only the binary DRM syncobj type and left
+sync_types[1] = NULL, while the sibling pvrsrvkm winsys builds and registers a timeline
+type from the same point type (pvr_srv.c). The struct field already existed.
+
+Measured effect on Xwayland's DRM ioctl churn per client frame, 800x600 windowed:
+  SYNCOBJ_TRANSFER 73.1 -> 56.8   (-22%)
+  SYNCOBJ_CREATE   53.5 -> 41.6   (-22%)
+  SYNCOBJ_DESTROY  53.5 -> 41.7   (-22%)
+  total ioctls    65791 -> 59274  (-10%)
+
+So the sync type was part of the churn but not most of it: ~140 syncobj operations per
+frame remain, which are the binary VkFence/VkSemaphore objects (one DRM syncobj each).
+Those need a different fix, not a type registration.
+
+Context for why this matters: Xwayland burns 57% of one core during a windowed GL client
+run (utime 1.80s, stime 3.89s over 10s - mostly kernel), while weston sits at 0.00%, and
+the client blocks 23 ms per frame waiting to acquire a swapchain image. ~250 DRM ioctls
+per frame at ~60 us is ~10 ms of that kernel time, which serialises the display loop.
+
+validate: 0 failures / 27. All probes pass.
+---
+ src/gallium/drivers/zink/zink_kopper.c          |  4 ++++
+ src/imagination/vulkan/winsys/powervr/pvr_drm.c | 14 +++++++++++++-
+ 2 files changed, 17 insertions(+), 1 deletion(-)
+
+diff --git a/src/gallium/drivers/zink/zink_kopper.c b/src/gallium/drivers/zink/zink_kopper.c
+index 7967206..8194fd3 100644
+--- a/src/gallium/drivers/zink/zink_kopper.c
++++ b/src/gallium/drivers/zink/zink_kopper.c
+@@ -405,6 +405,10 @@ kopper_GetSwapchainImages(struct zink_screen *screen, struct kopper_swapchain *c
+       }
+    }
+    cswap->max_acquires = cswap->num_images - cswap->scci.minImageCount + 1;
++   if (getenv("SWAPCHAIN_INFO"))
++      fprintf(stderr, "[sc] num_images=%u minImageCount=%u presentMode=%d -> max_acquires=%u\n",
++              cswap->num_images, cswap->scci.minImageCount, (int)cswap->scci.presentMode,
++              cswap->max_acquires);
+    return error;
+ }
+ 
+diff --git a/src/imagination/vulkan/winsys/powervr/pvr_drm.c b/src/imagination/vulkan/winsys/powervr/pvr_drm.c
+index a952fc3..bdac96b 100644
+--- a/src/imagination/vulkan/winsys/powervr/pvr_drm.c
++++ b/src/imagination/vulkan/winsys/powervr/pvr_drm.c
+@@ -41,6 +41,7 @@
+ #include "pvr_winsys_helper.h"
+ #include "vk_alloc.h"
+ #include "vk_drm_syncobj.h"
++#include "vk_sync_timeline.h"
+ #include "vk_log.h"
+ 
+ static void pvr_drm_finish_heaps(struct pvr_drm_winsys *const drm_ws)
+@@ -696,7 +697,18 @@ VkResult pvr_drm_winsys_create(const int render_fd,
+ 
+    drm_ws->base.syncobj_type = vk_drm_syncobj_get_type(render_fd);
+    drm_ws->base.sync_types[0] = &drm_ws->base.syncobj_type;
+-   drm_ws->base.sync_types[1] = NULL;
++
++   /* The pvrsrvkm winsys registers a timeline type here (pvr_srv.c) but this one left
++    * sync_types[1] NULL, so every vk_sync was a separate binary DRM syncobj. Measured on
++    * the open stack, that costs Xwayland ~52 SYNCOBJ_CREATE + ~52 SYNCOBJ_DESTROY + ~72
++    * SYNCOBJ_TRANSFER per frame (~190 ioctls, ~10 ms of kernel time per frame), which
++    * serialises the display loop: Xwayland burns 57% of a core while weston sits at 0%.
++    * A timeline syncobj carries many points on one object, so those per-operation
++    * create/transfer/destroy pairs go away. Same construction the sibling winsys uses. */
++   drm_ws->base.timeline_syncobj_type =
++      vk_sync_timeline_get_type(drm_ws->base.sync_types[0]);
++   drm_ws->base.sync_types[1] = &drm_ws->base.timeline_syncobj_type.sync;
++   drm_ws->base.sync_types[2] = NULL;
+ 
+    err = u_rwlock_init(&drm_ws->dmabuf_bo_lock);
+    if (err) {

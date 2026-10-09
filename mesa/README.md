@@ -333,3 +333,56 @@ The vendor `pvrsrvkm` module and the mainline `powervr` module cannot both own
 swap, which stops `display-manager.service`, drops the vendor module's 188
 references in under a second, runs the test, and restores — desktop included,
 without a reboot.
+
+---
+
+# The open-driver work: 43 commits on top of Mesa `main`
+
+**Added 2026-10-09.** The branch `open-pvr-work-2026-10-06` in `/home/radxa/mesa/mesa-main` carries
+**43 commits** on top of `origin/main` — **+1693 / -255 across 51 files** — and it cannot be pushed anywhere,
+because that checkout's only remote is **upstream `gitlab.freedesktop.org/mesa/mesa`** and no fork is configured.
+
+**So it is carried here as patches, in the two forms this directory already uses:**
+
+| file | what it is |
+|---|---|
+| `mesa-main-open-driver-all.patch` | the whole delta as one patch, like `mesa-main-local-all.patch` |
+| `open-driver-series/` | the same 43 commits as numbered `format-patch` files, in apply order |
+
+**Apply with:**
+
+```
+cd <mesa checkout>            # on the commit this was based on
+git am ../open-driver-series/*.patch        # keeps the 43 commits and their messages
+# or
+git apply ../mesa-main-open-driver-all.patch   # one squashed change
+```
+
+## What the 43 commits contain
+
+**Four classes, in the order they are stacked:**
+
+1. **Probed limit fixes** — `pvr` advertised limits that were floors, not the silicon's real values:
+   storage buffers 16→96, uniform buffers 13→64, sampled images 32→128, samplers 16→32,
+   storage images 4→32, compute workgroup 128→512, vertex output components 64→128,
+   input attachments 4→8, color attachments 4→8, maxFramebufferLayers 256→2048.
+   **Several violated Vulkan's required minimums.** Each was probed, not assumed.
+2. **Memory-safety fixes** — an out-of-bounds write in `pvr_init_vs_attribs`, a silent OOB write in
+   `vkCmdBindVertexBuffers`, an unguarded descriptor-set index, an unguarded `colorAttachmentCount`,
+   a rejected vertex-input overflow, and an unbalanced `unsync_fence` reset in `zink_copy_image_buffer`.
+3. **`pco` shader-compiler fixes** — `max_unroll_iterations` raised 16→64→256→1024 for long loops,
+   hoisting repeated immediates into a register, and 16-bit `flrp` / float-conversion fixes.
+4. **The timeline-syncobj work, and its withdrawal.** Steps 1–3 taught the winsys submit paths
+   timeline syncobjs and ordered GEOM jobs through the queue's persistent timeline syncobj.
+   **The final commit REVERTS the GEOM/FRAG conversion**: *it passes every probe but breaks weston.*
+   That revert is the most useful commit in the series.
+
+## Honest notes carried with the patches
+
+* **`shaderFloat16` is disabled** — it miscompiles 20 of 27 glmark2 scenes. **A later commit withdrew the
+  correctness justification and kept only the performance one**, then a further commit re-asserted it after
+  the miscompile was re-confirmed. **The ordering is preserved so the reasoning is visible.**
+* **Some commits are instrumentation, not fixes** (`PVR_SUBMIT_MIX`, `SWAP_TIMING`, `ZINK_EXTRA_IMAGES`,
+  `WSIREL_POINTS`), and are off by default.
+* **Two commits are reverts of earlier commits in the same series** — kept rather than squashed, because the
+  reversal is the finding.

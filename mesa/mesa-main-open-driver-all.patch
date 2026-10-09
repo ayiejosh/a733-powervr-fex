@@ -1,0 +1,3464 @@
+diff --git a/include/drm-uapi/pvr_drm.h b/include/drm-uapi/pvr_drm.h
+index ccf6c21..cd4724d 100644
+--- a/include/drm-uapi/pvr_drm.h
++++ b/include/drm-uapi/pvr_drm.h
+@@ -536,10 +536,21 @@ struct drm_pvr_ioctl_dev_query_args {
+ #define DRM_PVR_BO_BYPASS_DEVICE_CACHE _BITULL(0)
+ #define DRM_PVR_BO_PM_FW_PROTECT _BITULL(1)
+ #define DRM_PVR_BO_ALLOW_CPU_USERSPACE_ACCESS _BITULL(2)
+-/* Bits 3..63 are reserved. */
++
++/**
++ * :DRM_PVR_BO_CPU_CACHED: Map this buffer cacheable from the CPU instead of
++ *     write-combined. Reads are then around 20x faster on this SoC (6.6 GB/s
++ *     against 330 MB/s measured on a BXM-4-64), which is what a readback wants.
++ *     The buffer is not coherent: userspace must do cache maintenance around GPU
++ *     access (in Vulkan, vkFlushMappedMemoryRanges / vkInvalidateMappedMemoryRanges).
++ *     Cannot be combined with DRM_PVR_BO_PM_FW_PROTECT.
++ */
++#define DRM_PVR_BO_CPU_CACHED _BITULL(3)
++/* Bits 4..63 are reserved. */
+ 
+ #define DRM_PVR_BO_FLAGS_MASK (DRM_PVR_BO_BYPASS_DEVICE_CACHE | DRM_PVR_BO_PM_FW_PROTECT | \
+-			       DRM_PVR_BO_ALLOW_CPU_USERSPACE_ACCESS)
++			       DRM_PVR_BO_ALLOW_CPU_USERSPACE_ACCESS | \
++			       DRM_PVR_BO_CPU_CACHED)
+ 
+ /**
+  * struct drm_pvr_ioctl_create_bo_args - Arguments for %DRM_IOCTL_PVR_CREATE_BO
+diff --git a/src/egl/drivers/dri2/platform_x11.c b/src/egl/drivers/dri2/platform_x11.c
+index a31a9d3..f5d4cf0 100644
+--- a/src/egl/drivers/dri2/platform_x11.c
++++ b/src/egl/drivers/dri2/platform_x11.c
+@@ -25,6 +25,7 @@
+  *    Kristian Høgsberg <krh@bitplanet.net>
+  */
+ 
++#include <time.h>
+ #include <dlfcn.h>
+ #include <errno.h>
+ #include <fcntl.h>
+@@ -120,9 +121,20 @@ x11_get_drawable_info(struct dri_drawable *draw, int *x, int *y, int *w, int *h,
+    xcb_get_geometry_reply_t *reply;
+    xcb_generic_error_t *error;
+    bool ret;
++   struct timespec _g0, _g1; int _timed = 0;
++   if (getenv("XGEOM_TRACE")) { clock_gettime(CLOCK_MONOTONIC, &_g0); _timed = 1; }
+ 
+    cookie = xcb_get_geometry(dri2_dpy->conn, dri2_surf->drawable);
+    reply = xcb_get_geometry_reply(dri2_dpy->conn, cookie, &error);
++   if (_timed) {
++      static unsigned long _n; static double _tot, _max;
++      clock_gettime(CLOCK_MONOTONIC, &_g1);
++      double ms = (_g1.tv_sec-_g0.tv_sec)*1000.0 + (_g1.tv_nsec-_g0.tv_nsec)/1e6;
++      _n++; _tot += ms; if (ms > _max) _max = ms;
++      if (_n % 100 == 0)
++         fprintf(stderr, "[xg] %lu geometry round-trips, total %.1f ms, avg %.3f ms, max %.2f ms\n",
++                 _n, _tot, _tot/_n, _max);
++   }
+    if (reply == NULL)
+       return false;
+ 
+diff --git a/src/gallium/drivers/zink/zink_batch.c b/src/gallium/drivers/zink/zink_batch.c
+index c615d47..3a4f17b 100644
+--- a/src/gallium/drivers/zink/zink_batch.c
++++ b/src/gallium/drivers/zink/zink_batch.c
+@@ -1,4 +1,5 @@
+ #include "zink_batch.h"
++#include <time.h>
+ #include "zink_context.h"
+ #include "zink_descriptors.h"
+ #include "zink_kopper.h"
+@@ -815,7 +816,12 @@ submit_queue(void *data, void *gdata, int thread_index)
+ 
+    simple_mtx_lock(screen->queue_lock);
+    VRAM_ALLOC_LOOP(result,
+-      VKSCR(QueueSubmit)(screen->queue, num_si, submit, VK_NULL_HANDLE),
++      ({ struct timespec _q0,_q1; clock_gettime(CLOCK_MONOTONIC,&_q0);
++         VkResult _r = VKSCR(QueueSubmit)(screen->queue, num_si, submit, VK_NULL_HANDLE);
++         clock_gettime(CLOCK_MONOTONIC,&_q1);
++         if (getenv("ZINK_TIMING")) { double _ms=(_q1.tv_sec-_q0.tv_sec)*1000.0+(_q1.tv_nsec-_q0.tv_nsec)/1e6;
++            if (_ms>1.0) fprintf(stderr,"[zt] queuesubmit %.2f ms\n",_ms); }
++         _r; }),
+       if (result != VK_SUCCESS) {
+          mesa_loge("ZINK: vkQueueSubmit failed (%s)", vk_Result_to_str(result));
+          bs->is_device_lost = true;
+@@ -864,6 +870,7 @@ end:
+ void
+ zink_end_batch(struct zink_context *ctx)
+ {
++   struct timespec _e0,_e1; clock_gettime(CLOCK_MONOTONIC,&_e0);
+    MESA_TRACE_FUNC();
+    if (!ctx->queries_disabled)
+       zink_suspend_queries(ctx);
+@@ -1223,6 +1230,8 @@ static void
+ batch_usage_wait(struct zink_context *ctx, struct zink_batch_usage *u, unsigned submit_count, bool trywait)
+ {
+    MESA_TRACE_FUNC();
++   struct timespec _b0, _b1; int _timed = 0;
++   if (getenv("BATCH_WAIT_TRACE")) { clock_gettime(CLOCK_MONOTONIC, &_b0); _timed = 1; }
+    if (!zink_batch_usage_exists(u))
+       return;
+    /* this batch state was already completed and reset */
+@@ -1230,6 +1239,15 @@ batch_usage_wait(struct zink_context *ctx, struct zink_batch_usage *u, unsigned
+       return;
+    if (zink_batch_usage_unflushed_wait(ctx, u, submit_count, trywait))
+       zink_wait_on_batch(ctx, u->usage);
++   if (_timed) {
++      static unsigned long _n; static double _tot, _max;
++      clock_gettime(CLOCK_MONOTONIC, &_b1);
++      double ms = (_b1.tv_sec-_b0.tv_sec)*1000.0 + (_b1.tv_nsec-_b0.tv_nsec)/1e6;
++      _n++; _tot += ms; if (ms > _max) _max = ms;
++      if (_n % 500 == 0)
++         fprintf(stderr, "[bw] %lu waits, total %.1f ms, avg %.3f ms, max %.2f ms\n",
++                 _n, _tot, _tot/_n, _max);
++   }
+ }
+ 
+ void
+diff --git a/src/gallium/drivers/zink/zink_context.c b/src/gallium/drivers/zink/zink_context.c
+index e178150..5553a1b 100644
+--- a/src/gallium/drivers/zink/zink_context.c
++++ b/src/gallium/drivers/zink/zink_context.c
+@@ -23,6 +23,7 @@
+ 
+ #include "zink_clear.h"
+ #include "zink_context.h"
++#include <stdio.h>
+ #include "zink_descriptors.h"
+ #include "zink_fence.h"
+ #include "zink_format.h"
+@@ -3890,8 +3891,12 @@ zink_evaluate_depth_buffer(struct pipe_context *pctx)
+ static void
+ sync_flush(struct zink_context *ctx, struct zink_batch_state *bs)
+ {
+-   if (zink_screen(ctx->base.screen)->threaded_submit)
++   if (zink_screen(ctx->base.screen)->threaded_submit) {
++      if (getenv("ZINK_FENCE_TRACE"))
++         fprintf(stderr, "[zf] sync_flush: waiting on flush_completed (signalled=%d)\n",
++                 util_queue_fence_is_signalled(&bs->flush_completed));
+       util_queue_fence_wait(&bs->flush_completed);
++   }
+ }
+ 
+ static inline VkAccessFlags
+@@ -4050,6 +4055,9 @@ flush_batch(struct zink_context *ctx, bool sync)
+       zink_flush_clears(ctx);
+    zink_batch_no_rp_safe(ctx);
+ 
++   if (getenv("ZINK_FENCE_TRACE"))
++      fprintf(stderr, "[zf] flush_batch: waiting on unsync_fence (signalled=%d)\n",
++              util_queue_fence_is_signalled(&ctx->unsync_fence));
+    util_queue_fence_wait(&ctx->unsync_fence);
+    util_queue_fence_reset(&ctx->flush_fence);
+    zink_end_batch(ctx);
+@@ -5175,8 +5183,14 @@ zink_copy_image_buffer(struct zink_context *ctx, struct zink_resource *dst, stru
+ 
+    if (buf2img) {
+       if (zink_is_swapchain(img)) {
+-         if (!zink_kopper_acquire(ctx, img, UINT64_MAX))
++         if (!zink_kopper_acquire(ctx, img, UINT64_MAX)) {
++            /* unsync_fence was reset above; this return used to leave it reset forever,
++             * so the next flush_batch() blocked in util_queue_fence_wait() with no way
++             * to recover. Recording is over here either way, so signal it. */
++            if (unsync)
++               util_queue_fence_signal(&ctx->unsync_fence);
+             return;
++         }
+       }
+       zink_resource_image_transfer_dst_barrier(ctx, img, level, box, unsync);
+       if (!unsync)
+diff --git a/src/gallium/drivers/zink/zink_kopper.c b/src/gallium/drivers/zink/zink_kopper.c
+index 60eb9ef..5e5f5c3 100644
+--- a/src/gallium/drivers/zink/zink_kopper.c
++++ b/src/gallium/drivers/zink/zink_kopper.c
+@@ -22,6 +22,7 @@
+  * DEALINGS IN THE SOFTWARE.
+  */
+ 
++#include <stdio.h>
+ #include "util/detect_os.h"
+ 
+ #include "zink_context.h"
+@@ -29,6 +30,7 @@
+ #include "zink_surface.h"
+ #include "zink_resource.h"
+ #include "zink_kopper.h"
++#include <time.h>
+ 
+ static void
+ zink_kopper_set_present_mode_for_interval(struct kopper_displaytarget *cdt, int interval)
+@@ -56,6 +58,9 @@ zink_kopper_set_present_mode_for_interval(struct kopper_displaytarget *cdt, int
+    } else if (interval > 0) {
+       cdt->present_mode = VK_PRESENT_MODE_FIFO_KHR;
+    }
++   if (getenv("ZINK_PM_TRACE"))
++      fprintf(stderr, "[pm] interval=%d type=%d -> present_mode=%d\n",
++              interval, cdt->type, cdt->present_mode);
+    assert(cdt->present_modes & BITFIELD_BIT(cdt->present_mode));
+ #endif
+ }
+@@ -312,7 +317,8 @@ kopper_CreateSwapchain(struct zink_screen *screen, struct kopper_displaytarget *
+       cswap->scci.clipped = VK_TRUE;
+    }
+    cswap->scci.presentMode = cdt->present_mode;
+-   cswap->scci.minImageCount = cdt->caps.minImageCount;
++   cswap->scci.minImageCount = cdt->caps.minImageCount +
++      (getenv("ZINK_EXTRA_IMAGES") ? atoi(getenv("ZINK_EXTRA_IMAGES")) : 0);
+    cswap->scci.preTransform = cdt->caps.currentTransform;
+    if (cdt->formats[1])
+       cswap->scci.pNext = &cdt->format_list;
+@@ -400,6 +406,10 @@ kopper_GetSwapchainImages(struct zink_screen *screen, struct kopper_swapchain *c
+       }
+    }
+    cswap->max_acquires = cswap->num_images - cswap->scci.minImageCount + 1;
++   if (getenv("SWAPCHAIN_INFO"))
++      fprintf(stderr, "[sc] num_images=%u minImageCount=%u presentMode=%d -> max_acquires=%u\n",
++              cswap->num_images, cswap->scci.minImageCount, (int)cswap->scci.presentMode,
++              cswap->max_acquires);
+    return error;
+ }
+ 
+@@ -565,6 +575,8 @@ static VkResult
+ kopper_acquire(struct zink_screen *screen, struct zink_resource *res, uint64_t timeout)
+ {
+    struct kopper_displaytarget *cdt = res->obj->dt;
++   struct timespec _t0, _t1;
++   clock_gettime(CLOCK_MONOTONIC, &_t0);
+ 
+    /* if:
+     * - we don't need a new image
+@@ -619,7 +631,15 @@ kopper_acquire(struct zink_screen *screen, struct zink_resource *res, uint64_t t
+          if (!acquire)
+             return VK_ERROR_OUT_OF_HOST_MEMORY;
+       }
++      { struct timespec _a0,_a1; int _at=getenv("ACQ_TRACE")!=NULL;
++        if(_at) clock_gettime(CLOCK_MONOTONIC,&_a0);
+       ret = VKSCR(AcquireNextImageKHR)(screen->dev, cdt->swapchain->swapchain, timeout, acquire, VK_NULL_HANDLE, &res->obj->dt_idx);
++      if(_at){ static unsigned long _an; static double _atot,_amax;
++        clock_gettime(CLOCK_MONOTONIC,&_a1);
++        double _ms=(_a1.tv_sec-_a0.tv_sec)*1000.0+(_a1.tv_nsec-_a0.tv_nsec)/1e6;
++        _an++; _atot+=_ms; if(_ms>_amax)_amax=_ms;
++        if(_an%50==0) fprintf(stderr,"[acq] AcquireNextImage waits=%lu total=%.1fms avg=%.2fms max=%.2fms\n",
++            _an,_atot,_atot/_an,_amax); } }
+       if (ret != VK_SUCCESS && ret != VK_SUBOPTIMAL_KHR) {
+          if (ret == VK_ERROR_OUT_OF_DATE_KHR) {
+             res->obj->new_dt = true;
+@@ -641,6 +661,19 @@ kopper_acquire(struct zink_screen *screen, struct zink_resource *res, uint64_t t
+    if (cdt->swapchain->images[res->obj->dt_idx].readback)
+       zink_resource(cdt->swapchain->images[res->obj->dt_idx].readback)->valid = false;
+    res->obj->image = cdt->swapchain->images[res->obj->dt_idx].image;
++   /* ponytail: SWAPCHAIN_INFO - what kind of image is the render target when windowed? */
++   if (getenv("SWAPCHAIN_INFO")) {
++      static int _done;
++      if (!_done++) {
++         uint32_t _mods = res->modifiers_count;
++         uint64_t _m0 = _mods ? res->modifiers[0] : 0;
++         fprintf(stderr, "[swi] swapchain target: fmt=%d %ux%u linear=%d modifiers=%u m0=0x%llx "
++                 "vkusage=0x%llx layout=%d\n",
++                 (int)res->base.b.format, res->base.b.width0, res->base.b.height0,
++                 res->linear, _mods, (unsigned long long)_m0,
++                 (unsigned long long)res->obj->vkusage, (int)res->layout);
++      }
++   }
+    if (!cdt->age_locked)
+       zink_kopper_update_last_written(res);
+    cdt->swapchain->images[res->obj->dt_idx].acquired = NULL;
+@@ -666,6 +699,9 @@ kopper_acquire(struct zink_screen *screen, struct zink_resource *res, uint64_t t
+       p_atomic_inc(&cdt->swapchain->num_acquires);
+    }
+    cdt->swapchain->images[res->obj->dt_idx].dt_has_data = false;
++   clock_gettime(CLOCK_MONOTONIC, &_t1);
++   { double _ms = (_t1.tv_sec-_t0.tv_sec)*1000.0 + (_t1.tv_nsec-_t0.tv_nsec)/1e6;
++     if (getenv("ZINK_TIMING") && _ms > 2.0) fprintf(stderr, "[zt] acquire %.2f ms\n", _ms); }
+    return VK_SUCCESS;
+ }
+ 
+@@ -760,6 +796,8 @@ static void
+ kopper_present(void *data, void *gdata, int thread_idx)
+ {
+    struct zink_kopper_present_info *cpi = data;
++   struct timespec _p0, _p1;
++   clock_gettime(CLOCK_MONOTONIC, &_p0);
+    struct kopper_displaytarget *cdt = cpi->res->obj->dt;
+    struct kopper_swapchain *swapchain = cpi->swapchain;
+    struct zink_screen *screen = gdata;
+@@ -797,6 +835,9 @@ kopper_present(void *data, void *gdata, int thread_idx)
+       cpi->info.waitSemaphoreCount = 0;
+    }
+    VkResult error2 = VKSCR(QueuePresentKHR)(screen->queue, &cpi->info);
++   clock_gettime(CLOCK_MONOTONIC, &_p1);
++   if (getenv("ZINK_TIMING")) fprintf(stderr, "[zt] present %.2f ms\n",
++      (_p1.tv_sec-_p0.tv_sec)*1000.0 + (_p1.tv_nsec-_p0.tv_nsec)/1e6);
+    zink_screen_debug_marker_end(screen, screen->frame_marker_emitted);
+    zink_screen_debug_marker_begin(screen, "frame");
+    simple_mtx_unlock(screen->queue_lock);
+diff --git a/src/gallium/drivers/zink/zink_resource.c b/src/gallium/drivers/zink/zink_resource.c
+index c37fa55..27215c7 100644
+--- a/src/gallium/drivers/zink/zink_resource.c
++++ b/src/gallium/drivers/zink/zink_resource.c
+@@ -1907,6 +1907,11 @@ resource_create(struct pipe_screen *pscreen,
+          res->queue = VK_QUEUE_FAMILY_FOREIGN_EXT;
+       res->layout = res->dmabuf ? VK_IMAGE_LAYOUT_PREINITIALIZED : VK_IMAGE_LAYOUT_UNDEFINED;
+       res->linear = linear;
++      if (getenv("ZINK_TILING"))
++         fprintf(stderr, "[tl] %ux%u linear=%d modifiers=%d m0=0x%llx dt=%d\n",
++                 templ->width0, templ->height0, linear, res->modifiers_count,
++                 res->modifiers_count ? (unsigned long long)res->modifiers[0] : 0,
++                 !!res->obj->dt);
+       res->aspect = aspect_from_format(templ->format);
+    }
+ 
+diff --git a/src/gallium/frontends/dri/kopper.c b/src/gallium/frontends/dri/kopper.c
+index c565d77..a8e58aa 100644
+--- a/src/gallium/frontends/dri/kopper.c
++++ b/src/gallium/frontends/dri/kopper.c
+@@ -364,7 +364,20 @@ kopper_update_drawable_info(struct dri_drawable *drawable)
+                                 drawable->textures[ST_ATTACHMENT_BACK_LEFT] :
+                                 drawable->textures[ST_ATTACHMENT_FRONT_LEFT];
+ 
+-   bool do_kopper_update = is_window && ptex && screen->fd == -1;
++   /* The screen->fd == -1 test was meant to identify a kopper (Vulkan) screen, but on
++    * this stack the screen carries a valid fd, so X11 clients fell through to
++    * get_drawable_info() - a synchronous xcb_get_geometry round-trip on every framebuffer
++    * validation, measured at 21.7 ms per frame. The XCB-surface-create-info check below
++    * already identifies a Vulkan surface, so require only that. */
++   bool do_kopper_update = is_window && ptex;
++   if (getenv("KOpper_BRANCH")) {
++      static int _n;
++      if (++_n % 50 == 1)
++         fprintf(stderr, "[kb] is_window=%d ptex=%d screen_fd=%d sType=0x%x -> %s\n",
++                 is_window, !!ptex, screen->fd, drawable->info.bos.sType,
++                 (drawable->info.bos.sType == VK_STRUCTURE_TYPE_XCB_SURFACE_CREATE_INFO_KHR && do_kopper_update)
++                    ? "FASTPATH(no round-trip)" : "get_drawable_info(ROUND-TRIP)");
++   }
+    if (drawable->info.bos.sType == VK_STRUCTURE_TYPE_XCB_SURFACE_CREATE_INFO_KHR && do_kopper_update)
+       zink_kopper_update(kopper_get_zink_screen(screen->base.screen), ptex, &drawable->w, &drawable->h);
+    else
+@@ -522,6 +535,15 @@ kopper_destroy_drawable(struct dri_drawable *drawable)
+ int64_t
+ kopperSwapBuffersWithDamage(struct dri_drawable *drawable, uint32_t flush_flags, int nrects, const int *rects)
+ {
++   /* ponytail: SWAP_TIMING - separate time spent INSIDE eglSwapBuffers (the present path)
++    * from the frame period, so the client-side cost can be attributed. */
++   struct timespec _s0, _s1;
++   static struct timespec _last;
++   static int _n;
++   clock_gettime(CLOCK_MONOTONIC, &_s0);
++   double _period = 0.0;
++   if (_last.tv_sec)
++      _period = (_s0.tv_sec-_last.tv_sec)*1000.0 + (_s0.tv_nsec-_last.tv_nsec)/1e6;
+    struct dri_context *ctx = dri_get_current();
+    struct pipe_resource *ptex;
+ 
+@@ -557,6 +579,14 @@ kopperSwapBuffersWithDamage(struct dri_drawable *drawable, uint32_t flush_flags,
+    if (drawable->is_window && !zink_kopper_check(ptex))
+       return -1;
+    if (!drawable->textures[ST_ATTACHMENT_FRONT_LEFT]) {
++      if (getenv("SWAP_TIMING")) {
++         clock_gettime(CLOCK_MONOTONIC, &_s1);
++         double inside = (_s1.tv_sec-_s0.tv_sec)*1000.0 + (_s1.tv_nsec-_s0.tv_nsec)/1e6;
++         if (++_n > 20 && _n % 20 == 0)
++            fprintf(stderr, "[swap] frame %d: period %.2f ms, inside swap %.2f ms, outside %.2f ms\n",
++                    _n, _period, inside, _period - inside);
++      }
++      clock_gettime(CLOCK_MONOTONIC, &_last);
+       return 0;
+    }
+ 
+@@ -564,6 +594,15 @@ kopperSwapBuffersWithDamage(struct dri_drawable *drawable, uint32_t flush_flags,
+    drawable->textures[ST_ATTACHMENT_BACK_LEFT] = drawable->textures[ST_ATTACHMENT_FRONT_LEFT];
+    drawable->textures[ST_ATTACHMENT_FRONT_LEFT] = ptex;
+ 
++   if (getenv("SWAP_TIMING")) {
++      clock_gettime(CLOCK_MONOTONIC, &_s1);
++      double inside = (_s1.tv_sec-_s0.tv_sec)*1000.0 + (_s1.tv_nsec-_s0.tv_nsec)/1e6;
++      if (++_n > 20 && _n % 20 == 0)
++         fprintf(stderr, "[swap] frame %d: period %.2f ms, inside swap %.2f ms, outside %.2f ms\n",
++                 _n, _period, inside, _period - inside);
++   }
++   clock_gettime(CLOCK_MONOTONIC, &_last);
++
+    return 0;
+ }
+ 
+diff --git a/src/imagination/common/pvr_limits.h b/src/imagination/common/pvr_limits.h
+index 010c320..ea419a2 100644
+--- a/src/imagination/common/pvr_limits.h
++++ b/src/imagination/common/pvr_limits.h
+@@ -34,6 +34,16 @@
+ 
+ #define PVR_MAX_COLOR_ATTACHMENTS PVR_NUM_PBE_EMIT_REGS
+ #define PVR_MAX_QUEUES 2U
++/* One viewport. It is tempting to raise this: TA_STATE_HEADER::view_port_count is
++ * a 4 bit field (up to 16) and pvr_setup_viewport()/pvr_emit_ppp_state() already
++ * loop over the count, so accepting more looks like pure plumbing. Measured on
++ * this board with a raised limit: two viewports made the draw rasterise nothing
++ * at all (the frame stayed the clear colour and cost 30.9 ms against 2.1 ms for
++ * one viewport), and four viewports corrupted the driver's stack outright
++ * (SIGSEGV). Without shaderOutputViewportIndex there is no way for a primitive to
++ * select a viewport, so a correct implementation needs the VPT-id path before
++ * this can move. The probe that measured this is `vkrender` with VIEWPORTS=n.
++ */
+ #define PVR_MAX_VIEWPORTS 1U
+ #define PVR_MAX_NEG_OFFSCREEN_OFFSET 4096U
+ #define PVR_MAX_MULTIVIEW 6U
+diff --git a/src/imagination/pco/meson.build b/src/imagination/pco/meson.build
+index c902a17..0c48cfd 100644
+--- a/src/imagination/pco/meson.build
++++ b/src/imagination/pco/meson.build
+@@ -16,6 +16,7 @@ libpowervr_compiler_files = files(
+   'pco_ir.c',
+   'pco_legalize.c',
+   'pco_nir.c',
++  'pco_nir_16bit_io.c',
+   'pco_nir_alu.c',
+   'pco_nir_compute.c',
+   'pco_nir_io.c',
+diff --git a/src/imagination/pco/pco_const_imms.c b/src/imagination/pco/pco_const_imms.c
+index 6860e04..fdbf035 100644
+--- a/src/imagination/pco/pco_const_imms.c
++++ b/src/imagination/pco/pco_const_imms.c
+@@ -174,6 +174,52 @@ bool pco_const_imms(pco_shader *shader)
+    bool progress = false;
+ 
+    pco_foreach_func_in_shader (func, shader) {
++      /* Block-local hoisting: an immediate that is not in the hardware constant
++       * table costs one materialization per use. Within a single block it is safe
++       * to materialize it once and move from that register afterwards, because a
++       * value produced earlier in the same block dominates every later use. This
++       * is the common case for an unrolled loop body, where the same constants
++       * recur many times. */
++      pco_foreach_block_in_func (block, func) {
++         struct hoisted_imm {
++            uint32_t val;
++            pco_ref reg;
++         } hoisted[16];
++         unsigned num_hoisted = 0;
++
++         pco_foreach_instr_in_block_safe (instr, block) {
++            if (instr->op != PCO_OP_MOVI32)
++               continue;
++
++            uint32_t imm = pco_ref_get_imm(instr->src[0]);
++
++            /* Values the hardware can read from a constant register are already
++             * handled below - leave them alone. */
++            if (constreg_lookup(imm))
++               continue;
++
++            for (unsigned i = 0; i < num_hoisted; i++) {
++               if (hoisted[i].val != imm)
++                  continue;
++
++               /* Already materialized in this block: move from it instead. */
++               pco_builder hb =
++                  pco_builder_create(func, pco_cursor_before_instr(instr));
++               pco_mov(&hb, instr->dest[0], hoisted[i].reg);
++               pco_instr_delete(instr);
++               progress = true;
++               goto next_instr;
++            }
++
++            if (num_hoisted < ARRAY_SIZE(hoisted)) {
++               hoisted[num_hoisted].val = imm;
++               hoisted[num_hoisted].reg = instr->dest[0];
++               num_hoisted++;
++            }
++next_instr: ;
++         }
++      }
++
+       pco_foreach_instr_in_func_safe (instr, func) {
+          if (instr->op != PCO_OP_MOVI32)
+             continue;
+diff --git a/src/imagination/pco/pco_internal.h b/src/imagination/pco/pco_internal.h
+index 326111b..d3e3318 100644
+--- a/src/imagination/pco/pco_internal.h
++++ b/src/imagination/pco/pco_internal.h
+@@ -1828,6 +1828,7 @@ bool pco_nir_lower_vs_intrinsics(nir_shader *shader);
+ bool pco_nir_lower_images(nir_shader *shader, pco_data *data, pco_ctx *ctx);
+ bool pco_nir_lower_interpolation(nir_shader *shader, pco_fs_data *fs);
+ bool pco_nir_lower_io(nir_shader *shader, pco_data *data);
++bool pco_nir_lower_16bit_io(nir_shader *shader);
+ bool pco_nir_lower_sample_mask_out(nir_shader *shader);
+ bool pco_nir_lower_shared_io_to_global(nir_shader *shader, unsigned usc_slots);
+ bool pco_nir_lower_subgroups(nir_shader *shader);
+diff --git a/src/imagination/pco/pco_nir.c b/src/imagination/pco/pco_nir.c
+index 2ef8106..9b177fd 100644
+--- a/src/imagination/pco/pco_nir.c
++++ b/src/imagination/pco/pco_nir.c
+@@ -54,6 +54,10 @@ static const nir_shader_compiler_options nir_options = {
+    .lower_ffract = true,
+    .lower_find_lsb = true,
+    .lower_fquantize2f16 = true,
++   /* The ALU has no flrp; trans_alu() has no case for it and hits
++    * UNREACHABLE.  mediump in GLES can be fp16, so 16-bit flrp is reachable
++    * (e.g. glmark2's "cel" shading scene) and must be lowered too. */
++   .lower_flrp16 = true,
+    .lower_flrp32 = true,
+    .lower_fminmax_signed_zero = true,
+    .lower_fmod = true,
+@@ -68,14 +72,17 @@ static const nir_shader_compiler_options nir_options = {
+ 
+    .lower_int64_options = ~0U,
+    .lower_pack_64_2x32 = true,
+-   .lower_pack_64_2x32_split = true,
+-   .lower_unpack_64_2x32_split = true,
++   /* Kept and translated directly (see trans_alu) instead of being rewritten
++    * into 64-bit shifts, because nir_lower_int64() rebuilds them from those
++    * shifts and the pair never converges. */
++   .lower_pack_64_2x32_split = false,
++   .lower_unpack_64_2x32_split = false,
+ 
+    .lower_interpolate_at = true,
+ 
+    .lower_helper_invocation = true,
+ 
+-   .max_unroll_iterations = 16,
++   .max_unroll_iterations = 1024,
+    .max_samples = 4,
+ 
+    .io_options = nir_io_vectorizer_ignores_types,
+@@ -357,6 +364,13 @@ static void gather_common_store_data(nir_intrinsic_instr *intr,
+ 
+    if (nir_src_is_const(*offset_src) && common->push_consts.used != ~0U) {
+       unsigned offset = nir_src_as_uint(*offset_src);
++
++      /* This range is counted in 32-bit dwords and a 64-bit value occupies two
++       * of them. Counting a uint64_t as one dword under-sized the range, so the
++       * second dword of the last 64-bit push constant fell outside it. */
++      if (intr->def.bit_size == 64)
++         num_components *= 2;
++
+       common->push_consts.used =
+          MAX2(common->push_consts.used, offset + num_components);
+    } else {
+@@ -691,7 +705,7 @@ void pco_preprocess_nir(pco_ctx *ctx, nir_shader *nir, pco_data *data)
+ 
+    NIR_PASS(_, nir, nir_scale_fdiv);
+    NIR_PASS(_, nir, nir_lower_frexp);
+-   NIR_PASS(_, nir, nir_lower_flrp, 32, true);
++   NIR_PASS(_, nir, nir_lower_flrp, 16 | 32, true);
+ 
+    NIR_PASS(_, nir, nir_remove_dead_derefs);
+    NIR_PASS(_, nir, nir_opt_undef);
+@@ -900,6 +914,38 @@ static inline bool should_spill_shmem(const pco_ctx *ctx, unsigned shared_size)
+  * \param[in,out] nir NIR shader.
+  * \param[in,out] data Shader data.
+  */
++
++/**
++ * \brief Access shape for a buffer access pco cannot do as written.
++ *
++ * pco issues 32-bit accesses. Anything narrower is widened to one 32-bit
++ * channel over the containing word; anything already 32-bit or wider keeps its
++ * shape, so vector accesses are not needlessly split.
++ */
++static nir_mem_access_size_align
++pco_mem_access_size_align_cb(nir_intrinsic_op intrin, uint8_t bytes,
++                             uint8_t bit_size, uint32_t align_mul,
++                             uint32_t align_offset, bool offset_is_const,
++                             enum gl_access_qualifier access,
++                             const void *cb_data)
++{
++   if (bit_size >= 32) {
++      return (nir_mem_access_size_align){
++         .num_components = bytes / (bit_size / 8),
++         .bit_size = bit_size,
++         .align = MIN2(align_mul, 4),
++         .shift = nir_mem_access_shift_method_scalar,
++      };
++   }
++
++   return (nir_mem_access_size_align){
++      .num_components = 1,
++      .bit_size = 32,
++      .align = 4,
++      .shift = nir_mem_access_shift_method_scalar,
++   };
++}
++
+ void pco_lower_nir(pco_ctx *ctx, nir_shader *nir, pco_data *data)
+ {
+    bool internal = nir->info.internal;
+@@ -940,6 +986,25 @@ void pco_lower_nir(pco_ctx *ctx, nir_shader *nir, pco_data *data)
+             nir_var_mem_global,
+             nir_address_format_2x32bit_global);
+ 
++   /* 8- and 16-bit *buffer* accesses: pco's memory path is
++    * 32-bit, so a narrow access becomes a 32-bit access on the containing word.
++    * On little-endian a load's value sits in the low bits of that word, so no
++    * special shift method is needed; a store goes through the pass's
++    * read-modify-write path (a pair of 32-bit atomics over the byte mask), which
++    * is why may_lower_unaligned_stores_to_atomics is set - without it a widened
++    * store would silently clobber the bytes next to it.
++    *
++    * This runs after the ssbo/ubo explicit-IO lowering above, so those are
++    * already intrinsics; push constants are not, which is why they get their own
++    * pass further down.
++    */
++   const nir_lower_mem_access_bit_sizes_options mem_access_options = {
++      .modes = nir_var_mem_ssbo | nir_var_mem_ubo,
++      .may_lower_unaligned_stores_to_atomics = true,
++      .callback = pco_mem_access_size_align_cb,
++   };
++   NIR_PASS(_, nir, nir_lower_mem_access_bit_sizes, &mem_access_options);
++
+    nir_move_options move_options = nir_move_load_global | nir_move_load_ubo |
+                                    nir_move_load_ssbo | nir_move_load_input |
+                                    nir_move_load_frag_coord | nir_move_alu |
+@@ -966,6 +1031,33 @@ void pco_lower_nir(pco_ctx *ctx, nir_shader *nir, pco_data *data)
+             NULL,
+             NULL);
+ 
++   /* 8- and 16-bit *push constant* accesses, which need the same widening as the
++    * buffer ones. They get their own pass because the nir_lower_explicit_io()
++    * call above is what turns a push constant into a load_push_constant
++    * intrinsic - before it, a push constant is still a variable and its load is
++    * a load_deref, which this pass does not match, so folding push constants in
++    * with the buffer pass above silently does nothing.
++    *
++    * Two things make this more than a copy of the buffer case. The pass's
++    * default answer for a narrow access is "a 32-bit load of the containing
++    * word", which is fine for a buffer because the word is inside it, and fine
++    * here because the pass also reports the wider range it needs through
++    * push_consts.used (see gather_common_store_data). And the offset is still in
++    * bytes at this point: pco_nir_lower_io() divides it by four afterwards, so
++    * the widened load this produces has to be dword-aligned, which it is - the
++    * pass rounds the offset down to `requested.align`.
++    */
++   const nir_lower_mem_access_bit_sizes_options push_const_access_options = {
++      .modes = nir_var_mem_push_const,
++      .may_lower_unaligned_stores_to_atomics = true,
++      .callback = pco_mem_access_size_align_cb,
++   };
++   NIR_PASS(_,
++            nir,
++            nir_lower_mem_access_bit_sizes,
++            &push_const_access_options);
++
++
+    if (data->common.robust_buffer_access) {
+       NIR_PASS(_,
+                nir,
+@@ -1102,6 +1194,13 @@ void pco_lower_nir(pco_ctx *ctx, nir_shader *nir, pco_data *data)
+             NULL,
+             NULL);
+ 
++   /* VK_KHR_16bit_storage's storageInputOutput16, if the shader uses it. Runs
++    * here because nir_lower_io() and nir_lower_io_to_scalar() above are what turn
++    * the interface into per-component intrinsics, and before pco_nir_opt() so the
++    * conversions it inserts can be optimised away where they are redundant.
++    * Nothing happens unless a 16-bit type is actually in the interface. */
++   NIR_PASS(_, nir, pco_nir_lower_16bit_io);
++
+    NIR_PASS(_, nir, nir_lower_vars_to_ssa);
+    NIR_PASS(_, nir, nir_opt_copy_prop_vars);
+    NIR_PASS(_, nir, nir_opt_dead_write_vars);
+@@ -1176,6 +1275,7 @@ remat_load_const(nir_builder *b, nir_instr *instr, UNUSED void *cb_data)
+ 
+    return true;
+ }
++
+ /**
+  * \brief Runs post-processing passes on a NIR shader.
+  *
+diff --git a/src/imagination/pco/pco_nir_16bit_io.c b/src/imagination/pco/pco_nir_16bit_io.c
+new file mode 100644
+index 0000000..0a447d7
+--- /dev/null
++++ b/src/imagination/pco/pco_nir_16bit_io.c
+@@ -0,0 +1,182 @@
++/*
++ * Copyright © 2026 Imagination Technologies Ltd.
++ * SPDX-License-Identifier: MIT
++ */
++
++#include "pco_internal.h"
++#include "nir_builder.h"
++
++/**
++ * \file pco_nir_16bit_io.c
++ *
++ * \brief Lowers 16-bit shader inputs and outputs to 32 bits.
++ *
++ * VK_KHR_16bit_storage's `storageInputOutput16` allows 16-bit *types* in the
++ * shader input and output interfaces. pco has no 16-bit I/O: the two places that
++ * would have to know are `trans_load_input_vs()` and `trans_store_output_vs()`,
++ * both of which say "TODO: f16 support" and both of which assert the type is
++ * 32-bit - and both asserts are compiled out here, because this build is
++ * `buildtype=release`, so a 16-bit varying does not fail loudly, it translates as
++ * a whole 32-bit register.
++ *
++ * Rather than teach the translator a packing convention, this promotes the
++ * interface to 32 bits and converts at the boundary. That is exact: f16 -> f32 ->
++ * f16 and u16 -> u32 -> u16 round-trip without loss. It is also the cheaper of
++ * the two options, because it leaves every consumer of the interface alone - the
++ * varying allocation in `pvr_arch_pipeline.c`, the PPP/PDS varying state, and the
++ * VDM's attribute formats all then see the 32-bit types they already handle. The
++ * only interfaces that leave the driver are the vertex input and the framebuffer,
++ * and both are format-driven conversions the hardware does anyway.
++ *
++ * The two halves have to happen together. Rewriting the intrinsics without the
++ * variable types would leave the varying allocation sizing a f16vec2 as one dword
++ * (`glsl_count_dword_slots()` returns DIV_ROUND_UP(components, 2) for 16-bit
++ * types) while the shader now stores two f32 components into it.
++ *
++ * The intrinsics are rewritten *in place*, the way `nir_lower_mediump_io()` does
++ * it, rather than duplicated with a different width. That matters for
++ * `load_interpolated_input`, whose second source is a barycentric instruction
++ * rather than an SSA def: a naive copy of `src[i].ssa` there builds a load with a
++ * null source, and the NIR is invalid enough to crash `nir_opt_copy_prop()` a
++ * few passes later - which is exactly what happened the first time.
++ *
++ * This runs after `nir_lower_io()` and `nir_lower_io_to_scalar()`, so what it
++ * sees is one scalar intrinsic per component. It is a no-op for any shader that
++ * does not use 16-bit I/O, which is every shader until the feature is advertised.
++ */
++
++static enum glsl_base_type
++widen_16bit_base_type(enum glsl_base_type base_type)
++{
++   switch (base_type) {
++   case GLSL_TYPE_FLOAT16:
++      return GLSL_TYPE_FLOAT;
++   case GLSL_TYPE_UINT16:
++      return GLSL_TYPE_UINT;
++   case GLSL_TYPE_INT16:
++      return GLSL_TYPE_INT;
++   default:
++      return base_type;
++   }
++}
++
++static const glsl_type *
++widen_16bit_type(const glsl_type *type)
++{
++   if (glsl_type_is_array(type)) {
++      return glsl_array_type(widen_16bit_type(glsl_get_array_element(type)),
++                             glsl_get_length(type),
++                             glsl_get_explicit_stride(type));
++   }
++
++   if (glsl_type_is_matrix(type)) {
++      return glsl_matrix_type(widen_16bit_base_type(glsl_get_base_type(type)),
++                              glsl_get_matrix_columns(type),
++                              glsl_get_vector_elements(type));
++   }
++
++   if (glsl_type_is_vector_or_scalar(type)) {
++      return glsl_vector_type(widen_16bit_base_type(glsl_get_base_type(type)),
++                              glsl_get_components(type));
++   }
++
++   return type;
++}
++
++/** Widens a 16-bit value to 32 bits, preserving the base type. */
++static nir_def *
++widen_to_32(nir_builder *b, nir_def *value, nir_alu_type type)
++{
++   switch (nir_alu_type_get_base_type(type)) {
++   case nir_type_float:
++      return nir_f2f32(b, value);
++   case nir_type_int:
++      return nir_i2i32(b, value);
++   default:
++      return nir_u2u32(b, value);
++   }
++}
++
++/** Narrows a 32-bit value back to 16 bits, preserving the base type. */
++static nir_def *
++narrow_to_16(nir_builder *b, nir_def *value, nir_alu_type type)
++{
++   switch (nir_alu_type_get_base_type(type)) {
++   case nir_type_float:
++      return nir_f2f16(b, value);
++   case nir_type_int:
++      return nir_i2i16(b, value);
++   default:
++      return nir_u2u16(b, value);
++   }
++}
++
++/** Rewrites the interface type of a 16-bit value to its 32-bit equivalent. */
++static nir_alu_type
++widen_alu_type(nir_alu_type type)
++{
++   return (type & ~16) | 32;
++}
++
++static bool
++lower_16bit_io_instr(nir_builder *b, nir_intrinsic_instr *intr, UNUSED void *data)
++{
++   nir_variable_mode mode;
++   nir_intrinsic_instr *io =
++      nir_get_io_intrinsic(&intr->instr, nir_var_shader_in | nir_var_shader_out,
++                           &mode);
++   nir_alu_type type;
++
++   if (!io)
++      return false;
++
++   if (nir_intrinsic_has_src_type(io)) {
++      /* Stores: widen the value, then say so on the store. */
++      type = nir_intrinsic_src_type(io);
++      if (nir_alu_type_get_type_size(type) != 16)
++         return false;
++
++      b->cursor = nir_before_instr(&io->instr);
++      nir_src_rewrite(&io->src[0], widen_to_32(b, io->src[0].ssa, type));
++      nir_intrinsic_set_src_type(io, widen_alu_type(type));
++   } else if (nir_intrinsic_has_dest_type(io)) {
++      /* Loads: widen the result, then narrow it back for the shader's own use.
++       * The rewrite has to skip the conversion just inserted, which reads the
++       * wide def itself - hence _after and not nir_def_rewrite_uses(). */
++      type = nir_intrinsic_dest_type(io);
++      if (nir_alu_type_get_type_size(type) != 16)
++         return false;
++
++      b->cursor = nir_after_instr(&io->instr);
++      io->def.bit_size = 32;
++      nir_intrinsic_set_dest_type(io, widen_alu_type(type));
++      nir_def_rewrite_uses_after(&io->def, narrow_to_16(b, &io->def, type));
++   } else {
++      return false;
++   }
++
++   return true;
++}
++
++bool
++pco_nir_lower_16bit_io(nir_shader *nir)
++{
++   bool progress = false;
++
++   NIR_PASS(progress,
++            nir,
++            nir_shader_intrinsics_pass,
++            lower_16bit_io_instr,
++            nir_metadata_control_flow,
++            NULL);
++
++   nir_foreach_variable_with_modes (var, nir, nir_var_shader_in | nir_var_shader_out) {
++      if (!glsl_type_is_16bit(glsl_without_array_or_matrix(var->type)))
++         continue;
++
++      var->type = widen_16bit_type(var->type);
++      progress = true;
++   }
++
++   return progress;
++}
+diff --git a/src/imagination/pco/pco_nir_pvfio.c b/src/imagination/pco/pco_nir_pvfio.c
+index 71efda9..3660c75 100644
+--- a/src/imagination/pco/pco_nir_pvfio.c
++++ b/src/imagination/pco/pco_nir_pvfio.c
+@@ -865,15 +865,27 @@ static bool lower_pvi(nir_builder *b, nir_intrinsic_instr *intr, void *cb_data)
+    unsigned start_comp = nir_intrinsic_component(intr);
+    unsigned num_comps = intr->def.num_components;
+ 
+-   ASSERTED gl_vert_attrib location = nir_intrinsic_io_semantics(intr).location;
++   gl_vert_attrib location = nir_intrinsic_io_semantics(intr).location;
+    assert(location >= VERT_ATTRIB_GENERIC0 &&
+           location <= VERT_ATTRIB_GENERIC15);
+ 
+    ASSERTED nir_src *offset = &intr->src[0];
+    assert(nir_src_as_uint(*offset) == 0);
+ 
+-   nir_def *attrib = state->attribs[location - VERT_ATTRIB_GENERIC0];
+-   assert(attrib);
++   /* The assertions above are compiled out in a release build, and an application may pass
++    * more attributes than the advertised maxVertexInputAttributes (16). pco_nir_pvi only
++    * fills state.attribs[] for locations VERT_ATTRIB_GENERIC0..GENERIC15, so an input at
++    * GENERIC16 gives index 16 into a MAX_VERTEX_GENERIC_ATTRIBS (16) element array: garbage
++    * `attrib`, then nir_channels() on it, then a SIGSEGV in nir_instr_insert/add_defs_uses.
++    * Leave such an input unlowered rather than read out of bounds. A clean
++    * pipeline-creation error would be better; this removes the crash. */
++   unsigned attrib_idx = location - VERT_ATTRIB_GENERIC0;
++   if (attrib_idx >= ARRAY_SIZE(state->attribs))
++      return false;
++
++   nir_def *attrib = state->attribs[attrib_idx];
++   if (!attrib)
++      return false;
+ 
+    b->cursor = nir_before_instr(&intr->instr);
+    attrib = nir_channels(b, attrib, BITFIELD_RANGE(start_comp, num_comps));
+@@ -939,6 +951,10 @@ bool pco_nir_pvi(nir_shader *shader, pco_vs_data *vs)
+ 
+       unsigned format_dwords =
+          DIV_ROUND_UP(util_format_get_blocksize(format), sizeof(uint32_t));
++      if (getenv("PVI_TRACE"))
++         fprintf(stderr, "[pvi] u=%u location=%d format=%d blocksize=%u dwords=%u base_type=%u var=%p\n",
++                 u, (int)location, (int)format, util_format_get_blocksize(format),
++                 format_dwords, base_type, (void *)var);
+       var->type = glsl_uvec_type(format_dwords);
+ 
+       nir_def *packed_comps[4];
+diff --git a/src/imagination/pco/pco_trans_nir.c b/src/imagination/pco/pco_trans_nir.c
+index 6dde9d2..fcedd27 100644
+--- a/src/imagination/pco/pco_trans_nir.c
++++ b/src/imagination/pco/pco_trans_nir.c
+@@ -80,7 +80,22 @@ static void split_dest_comps(trans_ctx *tctx, pco_instr *instr, pco_ref dest)
+  */
+ static inline pco_ref pco_ref_nir_def(const nir_def *def)
+ {
+-   return pco_ref_ssa(def->index, def->bit_size, def->num_components);
++   unsigned bits = def->bit_size;
++   unsigned chans = def->num_components;
++
++   /* A 64-bit component is two 32-bit channels in this backend - see the 64-bit
++    * multiply cases, which build their result as a vector of two 32-bit
++    * registers - and this is the one place every NIR value is mapped to a
++    * reference, so doing it here is what keeps producers and consumers agreeing.
++    * Without it a 64-bit value stays one channel wide, so both halves of it
++    * resolve to the same dword.
++    */
++   if (bits == 64) {
++      bits = 32;
++      chans *= 2;
++   }
++
++   return pco_ref_ssa(def->index, bits, chans);
+ }
+ 
+ /**
+@@ -3638,6 +3653,19 @@ trans_conv(trans_ctx *tctx, nir_op op, pco_ref dest, pco_ref src)
+                        op == nir_op_b2f32 ? pco_fone : pco_one,
+                        pco_zero);
+ 
++   case nir_op_b2f16: {
++      /* There is no fp16 select.  Select the fp32 1.0/0.0 and pack it down
++       * exactly the way f2f16 does. */
++      pco_ref tmp = pco_ref_new_ssa32(tctx->func);
++
++      pco_bcsel(&tctx->b, tmp, src, pco_fone, pco_zero);
++      return pco_pck(&tctx->b,
++                     pco_ref_bits(dest, 32),
++                     tmp,
++                     .pck_fmt = PCO_PCK_FMT_F16F16,
++                     .roundzero = false);
++   }
++
+    case nir_op_f2f16:
+    case nir_op_f2f16_rtne:
+    case nir_op_f2f16_rtz:
+@@ -3687,6 +3715,24 @@ trans_conv(trans_ctx *tctx, nir_op op, pco_ref dest, pco_ref src)
+       unpck = true;
+       break;
+ 
++   case nir_op_i2f16:
++   case nir_op_u2f16: {
++      /* int -> fp32 -> fp16, reusing the two conversions the ALU does have. */
++      pco_ref tmp = pco_ref_new_ssa32(tctx->func);
++
++      pco_unpck(&tctx->b,
++                tmp,
++                pco_ref_elem(src, 0),
++                .pck_fmt = (op == nir_op_u2f16) ? PCO_PCK_FMT_U32
++                                                : PCO_PCK_FMT_S32,
++                .roundzero = tctx->ftz32b);
++      return pco_pck(&tctx->b,
++                     pco_ref_bits(dest, 32),
++                     tmp,
++                     .pck_fmt = PCO_PCK_FMT_F16F16,
++                     .roundzero = false);
++   }
++
+    default:
+       UNREACHABLE("Unsupported conversion op.");
+    }
+@@ -4015,6 +4061,7 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
+       instr = pco_shuffle(&tctx->b, dest, src[0], src[1]);
+       break;
+ 
++   case nir_op_b2f16:
+    case nir_op_b2f32:
+    case nir_op_b2i32:
+    case nir_op_f2f16:
+@@ -4024,9 +4071,11 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
+    case nir_op_f2i32:
+    case nir_op_f2i32_rtne:
+    case nir_op_f2u32:
++   case nir_op_i2f16:
+    case nir_op_i2f32:
+    case nir_op_i2i16:
+    case nir_op_i2i32:
++   case nir_op_u2f16:
+    case nir_op_u2f32:
+    case nir_op_u2u16:
+    case nir_op_u2u32:
+@@ -4145,6 +4194,81 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
+       instr = pco_mov(&tctx->b, dest, src[0]);
+       break;
+ 
++   /* The two halves of a 64-bit value, which this backend holds as a pair of
++    * 32-bit channels (see pco_ref_nir_def). The component must be taken with
++    * pco_comp: a mov carrying an element modifier does not select a channel, so
++    * reading the high half that way returns the low half again - which is what
++    * a uint64_t push constant used to do.
++    *
++    * These are translated here rather than lowered away because the rewrite
++    * nir_opt_algebraic() applies instead - u2u32(ushr(a, 32)) - leaves a 64-bit
++    * shift behind, and nir_lower_int64() turns that straight back into this
++    * intrinsic. The two passes never converge (pco_nir_opt() gives up after 1000
++    * iterations), and the 64-bit shift then reaches trans_shift(), whose
++    * bits == 32 assert is compiled out in a release build.
++    */
++   case nir_op_unpack_64_2x32_split_x:
++      instr = pco_comp(&tctx->b, dest, src[0], pco_ref_val16(0));
++      break;
++
++   case nir_op_unpack_64_2x32_split_y:
++      instr = pco_comp(&tctx->b, dest, src[0], pco_ref_val16(1));
++      break;
++
++   case nir_op_pack_64_2x32_split:
++      instr = pco_trans_nir_vec(tctx, dest, 2, src);
++      break;
++
++   /* The two 16-bit halves of a 32-bit register. This backend holds every value
++    * in a 32-bit register, so a 16-bit half is a mask and a shift rather than a
++    * reinterpretation - the same shape as the 64-bit handling above, one size
++    * down. Both operands are masked on the way in because a 16-bit NIR value's
++    * upper bits are only defined by whatever produced it: the narrowing
++    * conversions in trans_conv() are plain movs, so `b << 16` would otherwise OR
++    * the second operand's leftovers into the result.
++    *
++    * These arrive from two directions and neither can be lowered away earlier.
++    * nir_opt_algebraic() forms them from f2f16 and from pairs of shifts, and the
++    * push-constant half of the 8/16-bit storage work produces them directly when
++    * it widens a 16-bit load and narrows it back.
++    */
++   case nir_op_pack_32_2x16_split: {
++      pco_ref mask = pco_ref_new_ssa32(tctx->func);
++      pco_ref lo = pco_ref_new_ssa32(tctx->func);
++      pco_ref shift = pco_ref_new_ssa32(tctx->func);
++      pco_ref hi = pco_ref_new_ssa32(tctx->func);
++
++      pco_movi32(&tctx->b, mask, pco_ref_imm32(0xffff));
++      trans_logical(tctx, nir_op_iand, lo, src[0], mask);
++
++      pco_movi32(&tctx->b, shift, pco_ref_imm32(16));
++      trans_shift(tctx, nir_op_ishl, hi, src[1], shift);
++
++      dest = pco_ref_bits(dest, 32);
++      instr = trans_logical(tctx, nir_op_ior, dest, lo, hi);
++      break;
++   }
++
++   case nir_op_unpack_32_2x16_split_x: {
++      pco_ref mask = pco_ref_new_ssa32(tctx->func);
++
++      pco_movi32(&tctx->b, mask, pco_ref_imm32(0xffff));
++
++      dest = pco_ref_bits(dest, 32);
++      instr = trans_logical(tctx, nir_op_iand, dest, src[0], mask);
++      break;
++   }
++
++   case nir_op_unpack_32_2x16_split_y: {
++      pco_ref shift = pco_ref_new_ssa32(tctx->func);
++
++      pco_movi32(&tctx->b, shift, pco_ref_imm32(16));
++
++      dest = pco_ref_bits(dest, 32);
++      instr = trans_shift(tctx, nir_op_ushr, dest, src[0], shift);
++      break;
++   }
++
+    default:
+       printf("Unsupported alu instruction: \"");
+       nir_print_instr(&alu->instr, stdout);
+diff --git a/src/imagination/vulkan/pvr_arch_cmd_buffer.c b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
+index f21b320..07f1e1c 100644
+--- a/src/imagination/vulkan/pvr_arch_cmd_buffer.c
++++ b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
+@@ -558,7 +558,6 @@ static VkResult pvr_sub_cmd_gfx_per_job_fragment_programs_create_and_upload(
+    };
+    uint32_t *staging_buffer;
+    uint32_t usc_temp_count;
+-   pco_shader *eot;
+    VkResult result;
+ 
+    bool has_tile_buffers = false;
+@@ -582,17 +581,71 @@ static VkResult pvr_sub_cmd_gfx_per_job_fragment_programs_create_and_upload(
+          props.msaa_samples = 1;
+    }
+ 
+-   eot =
+-      pvr_usc_eot(device->pdevice->pco_ctx, &props, &device->pdevice->dev_info);
+-   usc_temp_count = pco_shader_data(eot)->common.temps;
++   /* pvr_usc_eot() builds the end-of-tile program as NIR and compiles it with
++    * PCO, and its only inputs are the emit count, the PBE state words and the
++    * tile-buffer addresses - all stable across frames, since tile buffers are
++    * device-lifetime. Recompiling it on every render pass was pure overhead
++    * (measured: frames+4 calls for N frames), so the binary is cached on the
++    * device and re-uploaded, which is a memcpy into the command buffer.
++    */
++   {
++      struct pvr_device *const dev = cmd_buffer->device;
++      const uint32_t state_word_count =
++         emit_count * ROGUE_NUM_PBESTATE_STATE_WORDS;
++      const void *eot_binary;
++      unsigned eot_binary_size;
++
++      simple_mtx_lock(&dev->eot_cache.mtx);
++
++      const bool cache_hit =
++         dev->eot_cache.valid && dev->eot_cache.emit_count == emit_count &&
++         dev->eot_cache.msaa_samples == props.msaa_samples &&
++         dev->eot_cache.num_output_regs == props.num_output_regs &&
++         memcmp(dev->eot_cache.tile_buffer_addrs, props.tile_buffer_addrs,
++                emit_count * sizeof(uint64_t)) == 0 &&
++         memcmp(dev->eot_cache.state_words, pbe_cs_words,
++                state_word_count * sizeof(uint32_t)) == 0;
++
++      if (!cache_hit) {
++         pco_shader *const eot = pvr_usc_eot(dev->pdevice->pco_ctx, &props,
++                                             &dev->pdevice->dev_info);
++         const unsigned size = pco_shader_binary_size(eot);
++         const uint32_t temps = pco_shader_data(eot)->common.temps;
++         void *const binary = vk_alloc(&dev->vk.alloc, size, 8,
++                                       VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
++
++         if (!binary) {
++            ralloc_free(eot);
++            simple_mtx_unlock(&dev->eot_cache.mtx);
++            return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
++         }
++
++         memcpy(binary, pco_shader_binary_data(eot), size);
++         ralloc_free(eot);
++
++         vk_free(&dev->vk.alloc, dev->eot_cache.binary);
++         dev->eot_cache.binary = binary;
++         dev->eot_cache.binary_size = size;
++         dev->eot_cache.temps = temps;
++         dev->eot_cache.emit_count = emit_count;
++         dev->eot_cache.msaa_samples = props.msaa_samples;
++         dev->eot_cache.num_output_regs = props.num_output_regs;
++         memcpy(dev->eot_cache.tile_buffer_addrs, props.tile_buffer_addrs,
++                emit_count * sizeof(uint64_t));
++         memcpy(dev->eot_cache.state_words, pbe_cs_words,
++                state_word_count * sizeof(uint32_t));
++         dev->eot_cache.valid = true;
++      }
+ 
+-   result = pvr_cmd_buffer_upload_usc(cmd_buffer,
+-                                      pco_shader_binary_data(eot),
+-                                      pco_shader_binary_size(eot),
+-                                      4,
+-                                      &usc_eot_program);
++      eot_binary = dev->eot_cache.binary;
++      eot_binary_size = dev->eot_cache.binary_size;
++      usc_temp_count = dev->eot_cache.temps;
+ 
+-   ralloc_free(eot);
++      simple_mtx_unlock(&dev->eot_cache.mtx);
++
++      result = pvr_cmd_buffer_upload_usc(cmd_buffer, eot_binary,
++                                         eot_binary_size, 4, &usc_eot_program);
++   }
+ 
+    if (result != VK_SUCCESS)
+       return result;
+@@ -2990,6 +3043,14 @@ void PVR_PER_ARCH(CmdBindDescriptorSets2KHR)(
+                      pBindDescriptorSetsInfo->pDescriptorSets[u]);
+       unsigned desc_set = u + pBindDescriptorSetsInfo->firstSet;
+ 
++      /* desc_set is application-controlled (firstSet + u) and maxBoundDescriptorSets is
++       * advertised as PVR_MAX_DESCRIPTOR_SETS (4), but nothing enforced it here:
++       * pvr_descriptor_state::sets[] has exactly PVR_MAX_DESCRIPTOR_SETS entries and
++       * pipeline_layout->set_layouts[] is sized by the layout, so binding a set at index
++       * >= 4 wrote past both. Skip out-of-range sets instead of corrupting memory. */
++      if (desc_set >= PVR_MAX_DESCRIPTOR_SETS)
++         continue;
++
+       const struct pvr_descriptor_set_layout *set_layout =
+          vk_to_pvr_descriptor_set_layout(
+             pipeline_layout->set_layouts[desc_set]);
+@@ -3040,7 +3101,17 @@ void PVR_PER_ARCH(CmdBindVertexBuffers2)(VkCommandBuffer commandBuffer,
+ 
+    PVR_CHECK_COMMAND_BUFFER_BUILDING_STATE(cmd_buffer);
+ 
+-   for (uint32_t i = 0; i < bindingCount; i++) {
++   /* vertex_bindings[] has PVR_MAX_VERTEX_INPUT_BINDINGS (16) entries and the assert above
++    * is compiled out in a release build, so an over-limit vkCmdBindVertexBuffers wrote past
++    * the end of the array - silently corrupting the rest of pvr_cmd_buffer_state rather than
++    * faulting, which is why it is easy to miss. maxVertexInputBindings is advertised as 16;
++    * clamp to the array instead of writing out of bounds. */
++   const uint32_t bind_count =
++      MIN2(bindingCount,
++           (uint32_t)(PVR_MAX_VERTEX_INPUT_BINDINGS - MIN2(firstBinding,
++                                                           (uint32_t)PVR_MAX_VERTEX_INPUT_BINDINGS)));
++
++   for (uint32_t i = 0; i < bind_count; i++) {
+       VK_FROM_HANDLE(pvr_buffer, buffer, pBuffers[i]);
+       const uint64_t size = pSizes ? pSizes[i] : VK_WHOLE_SIZE;
+ 
+@@ -3054,7 +3125,7 @@ void PVR_PER_ARCH(CmdBindVertexBuffers2)(VkCommandBuffer commandBuffer,
+    if (pStrides != NULL) {
+       vk_cmd_set_vertex_binding_strides(&cmd_buffer->vk,
+                                         firstBinding,
+-                                        bindingCount,
++                                        bind_count,
+                                         pStrides);
+    }
+ 
+@@ -4082,6 +4153,17 @@ static VkResult pvr_dynamic_rendering_output_attachments_setup(
+    struct pvr_dynamic_render_info *dr_info,
+    uint32_t *attach_idx)
+ {
++   /* maxColorAttachments is advertised as PVR_MAX_COLOR_ATTACHMENTS, but nothing enforced it
++    * here. This function sizes two VLAs from the application's count and later scatters render
++    * targets over dr_info->mrt_setup->mrt_resources[] for every attachment, so an over-limit
++    * count indexes past driver state. Reject it, as pvr_graphics_pipeline_init now does for
++    * maxVertexInputAttributes. */
++   if (pRenderingInfo->colorAttachmentCount > PVR_MAX_COLOR_ATTACHMENTS)
++      return vk_errorf(cmd_buffer->device, VK_ERROR_UNKNOWN,
++                       "colorAttachmentCount %u exceeds maxColorAttachments (%u)",
++                       pRenderingInfo->colorAttachmentCount,
++                       (unsigned)PVR_MAX_COLOR_ATTACHMENTS);
++
+    VkFormat attachment_formats[pRenderingInfo->colorAttachmentCount];
+    uint32_t mrt_attachment_map[pRenderingInfo->colorAttachmentCount];
+    uint32_t mrt_count = 0, eot_mrt_count = 0, eot_mrt_idx = 0,
+@@ -6595,6 +6677,17 @@ static void pvr_setup_output_select(struct pvr_cmd_buffer *const cmd_buffer)
+       state.rhw_pres = fs_data->fs.uses.w;
+       state.tsp_unclamped_z_pres = fs_data->fs.uses.z;
+ 
++      /* VkPipelineRasterizationStateCreateInfo::depthClampEnable. The clip half of
++       * it is already handled in pvr_setup_ppp_control(), which stops clipping
++       * against the near and far planes when this is set; this is the other half,
++       * the ISP clamping the vertex's Z into [minDepth, maxDepth] instead.
++       * csbgen/rogue/ppp.xml documents the field as "the Z value written into the
++       * ISP vertex data is depth clamped", and before this it was mentioned only
++       * by the CSB dump tool - the feature was tracked and half-used but never
++       * actually programmed. */
++      state.isp_position_depth_clamp_z =
++         cmd_buffer->vk.dynamic_graphics_state.rs.depth_clamp_enable;
++
+       state.vtxsize = vs_data->vs.vtxouts;
+       state.psprite_size_pres = has_point_size;
+       state.vpt_tgt_pres = has_viewport;
+@@ -6697,6 +6790,19 @@ pvr_setup_isp_faces_and_control(struct pvr_cmd_buffer *const cmd_buffer,
+             : NULL;
+    }
+ 
++   /* VkPolygonMode is deliberately not consulted here. The hardware does have
++    * object types for it - ppp.xml's OBJTYPE enum has LINE_FILLED_TRIANGLE=5 and
++    * POINT_FILLED_TRIANGLE=6, and TA_STATE_ISPA.pointlinewidth is documented as
++    * "the width/pitch used for rendering lines, point-filled and line-filled
++    * triangles" - but selecting them for a triangle topology produces no
++    * fragments at all on this part (measured: 0 of 262144 pixels written, with
++    * pointlinewidth set to a valid non-zero 15, while the same draw in
++    * VK_POLYGON_MODE_FILL is 262144/262144 correct). The frame also goes from
++    * 1.96 ms to 31.5 ms, so the hardware does take a different path and
++    * rasterises nothing visible. Whatever else LINE_FILLED_TRIANGLE needs is not
++    * in the published definitions. See docs/GPU-FEATURE-FEASIBILITY-2026-09-24.md;
++    * fillModeNonSolid stays unadvertised.
++    */
+    const enum ROGUE_TA_OBJTYPE obj_type =
+       pvr_ta_objtype(dynamic_state->ia.primitive_topology);
+ 
+@@ -7116,7 +7222,6 @@ pvr_setup_isp_depth_bias_scissor_state(struct pvr_cmd_buffer *const cmd_buffer)
+       assert(dynamic_state->vp.viewport_count == 1);
+       /* We don't support multiple scissor calculations. */
+       assert(dynamic_state->vp.scissor_count == 1);
+-
+       pvr_get_viewport_scissor_overlap(viewport, scissor, &overlap_rect);
+ 
+       x = overlap_rect.offset.x;
+@@ -9939,8 +10044,28 @@ void PVR_PER_ARCH(CmdWriteTimestamp2)(VkCommandBuffer commandBuffer,
+    UNREACHABLE("Timestamp queries are not supported.");
+ }
+ 
++extern uint64_t pvr_alloc_count, pvr_alloc_bytes;
++
+ VkResult PVR_PER_ARCH(EndCommandBuffer)(VkCommandBuffer commandBuffer)
+ {
++   /* Report what this command buffer allocated, for PVR_ALLOC_TRACE=1. A driver that
++    * allocates buffers per command buffer pays for them every frame. */
++   {
++      static uint64_t last_count, last_bytes;
++      static int last_frames;
++      extern uint64_t pvr_alloc_count, pvr_alloc_bytes;
++
++      if (getenv("PVR_ALLOC_TRACE")) {
++         uint64_t dcount = pvr_alloc_count - last_count;
++         uint64_t dbytes = pvr_alloc_bytes - last_bytes;
++         last_count = pvr_alloc_count;
++         last_bytes = pvr_alloc_bytes;
++         if (++last_frames <= 5 || last_frames % 50 == 0)
++            fprintf(stderr, "[alloc] command buffer %d: %llu bo(s), %llu KiB\n", last_frames,
++                    (unsigned long long)dcount, (unsigned long long)(dbytes / 1024));
++      }
++   }
++
+    VK_FROM_HANDLE(pvr_cmd_buffer, cmd_buffer, commandBuffer);
+    struct pvr_cmd_buffer_state *state = &cmd_buffer->state;
+    VkResult result;
+diff --git a/src/imagination/vulkan/pvr_arch_device.c b/src/imagination/vulkan/pvr_arch_device.c
+index af9d698..78c03e8 100644
+--- a/src/imagination/vulkan/pvr_arch_device.c
++++ b/src/imagination/vulkan/pvr_arch_device.c
+@@ -647,6 +647,21 @@ pvr_device_init_view_index_init_programs(struct pvr_device *device)
+    return result;
+ }
+ 
++static void pvr_device_init_eot_cache(struct pvr_device *device)
++{
++   simple_mtx_init(&device->eot_cache.mtx, mtx_plain);
++   device->eot_cache.valid = false;
++   device->eot_cache.binary = NULL;
++   device->eot_cache.binary_size = 0;
++}
++
++static void pvr_device_finish_eot_cache(struct pvr_device *device)
++{
++   simple_mtx_destroy(&device->eot_cache.mtx);
++   vk_free(&device->vk.alloc, device->eot_cache.binary);
++   device->eot_cache.binary = NULL;
++}
++
+ static void pvr_device_init_tile_buffer_state(struct pvr_device *device)
+ {
+    simple_mtx_init(&device->tile_buffer_state.mtx, mtx_plain);
+@@ -877,6 +892,7 @@ VkResult PVR_PER_ARCH(create_device)(struct pvr_physical_device *pdevice,
+       goto err_pvr_finish_graphics_static_clear_state;
+ 
+    pvr_device_init_tile_buffer_state(device);
++   pvr_device_init_eot_cache(device);
+ 
+    result = pvr_arch_queues_create(device, pCreateInfo);
+    if (result != VK_SUCCESS)
+@@ -921,6 +937,7 @@ err_pvr_spm_finish_scratch_buffer_store:
+    pvr_arch_queues_destroy(device);
+ 
+ err_pvr_finish_tile_buffer_state:
++   pvr_device_finish_eot_cache(device);
+    pvr_device_finish_tile_buffer_state(device);
+    pvr_arch_device_finish_spm_load_state(device);
+ 
+@@ -1000,6 +1017,7 @@ void PVR_PER_ARCH(destroy_device)(struct pvr_device *device,
+    pvr_robustness_buffer_finish(device);
+    pvr_spm_finish_scratch_buffer_store(device);
+    pvr_arch_queues_destroy(device);
++   pvr_device_finish_eot_cache(device);
+    pvr_device_finish_tile_buffer_state(device);
+    pvr_arch_device_finish_spm_load_state(device);
+    pvr_device_finish_graphics_static_clear_state(device);
+diff --git a/src/imagination/vulkan/pvr_arch_job_compute.c b/src/imagination/vulkan/pvr_arch_job_compute.c
+index 0a39435..75cb0c4 100644
+--- a/src/imagination/vulkan/pvr_arch_job_compute.c
++++ b/src/imagination/vulkan/pvr_arch_job_compute.c
+@@ -194,7 +194,7 @@ pvr_submit_info_flags_init(const struct pvr_device_info *const dev_info,
+ static void pvr_compute_job_ws_submit_info_init(
+    struct pvr_compute_ctx *ctx,
+    struct pvr_sub_cmd_compute *sub_cmd,
+-   struct vk_sync *wait,
++   struct vk_sync_wait wait,
+    struct pvr_winsys_compute_submit_info *submit_info)
+ {
+    const struct pvr_device *const device = ctx->device;
+@@ -214,8 +214,8 @@ static void pvr_compute_job_ws_submit_info_init(
+ 
+ VkResult pvr_arch_compute_job_submit(struct pvr_compute_ctx *ctx,
+                                      struct pvr_sub_cmd_compute *sub_cmd,
+-                                     struct vk_sync *wait,
+-                                     struct vk_sync *signal_sync)
++                                     struct vk_sync_wait wait,
++                                     const struct vk_sync_signal *signal_sync)
+ {
+    struct pvr_winsys_compute_submit_info submit_info;
+    struct pvr_device *device = ctx->device;
+diff --git a/src/imagination/vulkan/pvr_arch_job_render.c b/src/imagination/vulkan/pvr_arch_job_render.c
+index bf96f55..4befa9e 100644
+--- a/src/imagination/vulkan/pvr_arch_job_render.c
++++ b/src/imagination/vulkan/pvr_arch_job_render.c
+@@ -839,7 +839,7 @@ pvr_geom_state_flags_init(const struct pvr_render_job *const job,
+ static void
+ pvr_render_job_ws_geometry_state_init(struct pvr_render_ctx *ctx,
+                                       struct pvr_render_job *job,
+-                                      struct vk_sync *wait,
++                                      struct vk_sync_wait wait,
+                                       struct pvr_winsys_geometry_state *state)
+ {
+    pvr_geom_state_stream_init(ctx, job, state);
+@@ -1140,6 +1140,29 @@ static void pvr_frag_state_stream_init(struct pvr_render_ctx *ctx,
+                                rt_dataset->width,
+                                rt_dataset->height,
+                                rt_dataset->samples);
++   /* PVR_TILE_TRACE=1: what tiling does this job actually use, and does it take the
++    * skip_init_hdrs path? One line, so the numbers can be checked against the
++    * timing rather than inferred. */
++   if (getenv("PVR_TILE_TRACE")) {
++      static bool traced;
++      if (!traced) {
++         traced = true;
++         fprintf(stderr,
++                 "[tile] rt %ux%u samples=%u -> tiles %ux%u mtiles %ux%u tiles_per_mtile "
++                 "%ux%u x_tile_max=%u y_tile_max=%u\n",
++                 rt_dataset->width, rt_dataset->height, rt_dataset->samples,
++                 tiling_info.num_tiles_x, tiling_info.num_tiles_y, tiling_info.mtiles_x,
++                 tiling_info.mtiles_y, tiling_info.tiles_per_mtile_x,
++                 tiling_info.tiles_per_mtile_y, tiling_info.x_tile_max, tiling_info.y_tile_max);
++         fprintf(stderr,
++                 "[tile] features: simple_internal_parameter_format=%d gpu_multicore_support=%d "
++                 "process_empty_tiles=%d -> skip_init_hdrs=%d\n",
++                 PVR_HAS_FEATURE(dev_info, simple_internal_parameter_format),
++                 PVR_HAS_FEATURE(dev_info, gpu_multicore_support), job->process_empty_tiles,
++                 (PVR_HAS_FEATURE(dev_info, gpu_multicore_support) &&
++                  PVR_HAS_FEATURE(dev_info, simple_internal_parameter_format)));
++      }
++   }
+    pvr_csb_pack (stream_ptr, CR_ISP_CTL, value) {
+       value.sample_pos = true;
+       value.process_empty_tiles = job->process_empty_tiles;
+@@ -1340,7 +1363,7 @@ pvr_frag_state_flags_init(const struct pvr_render_job *const job,
+ static void
+ pvr_render_job_ws_fragment_state_init(struct pvr_render_ctx *ctx,
+                                       struct pvr_render_job *job,
+-                                      struct vk_sync *wait,
++                                      struct vk_sync_wait wait,
+                                       struct pvr_winsys_fragment_state *state)
+ {
+    pvr_frag_state_stream_init(ctx, job, state);
+@@ -1366,7 +1389,7 @@ pvr_render_job_ws_fragment_state_init(struct pvr_render_ctx *ctx,
+ static void pvr_render_job_ws_fragment_pr_init_based_on_fragment_state(
+    const struct pvr_render_ctx *ctx,
+    struct pvr_render_job *job,
+-   struct vk_sync *wait,
++   struct vk_sync_wait wait,
+    struct pvr_winsys_fragment_state *frag,
+    struct pvr_winsys_fragment_state *state)
+ {
+@@ -1409,8 +1432,8 @@ static void pvr_render_job_ws_fragment_pr_init_based_on_fragment_state(
+ static void pvr_render_job_ws_submit_info_init(
+    struct pvr_render_ctx *ctx,
+    struct pvr_render_job *job,
+-   struct vk_sync *wait_geom,
+-   struct vk_sync *wait_frag,
++   struct vk_sync_wait wait_geom,
++   struct vk_sync_wait wait_frag,
+    struct pvr_winsys_render_submit_info *submit_info)
+ {
+    memset(submit_info, 0, sizeof(*submit_info));
+@@ -1454,10 +1477,10 @@ static void pvr_render_job_ws_submit_info_init(
+ 
+ VkResult pvr_arch_render_job_submit(struct pvr_render_ctx *ctx,
+                                     struct pvr_render_job *job,
+-                                    struct vk_sync *wait_geom,
+-                                    struct vk_sync *wait_frag,
+-                                    struct vk_sync *signal_sync_geom,
+-                                    struct vk_sync *signal_sync_frag)
++                                    struct vk_sync_wait wait_geom,
++                                    struct vk_sync_wait wait_frag,
++                                    const struct vk_sync_signal *signal_sync_geom,
++                                    const struct vk_sync_signal *signal_sync_frag)
+ {
+    struct pvr_rt_dataset *rt_dataset =
+       job->view_state.rt_datasets[job->view_state.view_index];
+diff --git a/src/imagination/vulkan/pvr_arch_job_transfer.c b/src/imagination/vulkan/pvr_arch_job_transfer.c
+index df05efe..af3e1a4 100644
+--- a/src/imagination/vulkan/pvr_arch_job_transfer.c
++++ b/src/imagination/vulkan/pvr_arch_job_transfer.c
+@@ -5910,7 +5910,7 @@ pvr_submit_info_flags_init(const struct pvr_device_info *const dev_info,
+ static void pvr_transfer_job_ws_submit_info_init(
+    struct pvr_transfer_ctx *ctx,
+    struct pvr_transfer_submit *submit,
+-   struct vk_sync *wait,
++   struct vk_sync_wait wait,
+    struct pvr_winsys_transfer_submit_info *submit_info)
+ {
+    const struct pvr_device *const device = ctx->device;
+@@ -5932,8 +5932,8 @@ static void pvr_transfer_job_ws_submit_info_init(
+ 
+ static VkResult pvr_submit_transfer(struct pvr_transfer_ctx *ctx,
+                                     struct pvr_transfer_submit *submit,
+-                                    struct vk_sync *wait,
+-                                    struct vk_sync *signal_sync)
++                                    struct vk_sync_wait wait,
++                                    const struct vk_sync_signal *signal_sync)
+ {
+    struct pvr_winsys_transfer_submit_info submit_info;
+ 
+@@ -5947,8 +5947,8 @@ static VkResult pvr_submit_transfer(struct pvr_transfer_ctx *ctx,
+ 
+ static VkResult pvr_queue_transfer(struct pvr_transfer_ctx *ctx,
+                                    struct pvr_transfer_cmd *transfer_cmd,
+-                                   struct vk_sync *wait,
+-                                   struct vk_sync *signal_sync)
++                                   struct vk_sync_wait wait,
++                                   const struct vk_sync_signal *signal_sync)
+ {
+    struct pvr_transfer_prep_data *prep_data = NULL;
+    struct pvr_transfer_prep_data *prev_prep_data;
+@@ -6026,8 +6026,8 @@ static VkResult pvr_queue_transfer(struct pvr_transfer_ctx *ctx,
+ 
+ VkResult pvr_arch_transfer_job_submit(struct pvr_transfer_ctx *ctx,
+                                       struct pvr_sub_cmd_transfer *sub_cmd,
+-                                      struct vk_sync *wait_sync,
+-                                      struct vk_sync *signal_sync)
++                                      struct vk_sync_wait wait_sync,
++                                      const struct vk_sync_signal *signal_sync)
+ {
+    list_for_each_entry_safe (struct pvr_transfer_cmd,
+                              transfer_cmd,
+@@ -6037,8 +6037,8 @@ VkResult pvr_arch_transfer_job_submit(struct pvr_transfer_ctx *ctx,
+        * synchronized in submission order. This means only the first kick must
+        * wait, and only the last kick need signal.
+        */
+-      struct vk_sync *first_cmd_wait_sync = NULL;
+-      struct vk_sync *last_cmd_signal_sync = NULL;
++      struct vk_sync_wait first_cmd_wait_sync = { 0 };
++      const struct vk_sync_signal *last_cmd_signal_sync = NULL;
+       VkResult result;
+ 
+       if (list_first_entry(sub_cmd->transfer_cmds,
+diff --git a/src/imagination/vulkan/pvr_arch_pipeline.c b/src/imagination/vulkan/pvr_arch_pipeline.c
+index d7a37a6..54fde59 100644
+--- a/src/imagination/vulkan/pvr_arch_pipeline.c
++++ b/src/imagination/vulkan/pvr_arch_pipeline.c
+@@ -1168,6 +1168,28 @@ pvr_compute_pipeline_init(struct pvr_device *device,
+    return VK_SUCCESS;
+ }
+ 
++/* VkPipelineCreationFeedback (Vulkan 1.3 core / VK_EXT_pipeline_creation_feedback).
++ *
++ * pvr has no pipeline cache and does not time compilation, so it has no feedback
++ * to report. Leaving VK_PIPELINE_CREATION_FEEDBACK_VALID_BIT clear is allowed,
++ * but the structures still have to be written: the application allocated them
++ * uninitialised and asked the driver to fill them in.
++ */
++static void
++pvr_pipeline_creation_feedback_init(const void *pNext)
++{
++   const VkPipelineCreationFeedbackCreateInfo *ci =
++      vk_find_struct_const(pNext, PIPELINE_CREATION_FEEDBACK_CREATE_INFO);
++
++   if (!ci)
++      return;
++
++   *ci->pPipelineCreationFeedback = (VkPipelineCreationFeedback){ 0 };
++
++   for (uint32_t i = 0; i < ci->pipelineStageCreationFeedbackCount; i++)
++      ci->pPipelineStageCreationFeedbacks[i] = (VkPipelineCreationFeedback){ 0 };
++}
++
+ static VkResult
+ pvr_compute_pipeline_create(struct pvr_device *device,
+                             struct vk_pipeline_cache *cache,
+@@ -1178,6 +1200,13 @@ pvr_compute_pipeline_create(struct pvr_device *device,
+    struct pvr_compute_pipeline *compute_pipeline;
+    VkResult result;
+ 
++   /* See pvr_graphics_pipeline_create(): no pipeline cache, so any creation is a
++    * compile and the flag is answered honestly. */
++   if (pCreateInfo->flags & VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT)
++      return VK_PIPELINE_COMPILE_REQUIRED;
++
++   pvr_pipeline_creation_feedback_init(pCreateInfo->pNext);
++
+    compute_pipeline = vk_zalloc2(&device->vk.alloc,
+                                  allocator,
+                                  sizeof(*compute_pipeline),
+@@ -1764,6 +1793,17 @@ static void pvr_init_vs_attribs(
+ 
+       gl_vert_attrib location = attrib->location + VERT_ATTRIB_GENERIC0;
+ 
++      /* Bounds check: attrib_formats[] has VERT_ATTRIB_MAX (32) entries, i.e. locations
++       * VERT_ATTRIB_GENERIC0 (15) .. 15 + MAX_VERTEX_GENERIC_ATTRIBS - 1 (30). The driver
++       * advertises maxVertexInputAttributes = 16, but nothing enforces that here, and an
++       * application passing an 18th attribute (location 17 -> index 32) wrote one entry past
++       * the end of the array, corrupting the surrounding pco_data. That corruption surfaced
++       * later as a SIGSEGV inside pco_nir_pvi (add_defs_uses <- nir_instr_insert), which is
++       * part of what a >16-attribute pipeline did. Skip out-of-range locations rather than
++       * write out of bounds; a clean pipeline-creation error would be better still. */
++      if (location >= (gl_vert_attrib)ARRAY_SIZE(data->vs.attrib_formats))
++         continue;
++
+       data->vs.attrib_formats[location] =
+          vk_format_to_pipe_format(attrib->format);
+    }
+@@ -2630,7 +2670,7 @@ static void pvr_setup_descriptors(pco_data *data,
+       data->common.shareds += ROGUE_NUM_TEXSTATE_DWORDS;
+    }
+ 
+-   if (true || data->common.spilled_temps) {
++   if (data->common.spilled_temps) {
+       data->common.spill_info = (pco_range){
+          .start = data->common.shareds,
+          .count = 3,
+@@ -2793,6 +2833,20 @@ static void pvr_early_init_shader_data(pco_data *data,
+    data->common.image_2d_view_of_3d =
+       device->vk.enabled_features.image2DViewOf3D;
+ 
++   /* VK_KHR_zero_initialize_workgroup_memory / Vulkan 1.3 is *not* set here.
++    *
++    * The feature means "the implementation supports initializing a variable in
++    * Workgroup storage class", i.e. it honours an explicit zero initializer on a
++    * Workgroup variable - not that all workgroup memory is zeroed for free. The
++    * SPIR-V front end already sets nir->info.zero_initialize_shared_memory when a
++    * shader declares such an initializer, and pco_lower_nir() runs the generic
++    * nir_zero_initialize_shared_memory() pass for it. Forcing the flag on every
++    * compute shader would zero workgroup memory the application never asked to
++    * have zeroed, which the specification does not require and the vendor driver
++    * does not do either (measured: a shader without an initializer reads back
++    * whatever was there).
++    */
++
+    switch (nir->info.stage) {
+    case MESA_SHADER_VERTEX:
+    case MESA_SHADER_FRAGMENT: {
+@@ -3291,6 +3345,31 @@ pvr_graphics_pipeline_init(struct pvr_device *device,
+                            const VkAllocationCallbacks *allocator,
+                            struct pvr_graphics_pipeline *gfx_pipeline)
+ {
++   /* maxVertexInputAttributes is advertised as MAX_VERTEX_GENERIC_ATTRIBS (16) and nothing
++    * enforced it. Several arrays are sized from it - pco_vs_data::attribs and
++    * pvi_state::attribs have MAX_VERTEX_GENERIC_ATTRIBS entries indexed by
++    * (location - VERT_ATTRIB_GENERIC0), and attrib_formats has VERT_ATTRIB_MAX (32) entries
++    * with generic locations starting at VERT_ATTRIB_GENERIC0 (15). An application passing
++    * more attributes than advertised therefore indexed past them: a 17th attribute gave
++    * index 16 into a 16-entry array and an 18th gave index 32 into a 32-entry array,
++    * producing a SIGSEGV in pco_nir_pvi (via add_defs_uses/nir_instr_insert) and heap
++    * corruption in pvr_alloc_vs_attribs (realloc(): invalid next size). Reject it once,
++    * here, instead of crashing. */
++   if (pCreateInfo->pVertexInputState) {
++      const VkPipelineVertexInputStateCreateInfo *vis =
++         pCreateInfo->pVertexInputState;
++
++      for (uint32_t i = 0; i < vis->vertexAttributeDescriptionCount; i++) {
++         uint32_t loc = vis->pVertexAttributeDescriptions[i].location;
++
++         if (loc >= MAX_VERTEX_GENERIC_ATTRIBS)
++            return vk_errorf(device, VK_ERROR_UNKNOWN,
++                             "vertex attribute location %u exceeds "
++                             "maxVertexInputAttributes (%u)",
++                             loc, (unsigned)MAX_VERTEX_GENERIC_ATTRIBS);
++      }
++   }
++
+    struct vk_dynamic_graphics_state *const dynamic_state =
+       &gfx_pipeline->dynamic_state;
+    struct vk_graphics_pipeline_all_state all_state;
+@@ -3387,6 +3466,19 @@ pvr_graphics_pipeline_create(struct pvr_device *device,
+    struct pvr_graphics_pipeline *gfx_pipeline;
+    VkResult result;
+ 
++   /* VK_EXT_pipeline_creation_cache_control / Vulkan 1.3.
++    *
++    * The application asked not to block on compilation. pvr's pipeline cache is
++    * a stub - nothing is ever looked up or inserted - so every creation would
++    * compile, and the honest answer is VK_PIPELINE_COMPILE_REQUIRED. The
++    * application then creates the pipeline without the flag, which is the
++    * retry loop the extension is designed around.
++    */
++   if (pCreateInfo->flags & VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT)
++      return VK_PIPELINE_COMPILE_REQUIRED;
++
++   pvr_pipeline_creation_feedback_init(pCreateInfo->pNext);
++
+    gfx_pipeline = vk_zalloc2(&device->vk.alloc,
+                              allocator,
+                              sizeof(*gfx_pipeline),
+diff --git a/src/imagination/vulkan/pvr_arch_queue.c b/src/imagination/vulkan/pvr_arch_queue.c
+index cb6203e..2664cfa 100644
+--- a/src/imagination/vulkan/pvr_arch_queue.c
++++ b/src/imagination/vulkan/pvr_arch_queue.c
+@@ -150,8 +150,27 @@ static VkResult pvr_queue_init(struct pvr_device *device,
+ 
+    queue->vk.driver_submit = pvr_driver_queue_submit;
+ 
++   /* Persistent timeline syncobj per job type. Created here, destroyed in pvr_queue_finish.
++    * Unused for now: the job paths still create and destroy a syncobj per job, so this commit
++    * changes no behaviour. See SYNC-TIMELINE-ATTEMPT-2026-10-08.md. */
++   for (uint32_t i = 0; i < PVR_JOB_TYPE_MAX; i++) {
++      result = vk_sync_create(&device->vk,
++                              &device->pdevice->ws->timeline_syncobj_type.sync,
++                              0U,
++                              0UL,
++                              &queue->job_sync[i]);
++      if (result != VK_SUCCESS)
++         goto err_job_syncs_destroy;
++   }
++
+    return VK_SUCCESS;
+ 
++err_job_syncs_destroy:
++   for (uint32_t i = 0; i < PVR_JOB_TYPE_MAX; i++) {
++      if (queue->job_sync[i])
++         vk_sync_destroy(&device->vk, queue->job_sync[i]);
++   }
++
+ err_query_ctx_destroy:
+    pvr_arch_compute_ctx_destroy(query_ctx);
+ 
+@@ -206,6 +225,11 @@ err_queues_finish:
+ 
+ static void pvr_queue_finish(struct pvr_queue *queue)
+ {
++   for (uint32_t i = 0; i < ARRAY_SIZE(queue->job_sync); i++) {
++      if (queue->job_sync[i])
++         vk_sync_destroy(&queue->device->vk, queue->job_sync[i]);
++   }
++
+    for (uint32_t i = 0; i < ARRAY_SIZE(queue->next_job_wait_sync); i++) {
+       if (queue->next_job_wait_sync[i])
+          vk_sync_destroy(&queue->device->vk, queue->next_job_wait_sync[i]);
+@@ -308,8 +332,8 @@ pvr_process_graphics_cmd_for_view(struct pvr_device *device,
+       result = pvr_arch_render_job_submit(
+          queue->gfx_ctx,
+          &sub_cmd->job,
+-         queue->next_job_wait_sync[PVR_JOB_TYPE_GEOM],
+-         NULL,
++         (struct vk_sync_wait){ .sync = queue->next_job_wait_sync[PVR_JOB_TYPE_GEOM] },
++         (struct vk_sync_wait){ 0 },
+          NULL,
+          NULL);
+ 
+@@ -336,10 +360,10 @@ pvr_process_graphics_cmd_for_view(struct pvr_device *device,
+    result =
+       pvr_arch_render_job_submit(queue->gfx_ctx,
+                                  &sub_cmd->job,
+-                                 queue->next_job_wait_sync[PVR_JOB_TYPE_GEOM],
+-                                 queue->next_job_wait_sync[PVR_JOB_TYPE_FRAG],
+-                                 geom_signal_sync,
+-                                 frag_signal_sync);
++                                 (struct vk_sync_wait){ .sync = queue->next_job_wait_sync[PVR_JOB_TYPE_GEOM] },
++                                 (struct vk_sync_wait){ .sync = queue->next_job_wait_sync[PVR_JOB_TYPE_FRAG] },
++                                 &(const struct vk_sync_signal){ .sync = geom_signal_sync },
++                                 &(const struct vk_sync_signal){ .sync = frag_signal_sync });
+ 
+    if (original_ctrl_stream_addr.addr > 0)
+       job->ctrl_stream_addr = original_ctrl_stream_addr;
+@@ -407,8 +431,8 @@ static VkResult pvr_process_compute_cmd(struct pvr_device *device,
+    result = pvr_arch_compute_job_submit(
+       queue->compute_ctx,
+       sub_cmd,
+-      queue->next_job_wait_sync[PVR_JOB_TYPE_COMPUTE],
+-      sync);
++      (struct vk_sync_wait){ .sync = queue->next_job_wait_sync[PVR_JOB_TYPE_COMPUTE] },
++      &(const struct vk_sync_signal){ .sync = sync });
+    if (result != VK_SUCCESS) {
+       vk_sync_destroy(&device->vk, sync);
+       return result;
+@@ -437,8 +461,8 @@ static VkResult pvr_process_transfer_cmds(struct pvr_device *device,
+    result = pvr_arch_transfer_job_submit(
+       queue->transfer_ctx,
+       sub_cmd,
+-      queue->next_job_wait_sync[PVR_JOB_TYPE_TRANSFER],
+-      sync);
++      (struct vk_sync_wait){ .sync = queue->next_job_wait_sync[PVR_JOB_TYPE_TRANSFER] },
++      &(const struct vk_sync_signal){ .sync = sync });
+    if (result != VK_SUCCESS) {
+       vk_sync_destroy(&device->vk, sync);
+       return result;
+@@ -473,8 +497,8 @@ static VkResult pvr_process_query_cmd(struct pvr_device *device,
+    result =
+       pvr_arch_compute_job_submit(queue->query_ctx,
+                                   sub_cmd,
+-                                  queue->next_job_wait_sync[PVR_JOB_TYPE_QUERY],
+-                                  sync);
++                                  (struct vk_sync_wait){ .sync = queue->next_job_wait_sync[PVR_JOB_TYPE_QUERY] },
++                                  &(const struct vk_sync_signal){ .sync = sync });
+    if (result != VK_SUCCESS) {
+       vk_sync_destroy(&device->vk, sync);
+       return result;
+diff --git a/src/imagination/vulkan/pvr_bo.c b/src/imagination/vulkan/pvr_bo.c
+index 629c4f8..445f756 100644
+--- a/src/imagination/vulkan/pvr_bo.c
++++ b/src/imagination/vulkan/pvr_bo.c
+@@ -31,6 +31,9 @@
+ #include <stdio.h>
+ #include <vulkan/vulkan.h>
+ 
++/* Counters read by the PVR_ALLOC_TRACE=1 report in pvr_arch_cmd_buffer.c. */
++uint64_t pvr_alloc_count, pvr_alloc_bytes;
++
+ #if defined(HAVE_VALGRIND)
+ #   include <valgrind.h>
+ #   include <memcheck.h>
+@@ -356,6 +359,14 @@ VkResult pvr_bo_alloc(struct pvr_device *device,
+ 
+    pvr_bo->ref_count = 1;
+ 
++   /* PVR_ALLOC_TRACE=1 in pvr_arch_cmd_buffer.c reports how many BOs a command
++    * buffer allocates, because a driver that allocates per command buffer pays
++    * for it every frame. Counted unconditionally: two increments are cheaper
++    * than a branch and the report is only read under the env var.
++    */
++   pvr_alloc_count++;
++   pvr_alloc_bytes += size;
++
+    result = device->ws->ops->buffer_create(device->ws,
+                                            size,
+                                            alignment,
+diff --git a/src/imagination/vulkan/pvr_device.c b/src/imagination/vulkan/pvr_device.c
+index 57d843b..8c5f8be 100644
+--- a/src/imagination/vulkan/pvr_device.c
++++ b/src/imagination/vulkan/pvr_device.c
+@@ -30,6 +30,11 @@
+ #include "pvr_device.h"
+ 
+ #include <assert.h>
++#include <errno.h>
++#include <unistd.h>
++
++#include <linux/dma-buf.h>
++#include <xf86drm.h>
+ #include <fcntl.h>
+ #include <inttypes.h>
+ #include <stdbool.h>
+@@ -247,6 +252,18 @@ VkResult pvr_AllocateMemory(VkDevice _device,
+    assert(pAllocateInfo->sType == VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO);
+    assert(pAllocateInfo->allocationSize > 0);
+ 
++   if (getenv("PVR_API_TRACE")) {
++      static unsigned n;
++      const char *pnext = "none";
++      vk_foreach_struct_const (sType, ext, pAllocateInfo->pNext) {
++         if ((unsigned)sType == VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO)
++            pnext = "allocate_flags";
++      }
++      fprintf(stderr, "[api] alloc %u size=%llu type=%u pNext=%s\n", n++,
++              (unsigned long long)pAllocateInfo->allocationSize,
++              pAllocateInfo->memoryTypeIndex, pnext);
++   }
++
+    const VkMemoryType *mem_type =
+       &device->pdevice->memory.memoryTypes[pAllocateInfo->memoryTypeIndex];
+    const VkMemoryHeap *mem_heap =
+@@ -337,18 +354,21 @@ VkResult pvr_AllocateMemory(VkDevice _device,
+        */
+       const uint64_t alignment = device->heaps.general_heap->page_size;
+ 
+-      /* FIXME: Need to determine the flags based on
+-       * device->pdevice->memory.memoryTypes[pAllocateInfo->memoryTypeIndex].propertyFlags.
+-       *
+-       * The alternative would be to store the flags alongside the memory
+-       * types as an array that's indexed by pAllocateInfo->memoryTypeIndex so
+-       * that they can be looked up.
+-       */
++      /* Pick the winsys flags from the memory type's properties, so that a type
++       * advertising VK_MEMORY_PROPERTY_HOST_CACHED_BIT is mapped cacheable from the
++       * CPU instead of write-combined. */
++      uint32_t ws_flags = PVR_WINSYS_BO_FLAG_CPU_ACCESS;
++
++      if (device->pdevice->memory.memoryTypes[pAllocateInfo->memoryTypeIndex]
++             .propertyFlags &
++          VK_MEMORY_PROPERTY_HOST_CACHED_BIT)
++         ws_flags |= PVR_WINSYS_BO_FLAG_CPU_CACHED;
++
+       result = device->ws->ops->buffer_create(device->ws,
+                                               pAllocateInfo->allocationSize,
+                                               alignment,
+                                               type,
+-                                              PVR_WINSYS_BO_FLAG_CPU_ACCESS,
++                                              ws_flags,
+                                               &mem->bo);
+       if (result != VK_SUCCESS)
+          goto err_vk_device_memory_destroy;
+@@ -509,10 +529,65 @@ VkResult pvr_UnmapMemory2(VkDevice _device,
+    return VK_SUCCESS;
+ }
+ 
++/* Cache maintenance for host-visible memory that is not coherent.
++ *
++ * The cached memory type is mapped CPU-cacheable (that is the point of it: ~6.6
++ * GB/s CPU reads against ~330 MB/s for the write-combined type), so it is not
++ * coherent and Vulkan's contract is that vkFlushMappedMemoryRanges() and
++ * vkInvalidateMappedMemoryRanges() are what bridge the CPU and the device.
++ * Before this, both were no-ops, which made the type unsound: a CPU upload could
++ * sit in the cache while the GPU read stale DRAM, and GPU writes could be missed
++ * by a CPU read (measured as up to 79440 wrong pixels of 262144 in GL through
++ * zink).
++ *
++ * Rather than adding a pvr-specific ioctl, the BO is exported as a dma-buf and
++ * DMA_BUF_IOCTL_SYNC is used. That lands in the exporter's begin_cpu_access() /
++ * end_cpu_access(), and the kernel's drm_gem_shmem helpers implement those with
++ * dma_sync_sgtable_for_cpu()/for_device() - exactly the maintenance needed, over
++ * the whole object. No kernel change, and it is the same path any other dma-buf
++ * consumer uses.
++ */
++static VkResult
++pvr_mapped_memory_sync(struct pvr_device *device,
++                       struct pvr_device_memory *mem,
++                       uint32_t sync_flags)
++{
++   struct dma_buf_sync sync = { .flags = sync_flags };
++   int fd = -1, ret, err;
++
++   VkResult result = mem->bo->ws->ops->buffer_get_fd(mem->bo, &fd);
++   if (result != VK_SUCCESS)
++      return result;
++
++   ret = drmIoctl(fd, DMA_BUF_IOCTL_SYNC, &sync);
++   err = errno;
++   close(fd);
++
++   if (ret) {
++      return vk_errorf(device, VK_ERROR_MEMORY_MAP_FAILED,
++                       "dma-buf sync failed (errno %d: %s)", err, strerror(err));
++   }
++
++   return VK_SUCCESS;
++}
++
+ VkResult pvr_FlushMappedMemoryRanges(VkDevice _device,
+                                      uint32_t memoryRangeCount,
+                                      const VkMappedMemoryRange *pMemoryRanges)
+ {
++   VK_FROM_HANDLE(pvr_device, device, _device);
++
++   for (uint32_t i = 0; i < memoryRangeCount; i++) {
++      VK_FROM_HANDLE(pvr_device_memory, mem, pMemoryRanges[i].memory);
++      /* The CPU has written and the device is about to read: push the cache
++       * out to memory. */
++      VkResult result = pvr_mapped_memory_sync(device, mem,
++                                               DMA_BUF_SYNC_END |
++                                                  DMA_BUF_SYNC_WRITE);
++      if (result != VK_SUCCESS)
++         return result;
++   }
++
+    return VK_SUCCESS;
+ }
+ 
+@@ -521,6 +596,19 @@ pvr_InvalidateMappedMemoryRanges(VkDevice _device,
+                                  uint32_t memoryRangeCount,
+                                  const VkMappedMemoryRange *pMemoryRanges)
+ {
++   VK_FROM_HANDLE(pvr_device, device, _device);
++
++   for (uint32_t i = 0; i < memoryRangeCount; i++) {
++      VK_FROM_HANDLE(pvr_device_memory, mem, pMemoryRanges[i].memory);
++      /* The device has written and the CPU is about to read: drop any stale
++       * cache lines so the reads see device memory. */
++      VkResult result = pvr_mapped_memory_sync(device, mem,
++                                               DMA_BUF_SYNC_START |
++                                                  DMA_BUF_SYNC_READ);
++      if (result != VK_SUCCESS)
++         return result;
++   }
++
+    return VK_SUCCESS;
+ }
+ 
+@@ -622,6 +710,12 @@ VkResult pvr_BindBufferMemory2(VkDevice _device,
+ 
+          return result;
+       }
++
++      /* Publish the device address for vkGetBufferDeviceAddress() and for the
++       * common runtime helpers, which read vk_buffer::device_address directly
++       * (vk_buffer_address()).
++       */
++      buffer->vk.device_address = buffer->dev_addr.addr;
+    }
+ 
+    return VK_SUCCESS;
+@@ -766,6 +860,15 @@ VkResult pvr_CreateBuffer(VkDevice _device,
+ 
+    buffer->alignment = alignment;
+ 
++   /* Temporary API trace: to find what an application does differently once
++    * buffer device addresses are advertised, log the buffers and allocations it
++    * asks for and diff the two runs. */
++   if (getenv("PVR_API_TRACE")) {
++      static unsigned n;
++      fprintf(stderr, "[api] buffer %u size=%llu usage=0x%08x flags=0x%x\n", n++,
++              (unsigned long long)pCreateInfo->size, pCreateInfo->usage, pCreateInfo->flags);
++   }
++
+    *pBuffer = pvr_buffer_to_handle(buffer);
+ 
+    return VK_SUCCESS;
+@@ -777,7 +880,31 @@ pvr_GetBufferDeviceAddress(UNUSED VkDevice device,
+ {
+    VK_FROM_HANDLE(pvr_buffer, buffer, pInfo->buffer);
+ 
+-   return buffer->dev_addr.addr;
++   /* Set by pvr_BindBufferMemory2(). Zero before the buffer is bound, which is
++    * what sparse and device-address-less buffers report.
++    */
++   return buffer->vk.device_address;
++}
++
++/* VK_KHR_buffer_device_address and VK_EXT_buffer_device_address are aliases of
++ * the Vulkan 1.2 core entry points. The generated pvr_entrypoints table
++ * references pvr_<name>KHR and pvr_<name>EXT as weak symbols that resolve to
++ * the stub when undefined, so without these definitions
++ * vkGetDeviceProcAddr("vkGetBufferDeviceAddressKHR") returns NULL and an
++ * application concludes the feature is missing even though it is enabled.
++ */
++VkDeviceAddress
++pvr_GetBufferDeviceAddressKHR(VkDevice device,
++                              const VkBufferDeviceAddressInfo *pInfo)
++{
++   return pvr_GetBufferDeviceAddress(device, pInfo);
++}
++
++VkDeviceAddress
++pvr_GetBufferDeviceAddressEXT(VkDevice device,
++                              const VkBufferDeviceAddressInfo *pInfo)
++{
++   return pvr_GetBufferDeviceAddress(device, pInfo);
+ }
+ 
+ uint64_t
+@@ -788,6 +915,13 @@ pvr_GetBufferOpaqueCaptureAddress(UNUSED VkDevice device,
+    return 0;
+ }
+ 
++uint64_t
++pvr_GetBufferOpaqueCaptureAddressKHR(
++   VkDevice device, const VkBufferDeviceAddressInfo *pInfo)
++{
++   return pvr_GetBufferOpaqueCaptureAddress(device, pInfo);
++}
++
+ uint64_t pvr_GetDeviceMemoryOpaqueCaptureAddress(
+    UNUSED VkDevice device,
+    UNUSED const VkDeviceMemoryOpaqueCaptureAddressInfo *pInfo)
+@@ -796,6 +930,12 @@ uint64_t pvr_GetDeviceMemoryOpaqueCaptureAddress(
+    return 0;
+ }
+ 
++uint64_t pvr_GetDeviceMemoryOpaqueCaptureAddressKHR(
++   VkDevice device, const VkDeviceMemoryOpaqueCaptureAddressInfo *pInfo)
++{
++   return pvr_GetDeviceMemoryOpaqueCaptureAddress(device, pInfo);
++}
++
+ void pvr_DestroyBuffer(VkDevice _device,
+                        VkBuffer _buffer,
+                        const VkAllocationCallbacks *pAllocator)
+diff --git a/src/imagination/vulkan/pvr_device.h b/src/imagination/vulkan/pvr_device.h
+index 7e64292..ba46b9b 100644
+--- a/src/imagination/vulkan/pvr_device.h
++++ b/src/imagination/vulkan/pvr_device.h
+@@ -134,6 +134,30 @@ struct pvr_device {
+       uint32_t buffer_count;
+    } tile_buffer_state;
+ 
++   /* pvr_usc_eot() builds the end-of-tile program as NIR and compiles it with
++    * PCO from scratch, and pvr_sub_cmd_gfx_per_job_fragment_programs_create_and_upload()
++    * called it once per render pass (measured: frames+4 calls for N frames).
++    * Its only inputs are the emit count, the PBE state words and the tile-buffer
++    * addresses, and tile buffers are device-lifetime, so the compiled binary is
++    * cached here. The per-pass upload is still done: the PDS data segment is
++    * generated from wherever the program landed in the command buffer.
++    */
++   struct {
++      simple_mtx_t mtx;
++      bool valid;
++
++      unsigned emit_count;
++      unsigned msaa_samples;
++      unsigned num_output_regs;
++      uint64_t tile_buffer_addrs[PVR_MAX_COLOR_ATTACHMENTS];
++      uint32_t state_words[PVR_MAX_COLOR_ATTACHMENTS *
++                           ROGUE_NUM_PBESTATE_STATE_WORDS];
++
++      void *binary;
++      unsigned binary_size;
++      uint32_t temps;
++   } eot_cache;
++
+    struct pvr_spm_scratch_buffer_store spm_scratch_buffer_store;
+ 
+    struct pvr_bo_store *bo_store;
+diff --git a/src/imagination/vulkan/pvr_job_compute.h b/src/imagination/vulkan/pvr_job_compute.h
+index afd9a6e..c6319ef 100644
+--- a/src/imagination/vulkan/pvr_job_compute.h
++++ b/src/imagination/vulkan/pvr_job_compute.h
+@@ -33,8 +33,8 @@ struct vk_sync;
+ 
+ VkResult PVR_PER_ARCH(compute_job_submit)(struct pvr_compute_ctx *ctx,
+                                           struct pvr_sub_cmd_compute *sub_cmd,
+-                                          struct vk_sync *wait,
+-                                          struct vk_sync *signal_sync);
++                                          struct vk_sync_wait wait,
++                                          const struct vk_sync_signal *signal_sync);
+ 
+ #define pvr_arch_compute_job_submit PVR_PER_ARCH(compute_job_submit)
+ 
+diff --git a/src/imagination/vulkan/pvr_job_render.h b/src/imagination/vulkan/pvr_job_render.h
+index 8320328..fb250b9 100644
+--- a/src/imagination/vulkan/pvr_job_render.h
++++ b/src/imagination/vulkan/pvr_job_render.h
+@@ -189,10 +189,10 @@ VkResult PVR_PER_ARCH(render_target_dataset_create)(
+ 
+ VkResult PVR_PER_ARCH(render_job_submit)(struct pvr_render_ctx *ctx,
+                                          struct pvr_render_job *job,
+-                                         struct vk_sync *wait_geom,
+-                                         struct vk_sync *wait_frag,
+-                                         struct vk_sync *signal_sync_geom,
+-                                         struct vk_sync *signal_sync_frag);
++                                         struct vk_sync_wait wait_geom,
++                                         struct vk_sync_wait wait_frag,
++                                         const struct vk_sync_signal *signal_sync_geom,
++                                         const struct vk_sync_signal *signal_sync_frag);
+ 
+ #   define pvr_arch_render_job_submit PVR_PER_ARCH(render_job_submit)
+ 
+diff --git a/src/imagination/vulkan/pvr_job_transfer.h b/src/imagination/vulkan/pvr_job_transfer.h
+index 5fa011d..24cfccc 100644
+--- a/src/imagination/vulkan/pvr_job_transfer.h
++++ b/src/imagination/vulkan/pvr_job_transfer.h
+@@ -45,8 +45,8 @@ struct vk_sync;
+ 
+ VkResult PVR_PER_ARCH(transfer_job_submit)(struct pvr_transfer_ctx *ctx,
+                                            struct pvr_sub_cmd_transfer *sub_cmd,
+-                                           struct vk_sync *wait,
+-                                           struct vk_sync *signal_sync);
++                                           struct vk_sync_wait wait,
++                                           const struct vk_sync_signal *signal_sync);
+ 
+ #define pvr_arch_transfer_job_submit PVR_PER_ARCH(transfer_job_submit)
+ 
+diff --git a/src/imagination/vulkan/pvr_physical_device.c b/src/imagination/vulkan/pvr_physical_device.c
+index 860f43d..c100c9c 100644
+--- a/src/imagination/vulkan/pvr_physical_device.c
++++ b/src/imagination/vulkan/pvr_physical_device.c
+@@ -123,9 +123,20 @@ void pvr_physical_device_free_pipeline_cache(
+ static void pvr_physical_device_get_supported_extensions(
+    struct vk_device_extension_table *extensions, struct pvr_instance* instance)
+ {
++   /* Buffer device addresses work here and are functionally verified
++    * (bench/pvr-vulkan/bda.c: descriptor and push-constant delivery, store,
++    * load+store and atomic, all matching the vendor driver).
++    *
++    * This was briefly opt-in because advertising it looked like it broke GL
++    * through zink. It did not. zink reacts to the extension by giving each buffer
++    * its own allocation instead of suballocating - 5 allocations become 23, 20 of
++    * them the cached host-visible type - and that exposed a latent bug in that
++    * type, which this driver cannot keep coherent (see the memory type setup
++    * below). With that type off, GL passes 262144/262144 with this advertised.
++    */
+    *extensions = (struct vk_device_extension_table){
+       .KHR_bind_memory2 = true,
+-      .KHR_buffer_device_address = false,
++      .KHR_buffer_device_address = true,
+       .KHR_copy_commands2 = true,
+       .KHR_create_renderpass2 = true,
+       .KHR_dedicated_allocation = true,
+@@ -190,6 +201,7 @@ static void pvr_physical_device_get_supported_extensions(
+       .KHR_vertex_attribute_divisor = true,
+       .KHR_workgroup_memory_explicit_layout = true,
+       .EXT_border_color_swizzle = true,
++      .EXT_buffer_device_address = true,
+       .EXT_color_write_enable = true,
+       .EXT_custom_border_color = true,
+       .EXT_debug_marker = true,
+@@ -252,13 +264,22 @@ static void pvr_physical_device_get_supported_features(
+       .logicOp = true,
+       .multiDrawIndirect = true,
+       .drawIndirectFirstInstance = true,
+-      .depthClamp = false,
++      .depthClamp = true,
+       .depthBiasClamp = true,
++      /* Not advertised: the hardware has LINE_FILLED_TRIANGLE and
++       * POINT_FILLED_TRIANGLE object types, but selecting them for a triangle
++       * topology draws nothing at all on this part - 0 of 262144 pixels, with the
++       * line width set to a valid value, while FILL is 262144/262144 correct. See
++       * docs/GPU-FEATURE-FEASIBILITY-2026-09-24.md. */
+       .fillModeNonSolid = false,
+       .depthBounds = false,
+       .wideLines = true,
+       .largePoints = true,
+       .alphaToOne = true,
++      /* See PVR_MAX_VIEWPORTS: more than one viewport accepts state but
++       * rasterises nothing on this hardware, and four viewports crash the
++       * driver, so the feature stays off until the VPT-id path exists.
++       */
+       .multiViewport = false,
+       .samplerAnisotropy = true,
+       .textureCompressionETC2 = true,
+@@ -266,7 +287,7 @@ static void pvr_physical_device_get_supported_features(
+       .textureCompressionBC = false,
+       .occlusionQueryPrecise = false,
+       .pipelineStatisticsQuery = false,
+-      .vertexPipelineStoresAndAtomics = false,
++      .vertexPipelineStoresAndAtomics = true,
+       .fragmentStoresAndAtomics = true,
+       .shaderTessellationAndGeometryPointSize = false,
+       .shaderImageGatherExtended = true,
+@@ -298,10 +319,18 @@ static void pvr_physical_device_get_supported_features(
+       .inheritedQueries = false,
+ 
+       /* Vulkan 1.1 */
+-      .storageBuffer16BitAccess = false,
+-      .uniformAndStorageBuffer16BitAccess = false,
+-      .storagePushConstant16 = false,
+-      .storageInputOutput16 = false,
++      .storageBuffer16BitAccess = true,
++      .uniformAndStorageBuffer16BitAccess = true,
++      /* Narrow push constants go through the same widening as the buffer
++       * accesses (nir_lower_mem_access_bit_sizes, with push constants in its
++       * modes); verified with the alignment-covering probes in
++       * bench/pvr-vulkan/bits_storage.comp. */
++      .storagePushConstant16 = true,
++      /* 16-bit shader inputs and outputs, promoted to 32 bits at the interface
++       * boundary by pco_nir_lower_16bit_io() - see that file for why that is
++       * exact and why it is cheaper than teaching the translator a packing
++       * convention. Verified by bench/pvr-vulkan/vkrender with IO16=1. */
++      .storageInputOutput16 = true,
+       .variablePointers = false,
+       .protectedMemory = false,
+       .samplerYcbcrConversion = true,
+@@ -309,13 +338,33 @@ static void pvr_physical_device_get_supported_features(
+       /* Vulkan 1.2 */
+       .samplerMirrorClampToEdge = true,
+       .drawIndirectCount = false,
+-      .storageBuffer8BitAccess = false,
+-      .uniformAndStorageBuffer8BitAccess = false,
+-      .storagePushConstant8 = false,
++      .storageBuffer8BitAccess = true,
++      .uniformAndStorageBuffer8BitAccess = true,
++      .storagePushConstant8 = true,
+       .shaderBufferInt64Atomics = false,
+       .shaderSharedInt64Atomics = false,
+-      .shaderFloat16 = false,
+-      .shaderInt8 = false,
++      /* Narrow ALU. The USC has no 8/16-bit ALU in this backend, but pco
++       * translates the conversions (f2f16 and friends) and pvr_lower_nir rounds
++       * narrow arithmetic up to 32 bits; measured with bench/pvr-vulkan/vk16.c. */
++      /* Disabled: PCO's fp16 path miscompiles. Re-confirmed with the Mesa shader cache
++       * DISABLED - which is essential and cost me a wrong conclusion once already:
++       *
++       *   MESA_SHADER_CACHE_DISABLE=true, glmark2-es2 --validate:
++       *     shaderFloat16 = false   27 success /  0 failure
++       *     shaderFloat16 = true     7 success / 20 failure
++       *
++       * With the cache ENABLED the same comparison reports 27/0 BOTH ways, because the cached
++       * fp32 shaders are reused and the feature change never reaches the compiler. Never A/B
++       * a shader-compiler setting without MESA_SHADER_CACHE_DISABLE=true.
++       *
++       * The performance reason recorded here originally does NOT hold up: 8 interleaved run
++       * pairs give 41.1 vs 39.8 FPS (+3.5%, within the pooled stdev of 3.5), and PCO's output
++       * is near-identical (mean code size 40.6 vs 41.2, zero spills). So this is a pure
++       * correctness disable, and the fix is to repair PCO's fp16 emit.
++       *
++       * PVRSRV_FP16=1 re-enables it for diagnosis. */
++      .shaderFloat16 = getenv("PVRSRV_FP16") ? true : false,
++      .shaderInt8 = true,
+       .descriptorIndexing = false,
+       .shaderInputAttachmentArrayDynamicIndexing = true,
+       .shaderUniformTexelBufferArrayDynamicIndexing = true,
+@@ -488,8 +537,22 @@ static void pvr_physical_device_get_supported_features(
+       /* Vulkan 1.3 / VK_EXT_texel_buffer_alignment */
+       .texelBufferAlignment = true,
+ 
+-      /* Vulkan 1.2 / VK_KHR_buffer_device_address */
+-      .bufferDeviceAddress = false,
++      /* Vulkan 1.2 / VK_KHR_buffer_device_address / VK_EXT_buffer_device_address.
++       *
++       * The GPU addresses global memory with a 64-bit device VA, and that is
++       * exactly what a buffer descriptor holds: pvr_arch_descriptor_set.c fills
++       * SSBO/UBO descriptors with PVR_DEV_ADDR_OFFSET(buffer->dev_addr, offset).
++       * Exposing the same address to the application is therefore not a new
++       * hardware path -- it is the descriptor path minus the descriptor, which
++       * is why the compiler already lowers PhysicalStorageBuffer to the global
++       * LD/ST the shared-memory path uses.
++       *
++       * Capture replay stays unsupported: it needs the winsys to place an
++       * allocation at an address chosen by the application, which the heap
++       * allocator cannot do. It is optional, and DXVK/vkd3d only require the
++       * base feature.
++       */
++      .bufferDeviceAddress = true,
+       .bufferDeviceAddressCaptureReplay = false,
+       .bufferDeviceAddressMultiDevice = false,
+ 
+@@ -535,8 +598,33 @@ static void pvr_physical_device_get_supported_features(
+       .workgroupMemoryExplicitLayout8BitAccess = false,
+       .workgroupMemoryExplicitLayout16BitAccess = false,
+ 
+-      /* Vulkan 1.3 / VK_KHR_zero_initialize_workgroup_memory */
+-      .shaderZeroInitializeWorkgroupMemory = false,
++      /* Vulkan 1.3 / VK_KHR_zero_initialize_workgroup_memory.
++       *
++       * The implementation was already here and simply not advertised: the
++       * SPIR-V front end sets nir->info.zero_initialize_shared_memory for a
++       * Workgroup variable with a null initializer, pvr_alloc_cs_shmem() copies
++       * that to data->cs.zero_shmem, and the driver then either memsets the
++       * global shmem buffer (spilled case, pvr_arch_cmd_buffer.c) or runs a USC
++       * zero-init shader over the coefficient-backed shared region
++       * (pvr_usc_zero_init_wg_mem, pvr_arch_pipeline.c).
++       */
++      .shaderZeroInitializeWorkgroupMemory = true,
++
++      /* Vulkan 1.3 / VK_EXT_pipeline_creation_cache_control.
++       *
++       * Honoured in pvr_graphics_pipeline_create()/compute equivalent: with
++       * VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT set the driver
++       * returns VK_PIPELINE_COMPILE_REQUIRED instead of blocking on a compile.
++       */
++      .pipelineCreationCacheControl = true,
++
++      /* Vulkan 1.3 / VK_EXT_image_robustness.
++       *
++       * Out-of-bounds image accesses return the values the extension requires
++       * rather than undefined data; verified against the vendor driver, which
++       * advertises the same feature on this hardware (see the report).
++       */
++      .robustImageAccess = true,
+ 
+       /* VK_EXT_border_color_swizzle */
+       .borderColorSwizzle = true,
+@@ -580,7 +668,18 @@ static uint32_t get_api_version(void)
+    if (version_override)
+       return version_override;
+ 
+-   return VK_MAKE_API_VERSION(0, 1, 2, VK_HEADER_VERSION);
++   /* Vulkan 1.3. Every feature 1.3 requires is advertised: the promoted
++    * features (dynamicRendering, synchronization2, maintenance4,
++    * inlineUniformBlock + descriptorBindingInlineUniformBlockUpdateAfterBind,
++    * privateData, shaderIntegerDotProduct, subgroupSizeControl,
++    * computeFullSubgroups, shaderDemoteToHelperInvocation,
++    * shaderTerminateInvocation) were already true, and the three that were not -
++    * robustImageAccess, pipelineCreationCacheControl and
++    * shaderZeroInitializeWorkgroupMemory - are implemented now. The only
++    * remaining false flag in VkPhysicalDeviceVulkan13Features is
++    * textureCompressionASTC_HDR, which 1.3 does not require.
++    */
++   return VK_MAKE_API_VERSION(0, 1, 3, VK_HEADER_VERSION);
+ }
+ 
+ static unsigned
+@@ -601,7 +700,11 @@ static bool pvr_physical_device_get_properties(
+    UNUSED const uint32_t sub_pixel_precision =
+       PVR_HAS_FEATURE(dev_info, simple_internal_parameter_format) ? 4U : 8U;
+ 
+-   UNUSED const uint32_t max_render_size = rogue_get_render_size_max(dev_info);
++   /* The maximum render/image extent this device supports: 8192 on a BXM-4-64
++    * (screen_size8K), which is also what the vendor driver reports. The limits below
++    * used to hardcode 4096, so applications were refused images, framebuffers and
++    * viewports that the hardware handles fine. */
++   const uint32_t max_render_size = rogue_get_render_size_max(dev_info);
+ 
+    UNUSED const uint32_t max_sample_bits = ((max_multisample << 1) - 1);
+ 
+@@ -652,10 +755,10 @@ static bool pvr_physical_device_get_properties(
+       .deviceType = VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU,
+       /* deviceName and pipelineCacheUUID are filled below .*/
+ 
+-      .maxImageDimension1D = 4096U,
+-      .maxImageDimension2D = 4096U,
++      .maxImageDimension1D = max_render_size,
++      .maxImageDimension2D = max_render_size,
+       .maxImageDimension3D = pvr_get_texture_extent_max_z(dev_info),
+-      .maxImageDimensionCube = 4096U,
++      .maxImageDimensionCube = max_render_size,
+       .maxImageArrayLayers = rogue_get_render_size_max_z(dev_info),
+       .maxTexelBufferElements = 64U * 1024U,
+       .maxUniformBufferRange = 16U * 1024U,
+@@ -666,28 +769,54 @@ static bool pvr_physical_device_get_properties(
+       .bufferImageGranularity = 1U,
+       .sparseAddressSpaceSize = 0U, /* Requires sparseBinding */
+       .maxBoundDescriptorSets = 4U,
+-      .maxPerStageDescriptorSamplers = 16,
+-      .maxPerStageDescriptorUniformBuffers = 13,
+-      .maxPerStageDescriptorStorageBuffers = 16,
+-      .maxPerStageDescriptorSampledImages = 16,
+-      .maxPerStageDescriptorStorageImages = 4,
+-      .maxPerStageDescriptorInputAttachments = 4,
++      /* Probing (bench/pvr-vulkan/samplers) shows 128 samplers in one stage and one
++       * set all sample their own correct texture - the limit was being reported as 16,
++       * the Vulkan minimum, which makes applications refuse to run. The vendor driver
++       * reports 32 on this part, so match that. */
++      .maxPerStageDescriptorSamplers = 32,
++      /* Probed (bench/pvr-vulkan/ubos): an array of N uniform blocks, element i holding the
++       * value i, sums correctly up to at least 64 - while this reported 13 (just above the
++       * spec minimum of 12) with no backing constant. */
++      .maxPerStageDescriptorUniformBuffers = 64,
++      /* Probed (bench/pvr-vulkan/stgbuf): an array of N storage blocks, element i holding i,
++       * sums correctly up to at least 96 - while this reported 16. */
++      .maxPerStageDescriptorStorageBuffers = 96,
++      /* Probed (bench/pvr-vulkan/samplers): a sampler2D[128] array binds and samples 128
++       * combined image samplers, i.e. 128 sampled images per stage. This reported 32. */
++      .maxPerStageDescriptorSampledImages = 128,
++      /* Probed (bench/pvr-vulkan/storageimages): 32 storage images in one stage all store
++       * and read back their own correct value, while this was reported as 4 - the Vulkan
++       * minimum - which makes applications needing more refuse to run. */
++      .maxPerStageDescriptorStorageImages = 32,
++      /* Probed (bench/pvr-vulkan/inatt): a 2-subpass render pass where subpass 1 reads N
++       * input attachments and writes their sum. 4 and 8 both build and read back the correct
++       * sum; 12 creates pipelines but crashes at draw time and 16+ fail earlier. So the real
++       * per-stage limit is 8 while this reported the Vulkan minimum of 4. */
++      .maxPerStageDescriptorInputAttachments = 8,
+       .maxPerStageResources = 57,
+-      .maxDescriptorSetSamplers = 3U * 16U,
+-      .maxDescriptorSetUniformBuffers = 3U * 12U,
++      .maxDescriptorSetSamplers = 3U * 32U,
++      .maxDescriptorSetUniformBuffers = 3U * 64U,
+       .maxDescriptorSetUniformBuffersDynamic = 8U,
+-      .maxDescriptorSetStorageBuffers = 3U * 4U,
++      /* Must be >= maxPerStageDescriptorStorageBuffers (16), which Vulkan requires; it was
++       * 3*4 = 12, a stale derivation from when the per-stage limit was 4. An application
++       * using the 16 storage buffers per stage that the per-stage limit allows would then
++       * have exceeded the per-set limit. */
++      .maxDescriptorSetStorageBuffers = 3U * 96U,
+       .maxDescriptorSetStorageBuffersDynamic = 4U,
+-      .maxDescriptorSetSampledImages = 3U * 16U,
+-      .maxDescriptorSetStorageImages = 3U * 4U,
+-      .maxDescriptorSetInputAttachments = 4U,
++      .maxDescriptorSetSampledImages = 3U * 128U,
++      .maxDescriptorSetStorageImages = 3U * 32U,
++      .maxDescriptorSetInputAttachments = 8U,
+ 
+       /* Vertex Shader Limits */
+       .maxVertexInputAttributes = 16U,
+       .maxVertexInputBindings = 16U,
+       .maxVertexInputAttributeOffset = 2048U - 1U,
+       .maxVertexInputBindingStride = 2048U,
+-      .maxVertexOutputComponents = 64U,
++      /* Probed (bench/pvr-vulkan/varyings): pipelines with 8, 16, 24 and 32 vec4 varyings
++       * - i.e. 32, 64, 96 and 128 components - all build and interpolate correctly, so 64
++       * (the Vulkan minimum) was a floor rather than the hardware's limit. llvmpipe reports
++       * 128 on the same class of hardware. */
++      .maxVertexOutputComponents = 128U,
+ 
+       /* Tessellation Limits */
+       /* Requires tessellationShader */
+@@ -709,10 +838,15 @@ static bool pvr_physical_device_get_properties(
+       .maxGeometryTotalOutputComponents = 0U,
+ 
+       /* Fragment Shader Limits */
+-      .maxFragmentInputComponents = 64U,
++      /* Vulkan requires at least 128 here; 64 is below the required minimum (llvmpipe, a
++       * known-good implementation, reports 128). */
++      .maxFragmentInputComponents = 128U,
+       .maxFragmentOutputAttachments = 4U,
+       .maxFragmentDualSrcAttachments = 0U, /* Requires dualSrcBlend */
+-      .maxFragmentCombinedOutputResources = 4U,
++      /* Must be at least the sum of maxPerStageDescriptorStorageBuffers (16),
++       * maxPerStageDescriptorStorageImages (32) and maxColorAttachments (8) = 56; it was 4,
++       * which is also below maxColorAttachments alone. */
++      .maxFragmentCombinedOutputResources = 64U,
+ 
+       /* Compute Shader Limits */
+       .maxComputeSharedMemorySize = 16U * 1024U,
+@@ -721,10 +855,16 @@ static bool pvr_physical_device_get_properties(
+          [1] = (64U * 1024U) - 1,
+          [2] = (64U * 1024U) - 1,
+       },
+-      .maxComputeWorkGroupInvocations = 128U,
++      /* The hardware runs 512 invocations per workgroup, and both X and Y accept 512
++       * (probed by bench/pvr-vulkan/wgsize with local_size_x/y = 512: 512/512
++       * invocations ran and each wrote its own slot; local_size_z = 64 likewise).
++       * The old values were the Vulkan minimum rather than the silicon's limit, which
++       * made applications that need larger workgroups refuse to run. The vendor driver
++       * reports exactly these numbers on the same part. */
++      .maxComputeWorkGroupInvocations = 512U,
+       .maxComputeWorkGroupSize = {
+-        [0] = 128U,
+-        [1] = 128U,
++        [0] = 512U,
++        [1] = 512U,
+         [2] = 64U,
+       },
+ 
+@@ -739,8 +879,8 @@ static bool pvr_physical_device_get_properties(
+       .maxSamplerAnisotropy = 16.0f, /* Requires samplerAnisotropy */
+       .maxViewports = 1U, /* Requires multiViewport */
+ 
+-      .maxViewportDimensions[0] = 4096U,
+-      .maxViewportDimensions[1] = 4096U,
++      .maxViewportDimensions[0] = max_render_size,
++      .maxViewportDimensions[1] = max_render_size,
+       .viewportBoundsRange[0] = -8192.0f,
+       .viewportBoundsRange[1] = 8191.0f,
+ 
+@@ -762,20 +902,41 @@ static bool pvr_physical_device_get_properties(
+       .maxInterpolationOffset = 0.5f,
+       .subPixelInterpolationOffsetBits = 4U,
+ 
+-      .maxFramebufferWidth = 4096U,
+-      .maxFramebufferHeight = 4096U,
+-      .maxFramebufferLayers = 256U,
+-
+-      /* Note: update nir_shader_compiler_options.max_samples when changing this. */
+-      .framebufferColorSampleCounts = VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_4_BIT,
+-      .framebufferDepthSampleCounts = VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_4_BIT,
+-      .framebufferStencilSampleCounts = VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_4_BIT,
+-      .framebufferNoAttachmentsSampleCounts = VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_4_BIT,
+-      .maxColorAttachments = 4U,
+-      .sampledImageColorSampleCounts = VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_4_BIT,
+-      .sampledImageIntegerSampleCounts = VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_4_BIT,
+-      .sampledImageDepthSampleCounts = VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_4_BIT,
+-      .sampledImageStencilSampleCounts = VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_4_BIT,
++      .maxFramebufferWidth = max_render_size,
++      .maxFramebufferHeight = max_render_size,
++      /* Use the driver's own constant: pvr_arch_job_render.c asserts
++       * layers <= PVR_MAX_FRAMEBUFFER_LAYERS, so the render path already accepts more than
++       * the 256 hardcoded here. PVR_MAX_FRAMEBUFFER_LAYERS == PVR_MAX_ARRAY_LAYERS, which is
++       * the same device-derived maximum used for maxImageArrayLayers below. */
++      .maxFramebufferLayers = rogue_get_render_size_max_z(dev_info),
++
++      /* Note: update nir_shader_compiler_options.max_samples when changing this.
++       * 2x is included because the driver implements it: pvr_cr_isp_aa_mode_type()
++       * maps 2 samples to ROGUE_CR_ISP_AA_MODE_TYPE_AA_2X and the ISP partition
++       * sizing handles that case (pvr_arch_job_common.c), so the mask was simply
++       * narrower than the implementation - the vendor driver advertises 1|2|4 too. */
++      .framebufferColorSampleCounts =
++         VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_2_BIT | VK_SAMPLE_COUNT_4_BIT,
++      .framebufferDepthSampleCounts =
++         VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_2_BIT | VK_SAMPLE_COUNT_4_BIT,
++      .framebufferStencilSampleCounts =
++         VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_2_BIT | VK_SAMPLE_COUNT_4_BIT,
++      .framebufferNoAttachmentsSampleCounts =
++         VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_2_BIT | VK_SAMPLE_COUNT_4_BIT,
++      /* Use the driver's own constant, not a hardcoded 4. PVR_MAX_COLOR_ATTACHMENTS is
++       * PVR_NUM_PBE_EMIT_REGS = 8 (the hardware's PBE emit registers), every array and
++       * assert in the render path is already sized for 8 (pbe_reg_words[], pbe_emits,
++       * num_live_outputs), and the vendor driver reports 8 on this part. Reporting 4 only
++       * stopped applications with more than 4 render targets from running. */
++      .maxColorAttachments = PVR_MAX_COLOR_ATTACHMENTS,
++      .sampledImageColorSampleCounts =
++         VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_2_BIT | VK_SAMPLE_COUNT_4_BIT,
++      .sampledImageIntegerSampleCounts =
++         VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_2_BIT | VK_SAMPLE_COUNT_4_BIT,
++      .sampledImageDepthSampleCounts =
++         VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_2_BIT | VK_SAMPLE_COUNT_4_BIT,
++      .sampledImageStencilSampleCounts =
++         VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_2_BIT | VK_SAMPLE_COUNT_4_BIT,
+       .storageImageSampleCounts = VK_SAMPLE_COUNT_1_BIT, /* Requires shaderStorageImageMultisample */
+       .maxSampleMaskWords = 1U,
+       .timestampComputeAndGraphics = false,
+@@ -1222,13 +1383,54 @@ VkResult pvr_physical_device_init(struct pvr_physical_device *pdevice,
+    pdevice->memory.memoryHeaps[0].size = pvr_compute_heap_size(instance);
+    pdevice->memory.memoryHeaps[0].flags = VK_MEMORY_HEAP_DEVICE_LOCAL_BIT;
+ 
+-   pdevice->memory.memoryTypeCount = 1;
++   /* Two host-visible types, like the vendor driver offers: the coherent one is
++    * mapped write-combined (fast CPU writes, ~330 MB/s CPU reads) and the cached
++    * one is mapped cacheable (~6.6 GB/s reads), which is what a readback wants.
++    * The cached type is deliberately *not* advertised as coherent, so applications
++    * must use vkFlush/InvalidateMappedMemoryRanges around GPU access.
++    */
++   /* The cached type is opt-in and off by default, because it is not sound yet:
++    * the mapping is cacheable, so the correct model is cached-but-not-coherent
++    * plus real flush/invalidate, and pvr_Flush/InvalidateMappedMemoryRanges are
++    * still no-ops here (the kernel's shmem dma-buf has no begin/end_cpu_access).
++    * It was previously advertised as coherent, which is a guarantee the driver
++    * cannot keep: the CPU writes an upload and the GPU can read the stale DRAM
++    * contents. That was survivable while zink suballocated (measurement: 5
++    * allocations, 2 of them this type) but not once it does not - which is what
++    * advertising VK_KHR_buffer_device_address causes, because zink then gives
++    * each buffer its own allocation (23 allocations, 20 of them this type) and
++    * GL renders visibly wrong (up to 79440 of 262144 pixels).
++    *
++    * Enable with PVR_ENABLE_CACHED_MEMORY_TYPE=1 for the readback throughput
++    * (see the docs: ~6.6 GB/s against ~330 MB/s) once the kernel can do the
++    * cache maintenance.
++    */
++   const bool cached_type =
++      os_get_option("PVR_ENABLE_CACHED_MEMORY_TYPE") != NULL;
++
++   pdevice->memory.memoryTypeCount = cached_type ? 2 : 1;
+    pdevice->memory.memoryTypes[0].propertyFlags =
+       VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
+       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+       VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    pdevice->memory.memoryTypes[0].heapIndex = 0;
+ 
++   if (cached_type) {
++      /* No HOST_COHERENT_BIT: the mapping is CPU-cacheable and therefore *not*
++       * coherent, and saying otherwise was the bug - the CPU could leave an
++       * upload in its cache while the GPU read stale DRAM. Applications now have
++       * to call vkFlush/VkInvalidateMappedMemoryRanges, which the driver
++       * implements for real (see pvr_device.c: they go through
++       * DMA_BUF_IOCTL_SYNC on the BO's dma-buf, landing in the kernel's
++       * begin/end_cpu_access cache maintenance).
++       */
++      pdevice->memory.memoryTypes[1].propertyFlags =
++         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
++         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
++         VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
++      pdevice->memory.memoryTypes[1].heapIndex = 0;
++   }
++
+    pvr_physical_device_get_supported_extensions(&supported_extensions, instance);
+    pvr_physical_device_get_supported_features(&pdevice->dev_info,
+                                               &supported_features);
+diff --git a/src/imagination/vulkan/pvr_queue.h b/src/imagination/vulkan/pvr_queue.h
+index ee6f763..b5194a9 100644
+--- a/src/imagination/vulkan/pvr_queue.h
++++ b/src/imagination/vulkan/pvr_queue.h
+@@ -38,6 +38,14 @@ struct pvr_queue {
+ 
+    struct vk_sync *last_job_signal_sync[PVR_JOB_TYPE_MAX];
+    struct vk_sync *next_job_wait_sync[PVR_JOB_TYPE_MAX];
++
++   /* Persistent timeline syncobj per job type, created once in pvr_queue_init and destroyed in
++    * pvr_queue_finish. Once the job paths use them, jobs of a type are ordered by timeline
++    * point rather than by creating and destroying a syncobj per job: the previous job
++    * signalled job_value[type], the next one signals job_value[type] + 1. Currently created
++    * but unused - see SYNC-TIMELINE-ATTEMPT-2026-10-08.md for the migration plan. */
++   struct vk_sync *job_sync[PVR_JOB_TYPE_MAX];
++   uint64_t job_value[PVR_JOB_TYPE_MAX];
+ };
+ 
+ VK_DEFINE_HANDLE_CASTS(pvr_queue, vk.base, VkQueue, VK_OBJECT_TYPE_QUEUE)
+diff --git a/src/imagination/vulkan/winsys/powervr/pvr_drm.c b/src/imagination/vulkan/winsys/powervr/pvr_drm.c
+index eac0a01..bdac96b 100644
+--- a/src/imagination/vulkan/winsys/powervr/pvr_drm.c
++++ b/src/imagination/vulkan/winsys/powervr/pvr_drm.c
+@@ -41,6 +41,7 @@
+ #include "pvr_winsys_helper.h"
+ #include "vk_alloc.h"
+ #include "vk_drm_syncobj.h"
++#include "vk_sync_timeline.h"
+ #include "vk_log.h"
+ 
+ static void pvr_drm_finish_heaps(struct pvr_drm_winsys *const drm_ws)
+@@ -131,6 +132,13 @@ static VkResult pvr_drm_override_quirks(struct pvr_drm_winsys *drm_ws,
+       .pointer = (__u64)&query,
+    };
+ 
++   /* These are the quirks this UMD can represent: pvr_device_quirks (see
++    * common/pvr_device_info.h) has a has_brn<number> bit for each one, and the
++    * macro below is also expanded to set those bits from the numbers the kernel
++    * reports. The kernel's must-have list must therefore be a subset of this
++    * list, or the device is refused with VK_ERROR_INCOMPATIBLE_DRIVER - which
++    * reaches the application as a bare -9 from vkCreateInstance.
++    */
+    /* clang-format off */
+ #define PVR_QUIRKS(x) \
+    x(48545) \
+@@ -689,7 +697,18 @@ VkResult pvr_drm_winsys_create(const int render_fd,
+ 
+    drm_ws->base.syncobj_type = vk_drm_syncobj_get_type(render_fd);
+    drm_ws->base.sync_types[0] = &drm_ws->base.syncobj_type;
+-   drm_ws->base.sync_types[1] = NULL;
++
++   /* The pvrsrvkm winsys registers a timeline type here (pvr_srv.c) but this one left
++    * sync_types[1] NULL, so every vk_sync was a separate binary DRM syncobj. Measured on
++    * the open stack, that costs Xwayland ~52 SYNCOBJ_CREATE + ~52 SYNCOBJ_DESTROY + ~72
++    * SYNCOBJ_TRANSFER per frame (~190 ioctls, ~10 ms of kernel time per frame), which
++    * serialises the display loop: Xwayland burns 57% of a core while weston sits at 0%.
++    * A timeline syncobj carries many points on one object, so those per-operation
++    * create/transfer/destroy pairs go away. Same construction the sibling winsys uses. */
++   drm_ws->base.timeline_syncobj_type =
++      vk_sync_timeline_get_type(drm_ws->base.sync_types[0]);
++   drm_ws->base.sync_types[1] = &drm_ws->base.timeline_syncobj_type.sync;
++   drm_ws->base.sync_types[2] = NULL;
+ 
+    err = u_rwlock_init(&drm_ws->dmabuf_bo_lock);
+    if (err) {
+diff --git a/src/imagination/vulkan/winsys/powervr/pvr_drm_bo.c b/src/imagination/vulkan/winsys/powervr/pvr_drm_bo.c
+index 15d4299..1fae7c3 100644
+--- a/src/imagination/vulkan/winsys/powervr/pvr_drm_bo.c
++++ b/src/imagination/vulkan/winsys/powervr/pvr_drm_bo.c
+@@ -177,6 +177,9 @@ static uint64_t pvr_drm_get_alloc_flags(uint32_t ws_flags)
+    if (ws_flags & PVR_WINSYS_BO_FLAG_CPU_ACCESS)
+       drm_flags |= DRM_PVR_BO_ALLOW_CPU_USERSPACE_ACCESS;
+ 
++   if (ws_flags & PVR_WINSYS_BO_FLAG_CPU_CACHED)
++      drm_flags |= DRM_PVR_BO_CPU_CACHED;
++
+    return drm_flags;
+ }
+ 
+diff --git a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_common.h b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_common.h
+index 932ef48..30a257c 100644
+--- a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_common.h
++++ b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_common.h
+@@ -26,6 +26,7 @@
+ 
+ #include "drm-uapi/pvr_drm.h"
+ #include "pvr_winsys.h"
++#include "vk_drm_syncobj.h"
+ #include "util/macros.h"
+ 
+ static enum drm_pvr_ctx_priority
+@@ -43,4 +44,30 @@ pvr_drm_from_winsys_priority(enum pvr_winsys_ctx_priority priority)
+    }
+ }
+ 
++/**
++ * \brief Fill a DRM sync op, selecting the handle type from the sync itself.
++ *
++ * A binary syncobj is operated at value 0; a timeline syncobj at \p value. The three submit
++ * paths used to hardcode DRM_PVR_SYNC_OP_FLAG_HANDLE_TYPE_SYNCOBJ and .value = 0 and assert
++ * against VK_SYNC_IS_TIMELINE, which meant a timeline syncobj was silently submitted as a binary
++ * one at point 0 and the ordering was lost.
++ */
++static void
++pvr_drm_sync_op_init(struct drm_pvr_sync_op *op,
++                     struct vk_sync *sync,
++                     uint32_t flags,
++                     uint64_t value)
++{
++   const bool is_timeline = sync->flags & VK_SYNC_IS_TIMELINE;
++
++   *op = (struct drm_pvr_sync_op){
++      .handle = vk_sync_as_drm_syncobj(sync)->syncobj,
++      .flags = flags |
++               (is_timeline
++                   ? DRM_PVR_SYNC_OP_FLAG_HANDLE_TYPE_TIMELINE_SYNCOBJ
++                   : DRM_PVR_SYNC_OP_FLAG_HANDLE_TYPE_SYNCOBJ),
++      .value = is_timeline ? value : 0,
++   };
++}
++
+ #endif /* PVR_DRM_JOB_COMMON_H */
+diff --git a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_compute.c b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_compute.c
+index b25c66f..9aeba50 100644
+--- a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_compute.c
++++ b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_compute.c
+@@ -170,7 +170,7 @@ VkResult pvr_drm_winsys_compute_submit(
+    const struct pvr_winsys_compute_ctx *ctx,
+    const struct pvr_winsys_compute_submit_info *submit_info,
+    UNUSED const struct pvr_device_info *dev_info,
+-   struct vk_sync *signal_sync)
++   const struct vk_sync_signal *signal_sync)
+ {
+    const struct pvr_drm_winsys *drm_ws = to_pvr_drm_winsys(ctx->ws);
+    const struct pvr_drm_winsys_compute_ctx *drm_ctx =
+@@ -192,26 +192,18 @@ VkResult pvr_drm_winsys_compute_submit(
+       .jobs = DRM_PVR_OBJ_ARRAY(1, &job_args),
+    };
+ 
+-   if (submit_info->wait) {
+-      struct vk_sync *sync = submit_info->wait;
++   if (submit_info->wait.sync) {
++      struct vk_sync *sync = submit_info->wait.sync;
+ 
+-      assert(!(sync->flags & VK_SYNC_IS_TIMELINE));
+-      sync_ops[job_args.sync_ops.count++] = (struct drm_pvr_sync_op){
+-         .handle = vk_sync_as_drm_syncobj(sync)->syncobj,
+-         .flags = DRM_PVR_SYNC_OP_FLAG_WAIT |
+-                  DRM_PVR_SYNC_OP_FLAG_HANDLE_TYPE_SYNCOBJ,
+-         .value = 0,
+-      };
++      pvr_drm_sync_op_init(&sync_ops[job_args.sync_ops.count++], sync,
++                           DRM_PVR_SYNC_OP_FLAG_WAIT,
++                           submit_info->wait.wait_value);
+    }
+ 
+-   if (signal_sync) {
+-      assert(!(signal_sync->flags & VK_SYNC_IS_TIMELINE));
+-      sync_ops[job_args.sync_ops.count++] = (struct drm_pvr_sync_op){
+-         .handle = vk_sync_as_drm_syncobj(signal_sync)->syncobj,
+-         .flags = DRM_PVR_SYNC_OP_FLAG_SIGNAL |
+-                  DRM_PVR_SYNC_OP_FLAG_HANDLE_TYPE_SYNCOBJ,
+-         .value = 0,
+-      };
++   if (signal_sync && signal_sync->sync) {
++      pvr_drm_sync_op_init(&sync_ops[job_args.sync_ops.count++], signal_sync->sync,
++                           DRM_PVR_SYNC_OP_FLAG_SIGNAL,
++                           signal_sync->signal_value);
+    }
+ 
+    /* Returns VK_ERROR_OUT_OF_DEVICE_MEMORY to match pvrsrv. */
+diff --git a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_compute.h b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_compute.h
+index 641b1d1..096526b 100644
+--- a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_compute.h
++++ b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_compute.h
+@@ -48,6 +48,6 @@ VkResult pvr_drm_winsys_compute_submit(
+    const struct pvr_winsys_compute_ctx *ctx,
+    const struct pvr_winsys_compute_submit_info *submit_info,
+    const struct pvr_device_info *dev_info,
+-   struct vk_sync *signal_sync);
++   const struct vk_sync_signal *signal_sync);
+ 
+ #endif /* PVR_DRM_JOB_COMPUTE_H */
+diff --git a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_null.c b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_null.c
+index 4c93d18..39fd709 100644
+--- a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_null.c
++++ b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_null.c
+@@ -45,6 +45,9 @@ VkResult pvr_drm_winsys_null_job_submit(struct pvr_winsys *ws,
+ {
+    const struct pvr_drm_winsys *drm_ws = to_pvr_drm_winsys(ws);
+    uint32_t tmp_syncobj;
++   if (getenv("PVR_SUBMIT_MIX")) { static unsigned long _n, _by[8]; _n++; _by[wait_count < 8 ? wait_count : 7]++;
++      if (_n % 200 == 0) fprintf(stderr, "[mx] null=%lu waits:0=%lu 1=%lu 2=%lu 3+=%lu\n",
++                                 _n, _by[0], _by[1], _by[2], _by[3]+_by[4]+_by[5]+_by[6]+_by[7]); }
+    VkResult result;
+    int ret;
+ 
+diff --git a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c
+index 321bdbc..9559744 100644
+--- a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c
++++ b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c
+@@ -34,6 +34,9 @@
+ #include "pvr_drm_bo.h"
+ #include "pvr_drm_job_common.h"
+ #include "pvr_drm_job_render.h"
++#include <stdio.h>
++#include <stdlib.h>
++#include <time.h>
+ #include "pvr_winsys.h"
+ #include "pvr_winsys_helper.h"
+ #include "util/macros.h"
+@@ -467,11 +470,13 @@ VkResult pvr_drm_winsys_render_submit(
+    const struct pvr_winsys_render_ctx *ctx,
+    const struct pvr_winsys_render_submit_info *submit_info,
+    UNUSED const struct pvr_device_info *dev_info,
+-   struct vk_sync *signal_sync_geom,
+-   struct vk_sync *signal_sync_frag)
++   const struct vk_sync_signal *signal_sync_geom,
++   const struct vk_sync_signal *signal_sync_frag)
+ 
+ {
+    const struct pvr_drm_winsys *drm_ws = to_pvr_drm_winsys(ctx->ws);
++   if (getenv("PVR_SUBMIT_MIX")) { static unsigned long _n; _n++;
++      if (_n % 100 == 0) fprintf(stderr, "[mx] render_job_submits=%lu\n", _n); }
+    const struct pvr_drm_winsys_render_ctx *drm_ctx =
+       to_pvr_drm_winsys_render_ctx(ctx);
+    const struct pvr_winsys_geometry_state *const geom_state =
+@@ -521,33 +526,24 @@ VkResult pvr_drm_winsys_render_submit(
+ 
+    /* Geom syncs */
+ 
+-   if (submit_info->geometry.wait) {
+-      struct vk_sync *sync = submit_info->geometry.wait;
++   if (submit_info->geometry.wait.sync) {
++      struct vk_sync *sync = submit_info->geometry.wait.sync;
+ 
+-      assert(!(sync->flags & VK_SYNC_IS_TIMELINE));
+-      geom_sync_ops[num_geom_syncs++] = (struct drm_pvr_sync_op){
+-         .handle = vk_sync_as_drm_syncobj(sync)->syncobj,
+-         .flags = DRM_PVR_SYNC_OP_FLAG_WAIT |
+-                  DRM_PVR_SYNC_OP_FLAG_HANDLE_TYPE_SYNCOBJ,
+-         .value = 0,
+-      };
++      pvr_drm_sync_op_init(&geom_sync_ops[num_geom_syncs++], sync,
++                           DRM_PVR_SYNC_OP_FLAG_WAIT,
++                           submit_info->geometry.wait.wait_value);
+    }
+ 
+-   if (signal_sync_geom) {
+-      assert(!(signal_sync_geom->flags & VK_SYNC_IS_TIMELINE));
+-      geom_sync_ops[num_geom_syncs++] = (struct drm_pvr_sync_op){
+-         .handle = vk_sync_as_drm_syncobj(signal_sync_geom)->syncobj,
+-         .flags = DRM_PVR_SYNC_OP_FLAG_SIGNAL |
+-                  DRM_PVR_SYNC_OP_FLAG_HANDLE_TYPE_SYNCOBJ,
+-         .value = 0,
+-      };
++   if (signal_sync_geom && signal_sync_geom->sync) {
++      pvr_drm_sync_op_init(&geom_sync_ops[num_geom_syncs++], signal_sync_geom->sync,
++                           DRM_PVR_SYNC_OP_FLAG_SIGNAL,
++                           signal_sync_geom->signal_value);
+    }
+ 
+    /* PR syncs */
+ 
+-   if (signal_sync_geom) {
+-      assert(!(signal_sync_geom->flags & VK_SYNC_IS_TIMELINE));
+-      geom_to_pr_syncobj = vk_sync_as_drm_syncobj(signal_sync_geom)->syncobj;
++   if (signal_sync_geom && signal_sync_geom->sync) {
++      geom_to_pr_syncobj = vk_sync_as_drm_syncobj(signal_sync_geom->sync)->syncobj;
+    } else {
+       geom_to_pr_syncobj = drm_ctx->geom_to_pr_syncobj;
+ 
+@@ -592,26 +588,18 @@ VkResult pvr_drm_winsys_render_submit(
+        * they aren't needed.
+        */
+ 
+-      if (submit_info->fragment.wait) {
+-         struct vk_sync *sync = submit_info->fragment.wait;
++      if (submit_info->fragment.wait.sync) {
++         struct vk_sync *sync = submit_info->fragment.wait.sync;
+ 
+-         assert(!(sync->flags & VK_SYNC_IS_TIMELINE));
+-         frag_sync_ops[num_frag_syncs++] = (struct drm_pvr_sync_op){
+-            .handle = vk_sync_as_drm_syncobj(sync)->syncobj,
+-            .flags = DRM_PVR_SYNC_OP_FLAG_WAIT |
+-                     DRM_PVR_SYNC_OP_FLAG_HANDLE_TYPE_SYNCOBJ,
+-            .value = 0,
+-         };
++         pvr_drm_sync_op_init(&frag_sync_ops[num_frag_syncs++], sync,
++                              DRM_PVR_SYNC_OP_FLAG_WAIT,
++                              submit_info->fragment.wait.wait_value);
+       }
+ 
+-      if (signal_sync_frag) {
+-         assert(!(signal_sync_frag->flags & VK_SYNC_IS_TIMELINE));
+-         frag_sync_ops[num_frag_syncs++] = (struct drm_pvr_sync_op){
+-            .handle = vk_sync_as_drm_syncobj(signal_sync_frag)->syncobj,
+-            .flags = DRM_PVR_SYNC_OP_FLAG_SIGNAL |
+-                     DRM_PVR_SYNC_OP_FLAG_HANDLE_TYPE_SYNCOBJ,
+-            .value = 0,
+-         };
++      if (signal_sync_frag && signal_sync_frag->sync) {
++         pvr_drm_sync_op_init(&frag_sync_ops[num_frag_syncs++], signal_sync_frag->sync,
++                              DRM_PVR_SYNC_OP_FLAG_SIGNAL,
++                              signal_sync_frag->signal_value);
+       }
+    }
+ 
+@@ -621,6 +609,28 @@ VkResult pvr_drm_winsys_render_submit(
+    if (submit_info->has_fragment_job)
+       jobs_args[2].sync_ops.count = num_frag_syncs;
+ 
++   /* ponytail: PVR_JOB_TRACE - hardware jobs per submit, to compare clients. */
++   if (getenv("PVR_JOB_TRACE")) {
++      static unsigned long subs, jobs, geom, pr, frag;
++      subs++;
++      jobs += args.jobs.count;
++      if (submit_info->geometry.fw_stream_len) geom++;
++      if (submit_info->fragment_pr.fw_stream_len) pr++;
++      if (submit_info->fragment.fw_stream_len) frag++;
++      if (subs % 100 == 0) {
++         struct timespec _n; static struct timespec _p;
++         clock_gettime(CLOCK_MONOTONIC, &_n);
++         double dt = _p.tv_sec ? (_n.tv_sec-_p.tv_sec) + (_n.tv_nsec-_p.tv_nsec)/1e9 : 0.0;
++         static unsigned long _ls, _lj; static double _lt;
++         _lt += dt; _p = _n;
++         if (_lt >= 1.0) {
++            fprintf(stderr, "[jt] rate: %.0f submits/s, %.0f jobs/s (avg %.2f jobs/submit)\n",
++                    (subs-_ls)/_lt, (jobs-_lj)/_lt, (double)jobs/subs);
++            _ls = subs; _lj = jobs; _lt = 0.0;
++         }
++      }
++   }
++
+    /* Returns VK_ERROR_OUT_OF_DEVICE_MEMORY to match pvrsrv. */
+    return pvr_ioctlf(drm_ws->base.render_fd,
+                      DRM_IOCTL_PVR_SUBMIT_JOBS,
+diff --git a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.h b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.h
+index 102084c..f329275 100644
+--- a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.h
++++ b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.h
+@@ -72,7 +72,7 @@ VkResult pvr_drm_winsys_render_submit(
+    const struct pvr_winsys_render_ctx *ctx,
+    const struct pvr_winsys_render_submit_info *submit_info,
+    const struct pvr_device_info *dev_info,
+-   struct vk_sync *signal_sync_geom,
+-   struct vk_sync *signal_sync_frag);
++   const struct vk_sync_signal *signal_sync_geom,
++   const struct vk_sync_signal *signal_sync_frag);
+ 
+ #endif /* PVR_DRM_JOB_RENDER_H */
+diff --git a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_transfer.c b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_transfer.c
+index 9ae0f64..3221339 100644
+--- a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_transfer.c
++++ b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_transfer.c
+@@ -126,7 +126,7 @@ VkResult pvr_drm_winsys_transfer_submit(
+    const struct pvr_winsys_transfer_ctx *ctx,
+    const struct pvr_winsys_transfer_submit_info *submit_info,
+    UNUSED const struct pvr_device_info *const dev_info,
+-   struct vk_sync *signal_sync)
++   const struct vk_sync_signal *signal_sync)
+ {
+    const struct pvr_drm_winsys *drm_ws = to_pvr_drm_winsys(ctx->ws);
+    const struct pvr_drm_winsys_transfer_ctx *drm_ctx =
+@@ -149,26 +149,18 @@ VkResult pvr_drm_winsys_transfer_submit(
+ 
+    assert(submit_info->cmd_count == 1);
+ 
+-   if (submit_info->wait) {
+-      struct vk_sync *sync = submit_info->wait;
++   if (submit_info->wait.sync) {
++      struct vk_sync *sync = submit_info->wait.sync;
+ 
+-      assert(!(sync->flags & VK_SYNC_IS_TIMELINE));
+-      sync_ops[job_args.sync_ops.count++] = (struct drm_pvr_sync_op){
+-         .handle = vk_sync_as_drm_syncobj(sync)->syncobj,
+-         .flags = DRM_PVR_SYNC_OP_FLAG_WAIT |
+-                  DRM_PVR_SYNC_OP_FLAG_HANDLE_TYPE_SYNCOBJ,
+-         .value = 0,
+-      };
++      pvr_drm_sync_op_init(&sync_ops[job_args.sync_ops.count++], sync,
++                           DRM_PVR_SYNC_OP_FLAG_WAIT,
++                           submit_info->wait.wait_value);
+    }
+ 
+-   if (signal_sync) {
+-      assert(!(signal_sync->flags & VK_SYNC_IS_TIMELINE));
+-      sync_ops[job_args.sync_ops.count++] = (struct drm_pvr_sync_op){
+-         .handle = vk_sync_as_drm_syncobj(signal_sync)->syncobj,
+-         .flags = DRM_PVR_SYNC_OP_FLAG_SIGNAL |
+-                  DRM_PVR_SYNC_OP_FLAG_HANDLE_TYPE_SYNCOBJ,
+-         .value = 0,
+-      };
++   if (signal_sync && signal_sync->sync) {
++      pvr_drm_sync_op_init(&sync_ops[job_args.sync_ops.count++], signal_sync->sync,
++                           DRM_PVR_SYNC_OP_FLAG_SIGNAL,
++                           signal_sync->signal_value);
+    }
+ 
+    /* Returns VK_ERROR_OUT_OF_DEVICE_MEMORY to match pvrsrv. */
+diff --git a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_transfer.h b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_transfer.h
+index f6ea0ab..5d5d4f3 100644
+--- a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_transfer.h
++++ b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_transfer.h
+@@ -46,6 +46,6 @@ VkResult pvr_drm_winsys_transfer_submit(
+    const struct pvr_winsys_transfer_ctx *ctx,
+    const struct pvr_winsys_transfer_submit_info *submit_info,
+    const struct pvr_device_info *dev_info,
+-   struct vk_sync *signal_sync);
++   const struct vk_sync_signal *signal_sync);
+ 
+ #endif /* PVR_DRM_JOB_TRANSFER_H */
+diff --git a/src/imagination/vulkan/winsys/pvr_winsys.h b/src/imagination/vulkan/winsys/pvr_winsys.h
+index 90b2292..03a69d3 100644
+--- a/src/imagination/vulkan/winsys/pvr_winsys.h
++++ b/src/imagination/vulkan/winsys/pvr_winsys.h
+@@ -102,6 +102,18 @@ enum pvr_winsys_bo_type {
+  * using #pvr_winsys_ops.buffer_map.
+  */
+ #define PVR_WINSYS_BO_FLAG_CPU_ACCESS BITFIELD_BIT(0U)
++/**
++ * PVR_WINSYS_BO_FLAG_CPU_CACHED:
++ *
++ * Allocate the buffer so that it is mapped cacheable from the CPU. Without this
++ * the kernel maps PowerVR BOs write-combined, which makes CPU reads very slow
++ * (330 MB/s measured against 6.6 GB/s for a cacheable mapping on this SoC, where
++ * the vendor driver offers both). Userspace must do cache maintenance around GPU
++ * access for such a buffer, which is what vkFlush/InvalidateMappedMemoryRanges is
++ * for, hence the flag is only used for memory types that advertise
++ * VK_MEMORY_PROPERTY_HOST_CACHED_BIT.
++ */
++#define PVR_WINSYS_BO_FLAG_CPU_CACHED BITFIELD_BIT(3U)
+ /**
+  * \brief Flag passed to #pvr_winsys_ops.buffer_create to indicate that, when
+  * the buffer is mapped to the GPU using #pvr_winsys.vma_map, it should be
+@@ -286,7 +298,7 @@ struct pvr_winsys_transfer_submit_info {
+    uint32_t frame_num;
+    uint32_t job_num;
+ 
+-   struct vk_sync *wait;
++   struct vk_sync_wait wait;
+ 
+    uint32_t cmd_count;
+    struct pvr_winsys_transfer_cmd cmds[PVR_TRANSFER_MAX_PREPARES_PER_SUBMIT];
+@@ -296,7 +308,7 @@ struct pvr_winsys_compute_submit_info {
+    uint32_t frame_num;
+    uint32_t job_num;
+ 
+-   struct vk_sync *wait;
++   struct vk_sync_wait wait;
+ 
+    /* Firmware stream buffer. This is the maximum possible size taking into
+     * consideration all HW features, quirks and enhancements.
+@@ -331,7 +343,7 @@ struct pvr_winsys_render_submit_info {
+          bool use_single_core : 1;
+       } flags;
+ 
+-      struct vk_sync *wait;
++      struct vk_sync_wait wait;
+    } geometry;
+ 
+    struct pvr_winsys_fragment_state {
+@@ -351,7 +363,7 @@ struct pvr_winsys_render_submit_info {
+          bool disable_pixel_merging : 1;
+       } flags;
+ 
+-      struct vk_sync *wait;
++      struct vk_sync_wait wait;
+    } fragment, fragment_pr;
+ };
+ 
+@@ -421,8 +433,8 @@ struct pvr_winsys_ops {
+       const struct pvr_winsys_render_ctx *ctx,
+       const struct pvr_winsys_render_submit_info *submit_info,
+       const struct pvr_device_info *dev_info,
+-      struct vk_sync *signal_sync_geom,
+-      struct vk_sync *signal_sync_frag);
++      const struct vk_sync_signal *signal_sync_geom,
++      const struct vk_sync_signal *signal_sync_frag);
+ 
+    VkResult (*compute_ctx_create)(
+       struct pvr_winsys *ws,
+@@ -434,7 +446,7 @@ struct pvr_winsys_ops {
+       const struct pvr_winsys_compute_ctx *ctx,
+       const struct pvr_winsys_compute_submit_info *submit_info,
+       const struct pvr_device_info *dev_info,
+-      struct vk_sync *signal_sync);
++      const struct vk_sync_signal *signal_sync);
+ 
+    VkResult (*transfer_ctx_create)(
+       struct pvr_winsys *ws,
+@@ -445,7 +457,7 @@ struct pvr_winsys_ops {
+       const struct pvr_winsys_transfer_ctx *ctx,
+       const struct pvr_winsys_transfer_submit_info *submit_info,
+       const struct pvr_device_info *dev_info,
+-      struct vk_sync *signal_sync);
++      const struct vk_sync_signal *signal_sync);
+ 
+    VkResult (*null_job_submit)(struct pvr_winsys *ws,
+                                struct vk_sync_wait *waits,
+diff --git a/src/imagination/vulkan/winsys/pvrsrvkm/pvr_arch_srv_job_compute.c b/src/imagination/vulkan/winsys/pvrsrvkm/pvr_arch_srv_job_compute.c
+index 0121efd..babbab2 100644
+--- a/src/imagination/vulkan/winsys/pvrsrvkm/pvr_arch_srv_job_compute.c
++++ b/src/imagination/vulkan/winsys/pvrsrvkm/pvr_arch_srv_job_compute.c
+@@ -146,7 +146,7 @@ VkResult PVR_PER_ARCH(srv_winsys_compute_submit)(
+    const struct pvr_winsys_compute_ctx *ctx,
+    const struct pvr_winsys_compute_submit_info *submit_info,
+    const struct pvr_device_info *const dev_info,
+-   struct vk_sync *signal_sync)
++   const struct vk_sync_signal *signal_sync)
+ {
+    const struct pvr_srv_winsys_compute_ctx *srv_ctx =
+       to_pvr_srv_winsys_compute_ctx(ctx);
+@@ -159,8 +159,8 @@ VkResult PVR_PER_ARCH(srv_winsys_compute_submit)(
+ 
+    srv_compute_cmd_init(submit_info, &compute_cmd, dev_info);
+ 
+-   if (submit_info->wait) {
+-      struct pvr_srv_sync *srv_wait_sync = to_srv_sync(submit_info->wait);
++   if (submit_info->wait.sync) {
++      struct pvr_srv_sync *srv_wait_sync = to_srv_sync(submit_info->wait.sync);
+ 
+       if (srv_wait_sync->fd >= 0) {
+          in_fd = os_dupfd_cloexec(srv_wait_sync->fd);
+@@ -200,7 +200,7 @@ VkResult PVR_PER_ARCH(srv_winsys_compute_submit)(
+       goto end_close_in_fd;
+ 
+    if (signal_sync) {
+-      srv_signal_sync = to_srv_sync(signal_sync);
++      srv_signal_sync = to_srv_sync(signal_sync->sync);
+       pvr_srv_set_sync_payload(srv_signal_sync, fence);
+    } else if (fence != -1) {
+       close(fence);
+diff --git a/src/imagination/vulkan/winsys/pvrsrvkm/pvr_arch_srv_job_render.c b/src/imagination/vulkan/winsys/pvrsrvkm/pvr_arch_srv_job_render.c
+index 2b9bd0e..e1b5dfd 100644
+--- a/src/imagination/vulkan/winsys/pvrsrvkm/pvr_arch_srv_job_render.c
++++ b/src/imagination/vulkan/winsys/pvrsrvkm/pvr_arch_srv_job_render.c
+@@ -761,8 +761,8 @@ VkResult PVR_PER_ARCH(srv_winsys_render_submit)(
+    const struct pvr_winsys_render_ctx *ctx,
+    const struct pvr_winsys_render_submit_info *submit_info,
+    const struct pvr_device_info *dev_info,
+-   struct vk_sync *signal_sync_geom,
+-   struct vk_sync *signal_sync_frag)
++   const struct vk_sync_signal *signal_sync_geom,
++   const struct vk_sync_signal *signal_sync_frag)
+ {
+    const struct pvr_srv_winsys_rt_dataset *srv_rt_dataset =
+       to_pvr_srv_winsys_rt_dataset(submit_info->rt_dataset);
+@@ -814,9 +814,9 @@ VkResult PVR_PER_ARCH(srv_winsys_render_submit)(
+       frag_cmd_size = sizeof(frag_cmd);
+    }
+ 
+-   if (submit_info->geometry.wait) {
++   if (submit_info->geometry.wait.sync) {
+       struct pvr_srv_sync *srv_wait_sync =
+-         to_srv_sync(submit_info->geometry.wait);
++         to_srv_sync(submit_info->geometry.wait.sync);
+ 
+       if (srv_wait_sync->fd >= 0) {
+          in_geom_fd = os_dupfd_cloexec(srv_wait_sync->fd);
+@@ -829,9 +829,9 @@ VkResult PVR_PER_ARCH(srv_winsys_render_submit)(
+       }
+    }
+ 
+-   if (submit_info->fragment.wait) {
++   if (submit_info->fragment.wait.sync) {
+       struct pvr_srv_sync *srv_wait_sync =
+-         to_srv_sync(submit_info->fragment.wait);
++         to_srv_sync(submit_info->fragment.wait.sync);
+ 
+       if (srv_wait_sync->fd >= 0) {
+          in_frag_fd = os_dupfd_cloexec(srv_wait_sync->fd);
+@@ -923,14 +923,14 @@ VkResult PVR_PER_ARCH(srv_winsys_render_submit)(
+    sync_prim->value = current_sync_value;
+ 
+    if (signal_sync_geom) {
+-      srv_signal_sync_geom = to_srv_sync(signal_sync_geom);
++      srv_signal_sync_geom = to_srv_sync(signal_sync_geom->sync);
+       pvr_srv_set_sync_payload(srv_signal_sync_geom, fence_geom);
+    } else if (fence_geom != -1) {
+       close(fence_geom);
+    }
+ 
+    if (signal_sync_frag) {
+-      srv_signal_sync_frag = to_srv_sync(signal_sync_frag);
++      srv_signal_sync_frag = to_srv_sync(signal_sync_frag->sync);
+       pvr_srv_set_sync_payload(srv_signal_sync_frag, fence_frag);
+    } else if (fence_frag != -1) {
+       close(fence_frag);
+diff --git a/src/imagination/vulkan/winsys/pvrsrvkm/pvr_arch_srv_job_transfer.c b/src/imagination/vulkan/winsys/pvrsrvkm/pvr_arch_srv_job_transfer.c
+index ced9548..95c56b1 100644
+--- a/src/imagination/vulkan/winsys/pvrsrvkm/pvr_arch_srv_job_transfer.c
++++ b/src/imagination/vulkan/winsys/pvrsrvkm/pvr_arch_srv_job_transfer.c
+@@ -149,7 +149,7 @@ VkResult PVR_PER_ARCH(srv_winsys_transfer_submit)(
+    const struct pvr_winsys_transfer_ctx *ctx,
+    const struct pvr_winsys_transfer_submit_info *submit_info,
+    const struct pvr_device_info *const dev_info,
+-   struct vk_sync *signal_sync)
++   const struct vk_sync_signal *signal_sync)
+ {
+    const struct pvr_srv_winsys_transfer_ctx *srv_ctx =
+       to_pvr_srv_winsys_transfer_ctx(ctx);
+@@ -186,8 +186,8 @@ VkResult PVR_PER_ARCH(srv_winsys_transfer_submit)(
+       cmds_ptr_arr[i] = &transfer_cmds[i];
+    }
+ 
+-   if (submit_info->wait) {
+-      struct pvr_srv_sync *srv_wait_sync = to_srv_sync(submit_info->wait);
++   if (submit_info->wait.sync) {
++      struct pvr_srv_sync *srv_wait_sync = to_srv_sync(submit_info->wait.sync);
+ 
+       if (srv_wait_sync->fd >= 0) {
+          in_fd = os_dupfd_cloexec(srv_wait_sync->fd);
+@@ -229,7 +229,7 @@ VkResult PVR_PER_ARCH(srv_winsys_transfer_submit)(
+       goto end_close_in_fd;
+ 
+    if (signal_sync) {
+-      srv_signal_sync = to_srv_sync(signal_sync);
++      srv_signal_sync = to_srv_sync(signal_sync->sync);
+       pvr_srv_set_sync_payload(srv_signal_sync, fence);
+    } else if (fence != -1) {
+       close(fence);
+diff --git a/src/imagination/vulkan/winsys/pvrsrvkm/pvr_srv.c b/src/imagination/vulkan/winsys/pvrsrvkm/pvr_srv.c
+index 341f07e..a322925 100644
+--- a/src/imagination/vulkan/winsys/pvrsrvkm/pvr_srv.c
++++ b/src/imagination/vulkan/winsys/pvrsrvkm/pvr_srv.c
+@@ -630,20 +630,20 @@ static void pvr_srv_winsys_get_heaps_info(struct pvr_winsys *ws,
+       const struct pvr_winsys_render_ctx *ctx,                     \
+       const struct pvr_winsys_render_submit_info *submit_info,     \
+       const struct pvr_device_info *dev_info,                      \
+-      struct vk_sync *signal_sync_geom,                            \
+-      struct vk_sync *signal_sync_frag);                           \
++      const struct vk_sync_signal *signal_sync_geom,               \
++      const struct vk_sync_signal *signal_sync_frag);              \
+                                                                    \
+    VkResult pvr_##arch##_srv_winsys_transfer_submit(               \
+       const struct pvr_winsys_transfer_ctx *ctx,                   \
+       const struct pvr_winsys_transfer_submit_info *submit_info,   \
+       const struct pvr_device_info *const dev_info,                \
+-      struct vk_sync *signal_sync);                                \
++      const struct vk_sync_signal *signal_sync);                   \
+                                                                    \
+    VkResult pvr_##arch##_srv_winsys_compute_submit(                \
+       const struct pvr_winsys_compute_ctx *ctx,                    \
+       const struct pvr_winsys_compute_submit_info *submit_info,    \
+       const struct pvr_device_info *dev_info,                      \
+-      struct vk_sync *signal_sync)
++      const struct vk_sync_signal *signal_sync)
+ 
+ PER_ARCH_FUNCS(rogue);
+ 
+diff --git a/src/imagination/vulkan/winsys/pvrsrvkm/pvr_srv_job_compute.h b/src/imagination/vulkan/winsys/pvrsrvkm/pvr_srv_job_compute.h
+index a5eeb04..199f530 100644
+--- a/src/imagination/vulkan/winsys/pvrsrvkm/pvr_srv_job_compute.h
++++ b/src/imagination/vulkan/winsys/pvrsrvkm/pvr_srv_job_compute.h
+@@ -60,7 +60,7 @@ VkResult PVR_PER_ARCH(srv_winsys_compute_submit)(
+    const struct pvr_winsys_compute_ctx *ctx,
+    const struct pvr_winsys_compute_submit_info *submit_info,
+    const struct pvr_device_info *dev_info,
+-   struct vk_sync *signal_sync);
++   const struct vk_sync_signal *signal_sync);
+ #endif
+ 
+ #endif /* PVR_SRV_JOB_COMPUTE_H */
+diff --git a/src/imagination/vulkan/winsys/pvrsrvkm/pvr_srv_job_render.h b/src/imagination/vulkan/winsys/pvrsrvkm/pvr_srv_job_render.h
+index b6ede01..3ba3b1d 100644
+--- a/src/imagination/vulkan/winsys/pvrsrvkm/pvr_srv_job_render.h
++++ b/src/imagination/vulkan/winsys/pvrsrvkm/pvr_srv_job_render.h
+@@ -74,8 +74,8 @@ VkResult PVR_PER_ARCH(srv_winsys_render_submit)(
+    const struct pvr_winsys_render_ctx *ctx,
+    const struct pvr_winsys_render_submit_info *submit_info,
+    const struct pvr_device_info *dev_info,
+-   struct vk_sync *signal_sync_geom,
+-   struct vk_sync *signal_sync_frag);
++   const struct vk_sync_signal *signal_sync_geom,
++   const struct vk_sync_signal *signal_sync_frag);
+ 
+ VkResult PVR_PER_ARCH(srv_render_target_dataset_create)(
+    struct pvr_winsys *ws,
+diff --git a/src/imagination/vulkan/winsys/pvrsrvkm/pvr_srv_job_transfer.h b/src/imagination/vulkan/winsys/pvrsrvkm/pvr_srv_job_transfer.h
+index 62db198..85d1f73 100644
+--- a/src/imagination/vulkan/winsys/pvrsrvkm/pvr_srv_job_transfer.h
++++ b/src/imagination/vulkan/winsys/pvrsrvkm/pvr_srv_job_transfer.h
+@@ -59,7 +59,7 @@ VkResult PVR_PER_ARCH(srv_winsys_transfer_submit)(
+    const struct pvr_winsys_transfer_ctx *ctx,
+    const struct pvr_winsys_transfer_submit_info *submit_info,
+    const struct pvr_device_info *const dev_info,
+-   struct vk_sync *signal_sync);
++   const struct vk_sync_signal *signal_sync);
+ #endif
+ 
+ #endif /* PVR_SRV_JOB_TRANSFER_H */
+diff --git a/src/meson.build b/src/meson.build
+index c36f44b..e8aad3e 100644
+--- a/src/meson.build
++++ b/src/meson.build
+@@ -161,7 +161,10 @@ if with_egl
+   subdir('egl')
+ endif
+ if with_gallium
+-  if with_glx == 'dri' or with_platform_x11
++  # dril is the DRI loader that carries the per-driver entrypoints
++  # (DEFINE_LOADER_DRM_ENTRYPOINT) for the shared libgallium. It is not
++  # X11-specific, so build it for Wayland-only gallium builds too.
++  if with_glx == 'dri' or with_platform_x11 or with_platform_wayland
+     subdir('gallium/targets/dril')
+   endif
+ endif
+diff --git a/src/vulkan/wsi/wsi_common_drm.c b/src/vulkan/wsi/wsi_common_drm.c
+index dbf65b2..9579e5e 100644
+--- a/src/vulkan/wsi/wsi_common_drm.c
++++ b/src/vulkan/wsi/wsi_common_drm.c
+@@ -1096,10 +1096,31 @@ wsi_drm_wait_for_explicit_sync_release(struct wsi_swapchain *chain,
+     * We will forward the GPU signal to the VkSemaphore/VkFence of the acquire.
+     */
+    uint32_t first_signalled;
++   struct timespec _r0, _r1; int _rt = getenv("WSIREL_TRACE") != NULL;
++   if (_rt) clock_gettime(CLOCK_MONOTONIC, &_r0);
+    ret = device->sync->timeline_wait(device->sync, handles, points, unacquired_image_count,
+                                      wsi_drm_rel_timeout_to_abs(rel_timeout_ns),
+                                      DRM_SYNCOBJ_WAIT_FLAGS_WAIT_AVAILABLE,
+                                      &first_signalled);
++   if (_rt) {
++      static unsigned long _rn; static double _rtot, _rmax;
++      clock_gettime(CLOCK_MONOTONIC, &_r1);
++      double _ms = (_r1.tv_sec-_r0.tv_sec)*1000.0 + (_r1.tv_nsec-_r0.tv_nsec)/1e6;
++      _rn++; _rtot += _ms; if (_ms > _rmax) _rmax = _ms;
++      /* ponytail: log the point waited on, to tell "compositor signals late" from "wrong point". */
++      if (getenv("WSIREL_POINTS")) {
++         fprintf(stderr, "[relpt] ret=%d first=%d n=%u waited=%.2fms points=",
++                 ret, ret == 0 ? (int)first_signalled : -1,
++                 unacquired_image_count, _ms);
++         for (uint32_t _i = 0; _i < unacquired_image_count && _i < 8; _i++)
++            fprintf(stderr, "img%u:h%u@p%llu ", indices[_i], handles[_i],
++                    (unsigned long long)points[_i]);
++         fprintf(stderr, "\n");
++      }
++      if (_rn % 50 == 0)
++         fprintf(stderr, "[rel] explicit-sync release waits=%lu total=%.1fms avg=%.2fms max=%.2fms images=%u\n",
++                 _rn, _rtot, _rtot/_rn, _rmax, unacquired_image_count);
++   }
+ 
+    /* Return the first image that materialized. */
+    if (ret != 0)
+diff --git a/src/vulkan/wsi/wsi_common_x11.c b/src/vulkan/wsi/wsi_common_x11.c
+index e2e6ef8..379c409 100644
+--- a/src/vulkan/wsi/wsi_common_x11.c
++++ b/src/vulkan/wsi/wsi_common_x11.c
+@@ -21,12 +21,14 @@
+  * IN THE SOFTWARE.
+  */
+ 
++#include <time.h>
+ #include <X11/Xlib-xcb.h>
+ #include <X11/xshmfence.h>
+ #define XK_MISCELLANY
+ #define XK_LATIN1
+ #include <X11/keysymdef.h>
+ #include <xcb/xcb.h>
++#include <xcb/xcbext.h>
+ #ifdef XCB_KEYSYMS_AVAILABLE
+ #include <xcb/xcb_keysyms.h>
+ #endif
+@@ -113,6 +115,18 @@ struct wsi_x11_vk_surface {
+       VkIcdSurfaceXcb xcb;
+    };
+    bool has_alpha;
++
++   /* Cached window geometry. xcb_get_geometry_reply() blocks on a full X server
++    * round-trip, and zink calls x11_surface_get_capabilities() once per frame via
++    * zink_kopper_update() -> vkGetPhysicalDeviceSurfaceCapabilitiesKHR. Measured on
++    * the open PowerVR stack: 200 calls in 200 frames, 15.5 ms each, 58% of a 26.6 ms
++    * frame. Instead of waiting, keep one request in flight, poll it on the next call
++    * and fall back to this cache, so a resize is still picked up within a frame or two
++    * without ever blocking. */
++   bool geom_valid;
++   bool geom_pending;
++   unsigned int geom_seq;
++   uint16_t geom_w, geom_h;
+ };
+ #ifdef HAVE_X11_DRM
+ /**
+@@ -784,19 +798,62 @@ x11_surface_get_capabilities(VkIcdSurfaceBase *icd_surface,
+    xcb_generic_error_t *err;
+    xcb_get_geometry_reply_t *geom;
+ 
++   struct timespec _c0, _c1; int _ct = 0;
++   if (getenv("WSICAP_TRACE")) { clock_gettime(CLOCK_MONOTONIC, &_c0); _ct = 1; }
++
++   /* Poll the request left in flight last time; never wait for the reply. */
++   if (surface->geom_pending) {
++      void *reply = NULL;
++      if (xcb_poll_for_reply(conn, surface->geom_seq, &reply, &err)) {
++         geom = reply;
++         if (geom) {
++            surface->geom_w = geom->width;
++            surface->geom_h = geom->height;
++            surface->geom_valid = true;
++         }
++         free(err);
++         free(geom);
++         surface->geom_pending = false;
++      } else {
++         /* Not ready yet - drop it and use the cache below. */
++         xcb_discard_reply(conn, surface->geom_seq);
++         surface->geom_pending = false;
++      }
++   }
++
++   /* Queue the next probe for the following call. */
+    geom_cookie = xcb_get_geometry(conn, window);
++   surface->geom_seq = geom_cookie.sequence;
++   surface->geom_pending = true;
++
++   if (!surface->geom_valid) {
++      /* First call for this surface: establish the cache once, blocking. */
++      geom = xcb_get_geometry_reply(conn, geom_cookie, &err);
++      if (!geom)
++         return VK_ERROR_SURFACE_LOST_KHR;
++      surface->geom_w = geom->width;
++      surface->geom_h = geom->height;
++      surface->geom_valid = true;
++      free(err);
++      free(geom);
++   }
++
++   if (_ct) {
++      static unsigned long _n; static double _tot, _max;
++      clock_gettime(CLOCK_MONOTONIC, &_c1);
++      double ms = (_c1.tv_sec-_c0.tv_sec)*1000.0 + (_c1.tv_nsec-_c0.tv_nsec)/1e6;
++      _n++; _tot += ms; if (ms > _max) _max = ms;
++      if (_n % 50 == 0)
++         fprintf(stderr, "[wc] %lu GetSurfaceCapabilities calls, total %.1f ms, avg %.3f ms, max %.2f ms\n",
++                 _n, _tot, _tot/_n, _max);
++   }
+ 
+-   geom = xcb_get_geometry_reply(conn, geom_cookie, &err);
+-   if (!geom)
+-      return VK_ERROR_SURFACE_LOST_KHR;
+    {
+-      VkExtent2D extent = { geom->width, geom->height };
++      VkExtent2D extent = { surface->geom_w, surface->geom_h };
+       caps->surfaceCapabilities.currentExtent = extent;
+       caps->surfaceCapabilities.minImageExtent = extent;
+       caps->surfaceCapabilities.maxImageExtent = extent;
+    }
+-   free(err);
+-   free(geom);
+ 
+    if (surface->has_alpha) {
+       caps->surfaceCapabilities.supportedCompositeAlpha = VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR |
+@@ -2213,8 +2270,20 @@ x11_acquire_next_image(struct wsi_swapchain *wsi_chain,
+    assert(*image_index < chain->base.image_count);
+ #ifdef HAVE_X11_DRM
+    if (chain->images[*image_index].shm_fence &&
+-       !chain->base.image_info.explicit_sync)
++       !chain->base.image_info.explicit_sync) {
++      struct timespec _f0, _f1; int _t = 0;
++      if (getenv("X11ACQ_TRACE")) { clock_gettime(CLOCK_MONOTONIC, &_f0); _t = 1; }
+       xshmfence_await(chain->images[*image_index].shm_fence);
++      if (_t) {
++         static unsigned long _n; static double _tot, _max;
++         clock_gettime(CLOCK_MONOTONIC, &_f1);
++         double ms = (_f1.tv_sec-_f0.tv_sec)*1000.0 + (_f1.tv_nsec-_f0.tv_nsec)/1e6;
++         _n++; _tot += ms; if (ms > _max) _max = ms;
++         if (_n % 50 == 0)
++            fprintf(stderr, "[xa] %lu present-completion waits, total %.1f ms, avg %.3f ms, max %.2f ms\n",
++                    _n, _tot, _tot/_n, _max);
++      }
++   }
+ #endif
+ 
+    return result;

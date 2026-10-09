@@ -1,0 +1,39 @@
+From 911cdbd472b5cedcd68cfc542852211ae4d7052f Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Thu, 8 Oct 2026 03:14:47 +0800
+Subject: [PATCH 09/43] pvr: fix maxDescriptorSetStorageBuffers spec violation
+ (12 -> 48)
+
+Vulkan requires maxDescriptorSetStorageBuffers >= maxPerStageDescriptorStorageBuffers.
+The driver reported per-stage 16 but per-set 3*4 = 12 - a stale derivation from when the
+per-stage limit was 4. An application using the 16 storage buffers per stage that the
+per-stage limit permits would have exceeded the per-set limit, i.e. the two advertised
+limits contradicted each other.
+
+Now 3*16 = 48. Checked all six per-stage/per-set pairs in the limits struct: every per-set
+limit is now >= its per-stage counterpart (samplers 96/32, uniform buffers 36/13, storage
+buffers 48/16, sampled images 96/32, storage images 96/32, input attachments 4/4).
+
+No regressions: bda, vk13, pctest, vk16, wgsize, samplers, storageimages, mrt all PASS;
+glmark2 --validate still 0 failures / 27 pass.
+---
+ src/imagination/vulkan/pvr_physical_device.c | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/src/imagination/vulkan/pvr_physical_device.c b/src/imagination/vulkan/pvr_physical_device.c
+index 6a49178..c0806a6 100644
+--- a/src/imagination/vulkan/pvr_physical_device.c
++++ b/src/imagination/vulkan/pvr_physical_device.c
+@@ -769,7 +769,11 @@ static bool pvr_physical_device_get_properties(
+       .maxDescriptorSetSamplers = 3U * 32U,
+       .maxDescriptorSetUniformBuffers = 3U * 12U,
+       .maxDescriptorSetUniformBuffersDynamic = 8U,
+-      .maxDescriptorSetStorageBuffers = 3U * 4U,
++      /* Must be >= maxPerStageDescriptorStorageBuffers (16), which Vulkan requires; it was
++       * 3*4 = 12, a stale derivation from when the per-stage limit was 4. An application
++       * using the 16 storage buffers per stage that the per-stage limit allows would then
++       * have exceeded the per-set limit. */
++      .maxDescriptorSetStorageBuffers = 3U * 16U,
+       .maxDescriptorSetStorageBuffersDynamic = 4U,
+       .maxDescriptorSetSampledImages = 3U * 32U,
+       .maxDescriptorSetStorageImages = 3U * 32U,

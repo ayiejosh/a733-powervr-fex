@@ -1,0 +1,45 @@
+########## render-gap: open ##########
+icd:  /home/radxa/pvr_gen_icd.json
+date: 2026-10-05T16:13Z
+
+--- repeatability, 512x512 x60, three runs ---
+both #1                        1.788 ms/frame  146.6 Mpix/s  PASS
+      timing per frame: record=0.455 ms, submit=0.166 ms, gpu_wait=1.167 ms (60 batches)
+both #2                        1.771 ms/frame  148.0 Mpix/s  PASS
+      timing per frame: record=0.442 ms, submit=0.165 ms, gpu_wait=1.164 ms (60 batches)
+both #3                        1.706 ms/frame  153.6 Mpix/s  PASS
+      timing per frame: record=0.393 ms, submit=0.151 ms, gpu_wait=1.162 ms (60 batches)
+
+--- where the time goes, 512x512 x60 (MODE splits the frame) ---
+empty pass (no draw/copy)      ?  ?  n/a
+      timing per frame: record=0.257 ms, submit=0.069 ms, gpu_wait=0.359 ms (60 batches)
+render only (no copy)          ?  ?  n/a
+      timing per frame: record=0.799 ms, submit=0.146 ms, gpu_wait=1.011 ms (60 batches)
+copy only (no render)          ?  ?  n/a
+      timing per frame: record=0.006 ms, submit=0.108 ms, gpu_wait=0.441 ms (60 batches)
+
+--- is it fill, or full-surface work regardless of pixels? ---
+area=quarter (512x512)         3.770 ms/frame  69.5 Mpix/s  FAIL
+      timing per frame: record=1.769 ms, submit=0.615 ms, gpu_wait=1.385 ms (60 batches)
+area=half (512x512)            1.879 ms/frame  139.5 Mpix/s  FAIL
+      timing per frame: record=0.493 ms, submit=0.194 ms, gpu_wait=1.193 ms (60 batches)
+no clear, no store             1.683 ms/frame  155.8 Mpix/s  FAIL
+      timing per frame: record=0.386 ms, submit=0.152 ms, gpu_wait=1.144 ms (60 batches)
+
+--- per-submit overhead vs per-frame cost ---
+BATCH=1 (60 submits)           1.696 ms/frame  154.6 Mpix/s  PASS
+      timing per frame: record=0.384 ms, submit=0.151 ms, gpu_wait=1.161 ms (60 batches)
+BATCH=60 (1 submit)            1.275 ms/frame  205.6 Mpix/s  PASS
+      timing per frame: record=0.229 ms, submit=5.463 ms, gpu_wait=57.300 ms (1 batches)
+
+--- size sweep: fixed overhead (intercept) vs per-pixel (slope) ---
+size 128                       1.063 ms/frame  15.4 Mpix/s  PASS
+      timing per frame: record=0.444 ms, submit=0.172 ms, gpu_wait=0.447 ms (40 batches)
+size 256                       1.152 ms/frame  56.9 Mpix/s  PASS
+      timing per frame: record=0.411 ms, submit=0.164 ms, gpu_wait=0.577 ms (40 batches)
+size 512                       1.826 ms/frame  143.5 Mpix/s  PASS
+      timing per frame: record=0.469 ms, submit=0.186 ms, gpu_wait=1.171 ms (40 batches)
+size 1024                      4.483 ms/frame  233.9 Mpix/s  PASS
+      timing per frame: record=0.722 ms, submit=0.257 ms, gpu_wait=3.503 ms (40 batches)
+
+########## done ##########

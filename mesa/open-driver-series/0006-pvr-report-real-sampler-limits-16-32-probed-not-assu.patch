@@ -1,0 +1,62 @@
+From 4ff860d36c81817731b1b82df355171f2c379a60 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Thu, 8 Oct 2026 03:04:48 +0800
+Subject: [PATCH 06/43] pvr: report real sampler limits (16 -> 32), probed not
+ assumed
+
+maxPerStageDescriptorSamplers / maxPerStageDescriptorSampledImages were 16 - the Vulkan
+minimum, not the silicon's limit - and the per-set values were derived as 3*16. On this part
+the vendor driver reports 32 per stage, and applications needing more than 16 samplers in a
+stage refuse to run.
+
+Probed with bench/pvr-vulkan/samplers: a 32/64/96/128-element sampler2D array where texture i
+is a 1x1 image holding the value i and the shader writes each sampled value to slot i, so the
+readback proves both the count and that every index reads the RIGHT texture (aliasing or a
+short array would show wrong values, not zeros):
+
+  NS=32   32 correct, 0 wrong
+  NS=64   64 correct, 0 wrong
+  NS=96   96 correct, 0 wrong
+  NS=128 128 correct, 0 wrong
+
+So at least 128 samplers work per stage and per set. Set to 32 per stage (vendor parity, well
+inside what was probed) and 3*32 per set.
+
+No regressions: bda, vk13, pctest, vk16, wgsize all still PASS; glmark2 --validate still 0
+failures / 27 pass.
+---
+ src/imagination/vulkan/pvr_physical_device.c | 12 ++++++++----
+ 1 file changed, 8 insertions(+), 4 deletions(-)
+
+diff --git a/src/imagination/vulkan/pvr_physical_device.c b/src/imagination/vulkan/pvr_physical_device.c
+index 08e31c0..ca92d6c 100644
+--- a/src/imagination/vulkan/pvr_physical_device.c
++++ b/src/imagination/vulkan/pvr_physical_device.c
+@@ -752,19 +752,23 @@ static bool pvr_physical_device_get_properties(
+       .bufferImageGranularity = 1U,
+       .sparseAddressSpaceSize = 0U, /* Requires sparseBinding */
+       .maxBoundDescriptorSets = 4U,
+-      .maxPerStageDescriptorSamplers = 16,
++      /* Probing (bench/pvr-vulkan/samplers) shows 128 samplers in one stage and one
++       * set all sample their own correct texture - the limit was being reported as 16,
++       * the Vulkan minimum, which makes applications refuse to run. The vendor driver
++       * reports 32 on this part, so match that. */
++      .maxPerStageDescriptorSamplers = 32,
+       .maxPerStageDescriptorUniformBuffers = 13,
+       .maxPerStageDescriptorStorageBuffers = 16,
+-      .maxPerStageDescriptorSampledImages = 16,
++      .maxPerStageDescriptorSampledImages = 32,
+       .maxPerStageDescriptorStorageImages = 4,
+       .maxPerStageDescriptorInputAttachments = 4,
+       .maxPerStageResources = 57,
+-      .maxDescriptorSetSamplers = 3U * 16U,
++      .maxDescriptorSetSamplers = 3U * 32U,
+       .maxDescriptorSetUniformBuffers = 3U * 12U,
+       .maxDescriptorSetUniformBuffersDynamic = 8U,
+       .maxDescriptorSetStorageBuffers = 3U * 4U,
+       .maxDescriptorSetStorageBuffersDynamic = 4U,
+-      .maxDescriptorSetSampledImages = 3U * 16U,
++      .maxDescriptorSetSampledImages = 3U * 32U,
+       .maxDescriptorSetStorageImages = 3U * 4U,
+       .maxDescriptorSetInputAttachments = 4U,
+ 

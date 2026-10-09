@@ -92,3 +92,54 @@ Three gates had to be cleared, in this order, and each one is a distinct fact:
   under a second. The session running this work lives in
   `user@1000.service/app.slice/dsh-web.service`, not the graphical session, so it
   survives. See `kernel/open-driver-spike/stage4-mainline-vulkan.sh`.
+
+---
+
+# Session additions (2026-10-09)
+
+The sections above are the original bench documentation and still accurate. **What follows was added during the
+benchmarking session** - the harness, the A/B tooling, the safety rules, and the corrected findings.
+
+## The tools built
+
+| tool | what it does |
+|---|---|
+| `harness.py <probe> <size> <count> [ENV=V …] [--driver=open\|vendor]` | **one run → driver, speed (min/median/max + spread), correctness, per-stage job durations, critical path, CPU split, bandwidth.** Appends to `harness-log.jsonl`. **Its `--driver=` checks for kwin and refuses to switch if a desktop is live.** |
+| `sweep.sh` | the whole probe matrix → one consolidated table |
+| `ab.sh` | **full A/B in one run** — closes the desktop, arm open fully, arm vendor fully, reopens via trap, prints the diff |
+| `components.sh` | 30 component checks — **run as root (`sudo ./components.sh`) or the tracing checks can only report that they could not read the path** — modules, vermagic vs running kernel, driver binding, firmware (+md5), ICDs **and whether each named library resolves**, tracepoints, guard |
+| `enumvk.c` | Vulkan extension/feature enumerator |
+| `logcheck.py` | **which `harness-log.jsonl` records are safe to read** — ~6% of the job breakdowns are impossible (fence mispairing). `--clean` emits only the trustworthy ones |
+
+## Headline findings
+
+* **~2.4x render gap** (2.39x median, **1.94x worst case**) — measured with ranges on both sides.
+* **The four PCO fixes are PROBE-LEVEL: 2.7–3.4x on loop-bound compute and NO measurable client effect** on two
+  scenes. **Do not describe them as a client-level win.**
+* **Kernel share of the client frame: 62.5%**, independently measured.
+* **Stage shapes differ:** geometry is **flat** (open wins, 0.43x); PR and fragment are **tile-bound**, so the
+  PR's 4.03x is a *work-shape* problem (Mesa's) and the fragment's 2.17x is a *raster-cost* problem (outside Mesa).
+
+## Safety - read before switching drivers
+
+**The vendor `pvrsrvkm` driver has crashed this board twice**: its rewrapped firmware faulting, and a NULL-deref
+in its **file-close path** during a driver-switch sequence. **Both required a reboot; the guard recovered
+automatically both times.**
+
+* **Never unbind while kwin/X is alive** — the guard and `harness.py` both refuse.
+* **Batch switch operations.** Repeated weston teardown under the vendor driver is the exposure.
+* **Prefer `./ab.sh`** for two-arm work: one controlled switch pair with a trap-restore.
+
+## Measurement discipline
+
+* **throughput / kernel timestamps / counts** — ~1% repeatable, insensitive to host load. **Use these.**
+* **per-stage job durations** — 0.7–4.4% repeatable. **The decomposition's foundation.**
+* **wall-clock FPS** — ~0.2 ms fixed jitter, so percentage spread scales inversely with frame time
+  (**4.5% at 2048, 27% at 512**). **Never a 3-run median at small sizes.**
+* **Always check the tool measured what it claims** — two of this session's errors were instrumentation
+  silently not measuring (a mislabelled driver, a missing client process).
+
+**For the full record and the corrections, see `FINAL-HANDOVER-2026-10-08.md`. It opens with a one-screen
+BOTTOM LINE (current cross-driver figures, what shipped, what blocks the rest), then a corrections banner -**
+**sections 1-20 carry the original framing, 21-28 are the corrected record, and the later section wins.**
+

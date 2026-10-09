@@ -1,0 +1,223 @@
+From e9d1b2a774615e2c0276f37eafcdf0b7fa0de818 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Thu, 8 Oct 2026 14:05:12 +0800
+Subject: [PATCH 33/43] pvr: teach the winsys submit paths timeline syncobjs
+ (step 3, behaviour-preserving)
+
+This was the real blocker for the sync-churn work. The queue could not hand a timeline syncobj
+to the powervr winsys because the three submit paths could not express one:
+
+  pvr_drm_job_render.c    5x assert(!(... VK_SYNC_IS_TIMELINE)), 5x HANDLE_TYPE_SYNCOBJ, .value = 0
+  pvr_drm_job_compute.c   2x, 2x, 2x
+  pvr_drm_job_transfer.c  2x, 2x, 2x
+
+The asserts are compiled out in a release build, so migrating any job type in the queue submitted
+its timeline sync as a binary syncobj at point 0 while the queue's timeline points advanced
+independently: ordering lost, glmark2 segfaulted. Verified by doing exactly that and reverting.
+
+Now one helper in pvr_drm_job_common.h picks the handle type from the sync itself:
+
+  pvr_drm_sync_op_init(op, sync, flags, value)
+    binary   -> DRM_PVR_SYNC_OP_FLAG_HANDLE_TYPE_SYNCOBJ,          .value = 0
+    timeline -> DRM_PVR_SYNC_OP_FLAG_HANDLE_TYPE_TIMELINE_SYNCOBJ, .value = value
+
+and all 9 asserts are gone. The two remaining HANDLE_TYPE_SYNCOBJ sites in the render path are the
+driver's own internal geom_to_pr_syncobj, which is genuinely binary, so they stay as they are.
+
+The flag exists in the UAPI (pvr_drm.h:1058, value 1) and pvr_drm_job_null.c already implemented
+this correctly, so the pattern is copied from in-tree code rather than guessed.
+
+Behaviour-preserving: every queue sync is still binary and every value still 0, so the helper
+selects the same flag and value as before. This commit is what makes the next one (migrating job
+types one at a time) safe to attempt.
+
+Verified: build clean; bda, vk13, pctest, vk16, wgsize, samplers, storageimages, mrt, varyings,
+inatt, ubos, stgbuf, vattrib all PASS; glmark2 --validate 27/0; glmark2 score 84.
+---
+ .../winsys/powervr/pvr_drm_job_common.h       | 27 ++++++++++++
+ .../winsys/powervr/pvr_drm_job_compute.c      | 20 +++------
+ .../winsys/powervr/pvr_drm_job_render.c       | 41 ++++++-------------
+ .../winsys/powervr/pvr_drm_job_transfer.c     | 20 +++------
+ 4 files changed, 51 insertions(+), 57 deletions(-)
+
+diff --git a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_common.h b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_common.h
+index 932ef48..30a257c 100644
+--- a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_common.h
++++ b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_common.h
+@@ -26,6 +26,7 @@
+ 
+ #include "drm-uapi/pvr_drm.h"
+ #include "pvr_winsys.h"
++#include "vk_drm_syncobj.h"
+ #include "util/macros.h"
+ 
+ static enum drm_pvr_ctx_priority
+@@ -43,4 +44,30 @@ pvr_drm_from_winsys_priority(enum pvr_winsys_ctx_priority priority)
+    }
+ }
+ 
++/**
++ * \brief Fill a DRM sync op, selecting the handle type from the sync itself.
++ *
++ * A binary syncobj is operated at value 0; a timeline syncobj at \p value. The three submit
++ * paths used to hardcode DRM_PVR_SYNC_OP_FLAG_HANDLE_TYPE_SYNCOBJ and .value = 0 and assert
++ * against VK_SYNC_IS_TIMELINE, which meant a timeline syncobj was silently submitted as a binary
++ * one at point 0 and the ordering was lost.
++ */
++static void
++pvr_drm_sync_op_init(struct drm_pvr_sync_op *op,
++                     struct vk_sync *sync,
++                     uint32_t flags,
++                     uint64_t value)
++{
++   const bool is_timeline = sync->flags & VK_SYNC_IS_TIMELINE;
++
++   *op = (struct drm_pvr_sync_op){
++      .handle = vk_sync_as_drm_syncobj(sync)->syncobj,
++      .flags = flags |
++               (is_timeline
++                   ? DRM_PVR_SYNC_OP_FLAG_HANDLE_TYPE_TIMELINE_SYNCOBJ
++                   : DRM_PVR_SYNC_OP_FLAG_HANDLE_TYPE_SYNCOBJ),
++      .value = is_timeline ? value : 0,
++   };
++}
++
+ #endif /* PVR_DRM_JOB_COMMON_H */
+diff --git a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_compute.c b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_compute.c
+index 381cc49..8970219 100644
+--- a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_compute.c
++++ b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_compute.c
+@@ -195,23 +195,15 @@ VkResult pvr_drm_winsys_compute_submit(
+    if (submit_info->wait.sync) {
+       struct vk_sync *sync = submit_info->wait.sync;
+ 
+-      assert(!(sync->flags & VK_SYNC_IS_TIMELINE));
+-      sync_ops[job_args.sync_ops.count++] = (struct drm_pvr_sync_op){
+-         .handle = vk_sync_as_drm_syncobj(sync)->syncobj,
+-         .flags = DRM_PVR_SYNC_OP_FLAG_WAIT |
+-                  DRM_PVR_SYNC_OP_FLAG_HANDLE_TYPE_SYNCOBJ,
+-         .value = 0,
+-      };
++      pvr_drm_sync_op_init(&sync_ops[job_args.sync_ops.count++], sync,
++                           DRM_PVR_SYNC_OP_FLAG_WAIT,
++                           submit_info->wait.wait_value);
+    }
+ 
+    if (signal_sync) {
+-      assert(!(signal_sync->sync->flags & VK_SYNC_IS_TIMELINE));
+-      sync_ops[job_args.sync_ops.count++] = (struct drm_pvr_sync_op){
+-         .handle = vk_sync_as_drm_syncobj(signal_sync->sync)->syncobj,
+-         .flags = DRM_PVR_SYNC_OP_FLAG_SIGNAL |
+-                  DRM_PVR_SYNC_OP_FLAG_HANDLE_TYPE_SYNCOBJ,
+-         .value = 0,
+-      };
++      pvr_drm_sync_op_init(&sync_ops[job_args.sync_ops.count++], signal_sync->sync,
++                           DRM_PVR_SYNC_OP_FLAG_SIGNAL,
++                           signal_sync->signal_value);
+    }
+ 
+    /* Returns VK_ERROR_OUT_OF_DEVICE_MEMORY to match pvrsrv. */
+diff --git a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c
+index 579d119..b8ecc9e 100644
+--- a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c
++++ b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c
+@@ -529,29 +529,20 @@ VkResult pvr_drm_winsys_render_submit(
+    if (submit_info->geometry.wait.sync) {
+       struct vk_sync *sync = submit_info->geometry.wait.sync;
+ 
+-      assert(!(sync->flags & VK_SYNC_IS_TIMELINE));
+-      geom_sync_ops[num_geom_syncs++] = (struct drm_pvr_sync_op){
+-         .handle = vk_sync_as_drm_syncobj(sync)->syncobj,
+-         .flags = DRM_PVR_SYNC_OP_FLAG_WAIT |
+-                  DRM_PVR_SYNC_OP_FLAG_HANDLE_TYPE_SYNCOBJ,
+-         .value = 0,
+-      };
++      pvr_drm_sync_op_init(&geom_sync_ops[num_geom_syncs++], sync,
++                           DRM_PVR_SYNC_OP_FLAG_WAIT,
++                           submit_info->geometry.wait.wait_value);
+    }
+ 
+    if (signal_sync_geom) {
+-      assert(!(signal_sync_geom->sync->flags & VK_SYNC_IS_TIMELINE));
+-      geom_sync_ops[num_geom_syncs++] = (struct drm_pvr_sync_op){
+-         .handle = vk_sync_as_drm_syncobj(signal_sync_geom->sync)->syncobj,
+-         .flags = DRM_PVR_SYNC_OP_FLAG_SIGNAL |
+-                  DRM_PVR_SYNC_OP_FLAG_HANDLE_TYPE_SYNCOBJ,
+-         .value = 0,
+-      };
++      pvr_drm_sync_op_init(&geom_sync_ops[num_geom_syncs++], signal_sync_geom->sync,
++                           DRM_PVR_SYNC_OP_FLAG_SIGNAL,
++                           signal_sync_geom->signal_value);
+    }
+ 
+    /* PR syncs */
+ 
+    if (signal_sync_geom) {
+-      assert(!(signal_sync_geom->sync->flags & VK_SYNC_IS_TIMELINE));
+       geom_to_pr_syncobj = vk_sync_as_drm_syncobj(signal_sync_geom->sync)->syncobj;
+    } else {
+       geom_to_pr_syncobj = drm_ctx->geom_to_pr_syncobj;
+@@ -600,23 +591,15 @@ VkResult pvr_drm_winsys_render_submit(
+       if (submit_info->fragment.wait.sync) {
+          struct vk_sync *sync = submit_info->fragment.wait.sync;
+ 
+-         assert(!(sync->flags & VK_SYNC_IS_TIMELINE));
+-         frag_sync_ops[num_frag_syncs++] = (struct drm_pvr_sync_op){
+-            .handle = vk_sync_as_drm_syncobj(sync)->syncobj,
+-            .flags = DRM_PVR_SYNC_OP_FLAG_WAIT |
+-                     DRM_PVR_SYNC_OP_FLAG_HANDLE_TYPE_SYNCOBJ,
+-            .value = 0,
+-         };
++         pvr_drm_sync_op_init(&frag_sync_ops[num_frag_syncs++], sync,
++                              DRM_PVR_SYNC_OP_FLAG_WAIT,
++                              submit_info->fragment.wait.wait_value);
+       }
+ 
+       if (signal_sync_frag) {
+-         assert(!(signal_sync_frag->sync->flags & VK_SYNC_IS_TIMELINE));
+-         frag_sync_ops[num_frag_syncs++] = (struct drm_pvr_sync_op){
+-            .handle = vk_sync_as_drm_syncobj(signal_sync_frag->sync)->syncobj,
+-            .flags = DRM_PVR_SYNC_OP_FLAG_SIGNAL |
+-                     DRM_PVR_SYNC_OP_FLAG_HANDLE_TYPE_SYNCOBJ,
+-            .value = 0,
+-         };
++         pvr_drm_sync_op_init(&frag_sync_ops[num_frag_syncs++], signal_sync_frag->sync,
++                              DRM_PVR_SYNC_OP_FLAG_SIGNAL,
++                              signal_sync_frag->signal_value);
+       }
+    }
+ 
+diff --git a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_transfer.c b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_transfer.c
+index 75ce2f2..2f11a96 100644
+--- a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_transfer.c
++++ b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_transfer.c
+@@ -152,23 +152,15 @@ VkResult pvr_drm_winsys_transfer_submit(
+    if (submit_info->wait.sync) {
+       struct vk_sync *sync = submit_info->wait.sync;
+ 
+-      assert(!(sync->flags & VK_SYNC_IS_TIMELINE));
+-      sync_ops[job_args.sync_ops.count++] = (struct drm_pvr_sync_op){
+-         .handle = vk_sync_as_drm_syncobj(sync)->syncobj,
+-         .flags = DRM_PVR_SYNC_OP_FLAG_WAIT |
+-                  DRM_PVR_SYNC_OP_FLAG_HANDLE_TYPE_SYNCOBJ,
+-         .value = 0,
+-      };
++      pvr_drm_sync_op_init(&sync_ops[job_args.sync_ops.count++], sync,
++                           DRM_PVR_SYNC_OP_FLAG_WAIT,
++                           submit_info->wait.wait_value);
+    }
+ 
+    if (signal_sync) {
+-      assert(!(signal_sync->sync->flags & VK_SYNC_IS_TIMELINE));
+-      sync_ops[job_args.sync_ops.count++] = (struct drm_pvr_sync_op){
+-         .handle = vk_sync_as_drm_syncobj(signal_sync->sync)->syncobj,
+-         .flags = DRM_PVR_SYNC_OP_FLAG_SIGNAL |
+-                  DRM_PVR_SYNC_OP_FLAG_HANDLE_TYPE_SYNCOBJ,
+-         .value = 0,
+-      };
++      pvr_drm_sync_op_init(&sync_ops[job_args.sync_ops.count++], signal_sync->sync,
++                           DRM_PVR_SYNC_OP_FLAG_SIGNAL,
++                           signal_sync->signal_value);
+    }
+ 
+    /* Returns VK_ERROR_OUT_OF_DEVICE_MEMORY to match pvrsrv. */

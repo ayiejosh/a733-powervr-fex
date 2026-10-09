@@ -1,0 +1,131 @@
+From cdf21da20ccc70b8b224f93249ed49789209930a Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Thu, 8 Oct 2026 07:58:49 +0800
+Subject: [PATCH 17/43] wsi/x11: stop blocking on xcb_get_geometry_reply per
+ call (1230x faster)
+
+x11_surface_get_capabilities() read the window geometry with a blocking
+xcb_get_geometry_reply() on every call, purely to fill currentExtent/minImageExtent/
+maxImageExtent. zink calls it once per frame (zink_kopper_update ->
+vkGetPhysicalDeviceSurfaceCapabilitiesKHR -> dri_st_framebuffer_validate).
+
+Measured on the open PowerVR stack, 800x600 windowed, 200 frames:
+  before: 200 calls, 3106 ms total, avg 15.5 ms, max 51.9 ms  (58% of a 26.6 ms frame)
+  after : 300 calls,    4.2 ms total, avg 0.014 ms, max 0.06 ms   = 1230x faster
+
+The gles-x11 phase breakdown confirms it directly: 'draw' 17.34 ms -> 0.10 ms.
+
+Honest note: end-to-end fps rose only 36.3 -> 40.5 (+12%), because the round-trip was
+overlapping GPU time - 'glFinish' moved from 8.47 ms to 22.81 ms as the exposed cost.
+So this removes real blocking and a real 17 ms stall, but the frame was partly hidden
+behind it; the GPU/finish path is now the visible bottleneck.
+
+Implementation: keep one xcb_get_geometry request in flight, poll it with
+xcb_poll_for_reply() on the next call, and fall back to the cached extent, so a resize is
+still picked up within a frame or two and the first call establishes the cache.
+
+validate: 0 failures / 27. All probes pass.
+---
+ src/vulkan/wsi/wsi_common_x11.c | 68 ++++++++++++++++++++++++++++++---
+ 1 file changed, 62 insertions(+), 6 deletions(-)
+
+diff --git a/src/vulkan/wsi/wsi_common_x11.c b/src/vulkan/wsi/wsi_common_x11.c
+index ffad5ce..379c409 100644
+--- a/src/vulkan/wsi/wsi_common_x11.c
++++ b/src/vulkan/wsi/wsi_common_x11.c
+@@ -28,6 +28,7 @@
+ #define XK_LATIN1
+ #include <X11/keysymdef.h>
+ #include <xcb/xcb.h>
++#include <xcb/xcbext.h>
+ #ifdef XCB_KEYSYMS_AVAILABLE
+ #include <xcb/xcb_keysyms.h>
+ #endif
+@@ -114,6 +115,18 @@ struct wsi_x11_vk_surface {
+       VkIcdSurfaceXcb xcb;
+    };
+    bool has_alpha;
++
++   /* Cached window geometry. xcb_get_geometry_reply() blocks on a full X server
++    * round-trip, and zink calls x11_surface_get_capabilities() once per frame via
++    * zink_kopper_update() -> vkGetPhysicalDeviceSurfaceCapabilitiesKHR. Measured on
++    * the open PowerVR stack: 200 calls in 200 frames, 15.5 ms each, 58% of a 26.6 ms
++    * frame. Instead of waiting, keep one request in flight, poll it on the next call
++    * and fall back to this cache, so a resize is still picked up within a frame or two
++    * without ever blocking. */
++   bool geom_valid;
++   bool geom_pending;
++   unsigned int geom_seq;
++   uint16_t geom_w, geom_h;
+ };
+ #ifdef HAVE_X11_DRM
+ /**
+@@ -785,19 +798,62 @@ x11_surface_get_capabilities(VkIcdSurfaceBase *icd_surface,
+    xcb_generic_error_t *err;
+    xcb_get_geometry_reply_t *geom;
+ 
++   struct timespec _c0, _c1; int _ct = 0;
++   if (getenv("WSICAP_TRACE")) { clock_gettime(CLOCK_MONOTONIC, &_c0); _ct = 1; }
++
++   /* Poll the request left in flight last time; never wait for the reply. */
++   if (surface->geom_pending) {
++      void *reply = NULL;
++      if (xcb_poll_for_reply(conn, surface->geom_seq, &reply, &err)) {
++         geom = reply;
++         if (geom) {
++            surface->geom_w = geom->width;
++            surface->geom_h = geom->height;
++            surface->geom_valid = true;
++         }
++         free(err);
++         free(geom);
++         surface->geom_pending = false;
++      } else {
++         /* Not ready yet - drop it and use the cache below. */
++         xcb_discard_reply(conn, surface->geom_seq);
++         surface->geom_pending = false;
++      }
++   }
++
++   /* Queue the next probe for the following call. */
+    geom_cookie = xcb_get_geometry(conn, window);
++   surface->geom_seq = geom_cookie.sequence;
++   surface->geom_pending = true;
++
++   if (!surface->geom_valid) {
++      /* First call for this surface: establish the cache once, blocking. */
++      geom = xcb_get_geometry_reply(conn, geom_cookie, &err);
++      if (!geom)
++         return VK_ERROR_SURFACE_LOST_KHR;
++      surface->geom_w = geom->width;
++      surface->geom_h = geom->height;
++      surface->geom_valid = true;
++      free(err);
++      free(geom);
++   }
++
++   if (_ct) {
++      static unsigned long _n; static double _tot, _max;
++      clock_gettime(CLOCK_MONOTONIC, &_c1);
++      double ms = (_c1.tv_sec-_c0.tv_sec)*1000.0 + (_c1.tv_nsec-_c0.tv_nsec)/1e6;
++      _n++; _tot += ms; if (ms > _max) _max = ms;
++      if (_n % 50 == 0)
++         fprintf(stderr, "[wc] %lu GetSurfaceCapabilities calls, total %.1f ms, avg %.3f ms, max %.2f ms\n",
++                 _n, _tot, _tot/_n, _max);
++   }
+ 
+-   geom = xcb_get_geometry_reply(conn, geom_cookie, &err);
+-   if (!geom)
+-      return VK_ERROR_SURFACE_LOST_KHR;
+    {
+-      VkExtent2D extent = { geom->width, geom->height };
++      VkExtent2D extent = { surface->geom_w, surface->geom_h };
+       caps->surfaceCapabilities.currentExtent = extent;
+       caps->surfaceCapabilities.minImageExtent = extent;
+       caps->surfaceCapabilities.maxImageExtent = extent;
+    }
+-   free(err);
+-   free(geom);
+ 
+    if (surface->has_alpha) {
+       caps->surfaceCapabilities.supportedCompositeAlpha = VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR |
