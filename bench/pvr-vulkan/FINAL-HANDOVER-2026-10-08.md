@@ -814,4 +814,50 @@ what the four shipped fixes and the documented levers actually address.\n
 * **wall-clock FPS** - ~0.2 ms fixed jitter, so **percentage spread scales inversely with frame time**
   (4.5% at 2048, 27% at 512); needs many interleaved samples and never a 3-run median at small sizes
 * **always check the tool measured what it claims** - two of this session's errors were instrumentation
-  silently not measuring (a mislabelled driver, a missing client process)
+  silently not measuring (a mislabelled driver, a missing client process)\n
+---
+
+## 23. THE SHIPPED FIXES HAVE NO MEASURABLE CLIENT EFFECT - proven, not assumed
+
+**This is the most important thing to know about the four commits in this document.**
+
+### The experiment
+
+Checked out `80788b9` (the parent of `c2bde57`), rebuilt, and ran the **same scene through the same client
+setup** (weston + Xwayland + zink), four runs each, then restored. Repeated on a second scene chosen
+specifically to stress the shader.
+
+| scene | WITH fixes | WITHOUT fixes | verdict |
+|---|---|---|---|
+| `-b build` | 106, 109, 89, 80 (med ~97.5) | 83, 101, 105, 73 (med ~92) | **ranges overlap - no effect** |
+| `function:fragment-complexity=high:fragment-steps=10` | 99, 82, 78, 101 (med ~90.5) | 101, 91, 76, 79 (med ~85) | **ranges overlap - no effect** |
+
+### The control that makes it trustworthy
+
+**The same probes DO show the fixes' effect** - `cstpi` **2.74x**, `vkheavy` **3.36x**, with controls that behave
+as predicted. **So the builds genuinely differ, and the absence of a client effect is a property of the scene,
+not of a botched build.**
+
+### Why - and the leverage analysis already said so
+
+**Even a "shader-heavy" glmark2 scene spends most of its frame outside the shader on this stack:** compositor
+and present **38.5%** of the recoverable cost, **kernel synchronisation 62.5%** (independently measured), and
+**actual render 1.5%**. **A 2.7x improvement to 1.5% of the frame is ~0.9% overall** - indistinguishable from
+noise, exactly as measured. **The scene name describes the shader workload, not the frame's composition.**
+
+### What may and may not be claimed
+
+| claim | supported? |
+|---|---|
+| the fixes speed up loop-bound compute 2.7-3.4x | **YES** - probes, with controls |
+| they close the compute gap from 5.53x to ~2.1x | **YES** - probes |
+| **they make the real client faster** | **NO - measured, no effect on two scenes** |
+
+**Anyone writing a summary of these commits must not imply a client-level win.** Their value is that they
+removed a **real, measured, documented inefficiency in the compiler** - not that they made anything the user
+sees faster.
+
+### The corollary
+
+**The only lever that can move the client is the kernel-side synchronisation (62.5%)**, which is why the three
+timeline attempts - all reverted - were aimed at the right target, and why more codegen is not the answer.
