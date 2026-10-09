@@ -968,4 +968,61 @@ fix** - because the fixes are codegen and the render gap is tile-bound raster co
 **One switch, verify the driver bound before measuring, restore afterwards.** The failed attempt used `ab.sh`,
 whose switch left the driver **unbound** so the open-arm probes ran against nothing and a kernel Oops followed.
 **The verification step is what makes a switch safe; without it, a failed switch produces silent garbage and then
-a crash.**
+a crash.**\n
+---
+
+## 26. THE WHOLE SoC, NOT JUST THE GPU - two accelerators were doing nothing
+
+**The objective is about the GPU's gap. Surveying the rest of the die produced a finding of a different kind.**
+
+### The four accelerators
+
+| block | present | driven | usable | accelerated? |
+|---|---|---|---|---|
+| **CPU** | 8 cores: 2x Cortex-A76 @ 2002 MHz + 6x Cortex-A55 @ 1794 MHz | yes | **yes** | **all pinned at max frequency; NOT a limiter** |
+| **GPU** | PowerVR BXM-4-64 MC1 | yes | yes | **2.4x behind the vendor on render** |
+| **VPU** | `/dev/cedar_dev`, `/dev/cedar_dev_ve2` | `sunxi_ve` | **yes, direct route** | **1.46x decode / 2.24x encode FASTER than software** |
+| **NPU** | `/dev/vipcore` + `npu_thermal_zone` | yes | **NO** | untestable - **no userspace exists** |
+
+### The VPU was idle and is faster than the CPU
+
+**`/proc/interrupts` showed `cedar_dev` and `cedar_dev_ve2` at ZERO - never executed anything.** Yet the stack
+was complete: `libcdc_base`, `libMemAdapter`, `libvdecoder`, `libvencoder`, `libfbm`, `libsbm`, plus
+`vdecoderdemo` and `vencoderdemo`.
+
+**Ran it** (1080p H.264, generated with software ffmpeg):
+
+| operation | **VPU** | CPU | advantage |
+|---|---|---|---|
+| decode 36 frames | **0.467 s** | 0.63-0.79 s | **1.46x** |
+| encode 30 frames | **0.354 s** | 0.794 s (x264 ultrafast) | **2.24x** |
+
+**Interrupts 0 -> 143 / 0 -> 30.** The decode figure **understates it** - it includes process startup, while the
+demo's own timer reported **`cost 0 s`** for the decode.
+
+### But no standard consumer can reach it
+
+| route | state |
+|---|---|
+| **direct** `libvdecoder`/`libvencoder` | **works** |
+| **VA-API** | `libva` 1.22.0 installed and **already looks for `/usr/lib/aarch64-linux-gnu/dri/sunxi-drm_drv_video.so`** - **`va_openDriver() returns -1`, and no package provides it** |
+| V4L2 M2M | absent (`CONFIG_VIDEO_SUNXI_VIN_SPECIAL` unset) |
+| ffmpeg hwaccel | absent |
+| GStreamer | absent (1355 plugins, none references `libvdecoder`) |
+
+**So Firefox and Chromium decode video in software while the VPU idles.** **Same shape as the GPU's srv-winsys
+finding:** kernel half present, userspace non-standard, **the standard bridge unshipped - and for VA-API, not
+available in the distro at all.**
+
+### The two unlocks
+
+1. **Available today:** link `libvdecoder`/`libvencoder` and get **1.5-2.2x plus an entirely free CPU** - which
+   matters because **the client frame is 62.5% kernel CPU.**
+2. **A real project:** a VA-API driver from the vendor BSP. **`libva` already looks for that exact filename**, so
+   the integration point is defined - **the driver simply does not exist.**
+
+### The distinction worth carrying forward
+
+**The board has two different problems:** an **unused-acceleration** problem (VPU idle, NPU unstakced) and a
+**GPU-implementation** problem (2.4x render, tile-bound raster, outside Mesa). **They need different work**, and
+the benchmark alone could never have shown the first.
