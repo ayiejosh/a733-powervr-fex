@@ -1,5 +1,24 @@
 # Open PowerVR stack vs vendor driver — FINAL handover, 2026-10-08
 
+> ## READ THIS FIRST - sections 1-20 contain claims that later sections FALSIFY
+>
+> This document grew over the whole session and **was not rewritten as findings changed**. Sections 1-20
+> carry the *original* framing; sections **21-23 are the corrected record**. Where they disagree, the later
+> section wins. Specifically:
+>
+> | early claim | corrected in | truth |
+> |---|---|---|
+> | "25x client gap, 787 vs ~31 FPS" | **S21, S23** | the open stack reaches **102-113 FPS** on that scene; the ~31 matches **software rendering**; the measured gap is **~2.4x render** |
+> | "84% of frame time in the kernel" | **S22 tally / S21** | **62.5%**, independently measured (the original number holds in magnitude) |
+> | "target (5) CLOSED - PR job is a non-issue" | **S17, S19** | **it is the worst stage at 4.03x** |
+> | "target (2) - extra images give 19%" | **S21** | **measured ~2%, inside the noise** |
+> | "pool or timeline-back the vk_sync objects" | **S18, S19** | pooling is **unsafe** (kernel holds handle refs); the timeline needs the **two-line design** and has failed **three times** |
+> | the four fixes are a client-level win | **S23** | **probe-level only - measured, no client effect on two scenes** |
+>
+> **Everything that survived is in S21-23 with its measurement and its uncertainty. Everything else here is
+> the trail of how it was found.**
+
+
 This supersedes earlier handover text. Where a claim was later refuted by its own control, **the
 refutation is what stands and the claim is marked withdrawn.**
 
