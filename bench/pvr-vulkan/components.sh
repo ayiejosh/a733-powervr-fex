@@ -72,9 +72,21 @@ cd /home/radxa/mesa/mesa-main 2>/dev/null && {
 
 echo
 echo "-- tracing / instruments --"
+# ponytail: the tracing paths are root-only, and an unreadable directory is NOT proof of
+# absence - it reported pvr_fence as missing while the harness read those events every run.
+# Say "needs root" instead of a false negative.
 for e in gpu_scheduler pvr_fence; do
-  n=$(ls /sys/kernel/debug/tracing/events/$e 2>/dev/null | wc -l)
-  [ "$n" -gt 0 ] && row "tracepoints $e" OK "$n events" || row "tracepoints $e" "--" "not present under the bound driver"
+  n=0
+  for t in /sys/kernel/tracing/events/$e /sys/kernel/debug/tracing/events/$e; do
+    m=$(ls "$t" 2>/dev/null | wc -l); [ "$m" -gt "$n" ] && n=$m
+  done
+  if [ "$n" -gt 0 ]; then
+    row "tracepoints $e" OK "$n events"
+  elif [ "$(id -u)" = 0 ]; then
+    row "tracepoints $e" "--" "absent under the bound driver (checked as root)"
+  else
+    row "tracepoints $e" "--" "cannot read tracing dirs - re-run as root to know"
+  fi
 done
 [ -w /sys/kernel/debug/tracing/tracing_on ] && row "trace control writable" OK "yes" || row "trace control writable" WARN "no (need root)"
 pgrep -x kwin_x11 >/dev/null || pgrep -x kwin_wayland >/dev/null && row "compositor (blocks switch)" WARN "kwin alive" || row "compositor" OK "none - switching allowed"
