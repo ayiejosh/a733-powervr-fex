@@ -9,6 +9,9 @@
 # Measured: decode 1.46x faster than software, encode 2.24x faster, and the CPU is left free.
 #
 #   ./vpu.sh decode <in.h264> <out.yuv> [frames]
+#   ./vpu.sh decode-any <in.mp4|mkv|anything> <out.yuv> [frames]
+#       ffmpeg demuxes to a raw H.264 elementary stream, then the VPU decodes it. This is the
+#       reachable unlock for real files: ffmpeg cannot hand a decoder to us, but it CAN demux.
 #   ./vpu.sh encode <in.yuv>  <out.h264> <WxH> [frames]
 #   ./vpu.sh status
 #
@@ -50,6 +53,20 @@ case "$1" in
     printf 'encode: %s frames in %.3fs -> %s (%s bytes)\n' "$n" \
       "$(echo "$t1-$t0" | bc)" "$3" "$(stat -c%s "$3" 2>/dev/null || echo 0)"
     printf 'vpu interrupts: %s -> %s\n' "${before:-?}" "${after:-?}"
+    ;;
+  decode-any)
+    # ponytail: two-stage pipe with a temp elementary stream. ffmpeg demuxes (CPU, cheap), the
+    # VPU decodes (the expensive part). A real hwaccel would avoid the temp file; this works now.
+    [ -n "$2" ] && [ -n "$3" ] || { echo "usage: $0 decode-any <in.any> <out.yuv> [frames]" >&2; exit 2; }
+    [ -e "$2" ] || { echo "no such input: $2" >&2; exit 2; }
+    n=${4:-30}
+    tmp=$(mktemp /tmp/vpuany.XXXXXX.h264)
+    trap 'rm -f "$tmp"' EXIT
+    echo "demux: ffmpeg -> $tmp"
+    ffmpeg -hide_banner -loglevel error -i "$2" -c:v copy -bsf:v h264_mp4toannexb -f h264 "$tmp" -y 2>&1 | head -3
+    [ -s "$tmp" ] || { echo "demux produced nothing - is the video H.264?" >&2; exit 1; }
+    printf 'elementary stream: %s bytes\n' "$(stat -c%s "$tmp")"
+    "$0" decode "$tmp" "$3" "$n"
     ;;
   status)
     echo "devices:      $(ls /dev/cedar_dev* 2>/dev/null | tr '\n' ' ')"
