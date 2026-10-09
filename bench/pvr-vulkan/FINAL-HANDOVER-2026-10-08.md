@@ -879,4 +879,44 @@ sees faster.
 ### The corollary
 
 **The only lever that can move the client is the kernel-side synchronisation (62.5%)**, which is why the three
-timeline attempts - all reverted - were aimed at the right target, and why more codegen is not the answer.
+timeline attempts - all reverted - were aimed at the right target, and why more codegen is not the answer.\n
+---
+
+## 24. THE STAGES HAVE DIFFERENT SHAPES - and that separates the two gaps
+
+**Measured per-stage durations against surface size (vendor driver):**
+
+| size | QV (fragment) | PV (PR) | **VV (geometry)** |
+|---|---|---|---|
+| 256 | 0.423 ms | 0.327 ms | **0.320 ms** |
+| 512 | 0.603 | 0.373 | **0.366** |
+| 1024 | 1.543 | 0.764 | **0.421** |
+| 2048 | 5.433 | 1.875 | **0.514** |
+| 4096 | 26.179 | 8.568 | **1.131** |
+| **per doubling** | **~4.8x** | **~4.6x** | **~1.2x** |
+
+**Fragment and PR are TILE-BOUND. Geometry is nearly FLAT** across a 256x change in area.
+
+### What it explains, and what it separates
+
+| stage | shape | gap | what kind of problem |
+|---|---|---|---|
+| **geometry** | **flat** | **0.43x - open WINS** | fixed per-submit work (command setup, submit, fences). **Open's simpler path is good at this.** |
+| **PR** | **tile-bound 4.6x/doubling** | **4.03x** | **work SHAPE** - the pass's range/content |
+| **fragment** | **tile-bound 4.8x/doubling** | **2.17x** | **raster COST** - per-tile processing |
+
+**The key consequence: a tile-bound stage cannot be fixed by submitting fewer or better jobs - only by making
+each tile cheaper.** So:
+
+* **fragment's 2.17x is a raster-cost problem** - firmware or command stream, **outside Mesa** (every
+  driver-visible config is already correct or maximal);
+* **PR's 4.03x is a work-shape problem** - **the pass runs the fragment-shaped stream over the tile range even
+  when no PR is needed** (72% of the open fragment pass vs the vendor's 39%), **and that shape is Mesa's**.
+
+**Earlier sections treated the two as the same kind of gap. They are not.**
+
+### Also corrects a previous explanation
+
+**An earlier entry attributed the geometry job reading 0.50 ms against a recorded 0.76-0.87 ms to jitter.** The
+scaling data shows it ranges **0.32-1.13 ms with size** - **so the earlier range was taken at a different size.
+The jitter explanation was wrong.**
