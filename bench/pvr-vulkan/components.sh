@@ -1,4 +1,11 @@
 #!/bin/sh
+# Run as ROOT for complete results: the tracing paths are root-only, so without root the
+# tracepoint checks can only report that they could not read them. The harness reads traces
+# via sudo for the same reason.
+#
+#   sudo ./components.sh
+#
+# (Everything else works unprivileged, which is why some items are "--" rather than OK.)
 # Probe every small component and say what works. One run, one table.
 # Each check prints: OK / FAIL / WARN + the concrete value it saw.
 B=/mnt/sdcard/_REVIEW/emulation/trixie-prep/bench/pvr-vulkan

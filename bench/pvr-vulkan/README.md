@@ -107,7 +107,7 @@ benchmarking session** - the harness, the A/B tooling, the safety rules, and the
 | `harness.py <probe> <size> <count> [ENV=V …] [--driver=open\|vendor]` | **one run → driver, speed (min/median/max + spread), correctness, per-stage job durations, critical path, CPU split, bandwidth.** Appends to `harness-log.jsonl`. **Its `--driver=` checks for kwin and refuses to switch if a desktop is live.** |
 | `sweep.sh` | the whole probe matrix → one consolidated table |
 | `ab.sh` | **full A/B in one run** — closes the desktop, arm open fully, arm vendor fully, reopens via trap, prints the diff |
-| `components.sh` | 30 component checks — modules, vermagic vs running kernel, driver binding, firmware (+md5), ICDs **and whether each named library resolves**, tracepoints, guard |
+| `components.sh` | 30 component checks — **run as root (`sudo ./components.sh`) or the tracing checks can only report that they could not read the path** — modules, vermagic vs running kernel, driver binding, firmware (+md5), ICDs **and whether each named library resolves**, tracepoints, guard |
 | `enumvk.c` | Vulkan extension/feature enumerator |
 
 ## Headline findings
