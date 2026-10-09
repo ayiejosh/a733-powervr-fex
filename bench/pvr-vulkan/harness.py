@@ -234,9 +234,12 @@ def main():
         print(f"  cpu        : user {cpu['user_ms']} ms  sys {cpu['sys_ms']} ms"
               f"  (kernel {100*cpu['sys_ms']/max(tot_c,1e-9):.0f}% of probe CPU)")
     bw = ""
+    # ponytail: DERIVED, not measured. mpix_s * bpp is the ideal single write per pixel - it
+    # ignores overdraw, read-modify-write and tile traffic, so it is a LOWER BOUND. Said so,
+    # because a header reading "bandwidth" invites quoting it as real DRAM traffic.
     if rec["mpix_s"] and rec["bpp"]:
-        bw = f"   ~{rec['mpix_s']*rec['bpp']:.0f} MB/s written"
-    print(f"  bandwidth  : bpp={rec['bpp']}  {bw}")
+        bw = f"~{rec['mpix_s']*rec['bpp']:.0f} MB/s (ideal write, derived)"
+    print(f"  fb write   : bpp={rec['bpp']}  {bw}   [DERIVED from throughput x bpp - NOT measured DRAM traffic]")
     if rec["fps"]:
         print(f"  fps        : {rec['fps']}")
     print(f"{'='*74}\n")
