@@ -258,6 +258,14 @@ def main():
                 print(f"  WARNING    : two stages are equal to within 1% ({ds[i]:.3f} vs {ds[i+1]:.3f} ms)"
                       f" - likely MISPRICED, do not trust this breakdown")
                 break
+    # The breakdown comes from a ONE-FRAME window, so no single stage can outlast the frame.
+    # A job longer than the frame it belongs to is the other mispairing signature (it once
+    # produced a 168 ms median for a scene that renders in about six).
+    if jobs and rec.get("ms_per_frame"):
+        _mx = max(d for _, d in jobs)
+        if _mx > rec["ms_per_frame"] * 1.5:
+            print(f"  WARNING    : a stage is {_mx:.1f} ms but the frame is {rec['ms_per_frame']:.1f} ms"
+                  f" - IMPOSSIBLE in a one-frame window, do not trust this breakdown")
     print(f"  stages     : {len(jobs)} jobs in the trace window")
     if cpu:
         tot_c = cpu["user_ms"] + cpu["sys_ms"]
