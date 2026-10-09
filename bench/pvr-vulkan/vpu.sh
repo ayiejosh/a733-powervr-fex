@@ -6,7 +6,10 @@
 # VA-API driver (libva looks for sunxi-drm_drv_video.so and does not find it), no V4L2 M2M, no
 # ffmpeg hwaccel and no GStreamer element. So browsers and ffmpeg use the CPU while the VPU idles.
 #
-# Measured: the decode and encode STEPS are 1.46x and 2.24x faster than the CPU in isolation.
+# Measured, and CORRECTED twice: the VPU does NOT decode faster than the CPU. On 300 frames of 720p
+# both take ~3.7 ms/frame (VPU 1.25 s, ffmpeg 1.12 s). The earlier 1.46x came from a 36-frame test
+# where vdecoderdemo's fixed startup dominated. The real finding is that the device works and
+# NOTHING standard can reach it - no VA-API driver, no V4L2 M2M, no ffmpeg hwaccel, no GStreamer.
 # BUT the decode-any pipeline is 1.39x SLOWER end-to-end than plain ffmpeg. The overhead is NOT
 # disk I/O (writing to tmpfs made it worse) and NOT the hardware - it is the vendor demo's own
 # per-frame processing, which reports 'cost 0 s' internally while wall time is 1.6 s. This is a
