@@ -535,4 +535,61 @@ complete measurement toolset that caught three silent-wrong-answer bugs, and two
 proofs that each is out of Mesa's reach.
 
 **Next session should start with `./components.sh` and `./ab.sh`, then attempt the `drm/imagination` UAPI
-change — only with the budget to finish and verify it.**
+change — only with the budget to finish and verify it.**\n
+---
+
+## 17. ROUNDS 201-207: the sync lever attacked, and the worst stage located
+
+### The sync-timeline lever went from "unreachable" to "reachable with a named blocker"
+
+Step 1 (persistent `job_sync`/`job_value`, created and destroyed, **unused**) was already landed and is **kept**.
+Two attempts to use it, **both reverted**:
+
+| attempt | probe suite | weston |
+|---|---|---|
+| 1 (`d253e35`): GEOM+FRAG on the persistent timeline | **all PASS** | **SIGSEGV** |
+| 2: + restored the previous-barrier wait (map-derived hypothesis) | **all PASS** | **still SIGSEGV** |
+
+**Both removed 2 ioctls per barrier and both crashed the compositor.** The constraint they establish:
+
+> **The barrier's submit both waits on and signals the same timeline syncobj** (wait N, signal N+1). The
+> per-job path used **two different syncobjs**, so it never waited on what it was signalling. **The wait line
+> and the signal line must be separate** — two timeline objects per stage (`job_sync_wait` / `job_sync_signal`)
+> is the smaller shape, mirroring the per-job path.
+
+**And the gate that must apply** (the probes were blind both times):
+
+```
+1. probe suite via harness.py (correct ICD)   <- passed BOTH times
+2. WESTON MUST COME UP                        <- caught BOTH regressions
+3. glmark2 via zink renders + validates       <- end-to-end proof
+```
+
+### The worst stage is Mesa-side: the PR job at 4.03×
+
+| job | open | vendor | ratio |
+|---|---|---|---|
+| geometry / TA | 0.35 ms | 0.82 ms | **0.43x — open WINS** |
+| **PR (partial render)** | **9.31 ms** | **2.31 ms** | **4.03x** |
+| fragment | 13.01 ms | 5.99 ms | 2.17x |
+
+`pvr_render_job_ws_fragment_pr_init_based_on_fragment_state()` builds the PR state by **copying the fragment
+command stream** and patching two offsets, while `pvr_drm_job_render.c:587` confirms *"no PRs will be
+performed, as they aren't needed"*. **The driver's own TODOs flag both fixes and neither is taken.**
+
+**Two directions, correctly assigned** (I got this backwards once and corrected it):
+
+| TODO | saves | touches the 4.03x? |
+|---|---|---|
+| avoid the fragment state setup when `!run_frag` | **host CPU** (a stream built and never submitted — `[2]` is only submitted when `run_frag`) | **no** |
+| eliminate the pr / use frag directly in SPM | **a GPU job** | **yes — this is the 4.03x** |
+
+**The host-side one is nearly free and correctness-safe and host CPU is one of the two levers.** The GPU-side
+one is the 4.03x and needs a defensible test for "no PR can be needed", which the driver cannot know in
+advance because the firmware decides.
+
+### The method lesson, now three times over
+
+**Green probes are not sufficient.** The `insmod` module-load failure (probes never load the module), the
+mislabelled driver (silent wrong answers), and the two compositor crashes (probes issue too few barriers) —
+**the complement to `harness.py` is running the actual client.**
