@@ -15,6 +15,10 @@ WHAT IT OBSERVES, AND WHAT IT CANNOT
                             and PR is roughly a third of the fragment before trusting.
   critical path  measured   from the same trace
   CPU split      measured   RUSAGE_CHILDREN, LAST REP only, not the median
+  GPU busy       measured   critical path / the probe's OWN ms/frame from the SAME traced
+                            run. NOT the phase-2 median (untraced) and NOT phase-1's wall
+                            time (includes startup + tracing: 201-1602 ms for a 1-23 ms
+                            frame). Both of those give invalid ratios.
   wait states    measured   /proc/<pid>/task/*/wchan sampled while running: separates
                             futex (userspace lock contention) from kernel waits. A thread
                             in futex_wait is NOT in a syscall, so this CORRECTS the
@@ -202,7 +206,17 @@ def main():
     # ponytail: fence pairing degrades above a few thousand jobs, so the
     # breakdown must come from a short run. The speed comes from phase 2.
     trace_on(events)
-    _, _ = run("1", 60)
+    # ponytail: KEEP the phase-1 wall time. The critical path comes from this one-frame
+    # trace while the frame time comes from phase 2's median - comparing them directly is
+    # apples-to-oranges and produced a 105% "utilisation" on a vendor 4096 row. Reporting
+    # phase 1's own duration makes the GPU/frame ratio internally consistent.
+    # ponytail: the probe's OWN reported ms/frame is the only valid denominator. The
+    # phase-1 wall time includes process startup and tracing overhead (201-1602 ms for
+    # one 1-23 ms frame), and the phase-2 median is UNTRACED - so neither is comparable
+    # to a traced critical path. The probe's own figure from the SAME traced run is.
+    p1_out, p1_wall = run("1", 60)
+    _p1_ms = re.findall(r"([\d.]+) ms/frame", p1_out)
+    p1_frame_ms = float(_p1_ms[-1]) if _p1_ms else None
     txt = trace_off()
 
     # phase 2: many frames - for speed and correctness only.
@@ -249,6 +263,8 @@ def main():
            "correct": (correct[-1][0] if correct else None),
            "pixels_ok": (correct[-1][1] + "/" + correct[-1][2]) if correct else None,
            "jobs": [[n, round(d, 3)] for n, d in jobs[:6]],
+           "phase1_ms": round(p1_wall * 1000, 3) if p1_wall else None,
+           "phase1_frame_ms": p1_frame_ms,
            "trace": src}
 
     print(f"\n{'='*74}")
@@ -290,6 +306,12 @@ def main():
             print(f"  WARNING    : a stage is {_mx:.1f} ms but the frame is {rec['ms_per_frame']:.1f} ms"
                   f" - IMPOSSIBLE in a one-frame window, do not trust this breakdown")
     print(f"  stages     : {len(jobs)} jobs in the trace window")
+    if jobs and p1_frame_ms:
+        _crit = max(d for _, d in jobs)
+        print(f"  GPU busy   : {100*_crit/p1_frame_ms:.0f}%   (crit {_crit:.3f} ms / traced"
+              f" frame {p1_frame_ms:.3f} ms - MATCHED pair; phase-1 wall was"
+              f" {p1_wall*1000:.0f} ms incl. startup+tracing)")
+        rec["gpu_busy_pct"] = round(100 * _crit / p1_frame_ms, 1)
     if cpu:
         tot_c = cpu["user_ms"] + cpu["sys_ms"]
         # ponytail: RUSAGE_CHILDREN delta covers the LAST rep only (ru0 is re-read per rep, ru1
