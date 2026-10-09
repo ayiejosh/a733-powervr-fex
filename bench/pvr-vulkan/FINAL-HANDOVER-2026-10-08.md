@@ -1,5 +1,30 @@
 # Open PowerVR stack vs vendor driver — FINAL handover, 2026-10-08
 
+## BOTTOM LINE (one screen)
+
+**The objective - close the open PowerVR stack's gap to the vendor driver - is NOT met.** What was achieved, and
+what blocks the rest:
+
+| | |
+|---|---|
+| **Open vs vendor, NOW** | render **1.68-2.46x** · `vkheavy` **1.42x** · loops **1.63-2.15x** · **straight-line compute 1.06x = PARITY** |
+| **Progress** | loop/shader work went from **4.8-5.5x behind to 1.4-2.1x**; `cstpi` 26.6 -> **70.6** M/s, `vkheavy` 858.5 -> **255.4** ms |
+| **Shipped** | **4 PCO fixes** (`c2bde57`, `c251c9b`, `5a1be21`, `167a943`) - **probe-level only; NO measurable client effect (measured on two scenes)** |
+| **Gap attributed** | loops = **instruction count** (register moves forced by the assembler's ISA mapping); render = **tile-bound raster cost**, outside Mesa |
+| **Only lever that can move the client** | **kernel-side synchronisation (62.5% of the frame)** - spec complete, **three attempts failed**, bisection method recorded |
+| **Every other candidate** | measured ineffective, proven impossible, or a porting project (see S19) |
+| **The SoC beyond the GPU** | **VPU works but is NOT faster than the CPU** and **nothing standard can reach it**; **NPU has no userspace**; CPU at max freq, **not a limiter** |
+| **Gate** | green on **both** drivers - `glmark2 --validate` **27/27** - and the probes are now driver-agnostic |
+
+**How to read this document:** the banner below names six superseded claims; **sections 21-28 hold the corrected
+record**; everything earlier is the trail. **Nothing has been pushed.** 43 mesa commits ahead of `main`, never
+pushed.
+
+**The method that produced all of it:** **ten plausible mechanisms, ten refuted by measurement.** Every surviving
+claim is one that was measured; every withdrawn claim is one that was reasoned to. **Where a correction landed,
+it landed in the artifact it invalidated** - this document, the README, and the tools' own headers.
+
+
 > ## READ THIS FIRST - sections 1-20 contain claims that later sections FALSIFY
 >
 > This document grew over the whole session and **was not rewritten as findings changed**. Sections 1-20
