@@ -42,7 +42,7 @@ it landed in the artifact it invalidated** - this document, the README, and the 
 > | **the VPU is a speedup (S26, S27)** | **S28** | **WITHDRAWN.** On 300 frames the VPU and the CPU are **equal at ~3.7 ms/frame**; the 1.46x measured **startup** on a 36-frame run. The real finding is that the device works and **nothing standard can reach it** |
 > | the four fixes are a client-level win | **S23** | **probe-level only - measured, no client effect on two scenes** |
 >
-> **Everything that survived is in S21-23 with its measurement and its uncertainty. Everything else here is
+> **everything that survived is in S21-28 with its measurement and its uncertainty. Everything else here is
 > the trail of how it was found.**
 
 
