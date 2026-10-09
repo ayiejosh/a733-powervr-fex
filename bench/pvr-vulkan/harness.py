@@ -2,9 +2,28 @@
 """One run, everything observed: speed, per-stage job times, CPU, correctness.
 Works under either driver - it reads the tracepoints the bound driver actually emits.
 
-  ./harness.py <probe> <size> <secs> [env...]
+  ./harness.py <probe> <size> <secs> [env...]  [--driver=open|vendor]
 
 Emits a formatted report and appends one JSON line to harness-log.jsonl.
+
+WHAT IT OBSERVES, AND WHAT IT CANNOT
+  speed          measured   ms/frame, Mpix/s, M inv/s, min/median/max + spread
+  correctness    measured   the probe's own verdict and pixel count
+  per-stage jobs measured   from the bound driver's tracepoints: gpu_scheduler (open)
+                            or pvr_fence (vendor). Jobs can be MISPRICED above a few
+                            thousand of them - sanity-check geometry is the smallest
+                            and PR is roughly a third of the fragment before trusting.
+  critical path  measured   from the same trace
+  CPU split      measured   RUSAGE_CHILDREN, LAST REP only, not the median
+  fb write       DERIVED    mpix_s x bpp - an ideal single write per pixel. Ignores
+                            overdraw and read-modify-write, so a LOWER BOUND, not
+                            measured DRAM traffic.
+  ioctl counts   IMPOSSIBLE no ioctl tracepoints, no perf (perf_event_paranoid=2), and
+                            kprobe_events arms but never fires on this kernel. CPU sys
+                            time is the only proxy; the "~190 ioctls/frame" figure is
+                            an inference from it, not a count.
+
+Run as a user with sudo rights: all trace access goes through sudo to /sys/kernel/debug/tracing.
 """
 import json, os, re, resource, subprocess, sys, time
 
