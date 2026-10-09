@@ -40,7 +40,7 @@ it landed in the artifact it invalidated** - this document, the README, and the 
 > | "target (2) - extra images give 19%" | **S21** | **measured ~2%, inside the noise** |
 > | "pool or timeline-back the vk_sync objects" | **S18, S19** | pooling is **unsafe** (kernel holds handle refs); the timeline needs the **two-line design** and has failed **three times** |
 > | **the current cross-driver comparison** | **S25** | render **1.68-2.46x**, straight-line compute **1.06x (parity)**, loops **1.63-2.15x**, `vkheavy` **1.42x** |
-> | **the VPU is a speedup (S26, S27)** | **S28** | **WITHDRAWN.** On 300 frames the VPU and the CPU are **equal at ~3.7 ms/frame**; the 1.46x measured **startup** on a 36-frame run. The real finding is that the device works and **nothing standard can reach it** |
+> | **the VPU is a speedup (S26, S27, S28)** | **S29** | **it depends on load.** Idle it is **1.18x slower**; **under CPU load it is 1.24-1.49x FASTER and uses 8-14x less CPU.** It is a CPU-offload engine - and this board is never idle |
 > | the four fixes are a client-level win | **S23** | **probe-level only - measured, no client effect on two scenes** |
 >
 > **everything that survived is in S21-28 with its measurement and its uncertainty. Everything else here is
@@ -1008,7 +1008,7 @@ a crash.**\n
 |---|---|---|---|---|
 | **CPU** | 8 cores: 2x Cortex-A76 @ 2002 MHz + 6x Cortex-A55 @ 1794 MHz | yes | **yes** | **all pinned at max frequency; NOT a limiter** |
 | **GPU** | PowerVR BXM-4-64 MC1 | yes | yes | **2.4x behind the vendor on render** |
-| **VPU** | `/dev/cedar_dev`, `/dev/cedar_dev_ve2` | `sunxi_ve` | **yes, direct route** | **WORKS, but NOT faster than the CPU - equal at ~3.7 ms/frame on 300 frames. See S27 and S28; the 1.46x figure is WITHDRAWN (it measured startup on a 36-frame run)** |
+| **VPU** | `/dev/cedar_dev`, `/dev/cedar_dev_ve2` | `sunxi_ve` | **yes, direct route** | **USEFUL: an OFFLOAD engine. Idle it is 1.18x slower; under CPU load it is 1.24-1.49x FASTER and uses 8-14x less CPU. See S29** |
 | **NPU** | `/dev/vipcore` + `npu_thermal_zone` | yes | **NO** | untestable - **no userspace exists** |
 
 ### The VPU was idle and is faster than the CPU
@@ -1151,4 +1151,33 @@ advantage.**
 * **and `vpu.sh` is a demonstration, not a speedup** - its header says so.
 
 **The finding worth keeping from the whole SoC survey is the integration gap, not a speedup.** Four measurements
-and three refuted explanations to arrive back at the thing that needed no explanation.
+and three refuted explanations to arrive back at the thing that needed no explanation.\n
+---
+
+## 29. THE VPU IS USEFUL AFTER ALL - as a CPU-offload engine, and under load it wins
+
+**S26 claimed the VPU was faster; S27 and S28 withdrew that. Both were measuring the wrong thing. The answer
+depends on CPU contention, and measured properly:**
+
+| 300 frames, 720p | idle wall | idle CPU | **loaded wall** | loaded CPU |
+|---|---|---|---|---|
+| **decode** - VPU | 1.36 s | **0.73 s** | **1.54 s** | 0.85 s |
+| decode - ffmpeg | 1.16 s | 5.6 s | 1.90 s | 3.35 s |
+| **encode h264** - VPU | 1.49 s | **0.59 s** | **1.45 s** | 0.55 s |
+| encode - x264 | 1.26 s | 7.2 s | 2.17 s | 4.40 s |
+| **encode JPEG** - VPU | 1.56 s | **0.55 s** | - | - |
+| encode - mjpeg | 1.38 s | 7.6 s | - | - |
+
+**Idle: 1.18x slower, 8-14x less CPU. Loaded (6 of 8 cores busy): 1.49x faster encoding, 1.24x faster decoding,
+still 4-6x less CPU.**
+
+**The VPU is an offload engine, not a throughput engine - and this board is never idle while the desktop is up**
+(client frame: **102% of one core, 62.5% in the kernel**; ffmpeg wants **5.5 cores** for what the VPU does in
+**0.4**).
+
+**Use it for:** video decode/encode while the desktop runs, **JPEG encoding** (`vencoder -f 1`, output gets
+`.mjpeg` appended), screen recording, transcoding, thumbnailing. **Break-even ~3-4 busy cores.**
+
+**Caveats:** quality is not comparable (VPU h264 output **3x** larger than x264's, JPEG **1.8x**); **no standard
+app can reach it** (no VA-API, V4L2 M2M, hwaccel or GStreamer) so it needs `libvdecoder`/`libvencoder` or the
+demos; the `decode-any` wrapper demuxes through ffmpeg.
