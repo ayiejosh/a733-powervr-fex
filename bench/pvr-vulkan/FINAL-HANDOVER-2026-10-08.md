@@ -724,4 +724,58 @@ and the srv branch IS taken.**
 ### Build state
 
 **`imagination-srv` was reverted to its default (False) after the experiment**, so the build matches the
-session's verified baseline. **Mesa `d253e35`, 0 modified, 43 ahead, four PCO fixes intact.**
+session's verified baseline. **Mesa `d253e35`, 0 modified, 43 ahead, four PCO fixes intact.**\n
+---
+
+## 21. THE OBJECTIVE'S PREMISES, TESTED (rounds 239-244)
+
+**Six inherited figures were tested. Three failed.** That ratio is the single most useful thing in this
+document.
+
+### Refuted
+
+| premise | source | test | result |
+|---|---|---|---|
+| **extra swapchain images give 19%** | target (2) | 8 interleaved rounds, `ZINK_EXTRA_IMAGES=0` vs `=2` | **~2% - `101.5` vs `103.5` FPS, ranges 75-113 / 76-107 - inside the noise** |
+| **the PR job is a non-issue** | target (5) | per-job kernel timestamps | **it is the WORST stage: 9.31 vs 2.31 ms = 4.03x** |
+| **the open stack gets ~31 FPS** | ground truth | glmark2 through weston+Xwayland+zink | **observed 102-113 FPS, ~3x the recorded figure** |
+
+### Explained rather than refuted
+
+**The "~31 FPS" is best explained by SOFTWARE RENDERING (llvmpipe), not by the open driver.** Measured, same
+probe: llvmpipe **40.075 ms** vs open GPU **13.687 ms** = **2.93x slower**; the open client at **108 FPS** would
+be **~37 FPS** on llvmpipe, against the recorded **~31** - **within ~15%.**
+
+**Consistent with a known fact: the open driver was genuinely unable to load before this session fixed
+`switch-open.sh`** (`insmod` does not resolve module dependencies) - **exactly the state that produces a
+fallback.**
+
+**Caveat, honest:** the software figure is **inferred** from a probe ratio; a direct measurement with
+`LIBGL_ALWAYS_SOFTWARE=1` **did not complete** (200 s per run, no output). **The scene also differs.**
+
+**And the vendor half is unreachable:** the vendor is 2.39x faster than the open GPU on the same probe, so a
+vendor client would be **~258 FPS, not 787** - reaching 787 needs another **3.1x** beyond anything measurable.
+
+### Held up (measured, with ranges)
+
+| figure | value |
+|---|---|
+| render ratio, 2048 | **2.39x median, 1.94x worst case** |
+| fixed per-tile cost | **2.17x** (13.01 vs 5.99 ms) |
+| PR job | **4.03x** - now with a target: PR is **72%** of the open fragment pass vs **39%** of the vendor's |
+| kernel share of the client frame | **84%** |
+| straight-line compute | **parity (1.02x)** |
+
+### The variance, characterised
+
+**~0.2 ms of fixed scheduling jitter plus occasional single hiccups.** Percentage spread therefore scales
+inversely with frame time: **4.5% at 2048 (5.5 ms)**, **27% at 512 (0.67 ms)**. Absolute jitter is similar
+(0.18-0.25 ms). **Small workloads need more samples; a 3-run median at 512 proves nothing.**
+
+**`harness.py` now reports a range** (`HARNESS_REPEATS`, default 3) and stores `samples` + `spread_pct`.
+
+### The conclusion for anyone reading this
+
+**The objective's headline - a 25x client gap - should be retired in favour of the measured ~2.4x render gap.**
+Closing 2.4x with a known 60% kernel-side component is a different and more tractable problem than 25x, and is
+what the four shipped fixes and the documented levers actually address.
