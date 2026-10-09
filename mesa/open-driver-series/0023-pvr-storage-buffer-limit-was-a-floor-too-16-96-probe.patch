@@ -1,0 +1,46 @@
+From 1e2b64c4152c43aee1fb0e3efe53fddcb2c5e8b0 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Thu, 8 Oct 2026 11:09:59 +0800
+Subject: [PATCH 23/43] pvr: storage buffer limit was a floor too (16 -> 96),
+ probed
+
+maxPerStageDescriptorStorageBuffers reported 16. Probed with a new harness
+(bench/pvr-vulkan/stgbuf): an array of N storage blocks where element i holds the value i, so
+the shader's sum must be the triangular number; an array element is one descriptor.
+
+  N=16 got 120    N=32 got 496    N=48 got 1128    N=64 got 2016    N=96 got 4560
+
+At least 96 storage buffers work per stage, so 16 was a floor. maxDescriptorSetStorageBuffers
+follows (3x96) and still satisfies the spec invariant maxDescriptorSet* >=
+maxPerStageDescriptor*.
+
+That is floor 9. No regressions: bda, vk13, pctest, vk16, wgsize, samplers, storageimages,
+mrt, varyings, inatt, ubos, stgbuf, linfilter all PASS.
+---
+ src/imagination/vulkan/pvr_physical_device.c | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/src/imagination/vulkan/pvr_physical_device.c b/src/imagination/vulkan/pvr_physical_device.c
+index 0f67470..9d70109 100644
+--- a/src/imagination/vulkan/pvr_physical_device.c
++++ b/src/imagination/vulkan/pvr_physical_device.c
+@@ -761,7 +761,9 @@ static bool pvr_physical_device_get_properties(
+        * value i, sums correctly up to at least 64 - while this reported 13 (just above the
+        * spec minimum of 12) with no backing constant. */
+       .maxPerStageDescriptorUniformBuffers = 64,
+-      .maxPerStageDescriptorStorageBuffers = 16,
++      /* Probed (bench/pvr-vulkan/stgbuf): an array of N storage blocks, element i holding i,
++       * sums correctly up to at least 96 - while this reported 16. */
++      .maxPerStageDescriptorStorageBuffers = 96,
+       /* Probed (bench/pvr-vulkan/samplers): a sampler2D[128] array binds and samples 128
+        * combined image samplers, i.e. 128 sampled images per stage. This reported 32. */
+       .maxPerStageDescriptorSampledImages = 128,
+@@ -782,7 +784,7 @@ static bool pvr_physical_device_get_properties(
+        * 3*4 = 12, a stale derivation from when the per-stage limit was 4. An application
+        * using the 16 storage buffers per stage that the per-stage limit allows would then
+        * have exceeded the per-set limit. */
+-      .maxDescriptorSetStorageBuffers = 3U * 16U,
++      .maxDescriptorSetStorageBuffers = 3U * 96U,
+       .maxDescriptorSetStorageBuffersDynamic = 4U,
+       .maxDescriptorSetSampledImages = 3U * 128U,
+       .maxDescriptorSetStorageImages = 3U * 32U,

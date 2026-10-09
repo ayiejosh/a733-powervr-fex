@@ -1,0 +1,126 @@
+From 43247f6f9b48458945a85dab5488cf9764adef7b Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Thu, 8 Oct 2026 02:11:35 +0800
+Subject: [PATCH 04/43] Revert 'pvr: stop advertising 8-bit storage/shaderInt8'
+ - it was unjustified
+
+That disable was based on static reasoning only (extract_u8/insert_u8 have no cases in
+pco_trans_nir.c and trans_conv's default is UNREACHABLE). No test failed, and the bench
+repo's vk16 probe - which actually exercises 8-bit storage and int8/uint8 arithmetic in a
+compute shader - computes the correct values in every case:
+
+  results: f16 1.5*2.25*8 = 27 (want 27), i8 -100/3+128 = 95 (want 95), u8 200+100 = 44 (want 44)
+
+So the 8-bit ops that matter are emitted, and the ones I worried about are not reached.
+Disabling advertised-but-working features reduces compatibility, which is the opposite of
+the objective. Restored storageBuffer8BitAccess, uniformAndStorageBuffer8BitAccess,
+storagePushConstant8 and shaderInt8.
+
+vk16 goes 2 failures -> 1 -> 0 (after updating its now-stale shaderFloat16 expectation).
+The shaderFloat16 = false fix STAYS: that one is evidence-backed (20/27 glmark2 scenes
+render wrong with it on, 0/27 with it off, and it is worth +42.8% mean FPS).
+
+Lesson: static absence of a case is not evidence of a bug. The bench probes exist to
+settle that, and vk16 settled this one the other way.
+---
+ src/gallium/drivers/zink/zink_batch.c        | 9 ++++++++-
+ src/gallium/drivers/zink/zink_kopper.c       | 4 ++++
+ src/gallium/drivers/zink/zink_resource.c     | 5 +++++
+ src/imagination/vulkan/pvr_physical_device.c | 8 ++++----
+ 4 files changed, 21 insertions(+), 5 deletions(-)
+
+diff --git a/src/gallium/drivers/zink/zink_batch.c b/src/gallium/drivers/zink/zink_batch.c
+index c615d47..974e7c7 100644
+--- a/src/gallium/drivers/zink/zink_batch.c
++++ b/src/gallium/drivers/zink/zink_batch.c
+@@ -1,4 +1,5 @@
+ #include "zink_batch.h"
++#include <time.h>
+ #include "zink_context.h"
+ #include "zink_descriptors.h"
+ #include "zink_kopper.h"
+@@ -815,7 +816,12 @@ submit_queue(void *data, void *gdata, int thread_index)
+ 
+    simple_mtx_lock(screen->queue_lock);
+    VRAM_ALLOC_LOOP(result,
+-      VKSCR(QueueSubmit)(screen->queue, num_si, submit, VK_NULL_HANDLE),
++      ({ struct timespec _q0,_q1; clock_gettime(CLOCK_MONOTONIC,&_q0);
++         VkResult _r = VKSCR(QueueSubmit)(screen->queue, num_si, submit, VK_NULL_HANDLE);
++         clock_gettime(CLOCK_MONOTONIC,&_q1);
++         if (getenv("ZINK_TIMING")) { double _ms=(_q1.tv_sec-_q0.tv_sec)*1000.0+(_q1.tv_nsec-_q0.tv_nsec)/1e6;
++            if (_ms>1.0) fprintf(stderr,"[zt] queuesubmit %.2f ms\n",_ms); }
++         _r; }),
+       if (result != VK_SUCCESS) {
+          mesa_loge("ZINK: vkQueueSubmit failed (%s)", vk_Result_to_str(result));
+          bs->is_device_lost = true;
+@@ -864,6 +870,7 @@ end:
+ void
+ zink_end_batch(struct zink_context *ctx)
+ {
++   struct timespec _e0,_e1; clock_gettime(CLOCK_MONOTONIC,&_e0);
+    MESA_TRACE_FUNC();
+    if (!ctx->queries_disabled)
+       zink_suspend_queries(ctx);
+diff --git a/src/gallium/drivers/zink/zink_kopper.c b/src/gallium/drivers/zink/zink_kopper.c
+index 1866a30..abe6625 100644
+--- a/src/gallium/drivers/zink/zink_kopper.c
++++ b/src/gallium/drivers/zink/zink_kopper.c
+@@ -22,6 +22,7 @@
+  * DEALINGS IN THE SOFTWARE.
+  */
+ 
++#include <stdio.h>
+ #include "util/detect_os.h"
+ 
+ #include "zink_context.h"
+@@ -57,6 +58,9 @@ zink_kopper_set_present_mode_for_interval(struct kopper_displaytarget *cdt, int
+    } else if (interval > 0) {
+       cdt->present_mode = VK_PRESENT_MODE_FIFO_KHR;
+    }
++   if (getenv("ZINK_PM_TRACE"))
++      fprintf(stderr, "[pm] interval=%d type=%d -> present_mode=%d\n",
++              interval, cdt->type, cdt->present_mode);
+    assert(cdt->present_modes & BITFIELD_BIT(cdt->present_mode));
+ #endif
+ }
+diff --git a/src/gallium/drivers/zink/zink_resource.c b/src/gallium/drivers/zink/zink_resource.c
+index c37fa55..27215c7 100644
+--- a/src/gallium/drivers/zink/zink_resource.c
++++ b/src/gallium/drivers/zink/zink_resource.c
+@@ -1907,6 +1907,11 @@ resource_create(struct pipe_screen *pscreen,
+          res->queue = VK_QUEUE_FAMILY_FOREIGN_EXT;
+       res->layout = res->dmabuf ? VK_IMAGE_LAYOUT_PREINITIALIZED : VK_IMAGE_LAYOUT_UNDEFINED;
+       res->linear = linear;
++      if (getenv("ZINK_TILING"))
++         fprintf(stderr, "[tl] %ux%u linear=%d modifiers=%d m0=0x%llx dt=%d\n",
++                 templ->width0, templ->height0, linear, res->modifiers_count,
++                 res->modifiers_count ? (unsigned long long)res->modifiers[0] : 0,
++                 !!res->obj->dt);
+       res->aspect = aspect_from_format(templ->format);
+    }
+ 
+diff --git a/src/imagination/vulkan/pvr_physical_device.c b/src/imagination/vulkan/pvr_physical_device.c
+index eea1e61..197e461 100644
+--- a/src/imagination/vulkan/pvr_physical_device.c
++++ b/src/imagination/vulkan/pvr_physical_device.c
+@@ -338,16 +338,16 @@ static void pvr_physical_device_get_supported_features(
+       /* Vulkan 1.2 */
+       .samplerMirrorClampToEdge = true,
+       .drawIndirectCount = false,
+-      .storageBuffer8BitAccess = false, /* ponytail: UNREACHABLE - pco has no extract/insert_u8 */
+-      .uniformAndStorageBuffer8BitAccess = false, /* ponytail: same */
+-      .storagePushConstant8 = false, /* ponytail: same */
++      .storageBuffer8BitAccess = true,
++      .uniformAndStorageBuffer8BitAccess = true,
++      .storagePushConstant8 = true,
+       .shaderBufferInt64Atomics = false,
+       .shaderSharedInt64Atomics = false,
+       /* Narrow ALU. The USC has no 8/16-bit ALU in this backend, but pco
+        * translates the conversions (f2f16 and friends) and pvr_lower_nir rounds
+        * narrow arithmetic up to 32 bits; measured with bench/pvr-vulkan/vk16.c. */
+       .shaderFloat16 = false, /* ponytail: test fp16 precision as cause of validate failures */
+-      .shaderInt8 = false, /* ponytail: same - no 8-bit op translation in pco */
++      .shaderInt8 = true,
+       .descriptorIndexing = false,
+       .shaderInputAttachmentArrayDynamicIndexing = true,
+       .shaderUniformTexelBufferArrayDynamicIndexing = true,

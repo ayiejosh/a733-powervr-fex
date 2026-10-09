@@ -1,0 +1,42 @@
+From e3cf93fb50dee71bafd7a0f9e4d51b58e628aa29 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Thu, 8 Oct 2026 18:05:18 +0800
+Subject: [PATCH 35/43] wsi: log the release timeline point waited on
+ (WSIREL_POINTS, off by default)
+
+Extends the existing WSIREL_TRACE instrumentation in wsi_drm_wait_for_explicit_sync_release() to
+also print, per wait, the return code, the chosen image index, the elapsed wait and the
+(handle, point) pair for every candidate image.
+
+This answers a question that decided the next step: whether the ~13 ms release wait is the
+compositor signalling late or the client waiting on the wrong point. Measured, the points are
+monotonically increasing per handle (p1 -> p2 -> p3) with the chosen index rotating 1,2,0 and
+ret=0 on every wait, so the client waits on the correct points and the signal is simply late.
+
+Env-gated and inert unless WSIREL_POINTS is set. Verified: bda, vk13, pctest, vk16 PASS and
+glmark2 --validate 27/0.
+---
+ src/vulkan/wsi/wsi_common_drm.c | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/src/vulkan/wsi/wsi_common_drm.c b/src/vulkan/wsi/wsi_common_drm.c
+index 0735a1f..9579e5e 100644
+--- a/src/vulkan/wsi/wsi_common_drm.c
++++ b/src/vulkan/wsi/wsi_common_drm.c
+@@ -1107,6 +1107,16 @@ wsi_drm_wait_for_explicit_sync_release(struct wsi_swapchain *chain,
+       clock_gettime(CLOCK_MONOTONIC, &_r1);
+       double _ms = (_r1.tv_sec-_r0.tv_sec)*1000.0 + (_r1.tv_nsec-_r0.tv_nsec)/1e6;
+       _rn++; _rtot += _ms; if (_ms > _rmax) _rmax = _ms;
++      /* ponytail: log the point waited on, to tell "compositor signals late" from "wrong point". */
++      if (getenv("WSIREL_POINTS")) {
++         fprintf(stderr, "[relpt] ret=%d first=%d n=%u waited=%.2fms points=",
++                 ret, ret == 0 ? (int)first_signalled : -1,
++                 unacquired_image_count, _ms);
++         for (uint32_t _i = 0; _i < unacquired_image_count && _i < 8; _i++)
++            fprintf(stderr, "img%u:h%u@p%llu ", indices[_i], handles[_i],
++                    (unsigned long long)points[_i]);
++         fprintf(stderr, "\n");
++      }
+       if (_rn % 50 == 0)
+          fprintf(stderr, "[rel] explicit-sync release waits=%lu total=%.1fms avg=%.2fms max=%.2fms images=%u\n",
+                  _rn, _rtot, _rtot/_rn, _rmax, unacquired_image_count);

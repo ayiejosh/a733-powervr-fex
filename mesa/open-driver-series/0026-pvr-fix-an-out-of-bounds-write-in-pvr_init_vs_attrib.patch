@@ -1,0 +1,62 @@
+From 4a428e4c4f14d706b8d5501365ccf57098c41d47 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Thu, 8 Oct 2026 13:07:25 +0800
+Subject: [PATCH 26/43] pvr: fix an out-of-bounds write in pvr_init_vs_attribs
+
+Found by probing maxVertexInputAttributes (advertised 16) with a new harness
+(bench/pvr-vulkan/vattrib): a vertex shader with N vec4 attributes, one binding, and a
+readback of the summed values.
+
+  N=16  -> correct (got 30, want 30)
+  N=17+ -> SIGSEGV
+
+Backtrace of the crash:
+
+  #0 add_defs_uses
+  #1 nir_instr_insert
+  #2 nir_builder_instr_insert
+  #3 pco_nir_pvi
+  #4 pco_lower_nir
+  #5 pvr_graphics_pipeline_init
+  #6 pvr_rogue_CreateGraphicsPipelines
+
+pvr_init_vs_attribs() wrote data->vs.attrib_formats[attrib->location + VERT_ATTRIB_GENERIC0]
+with no bounds check. The array is enum pipe_format attrib_formats[VERT_ATTRIB_MAX] - 32
+entries, indices 0..31 - while VERT_ATTRIB_GENERIC0 is 16 and MAX_VERTEX_GENERIC_ATTRIBS is
+16, so the valid range is 16..31. A 17th attribute has location 16 -> index 32, one past the
+end, corrupting the surrounding pco_data; the corruption surfaced later as the segfault above.
+
+Now out-of-range locations are skipped. A clean pipeline-creation error would be better than
+skipping, but this removes the memory corruption.
+
+NOTE: the segfault at N=17+ PERSISTS after this fix, at the same pco_nir_pvi site, so there is
+a second cause still to isolate. This commit is a genuine memory-safety fix on its own.
+
+No regressions: bda, vk13, pctest, vk16, wgsize, samplers, storageimages, mrt, varyings, ubos,
+stgbuf, vattrib(16) all PASS; glmark2 --validate 27/0.
+---
+ src/imagination/vulkan/pvr_arch_pipeline.c | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/src/imagination/vulkan/pvr_arch_pipeline.c b/src/imagination/vulkan/pvr_arch_pipeline.c
+index 98416ef..90f6ca3 100644
+--- a/src/imagination/vulkan/pvr_arch_pipeline.c
++++ b/src/imagination/vulkan/pvr_arch_pipeline.c
+@@ -1793,6 +1793,17 @@ static void pvr_init_vs_attribs(
+ 
+       gl_vert_attrib location = attrib->location + VERT_ATTRIB_GENERIC0;
+ 
++      /* Bounds check: attrib_formats[] has VERT_ATTRIB_MAX (32) entries, i.e. locations
++       * VERT_ATTRIB_GENERIC0 (16) .. 16 + MAX_VERTEX_GENERIC_ATTRIBS - 1 (31). The driver
++       * advertises maxVertexInputAttributes = 16, but nothing enforces that here, and an
++       * application passing a 17th attribute (location 16 -> index 32) wrote one entry past
++       * the end of the array, corrupting the surrounding pco_data. That corruption surfaced
++       * later as a SIGSEGV inside pco_nir_pvi (add_defs_uses <- nir_instr_insert), which is
++       * what a >16-attribute pipeline does today. Skip out-of-range locations rather than
++       * write out of bounds; a clean pipeline-creation error would be better still. */
++      if (location >= (gl_vert_attrib)ARRAY_SIZE(data->vs.attrib_formats))
++         continue;
++
+       data->vs.attrib_formats[location] =
+          vk_format_to_pipe_format(attrib->format);
+    }

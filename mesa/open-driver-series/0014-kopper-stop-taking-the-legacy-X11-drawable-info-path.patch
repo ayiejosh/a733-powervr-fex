@@ -1,0 +1,141 @@
+From eeb533a2ba55b1c6379551e48194b5317f6071b0 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Thu, 8 Oct 2026 04:42:29 +0800
+Subject: [PATCH 14/43] kopper: stop taking the legacy X11 drawable-info path
+ (removes a 21.7 ms sync round-trip)
+
+kopper_update_drawable_info() required screen->fd == -1 to take the kopper fast path. On this
+stack screen->fd is 4, so X11 clients fell through to get_drawable_info() ->
+x11_get_drawable_info() -> a BLOCKING xcb_get_geometry_reply on every framebuffer validation.
+
+Measured (XGEOM_TRACE): 300 calls costing 6518 ms in a 25 s run, average 21.7 ms each; gdb stack
+sampling put 50% of main-thread samples inside it. The surface IS an XCB Vulkan surface
+(sType=1000005000, verified), so the XCB check alone is sufficient and the fd test is stale.
+
+After the change the round-trip count is 0.
+
+IMPORTANT: this does NOT improve the frame rate - 40/40/34 FPS after versus 34-38 before, within
+noise. The wait is overlapped, so removing it moves the wait rather than saving time. It is kept
+because it removes 21.7 ms of synchronous blocking per call and validate still passes, but it is
+NOT the windowed bottleneck and the earlier claim that it was is withdrawn.
+
+Also adds env-gated XGEOM_TRACE (platform_x11.c) and KOpper_BRANCH (kopper.c) instrumentation.
+---
+ src/egl/drivers/dri2/platform_x11.c    | 12 ++++++++++++
+ src/gallium/drivers/zink/zink_batch.c  | 11 +++++++++++
+ src/gallium/drivers/zink/zink_kopper.c | 13 +++++++++++++
+ src/gallium/frontends/dri/kopper.c     | 15 ++++++++++++++-
+ 4 files changed, 50 insertions(+), 1 deletion(-)
+
+diff --git a/src/egl/drivers/dri2/platform_x11.c b/src/egl/drivers/dri2/platform_x11.c
+index a31a9d3..f5d4cf0 100644
+--- a/src/egl/drivers/dri2/platform_x11.c
++++ b/src/egl/drivers/dri2/platform_x11.c
+@@ -25,6 +25,7 @@
+  *    Kristian Høgsberg <krh@bitplanet.net>
+  */
+ 
++#include <time.h>
+ #include <dlfcn.h>
+ #include <errno.h>
+ #include <fcntl.h>
+@@ -120,9 +121,20 @@ x11_get_drawable_info(struct dri_drawable *draw, int *x, int *y, int *w, int *h,
+    xcb_get_geometry_reply_t *reply;
+    xcb_generic_error_t *error;
+    bool ret;
++   struct timespec _g0, _g1; int _timed = 0;
++   if (getenv("XGEOM_TRACE")) { clock_gettime(CLOCK_MONOTONIC, &_g0); _timed = 1; }
+ 
+    cookie = xcb_get_geometry(dri2_dpy->conn, dri2_surf->drawable);
+    reply = xcb_get_geometry_reply(dri2_dpy->conn, cookie, &error);
++   if (_timed) {
++      static unsigned long _n; static double _tot, _max;
++      clock_gettime(CLOCK_MONOTONIC, &_g1);
++      double ms = (_g1.tv_sec-_g0.tv_sec)*1000.0 + (_g1.tv_nsec-_g0.tv_nsec)/1e6;
++      _n++; _tot += ms; if (ms > _max) _max = ms;
++      if (_n % 100 == 0)
++         fprintf(stderr, "[xg] %lu geometry round-trips, total %.1f ms, avg %.3f ms, max %.2f ms\n",
++                 _n, _tot, _tot/_n, _max);
++   }
+    if (reply == NULL)
+       return false;
+ 
+diff --git a/src/gallium/drivers/zink/zink_batch.c b/src/gallium/drivers/zink/zink_batch.c
+index 974e7c7..3a4f17b 100644
+--- a/src/gallium/drivers/zink/zink_batch.c
++++ b/src/gallium/drivers/zink/zink_batch.c
+@@ -1230,6 +1230,8 @@ static void
+ batch_usage_wait(struct zink_context *ctx, struct zink_batch_usage *u, unsigned submit_count, bool trywait)
+ {
+    MESA_TRACE_FUNC();
++   struct timespec _b0, _b1; int _timed = 0;
++   if (getenv("BATCH_WAIT_TRACE")) { clock_gettime(CLOCK_MONOTONIC, &_b0); _timed = 1; }
+    if (!zink_batch_usage_exists(u))
+       return;
+    /* this batch state was already completed and reset */
+@@ -1237,6 +1239,15 @@ batch_usage_wait(struct zink_context *ctx, struct zink_batch_usage *u, unsigned
+       return;
+    if (zink_batch_usage_unflushed_wait(ctx, u, submit_count, trywait))
+       zink_wait_on_batch(ctx, u->usage);
++   if (_timed) {
++      static unsigned long _n; static double _tot, _max;
++      clock_gettime(CLOCK_MONOTONIC, &_b1);
++      double ms = (_b1.tv_sec-_b0.tv_sec)*1000.0 + (_b1.tv_nsec-_b0.tv_nsec)/1e6;
++      _n++; _tot += ms; if (ms > _max) _max = ms;
++      if (_n % 500 == 0)
++         fprintf(stderr, "[bw] %lu waits, total %.1f ms, avg %.3f ms, max %.2f ms\n",
++                 _n, _tot, _tot/_n, _max);
++   }
+ }
+ 
+ void
+diff --git a/src/gallium/drivers/zink/zink_kopper.c b/src/gallium/drivers/zink/zink_kopper.c
+index abe6625..7967206 100644
+--- a/src/gallium/drivers/zink/zink_kopper.c
++++ b/src/gallium/drivers/zink/zink_kopper.c
+@@ -648,6 +648,19 @@ kopper_acquire(struct zink_screen *screen, struct zink_resource *res, uint64_t t
+    if (cdt->swapchain->images[res->obj->dt_idx].readback)
+       zink_resource(cdt->swapchain->images[res->obj->dt_idx].readback)->valid = false;
+    res->obj->image = cdt->swapchain->images[res->obj->dt_idx].image;
++   /* ponytail: SWAPCHAIN_INFO - what kind of image is the render target when windowed? */
++   if (getenv("SWAPCHAIN_INFO")) {
++      static int _done;
++      if (!_done++) {
++         uint32_t _mods = res->modifiers_count;
++         uint64_t _m0 = _mods ? res->modifiers[0] : 0;
++         fprintf(stderr, "[swi] swapchain target: fmt=%d %ux%u linear=%d modifiers=%u m0=0x%llx "
++                 "vkusage=0x%llx layout=%d\n",
++                 (int)res->base.b.format, res->base.b.width0, res->base.b.height0,
++                 res->linear, _mods, (unsigned long long)_m0,
++                 (unsigned long long)res->obj->vkusage, (int)res->layout);
++      }
++   }
+    if (!cdt->age_locked)
+       zink_kopper_update_last_written(res);
+    cdt->swapchain->images[res->obj->dt_idx].acquired = NULL;
+diff --git a/src/gallium/frontends/dri/kopper.c b/src/gallium/frontends/dri/kopper.c
+index 09f79d4..a8e58aa 100644
+--- a/src/gallium/frontends/dri/kopper.c
++++ b/src/gallium/frontends/dri/kopper.c
+@@ -364,7 +364,20 @@ kopper_update_drawable_info(struct dri_drawable *drawable)
+                                 drawable->textures[ST_ATTACHMENT_BACK_LEFT] :
+                                 drawable->textures[ST_ATTACHMENT_FRONT_LEFT];
+ 
+-   bool do_kopper_update = is_window && ptex && screen->fd == -1;
++   /* The screen->fd == -1 test was meant to identify a kopper (Vulkan) screen, but on
++    * this stack the screen carries a valid fd, so X11 clients fell through to
++    * get_drawable_info() - a synchronous xcb_get_geometry round-trip on every framebuffer
++    * validation, measured at 21.7 ms per frame. The XCB-surface-create-info check below
++    * already identifies a Vulkan surface, so require only that. */
++   bool do_kopper_update = is_window && ptex;
++   if (getenv("KOpper_BRANCH")) {
++      static int _n;
++      if (++_n % 50 == 1)
++         fprintf(stderr, "[kb] is_window=%d ptex=%d screen_fd=%d sType=0x%x -> %s\n",
++                 is_window, !!ptex, screen->fd, drawable->info.bos.sType,
++                 (drawable->info.bos.sType == VK_STRUCTURE_TYPE_XCB_SURFACE_CREATE_INFO_KHR && do_kopper_update)
++                    ? "FASTPATH(no round-trip)" : "get_drawable_info(ROUND-TRIP)");
++   }
+    if (drawable->info.bos.sType == VK_STRUCTURE_TYPE_XCB_SURFACE_CREATE_INFO_KHR && do_kopper_update)
+       zink_kopper_update(kopper_get_zink_screen(screen->base.screen), ptex, &drawable->w, &drawable->h);
+    else

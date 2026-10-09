@@ -1,0 +1,60 @@
+From c41620aeb34e0eb0c07d22f8cdead0d223df45d3 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Thu, 8 Oct 2026 13:18:25 +0800
+Subject: [PATCH 28/43] pvr: clamp vkCmdBindVertexBuffers to the binding array
+ (silent OOB write)
+
+Same pattern as the vertex-attribute crash fixed in the previous commit: maxVertexInputBindings
+is advertised as 16, cmd_buffer->state.vertex_bindings[] has PVR_MAX_VERTEX_INPUT_BINDINGS (16)
+entries, and the only guard is an assert() that is compiled out in a release build.
+
+  vb[firstBinding + i] = ...   /* firstBinding + i reaches 31 at bindingCount = 32 */
+
+Unlike the attribute case this does not fault: the overflow lands inside the same
+pvr_cmd_buffer_state struct, so it silently corrupts adjacent state. A vbind harness
+(vkCmdBindVertexBuffers with 1..32 bindings) therefore reports no crash both before and after -
+the defect is out-of-bounds by inspection, not by observation. The loop and the stride call are
+now clamped to the array size.
+
+Harness note: the vbind probe must pass the shader's attribute count (16) as its own argument,
+separately from the binding count under test, otherwise the previous commit's attribute guard
+rejects the pipeline first.
+
+No regressions: bda, vk13, pctest, vk16, wgsize, samplers, storageimages, mrt, varyings, ubos,
+stgbuf, vattrib(16) all PASS; glmark2 --validate 27/0.
+---
+ src/imagination/vulkan/pvr_arch_cmd_buffer.c | 14 ++++++++++++--
+ 1 file changed, 12 insertions(+), 2 deletions(-)
+
+diff --git a/src/imagination/vulkan/pvr_arch_cmd_buffer.c b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
+index 4ada520..b01039a 100644
+--- a/src/imagination/vulkan/pvr_arch_cmd_buffer.c
++++ b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
+@@ -3093,7 +3093,17 @@ void PVR_PER_ARCH(CmdBindVertexBuffers2)(VkCommandBuffer commandBuffer,
+ 
+    PVR_CHECK_COMMAND_BUFFER_BUILDING_STATE(cmd_buffer);
+ 
+-   for (uint32_t i = 0; i < bindingCount; i++) {
++   /* vertex_bindings[] has PVR_MAX_VERTEX_INPUT_BINDINGS (16) entries and the assert above
++    * is compiled out in a release build, so an over-limit vkCmdBindVertexBuffers wrote past
++    * the end of the array - silently corrupting the rest of pvr_cmd_buffer_state rather than
++    * faulting, which is why it is easy to miss. maxVertexInputBindings is advertised as 16;
++    * clamp to the array instead of writing out of bounds. */
++   const uint32_t bind_count =
++      MIN2(bindingCount,
++           (uint32_t)(PVR_MAX_VERTEX_INPUT_BINDINGS - MIN2(firstBinding,
++                                                           (uint32_t)PVR_MAX_VERTEX_INPUT_BINDINGS)));
++
++   for (uint32_t i = 0; i < bind_count; i++) {
+       VK_FROM_HANDLE(pvr_buffer, buffer, pBuffers[i]);
+       const uint64_t size = pSizes ? pSizes[i] : VK_WHOLE_SIZE;
+ 
+@@ -3107,7 +3117,7 @@ void PVR_PER_ARCH(CmdBindVertexBuffers2)(VkCommandBuffer commandBuffer,
+    if (pStrides != NULL) {
+       vk_cmd_set_vertex_binding_strides(&cmd_buffer->vk,
+                                         firstBinding,
+-                                        bindingCount,
++                                        bind_count,
+                                         pStrides);
+    }
+ 

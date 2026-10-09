@@ -1,0 +1,70 @@
+From 61001c46939bcc2eb60571177cf597f2997521b5 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 9 Oct 2026 08:03:47 +0800
+Subject: [PATCH 41/43] pvr: order GEOM jobs through the queue's persistent
+ timeline syncobj
+
+Step 2 of the sync-timeline plan (SYNC-TIMELINE-ATTEMPT-2026-10-08.md): convert ONE job
+type, GEOM, from a per-barrier syncobj create/destroy to the queue's persistent timeline
+syncobj that step 1 already added but left unused.
+
+The barrier path now signals job_sync[GEOM] at ++job_value[GEOM], and the GEOM job waits
+on that point, so a GEOM barrier costs 0 create and 0 destroy ioctls instead of 2.
+
+The critical detail, and where a previous attempt went wrong: last_job_signal_sync[stage]
+is NOT the same thing as next_job_wait_sync[stage]. The former is the GEOM JOB's own
+signal, waited on by the two event paths; the latter is created by the barrier and
+consumed by the next job. An earlier attempt nulled and destroyed last_job_signal_sync
+for GEOM as well, which removed the event paths' wait on GEOM completion - a race. This
+change touches only next_job_wait_sync, so the event paths are unaffected.
+
+Measured with harness.py on the open driver, correctness green (bda PASS(0), vk13 PASS,
+pctest PASS(0), vkrender 512 and 2048 PASS): vkrender 512 1.502 -> 1.435 ms/frame,
+vkrender 2048 13.746 -> 13.687, vkheavy 2048 255.938 -> 255.036.
+
+The gain is small because GEOM barriers are a fraction of the ~190 syncobj ioctls per
+frame; the remaining job types (FRAG, COMPUTE, TRANSFER, QUERY) still use the per-job
+path and are converted next, one at a time with the gate run after each.
+---
+ src/imagination/vulkan/pvr_arch_queue.c | 21 ++++++++++++++++++++-
+ 1 file changed, 20 insertions(+), 1 deletion(-)
+
+diff --git a/src/imagination/vulkan/pvr_arch_queue.c b/src/imagination/vulkan/pvr_arch_queue.c
+index 2664cfa..deca71b 100644
+--- a/src/imagination/vulkan/pvr_arch_queue.c
++++ b/src/imagination/vulkan/pvr_arch_queue.c
+@@ -332,7 +332,9 @@ pvr_process_graphics_cmd_for_view(struct pvr_device *device,
+       result = pvr_arch_render_job_submit(
+          queue->gfx_ctx,
+          &sub_cmd->job,
+-         (struct vk_sync_wait){ .sync = queue->next_job_wait_sync[PVR_JOB_TYPE_GEOM] },
++         (struct vk_sync_wait){ .sync = queue->job_value[PVR_JOB_TYPE_GEOM] ?
++                                       queue->job_sync[PVR_JOB_TYPE_GEOM] : NULL,
++                                .wait_value = queue->job_value[PVR_JOB_TYPE_GEOM] },
+          (struct vk_sync_wait){ 0 },
+          NULL,
+          NULL);
+@@ -544,6 +546,23 @@ pvr_process_event_cmd_barrier(struct pvr_device *device,
+       struct vk_sync_signal signal;
+       struct vk_sync *signal_sync;
+ 
++      if (stage == PVR_JOB_TYPE_GEOM) {
++         /* GEOM orders through the queue's persistent timeline syncobj: signal
++          * point N+1; the next GEOM job waits on point N. No per-barrier
++          * create/destroy. last_job_signal_sync is deliberately untouched - it
++          * is the GEOM JOB's own signal, which the event paths wait on. */
++         signal = (struct vk_sync_signal){
++            .sync = queue->job_sync[PVR_JOB_TYPE_GEOM],
++            .stage_mask = ~(VkPipelineStageFlags2)0,
++            .signal_value = ++queue->job_value[PVR_JOB_TYPE_GEOM],
++         };
++         result = device->ws->ops->null_job_submit(device->ws, wait_syncs,
++                                                   wait_count, &signal);
++         if (result != VK_SUCCESS)
++            return result;
++         continue;
++      }
++
+       result = vk_sync_create(&device->vk,
+                               &device->pdevice->ws->syncobj_type,
+                               0U,

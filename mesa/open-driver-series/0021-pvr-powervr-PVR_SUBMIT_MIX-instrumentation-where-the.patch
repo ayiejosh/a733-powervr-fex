@@ -1,0 +1,50 @@
+From d59c7708e38625cb95a0fd08137b913be5263619 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Thu, 8 Oct 2026 11:03:30 +0800
+Subject: [PATCH 21/43] pvr/powervr: PVR_SUBMIT_MIX instrumentation - where the
+ sync churn actually comes from
+
+Counts submit calls and the wait-count distribution of the null-job path. Measured in
+Xwayland during a windowed client run: ~16,400 null submits in 22 s (~745/s, ~17.7 per
+client frame) with distribution waits:0=0, 1=5302 (33%), 2=10217 (63%), 3+=687 (4%).
+
+That maps to ~52 of Xwayland's ~250 DRM ioctls per frame: waits:1 already costs a single
+SYNCOBJ_TRANSFER, while the 63% at waits:2 each cost CREATE + 2 TRANSFER + DESTROY because
+the driver emulates 'signal dst when all waits complete' by transferring every wait into a
+temporary syncobj.
+
+So the null path is ~20% of the churn; the majority is the queue's per-job sync
+create/destroy in pvr_arch_queue.c, which needs the cross-layer value plumbing rather than
+a local fix. Instrumentation is env-gated and inert by default.
+---
+ src/imagination/vulkan/winsys/powervr/pvr_drm_job_null.c   | 3 +++
+ src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c | 2 ++
+ 2 files changed, 5 insertions(+)
+
+diff --git a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_null.c b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_null.c
+index 4c93d18..39fd709 100644
+--- a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_null.c
++++ b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_null.c
+@@ -45,6 +45,9 @@ VkResult pvr_drm_winsys_null_job_submit(struct pvr_winsys *ws,
+ {
+    const struct pvr_drm_winsys *drm_ws = to_pvr_drm_winsys(ws);
+    uint32_t tmp_syncobj;
++   if (getenv("PVR_SUBMIT_MIX")) { static unsigned long _n, _by[8]; _n++; _by[wait_count < 8 ? wait_count : 7]++;
++      if (_n % 200 == 0) fprintf(stderr, "[mx] null=%lu waits:0=%lu 1=%lu 2=%lu 3+=%lu\n",
++                                 _n, _by[0], _by[1], _by[2], _by[3]+_by[4]+_by[5]+_by[6]+_by[7]); }
+    VkResult result;
+    int ret;
+ 
+diff --git a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c
+index e0d90ba..1e3bcae 100644
+--- a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c
++++ b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c
+@@ -475,6 +475,8 @@ VkResult pvr_drm_winsys_render_submit(
+ 
+ {
+    const struct pvr_drm_winsys *drm_ws = to_pvr_drm_winsys(ctx->ws);
++   if (getenv("PVR_SUBMIT_MIX")) { static unsigned long _n; _n++;
++      if (_n % 100 == 0) fprintf(stderr, "[mx] render_job_submits=%lu\n", _n); }
+    const struct pvr_drm_winsys_render_ctx *drm_ctx =
+       to_pvr_drm_winsys_render_ctx(ctx);
+    const struct pvr_winsys_geometry_state *const geom_state =

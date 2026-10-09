@@ -1,0 +1,74 @@
+From 863bd729d41b6984821bd147f319653c8cbd3676 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Thu, 8 Oct 2026 03:46:20 +0800
+Subject: [PATCH 12/43] zink: fix unbalanced unsync_fence reset in
+ zink_copy_image_buffer
+
+zink_copy_image_buffer() resets ctx->unsync_fence when called with unsync set, and signals
+it at the end. An early return - when the image is a swapchain and zink_kopper_acquire()
+fails - returned between the two, leaving the fence reset forever, so the next flush_batch()
+would block in util_queue_fence_wait(&ctx->unsync_fence) with no way to recover. Signal it
+before returning; recording is over either way.
+
+This is a genuine bug but it does NOT fix the native-Wayland livelock being investigated:
+with ZINK_FENCE_TRACE=1 the trace shows unsync_fence signalled=1 on every check, while the
+stall is in sync_flush() waiting on bs->flush_completed (signalled=0), iterating ~612/s.
+
+Also adds env-gated ZINK_FENCE_TRACE instrumentation to both waits, which is what identified
+which fence is involved.
+---
+ src/gallium/drivers/zink/zink_context.c | 18 ++++++++++++++++--
+ 1 file changed, 16 insertions(+), 2 deletions(-)
+
+diff --git a/src/gallium/drivers/zink/zink_context.c b/src/gallium/drivers/zink/zink_context.c
+index e178150..5553a1b 100644
+--- a/src/gallium/drivers/zink/zink_context.c
++++ b/src/gallium/drivers/zink/zink_context.c
+@@ -23,6 +23,7 @@
+ 
+ #include "zink_clear.h"
+ #include "zink_context.h"
++#include <stdio.h>
+ #include "zink_descriptors.h"
+ #include "zink_fence.h"
+ #include "zink_format.h"
+@@ -3890,8 +3891,12 @@ zink_evaluate_depth_buffer(struct pipe_context *pctx)
+ static void
+ sync_flush(struct zink_context *ctx, struct zink_batch_state *bs)
+ {
+-   if (zink_screen(ctx->base.screen)->threaded_submit)
++   if (zink_screen(ctx->base.screen)->threaded_submit) {
++      if (getenv("ZINK_FENCE_TRACE"))
++         fprintf(stderr, "[zf] sync_flush: waiting on flush_completed (signalled=%d)\n",
++                 util_queue_fence_is_signalled(&bs->flush_completed));
+       util_queue_fence_wait(&bs->flush_completed);
++   }
+ }
+ 
+ static inline VkAccessFlags
+@@ -4050,6 +4055,9 @@ flush_batch(struct zink_context *ctx, bool sync)
+       zink_flush_clears(ctx);
+    zink_batch_no_rp_safe(ctx);
+ 
++   if (getenv("ZINK_FENCE_TRACE"))
++      fprintf(stderr, "[zf] flush_batch: waiting on unsync_fence (signalled=%d)\n",
++              util_queue_fence_is_signalled(&ctx->unsync_fence));
+    util_queue_fence_wait(&ctx->unsync_fence);
+    util_queue_fence_reset(&ctx->flush_fence);
+    zink_end_batch(ctx);
+@@ -5175,8 +5183,14 @@ zink_copy_image_buffer(struct zink_context *ctx, struct zink_resource *dst, stru
+ 
+    if (buf2img) {
+       if (zink_is_swapchain(img)) {
+-         if (!zink_kopper_acquire(ctx, img, UINT64_MAX))
++         if (!zink_kopper_acquire(ctx, img, UINT64_MAX)) {
++            /* unsync_fence was reset above; this return used to leave it reset forever,
++             * so the next flush_batch() blocked in util_queue_fence_wait() with no way
++             * to recover. Recording is over here either way, so signal it. */
++            if (unsync)
++               util_queue_fence_signal(&ctx->unsync_fence);
+             return;
++         }
+       }
+       zink_resource_image_transfer_dst_barrier(ctx, img, level, box, unsync);
+       if (!unsync)

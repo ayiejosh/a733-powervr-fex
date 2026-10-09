@@ -1,0 +1,84 @@
+From f6602418f1f085086de64e12c045ea8ddb7adeb7 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Thu, 8 Oct 2026 14:14:54 +0800
+Subject: [PATCH 34/43] pvr: treat a signal with a NULL sync as no signal in
+ the winsys submit paths
+
+Found while retrying the timeline-sync queue migration, but a real bug on its own: a
+struct vk_sync_signal whose .sync is NULL means "no signal", and the three submit paths tested the
+struct pointer rather than the sync inside it.
+
+The queue passes &(const struct vk_sync_signal){ .sync = frag_signal_sync } unconditionally, so
+when there is no fragment work frag_signal_sync is NULL but the pointer is not - the winsys then
+dereferenced signal_sync_frag->sync (NULL) in vk_sync_as_drm_syncobj() and the driver segfaulted
+inside pvr_drm_winsys_render_submit. This is a latent crash introduced by the step-1 API change
+(53ccc4b), which made these parameters structs; before that they were bare pointers that were
+simply NULL.
+
+Now guarded on the sync: signal_sync_geom && signal_sync_geom->sync, and likewise for
+signal_sync_frag and the compute/transfer signal_sync.
+
+Verified: build clean; bda, vk13, pctest, vk16, mrt PASS; glmark2 --validate 27/0.
+---
+ src/imagination/vulkan/winsys/powervr/pvr_drm_job_compute.c | 2 +-
+ src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c  | 6 +++---
+ .../vulkan/winsys/powervr/pvr_drm_job_transfer.c            | 2 +-
+ 3 files changed, 5 insertions(+), 5 deletions(-)
+
+diff --git a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_compute.c b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_compute.c
+index 8970219..9aeba50 100644
+--- a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_compute.c
++++ b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_compute.c
+@@ -200,7 +200,7 @@ VkResult pvr_drm_winsys_compute_submit(
+                            submit_info->wait.wait_value);
+    }
+ 
+-   if (signal_sync) {
++   if (signal_sync && signal_sync->sync) {
+       pvr_drm_sync_op_init(&sync_ops[job_args.sync_ops.count++], signal_sync->sync,
+                            DRM_PVR_SYNC_OP_FLAG_SIGNAL,
+                            signal_sync->signal_value);
+diff --git a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c
+index b8ecc9e..9559744 100644
+--- a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c
++++ b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c
+@@ -534,7 +534,7 @@ VkResult pvr_drm_winsys_render_submit(
+                            submit_info->geometry.wait.wait_value);
+    }
+ 
+-   if (signal_sync_geom) {
++   if (signal_sync_geom && signal_sync_geom->sync) {
+       pvr_drm_sync_op_init(&geom_sync_ops[num_geom_syncs++], signal_sync_geom->sync,
+                            DRM_PVR_SYNC_OP_FLAG_SIGNAL,
+                            signal_sync_geom->signal_value);
+@@ -542,7 +542,7 @@ VkResult pvr_drm_winsys_render_submit(
+ 
+    /* PR syncs */
+ 
+-   if (signal_sync_geom) {
++   if (signal_sync_geom && signal_sync_geom->sync) {
+       geom_to_pr_syncobj = vk_sync_as_drm_syncobj(signal_sync_geom->sync)->syncobj;
+    } else {
+       geom_to_pr_syncobj = drm_ctx->geom_to_pr_syncobj;
+@@ -596,7 +596,7 @@ VkResult pvr_drm_winsys_render_submit(
+                               submit_info->fragment.wait.wait_value);
+       }
+ 
+-      if (signal_sync_frag) {
++      if (signal_sync_frag && signal_sync_frag->sync) {
+          pvr_drm_sync_op_init(&frag_sync_ops[num_frag_syncs++], signal_sync_frag->sync,
+                               DRM_PVR_SYNC_OP_FLAG_SIGNAL,
+                               signal_sync_frag->signal_value);
+diff --git a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_transfer.c b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_transfer.c
+index 2f11a96..3221339 100644
+--- a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_transfer.c
++++ b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_transfer.c
+@@ -157,7 +157,7 @@ VkResult pvr_drm_winsys_transfer_submit(
+                            submit_info->wait.wait_value);
+    }
+ 
+-   if (signal_sync) {
++   if (signal_sync && signal_sync->sync) {
+       pvr_drm_sync_op_init(&sync_ops[job_args.sync_ops.count++], signal_sync->sync,
+                            DRM_PVR_SYNC_OP_FLAG_SIGNAL,
+                            signal_sync->signal_value);

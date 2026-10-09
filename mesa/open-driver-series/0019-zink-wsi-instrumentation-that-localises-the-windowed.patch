@@ -1,0 +1,71 @@
+From 3e6b15f389cd9852b77871c918537601600eb45e Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Thu, 8 Oct 2026 09:43:18 +0800
+Subject: [PATCH 19/43] zink/wsi: instrumentation that localises the windowed
+ stall to the compositor release wait
+
+The client blocks 22.11 ms of a 27 ms frame inside AcquireNextImageKHR (max 62.18 ms,
+matching weston's 53 ms cycle). Two candidates were ruled out by measurement:
+
+* more swapchain images - extra=0 median 39 FPS vs extra=2 median 37.5 FPS, no effect
+  (reverted);
+* the release mechanism - forcing the xshmfence path instead of DRI3/Present v1.4
+  explicit sync gave median 35 vs 36 FPS, no effect (reverted).
+
+The wait is wsi_drm_wait_for_explicit_sync_release() -> device->sync->timeline_wait()
+with DRM_SYNCOBJ_WAIT_FLAGS_WAIT_AVAILABLE, i.e. the client is waiting for the
+compositor to release the buffer, and that latency is the loop latency regardless of
+which sync primitive carries it. The present_fence path in zink's kopper is not hit.
+
+Keeps ACQ_TRACE (zink kopper) and WSIREL_TRACE (wsi_common_drm) instrumentation.
+---
+ src/gallium/drivers/zink/zink_kopper.c |  8 ++++++++
+ src/vulkan/wsi/wsi_common_drm.c        | 11 +++++++++++
+ 2 files changed, 19 insertions(+)
+
+diff --git a/src/gallium/drivers/zink/zink_kopper.c b/src/gallium/drivers/zink/zink_kopper.c
+index 8194fd3..3c91504 100644
+--- a/src/gallium/drivers/zink/zink_kopper.c
++++ b/src/gallium/drivers/zink/zink_kopper.c
+@@ -630,7 +630,15 @@ kopper_acquire(struct zink_screen *screen, struct zink_resource *res, uint64_t t
+          if (!acquire)
+             return VK_ERROR_OUT_OF_HOST_MEMORY;
+       }
++      { struct timespec _a0,_a1; int _at=getenv("ACQ_TRACE")!=NULL;
++        if(_at) clock_gettime(CLOCK_MONOTONIC,&_a0);
+       ret = VKSCR(AcquireNextImageKHR)(screen->dev, cdt->swapchain->swapchain, timeout, acquire, VK_NULL_HANDLE, &res->obj->dt_idx);
++      if(_at){ static unsigned long _an; static double _atot,_amax;
++        clock_gettime(CLOCK_MONOTONIC,&_a1);
++        double _ms=(_a1.tv_sec-_a0.tv_sec)*1000.0+(_a1.tv_nsec-_a0.tv_nsec)/1e6;
++        _an++; _atot+=_ms; if(_ms>_amax)_amax=_ms;
++        if(_an%50==0) fprintf(stderr,"[acq] AcquireNextImage waits=%lu total=%.1fms avg=%.2fms max=%.2fms\n",
++            _an,_atot,_atot/_an,_amax); } }
+       if (ret != VK_SUCCESS && ret != VK_SUBOPTIMAL_KHR) {
+          if (ret == VK_ERROR_OUT_OF_DATE_KHR) {
+             res->obj->new_dt = true;
+diff --git a/src/vulkan/wsi/wsi_common_drm.c b/src/vulkan/wsi/wsi_common_drm.c
+index dbf65b2..0735a1f 100644
+--- a/src/vulkan/wsi/wsi_common_drm.c
++++ b/src/vulkan/wsi/wsi_common_drm.c
+@@ -1096,10 +1096,21 @@ wsi_drm_wait_for_explicit_sync_release(struct wsi_swapchain *chain,
+     * We will forward the GPU signal to the VkSemaphore/VkFence of the acquire.
+     */
+    uint32_t first_signalled;
++   struct timespec _r0, _r1; int _rt = getenv("WSIREL_TRACE") != NULL;
++   if (_rt) clock_gettime(CLOCK_MONOTONIC, &_r0);
+    ret = device->sync->timeline_wait(device->sync, handles, points, unacquired_image_count,
+                                      wsi_drm_rel_timeout_to_abs(rel_timeout_ns),
+                                      DRM_SYNCOBJ_WAIT_FLAGS_WAIT_AVAILABLE,
+                                      &first_signalled);
++   if (_rt) {
++      static unsigned long _rn; static double _rtot, _rmax;
++      clock_gettime(CLOCK_MONOTONIC, &_r1);
++      double _ms = (_r1.tv_sec-_r0.tv_sec)*1000.0 + (_r1.tv_nsec-_r0.tv_nsec)/1e6;
++      _rn++; _rtot += _ms; if (_ms > _rmax) _rmax = _ms;
++      if (_rn % 50 == 0)
++         fprintf(stderr, "[rel] explicit-sync release waits=%lu total=%.1fms avg=%.2fms max=%.2fms images=%u\n",
++                 _rn, _rtot, _rtot/_rn, _rmax, unacquired_image_count);
++   }
+ 
+    /* Return the first image that materialized. */
+    if (ret != 0)

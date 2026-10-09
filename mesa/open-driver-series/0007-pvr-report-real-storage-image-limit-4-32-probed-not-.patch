@@ -1,0 +1,53 @@
+From 69ccd2ad1ab79d9056bb156db6bf67b13080c142 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Thu, 8 Oct 2026 03:08:07 +0800
+Subject: [PATCH 07/43] pvr: report real storage-image limit (4 -> 32), probed
+ not assumed
+
+maxPerStageDescriptorStorageImages was 4 - exactly the Vulkan minimum and with no backing
+constant anywhere in the driver - and maxDescriptorSetStorageImages was derived as 3*4. An
+application needing more than 4 storage images in a stage refuses to run.
+
+Probed with bench/pvr-vulkan/storageimages: the shader stores index i into storage image i,
+then reads each image back into an SSBO, so a single buffer readback proves both that image i
+is addressable and that it holds the value written to image i (aliasing or a short array would
+show wrong values, not zeros):
+
+  NIMG=4   4 correct, 0 wrong
+  NIMG=8   8 correct, 0 wrong
+  NIMG=16 16 correct, 0 wrong
+  NIMG=32 32 correct, 0 wrong
+
+Set to 32 per stage and 3*32 per set, matching the sampler fix.
+
+No regressions: bda, vk13, pctest, vk16, wgsize, samplers all PASS; glmark2 --validate still
+0 failures / 27 pass.
+---
+ src/imagination/vulkan/pvr_physical_device.c | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/src/imagination/vulkan/pvr_physical_device.c b/src/imagination/vulkan/pvr_physical_device.c
+index ca92d6c..57c2fd8 100644
+--- a/src/imagination/vulkan/pvr_physical_device.c
++++ b/src/imagination/vulkan/pvr_physical_device.c
+@@ -760,7 +760,10 @@ static bool pvr_physical_device_get_properties(
+       .maxPerStageDescriptorUniformBuffers = 13,
+       .maxPerStageDescriptorStorageBuffers = 16,
+       .maxPerStageDescriptorSampledImages = 32,
+-      .maxPerStageDescriptorStorageImages = 4,
++      /* Probed (bench/pvr-vulkan/storageimages): 32 storage images in one stage all store
++       * and read back their own correct value, while this was reported as 4 - the Vulkan
++       * minimum - which makes applications needing more refuse to run. */
++      .maxPerStageDescriptorStorageImages = 32,
+       .maxPerStageDescriptorInputAttachments = 4,
+       .maxPerStageResources = 57,
+       .maxDescriptorSetSamplers = 3U * 32U,
+@@ -769,7 +772,7 @@ static bool pvr_physical_device_get_properties(
+       .maxDescriptorSetStorageBuffers = 3U * 4U,
+       .maxDescriptorSetStorageBuffersDynamic = 4U,
+       .maxDescriptorSetSampledImages = 3U * 32U,
+-      .maxDescriptorSetStorageImages = 3U * 4U,
++      .maxDescriptorSetStorageImages = 3U * 32U,
+       .maxDescriptorSetInputAttachments = 4U,
+ 
+       /* Vertex Shader Limits */

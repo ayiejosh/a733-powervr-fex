@@ -1,0 +1,86 @@
+From de755dc7c6c8f1c919a00bfecca3d7c06e0c977f Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Thu, 8 Oct 2026 13:54:12 +0800
+Subject: [PATCH 32/43] pvr: create persistent per-type timeline syncobjs in
+ the queue (step 2a, unused)
+
+First of the four small steps that replace the queue's per-job vk_sync create/destroy with one
+persistent timeline syncobj per job type. This commit only adds them:
+
+  pvr_queue.h        job_sync[PVR_JOB_TYPE_MAX], job_value[PVR_JOB_TYPE_MAX]
+  pvr_queue_init     create each as a timeline syncobj
+  pvr_queue_finish   destroy them
+
+Nothing uses them yet - the job paths still create and destroy a syncobj per job - so this is
+behaviour-identical by construction, which is the point: it separates the objects existing from
+the paths using them, so the risky part can be bisected one job type at a time.
+
+Verified: build clean; bda, vk13, pctest, vk16 PASS; glmark2 --validate 27/0.
+---
+ src/imagination/vulkan/pvr_arch_queue.c | 24 ++++++++++++++++++++++++
+ src/imagination/vulkan/pvr_queue.h      |  8 ++++++++
+ 2 files changed, 32 insertions(+)
+
+diff --git a/src/imagination/vulkan/pvr_arch_queue.c b/src/imagination/vulkan/pvr_arch_queue.c
+index ca2f860..2664cfa 100644
+--- a/src/imagination/vulkan/pvr_arch_queue.c
++++ b/src/imagination/vulkan/pvr_arch_queue.c
+@@ -150,8 +150,27 @@ static VkResult pvr_queue_init(struct pvr_device *device,
+ 
+    queue->vk.driver_submit = pvr_driver_queue_submit;
+ 
++   /* Persistent timeline syncobj per job type. Created here, destroyed in pvr_queue_finish.
++    * Unused for now: the job paths still create and destroy a syncobj per job, so this commit
++    * changes no behaviour. See SYNC-TIMELINE-ATTEMPT-2026-10-08.md. */
++   for (uint32_t i = 0; i < PVR_JOB_TYPE_MAX; i++) {
++      result = vk_sync_create(&device->vk,
++                              &device->pdevice->ws->timeline_syncobj_type.sync,
++                              0U,
++                              0UL,
++                              &queue->job_sync[i]);
++      if (result != VK_SUCCESS)
++         goto err_job_syncs_destroy;
++   }
++
+    return VK_SUCCESS;
+ 
++err_job_syncs_destroy:
++   for (uint32_t i = 0; i < PVR_JOB_TYPE_MAX; i++) {
++      if (queue->job_sync[i])
++         vk_sync_destroy(&device->vk, queue->job_sync[i]);
++   }
++
+ err_query_ctx_destroy:
+    pvr_arch_compute_ctx_destroy(query_ctx);
+ 
+@@ -206,6 +225,11 @@ err_queues_finish:
+ 
+ static void pvr_queue_finish(struct pvr_queue *queue)
+ {
++   for (uint32_t i = 0; i < ARRAY_SIZE(queue->job_sync); i++) {
++      if (queue->job_sync[i])
++         vk_sync_destroy(&queue->device->vk, queue->job_sync[i]);
++   }
++
+    for (uint32_t i = 0; i < ARRAY_SIZE(queue->next_job_wait_sync); i++) {
+       if (queue->next_job_wait_sync[i])
+          vk_sync_destroy(&queue->device->vk, queue->next_job_wait_sync[i]);
+diff --git a/src/imagination/vulkan/pvr_queue.h b/src/imagination/vulkan/pvr_queue.h
+index ee6f763..b5194a9 100644
+--- a/src/imagination/vulkan/pvr_queue.h
++++ b/src/imagination/vulkan/pvr_queue.h
+@@ -38,6 +38,14 @@ struct pvr_queue {
+ 
+    struct vk_sync *last_job_signal_sync[PVR_JOB_TYPE_MAX];
+    struct vk_sync *next_job_wait_sync[PVR_JOB_TYPE_MAX];
++
++   /* Persistent timeline syncobj per job type, created once in pvr_queue_init and destroyed in
++    * pvr_queue_finish. Once the job paths use them, jobs of a type are ordered by timeline
++    * point rather than by creating and destroying a syncobj per job: the previous job
++    * signalled job_value[type], the next one signals job_value[type] + 1. Currently created
++    * but unused - see SYNC-TIMELINE-ATTEMPT-2026-10-08.md for the migration plan. */
++   struct vk_sync *job_sync[PVR_JOB_TYPE_MAX];
++   uint64_t job_value[PVR_JOB_TYPE_MAX];
+ };
+ 
+ VK_DEFINE_HANDLE_CASTS(pvr_queue, vk.base, VkQueue, VK_OBJECT_TYPE_QUEUE)

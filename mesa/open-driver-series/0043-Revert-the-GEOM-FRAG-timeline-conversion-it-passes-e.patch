@@ -1,0 +1,85 @@
+From d253e35777340e1f17ecac76419aa8fe24a4c140 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 9 Oct 2026 08:12:44 +0800
+Subject: [PATCH 43/43] Revert the GEOM/FRAG timeline conversion - it passes
+ every probe but breaks weston
+
+Reverts 61001c4 and a94f4b3. The conversion was correctness-green on the whole probe
+suite (bda, vk13, pctest, vk16, vkrender 512 and 2048) and removed 2 ioctls per GEOM/FRAG
+barrier, but it crashes the real compositor:
+
+  with the change:    weston exits 139 (SIGSEGV)
+  without the change: weston runs until killed by the timeout, no crash
+
+Tested by starting weston + Xwayland (the objective's own client setup) under the open
+driver in both states. With the change, weston dies immediately with
+'Failed to process Wayland connection: Connection reset by peer'; with the revert it comes
+up and Xwayland with it.
+
+This is the case the probe suite cannot see: the probes submit a handful of jobs with few
+barriers, while weston drives the queue through the event and barrier paths far harder.
+The measured frame-time effect on the probes was also within run-to-run noise
+(vkrender 2048: 13.746 baseline, 13.536 with, 14.116 on a rerun of the same code), so the
+change had no demonstrated benefit and a demonstrated crash.
+
+Reverted rather than debugged under time pressure: a change with no measured gain that
+breaks the compositor is worse than no change. The persistent job_sync/job_value fields
+from step 1 remain in place and unused, so a corrected attempt can start from them.
+---
+ src/imagination/vulkan/pvr_arch_queue.c | 29 +++----------------------
+ 1 file changed, 3 insertions(+), 26 deletions(-)
+
+diff --git a/src/imagination/vulkan/pvr_arch_queue.c b/src/imagination/vulkan/pvr_arch_queue.c
+index 67ab290..2664cfa 100644
+--- a/src/imagination/vulkan/pvr_arch_queue.c
++++ b/src/imagination/vulkan/pvr_arch_queue.c
+@@ -332,9 +332,7 @@ pvr_process_graphics_cmd_for_view(struct pvr_device *device,
+       result = pvr_arch_render_job_submit(
+          queue->gfx_ctx,
+          &sub_cmd->job,
+-         (struct vk_sync_wait){ .sync = queue->job_value[PVR_JOB_TYPE_GEOM] ?
+-                                       queue->job_sync[PVR_JOB_TYPE_GEOM] : NULL,
+-                                .wait_value = queue->job_value[PVR_JOB_TYPE_GEOM] },
++         (struct vk_sync_wait){ .sync = queue->next_job_wait_sync[PVR_JOB_TYPE_GEOM] },
+          (struct vk_sync_wait){ 0 },
+          NULL,
+          NULL);
+@@ -362,12 +360,8 @@ pvr_process_graphics_cmd_for_view(struct pvr_device *device,
+    result =
+       pvr_arch_render_job_submit(queue->gfx_ctx,
+                                  &sub_cmd->job,
+-                                 (struct vk_sync_wait){ .sync = queue->job_value[PVR_JOB_TYPE_GEOM] ?
+-                                                              queue->job_sync[PVR_JOB_TYPE_GEOM] : NULL,
+-                                                         .wait_value = queue->job_value[PVR_JOB_TYPE_GEOM] },
+-                                 (struct vk_sync_wait){ .sync = queue->job_value[PVR_JOB_TYPE_FRAG] ?
+-                                                              queue->job_sync[PVR_JOB_TYPE_FRAG] : NULL,
+-                                                         .wait_value = queue->job_value[PVR_JOB_TYPE_FRAG] },
++                                 (struct vk_sync_wait){ .sync = queue->next_job_wait_sync[PVR_JOB_TYPE_GEOM] },
++                                 (struct vk_sync_wait){ .sync = queue->next_job_wait_sync[PVR_JOB_TYPE_FRAG] },
+                                  &(const struct vk_sync_signal){ .sync = geom_signal_sync },
+                                  &(const struct vk_sync_signal){ .sync = frag_signal_sync });
+ 
+@@ -550,23 +544,6 @@ pvr_process_event_cmd_barrier(struct pvr_device *device,
+       struct vk_sync_signal signal;
+       struct vk_sync *signal_sync;
+ 
+-      if (stage == PVR_JOB_TYPE_GEOM || stage == PVR_JOB_TYPE_FRAG) {
+-         /* GEOM orders through the queue's persistent timeline syncobj: signal
+-          * point N+1; the next GEOM job waits on point N. No per-barrier
+-          * create/destroy. last_job_signal_sync is deliberately untouched - it
+-          * is the GEOM JOB's own signal, which the event paths wait on. */
+-         signal = (struct vk_sync_signal){
+-            .sync = queue->job_sync[stage],
+-            .stage_mask = ~(VkPipelineStageFlags2)0,
+-            .signal_value = ++queue->job_value[stage],
+-         };
+-         result = device->ws->ops->null_job_submit(device->ws, wait_syncs,
+-                                                   wait_count, &signal);
+-         if (result != VK_SUCCESS)
+-            return result;
+-         continue;
+-      }
+-
+       result = vk_sync_create(&device->vk,
+                               &device->pdevice->ws->syncobj_type,
+                               0U,

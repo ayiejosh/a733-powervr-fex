@@ -1,0 +1,64 @@
+From a94f4b3f0b80c7ddd58b60f50e9b74126069edc4 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 9 Oct 2026 08:05:19 +0800
+Subject: [PATCH 42/43] pvr: extend the timeline conversion to FRAG, and fix a
+ stale GEOM wait it exposed
+
+Completes the GEOM step and adds FRAG. While doing so it caught an incompleteness in the
+previous commit: there are TWO GEOM waits, not one. The multiview submit path at
+pvr_arch_queue.c:363 also read next_job_wait_sync[PVR_JOB_TYPE_GEOM], which the converted
+barrier path no longer sets - so it would have waited on nothing. Both waits in that path
+now read the timeline point, so GEOM and FRAG are consistent everywhere they are waited on.
+
+Correctness green on the open driver: bda PASS(0), vk13 PASS(11 ok, 0 failed),
+pctest PASS(0), vk16 PASS(9 ok, 0 failed), vkrender 512 (262144/262144) and 2048
+(4194304/4194304).
+
+Measured with harness.py: vkrender 2048 13.746 -> 13.536 ms/frame, vkrender 512
+1.502 -> 1.477, vkheavy 255.938 -> 255.178. Small, because these probes issue few
+barriers; the client frame with ~190 syncobj ioctls is where the aggregate shows.
+
+Remaining stages COMPUTE, TRANSFER and QUERY still use the per-job path and are converted
+next on the same pattern.
+---
+ src/imagination/vulkan/pvr_arch_queue.c | 14 +++++++++-----
+ 1 file changed, 9 insertions(+), 5 deletions(-)
+
+diff --git a/src/imagination/vulkan/pvr_arch_queue.c b/src/imagination/vulkan/pvr_arch_queue.c
+index deca71b..67ab290 100644
+--- a/src/imagination/vulkan/pvr_arch_queue.c
++++ b/src/imagination/vulkan/pvr_arch_queue.c
+@@ -362,8 +362,12 @@ pvr_process_graphics_cmd_for_view(struct pvr_device *device,
+    result =
+       pvr_arch_render_job_submit(queue->gfx_ctx,
+                                  &sub_cmd->job,
+-                                 (struct vk_sync_wait){ .sync = queue->next_job_wait_sync[PVR_JOB_TYPE_GEOM] },
+-                                 (struct vk_sync_wait){ .sync = queue->next_job_wait_sync[PVR_JOB_TYPE_FRAG] },
++                                 (struct vk_sync_wait){ .sync = queue->job_value[PVR_JOB_TYPE_GEOM] ?
++                                                              queue->job_sync[PVR_JOB_TYPE_GEOM] : NULL,
++                                                         .wait_value = queue->job_value[PVR_JOB_TYPE_GEOM] },
++                                 (struct vk_sync_wait){ .sync = queue->job_value[PVR_JOB_TYPE_FRAG] ?
++                                                              queue->job_sync[PVR_JOB_TYPE_FRAG] : NULL,
++                                                         .wait_value = queue->job_value[PVR_JOB_TYPE_FRAG] },
+                                  &(const struct vk_sync_signal){ .sync = geom_signal_sync },
+                                  &(const struct vk_sync_signal){ .sync = frag_signal_sync });
+ 
+@@ -546,15 +550,15 @@ pvr_process_event_cmd_barrier(struct pvr_device *device,
+       struct vk_sync_signal signal;
+       struct vk_sync *signal_sync;
+ 
+-      if (stage == PVR_JOB_TYPE_GEOM) {
++      if (stage == PVR_JOB_TYPE_GEOM || stage == PVR_JOB_TYPE_FRAG) {
+          /* GEOM orders through the queue's persistent timeline syncobj: signal
+           * point N+1; the next GEOM job waits on point N. No per-barrier
+           * create/destroy. last_job_signal_sync is deliberately untouched - it
+           * is the GEOM JOB's own signal, which the event paths wait on. */
+          signal = (struct vk_sync_signal){
+-            .sync = queue->job_sync[PVR_JOB_TYPE_GEOM],
++            .sync = queue->job_sync[stage],
+             .stage_mask = ~(VkPipelineStageFlags2)0,
+-            .signal_value = ++queue->job_value[PVR_JOB_TYPE_GEOM],
++            .signal_value = ++queue->job_value[stage],
+          };
+          result = device->ws->ops->null_job_submit(device->ws, wait_syncs,
+                                                    wait_count, &signal);

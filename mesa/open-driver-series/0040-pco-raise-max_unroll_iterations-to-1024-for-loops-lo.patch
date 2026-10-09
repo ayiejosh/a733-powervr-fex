@@ -1,0 +1,54 @@
+From 167a943e36ef77f37a52355ec06d34e724640e90 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 9 Oct 2026 00:48:40 +0800
+Subject: [PATCH 40/43] pco: raise max_unroll_iterations to 1024 for loops
+ longer than 256 iterations
+
+5a1be21 raised the unroll threshold to 256 and removed the cliff above 64 for 128-iteration
+loops. A probe with a 512-iteration loop shows a third cliff above the new limit:
+
+  cstpi512 (512 iterations), limit 256:   1.9 M inv/s
+  cstpi128 (128 iterations), limit 256:  19.6 M inv/s
+
+cstpi512 does four times the work per invocation of cstpi128, so equal efficiency would be
+about 19.6/4 = 4.9 M inv/s. At 1.9 it was 2.6x less efficient per iteration - not fully
+unrolled at 256.
+
+  probe                 limit 256   limit 1024
+  cstpi512 (512 iters)  1.9         5.1     (2.68x, and equal-efficiency is 4.9)
+  cstpi128 (128 iters)  19.6        19.6
+  cstpi    (32 iters)   70.7        71.6
+  cstpf    (32 iters)   84.6        87.7
+  glmark2 full suite    49          49
+
+The 512-iteration loop reaches 5.1 M inv/s, the equal-efficiency figure, so the cliff is
+gone, and the shorter probes and the full suite are unchanged.
+
+Correction to the previous commit's reasoning: 5a1be21 concluded that 1024 showed no gain
+over 256, but that was measured only on the 128-iteration probe, which both limits cover.
+On a 512-iteration probe 1024 is 2.68x better, so the earlier conclusion was based on too
+narrow a test.
+
+Trade-off recorded rather than hidden: a larger unroll limit increases code size, and this
+suite is neutral because none of its scenes has a long loop - so the cost is real but
+invisible here. The limit is set by the longest loop measured (512) rather than raised
+arbitrarily.
+
+Correctness green: vkrender 2048, bda, vk13, pctest, vk16.
+---
+ src/imagination/pco/pco_nir.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/imagination/pco/pco_nir.c b/src/imagination/pco/pco_nir.c
+index 4a345d1..9b177fd 100644
+--- a/src/imagination/pco/pco_nir.c
++++ b/src/imagination/pco/pco_nir.c
+@@ -82,7 +82,7 @@ static const nir_shader_compiler_options nir_options = {
+ 
+    .lower_helper_invocation = true,
+ 
+-   .max_unroll_iterations = 256,
++   .max_unroll_iterations = 1024,
+    .max_samples = 4,
+ 
+    .io_options = nir_io_vectorizer_ignores_types,

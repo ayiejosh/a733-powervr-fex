@@ -1,0 +1,638 @@
+From 53ccc4b69582eb90e9aaa7d4c150776002b74285 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Thu, 8 Oct 2026 13:39:57 +0800
+Subject: [PATCH 31/43] pvr: plumb sync values through the winsys submit API
+ (step 1 of 3, behaviour-preserving)
+
+Groundwork for timeline syncobjs, which is what removes the queue's per-job sync
+create/destroy (~250 DRM ioctls per Xwayland frame, ~80% of it this path).
+
+The winsys submit API carried bare struct vk_sync pointers, so a timeline point could not be
+expressed: pvr_drm_job_render.c hardcoded .value = 0 at 10 sites and asserted
+!(sync->flags & VK_SYNC_IS_TIMELINE) at 8. Mesa already has the value-carrying types and the
+null-job path already uses them, so this change adopts them everywhere:
+
+  pvr_winsys.h      4x 'struct vk_sync *wait'      -> 'struct vk_sync_wait wait'
+                    3x 'struct vk_sync *signal_sync*' -> 'const struct vk_sync_signal *'
+  pvr_arch_job_{render,compute,transfer}.c and pvr_job_{render,compute,transfer}.h
+                    wrappers, ws_submit_info_init helpers and state-init helpers take/forward
+                    the new types
+  powervr + pvrsrvkm job implementations consume wait.sync / signal->sync
+  pvr_arch_queue.c  call sites wrap the bare syncs in the value-carrying structs
+
+**Values are all still zero, so this is behaviour-preserving**: a binary syncobj is defined to
+use value 0, which is what the code passed before. No functional change is intended or observed.
+
+Verified: build clean; bda, vk13, pctest, vk16, wgsize, samplers, storageimages, mrt, varyings,
+inatt, ubos, stgbuf, vattrib all PASS; glmark2 --validate 27/0.
+
+Next (step 2): the queue keeps a persistent timeline sync per job type and increments its point,
+so no sync object is created or destroyed per job.
+---
+ src/imagination/vulkan/pvr_arch_job_compute.c |  6 ++---
+ src/imagination/vulkan/pvr_arch_job_render.c  | 18 +++++++-------
+ .../vulkan/pvr_arch_job_transfer.c            | 18 +++++++-------
+ src/imagination/vulkan/pvr_arch_queue.c       | 24 +++++++++----------
+ src/imagination/vulkan/pvr_job_compute.h      |  4 ++--
+ src/imagination/vulkan/pvr_job_render.h       |  8 +++----
+ src/imagination/vulkan/pvr_job_transfer.h     |  4 ++--
+ .../winsys/powervr/pvr_drm_job_compute.c      | 10 ++++----
+ .../winsys/powervr/pvr_drm_job_compute.h      |  2 +-
+ .../winsys/powervr/pvr_drm_job_render.c       | 24 +++++++++----------
+ .../winsys/powervr/pvr_drm_job_render.h       |  4 ++--
+ .../winsys/powervr/pvr_drm_job_transfer.c     | 10 ++++----
+ .../winsys/powervr/pvr_drm_job_transfer.h     |  2 +-
+ src/imagination/vulkan/winsys/pvr_winsys.h    | 16 ++++++-------
+ .../pvrsrvkm/pvr_arch_srv_job_compute.c       |  6 ++---
+ .../winsys/pvrsrvkm/pvr_arch_srv_job_render.c | 12 +++++-----
+ .../pvrsrvkm/pvr_arch_srv_job_transfer.c      |  6 ++---
+ 17 files changed, 87 insertions(+), 87 deletions(-)
+
+diff --git a/src/imagination/vulkan/pvr_arch_job_compute.c b/src/imagination/vulkan/pvr_arch_job_compute.c
+index 0a39435..75cb0c4 100644
+--- a/src/imagination/vulkan/pvr_arch_job_compute.c
++++ b/src/imagination/vulkan/pvr_arch_job_compute.c
+@@ -194,7 +194,7 @@ pvr_submit_info_flags_init(const struct pvr_device_info *const dev_info,
+ static void pvr_compute_job_ws_submit_info_init(
+    struct pvr_compute_ctx *ctx,
+    struct pvr_sub_cmd_compute *sub_cmd,
+-   struct vk_sync *wait,
++   struct vk_sync_wait wait,
+    struct pvr_winsys_compute_submit_info *submit_info)
+ {
+    const struct pvr_device *const device = ctx->device;
+@@ -214,8 +214,8 @@ static void pvr_compute_job_ws_submit_info_init(
+ 
+ VkResult pvr_arch_compute_job_submit(struct pvr_compute_ctx *ctx,
+                                      struct pvr_sub_cmd_compute *sub_cmd,
+-                                     struct vk_sync *wait,
+-                                     struct vk_sync *signal_sync)
++                                     struct vk_sync_wait wait,
++                                     const struct vk_sync_signal *signal_sync)
+ {
+    struct pvr_winsys_compute_submit_info submit_info;
+    struct pvr_device *device = ctx->device;
+diff --git a/src/imagination/vulkan/pvr_arch_job_render.c b/src/imagination/vulkan/pvr_arch_job_render.c
+index 025a05b..4befa9e 100644
+--- a/src/imagination/vulkan/pvr_arch_job_render.c
++++ b/src/imagination/vulkan/pvr_arch_job_render.c
+@@ -839,7 +839,7 @@ pvr_geom_state_flags_init(const struct pvr_render_job *const job,
+ static void
+ pvr_render_job_ws_geometry_state_init(struct pvr_render_ctx *ctx,
+                                       struct pvr_render_job *job,
+-                                      struct vk_sync *wait,
++                                      struct vk_sync_wait wait,
+                                       struct pvr_winsys_geometry_state *state)
+ {
+    pvr_geom_state_stream_init(ctx, job, state);
+@@ -1363,7 +1363,7 @@ pvr_frag_state_flags_init(const struct pvr_render_job *const job,
+ static void
+ pvr_render_job_ws_fragment_state_init(struct pvr_render_ctx *ctx,
+                                       struct pvr_render_job *job,
+-                                      struct vk_sync *wait,
++                                      struct vk_sync_wait wait,
+                                       struct pvr_winsys_fragment_state *state)
+ {
+    pvr_frag_state_stream_init(ctx, job, state);
+@@ -1389,7 +1389,7 @@ pvr_render_job_ws_fragment_state_init(struct pvr_render_ctx *ctx,
+ static void pvr_render_job_ws_fragment_pr_init_based_on_fragment_state(
+    const struct pvr_render_ctx *ctx,
+    struct pvr_render_job *job,
+-   struct vk_sync *wait,
++   struct vk_sync_wait wait,
+    struct pvr_winsys_fragment_state *frag,
+    struct pvr_winsys_fragment_state *state)
+ {
+@@ -1432,8 +1432,8 @@ static void pvr_render_job_ws_fragment_pr_init_based_on_fragment_state(
+ static void pvr_render_job_ws_submit_info_init(
+    struct pvr_render_ctx *ctx,
+    struct pvr_render_job *job,
+-   struct vk_sync *wait_geom,
+-   struct vk_sync *wait_frag,
++   struct vk_sync_wait wait_geom,
++   struct vk_sync_wait wait_frag,
+    struct pvr_winsys_render_submit_info *submit_info)
+ {
+    memset(submit_info, 0, sizeof(*submit_info));
+@@ -1477,10 +1477,10 @@ static void pvr_render_job_ws_submit_info_init(
+ 
+ VkResult pvr_arch_render_job_submit(struct pvr_render_ctx *ctx,
+                                     struct pvr_render_job *job,
+-                                    struct vk_sync *wait_geom,
+-                                    struct vk_sync *wait_frag,
+-                                    struct vk_sync *signal_sync_geom,
+-                                    struct vk_sync *signal_sync_frag)
++                                    struct vk_sync_wait wait_geom,
++                                    struct vk_sync_wait wait_frag,
++                                    const struct vk_sync_signal *signal_sync_geom,
++                                    const struct vk_sync_signal *signal_sync_frag)
+ {
+    struct pvr_rt_dataset *rt_dataset =
+       job->view_state.rt_datasets[job->view_state.view_index];
+diff --git a/src/imagination/vulkan/pvr_arch_job_transfer.c b/src/imagination/vulkan/pvr_arch_job_transfer.c
+index df05efe..af3e1a4 100644
+--- a/src/imagination/vulkan/pvr_arch_job_transfer.c
++++ b/src/imagination/vulkan/pvr_arch_job_transfer.c
+@@ -5910,7 +5910,7 @@ pvr_submit_info_flags_init(const struct pvr_device_info *const dev_info,
+ static void pvr_transfer_job_ws_submit_info_init(
+    struct pvr_transfer_ctx *ctx,
+    struct pvr_transfer_submit *submit,
+-   struct vk_sync *wait,
++   struct vk_sync_wait wait,
+    struct pvr_winsys_transfer_submit_info *submit_info)
+ {
+    const struct pvr_device *const device = ctx->device;
+@@ -5932,8 +5932,8 @@ static void pvr_transfer_job_ws_submit_info_init(
+ 
+ static VkResult pvr_submit_transfer(struct pvr_transfer_ctx *ctx,
+                                     struct pvr_transfer_submit *submit,
+-                                    struct vk_sync *wait,
+-                                    struct vk_sync *signal_sync)
++                                    struct vk_sync_wait wait,
++                                    const struct vk_sync_signal *signal_sync)
+ {
+    struct pvr_winsys_transfer_submit_info submit_info;
+ 
+@@ -5947,8 +5947,8 @@ static VkResult pvr_submit_transfer(struct pvr_transfer_ctx *ctx,
+ 
+ static VkResult pvr_queue_transfer(struct pvr_transfer_ctx *ctx,
+                                    struct pvr_transfer_cmd *transfer_cmd,
+-                                   struct vk_sync *wait,
+-                                   struct vk_sync *signal_sync)
++                                   struct vk_sync_wait wait,
++                                   const struct vk_sync_signal *signal_sync)
+ {
+    struct pvr_transfer_prep_data *prep_data = NULL;
+    struct pvr_transfer_prep_data *prev_prep_data;
+@@ -6026,8 +6026,8 @@ static VkResult pvr_queue_transfer(struct pvr_transfer_ctx *ctx,
+ 
+ VkResult pvr_arch_transfer_job_submit(struct pvr_transfer_ctx *ctx,
+                                       struct pvr_sub_cmd_transfer *sub_cmd,
+-                                      struct vk_sync *wait_sync,
+-                                      struct vk_sync *signal_sync)
++                                      struct vk_sync_wait wait_sync,
++                                      const struct vk_sync_signal *signal_sync)
+ {
+    list_for_each_entry_safe (struct pvr_transfer_cmd,
+                              transfer_cmd,
+@@ -6037,8 +6037,8 @@ VkResult pvr_arch_transfer_job_submit(struct pvr_transfer_ctx *ctx,
+        * synchronized in submission order. This means only the first kick must
+        * wait, and only the last kick need signal.
+        */
+-      struct vk_sync *first_cmd_wait_sync = NULL;
+-      struct vk_sync *last_cmd_signal_sync = NULL;
++      struct vk_sync_wait first_cmd_wait_sync = { 0 };
++      const struct vk_sync_signal *last_cmd_signal_sync = NULL;
+       VkResult result;
+ 
+       if (list_first_entry(sub_cmd->transfer_cmds,
+diff --git a/src/imagination/vulkan/pvr_arch_queue.c b/src/imagination/vulkan/pvr_arch_queue.c
+index cb6203e..ca2f860 100644
+--- a/src/imagination/vulkan/pvr_arch_queue.c
++++ b/src/imagination/vulkan/pvr_arch_queue.c
+@@ -308,8 +308,8 @@ pvr_process_graphics_cmd_for_view(struct pvr_device *device,
+       result = pvr_arch_render_job_submit(
+          queue->gfx_ctx,
+          &sub_cmd->job,
+-         queue->next_job_wait_sync[PVR_JOB_TYPE_GEOM],
+-         NULL,
++         (struct vk_sync_wait){ .sync = queue->next_job_wait_sync[PVR_JOB_TYPE_GEOM] },
++         (struct vk_sync_wait){ 0 },
+          NULL,
+          NULL);
+ 
+@@ -336,10 +336,10 @@ pvr_process_graphics_cmd_for_view(struct pvr_device *device,
+    result =
+       pvr_arch_render_job_submit(queue->gfx_ctx,
+                                  &sub_cmd->job,
+-                                 queue->next_job_wait_sync[PVR_JOB_TYPE_GEOM],
+-                                 queue->next_job_wait_sync[PVR_JOB_TYPE_FRAG],
+-                                 geom_signal_sync,
+-                                 frag_signal_sync);
++                                 (struct vk_sync_wait){ .sync = queue->next_job_wait_sync[PVR_JOB_TYPE_GEOM] },
++                                 (struct vk_sync_wait){ .sync = queue->next_job_wait_sync[PVR_JOB_TYPE_FRAG] },
++                                 &(const struct vk_sync_signal){ .sync = geom_signal_sync },
++                                 &(const struct vk_sync_signal){ .sync = frag_signal_sync });
+ 
+    if (original_ctrl_stream_addr.addr > 0)
+       job->ctrl_stream_addr = original_ctrl_stream_addr;
+@@ -407,8 +407,8 @@ static VkResult pvr_process_compute_cmd(struct pvr_device *device,
+    result = pvr_arch_compute_job_submit(
+       queue->compute_ctx,
+       sub_cmd,
+-      queue->next_job_wait_sync[PVR_JOB_TYPE_COMPUTE],
+-      sync);
++      (struct vk_sync_wait){ .sync = queue->next_job_wait_sync[PVR_JOB_TYPE_COMPUTE] },
++      &(const struct vk_sync_signal){ .sync = sync });
+    if (result != VK_SUCCESS) {
+       vk_sync_destroy(&device->vk, sync);
+       return result;
+@@ -437,8 +437,8 @@ static VkResult pvr_process_transfer_cmds(struct pvr_device *device,
+    result = pvr_arch_transfer_job_submit(
+       queue->transfer_ctx,
+       sub_cmd,
+-      queue->next_job_wait_sync[PVR_JOB_TYPE_TRANSFER],
+-      sync);
++      (struct vk_sync_wait){ .sync = queue->next_job_wait_sync[PVR_JOB_TYPE_TRANSFER] },
++      &(const struct vk_sync_signal){ .sync = sync });
+    if (result != VK_SUCCESS) {
+       vk_sync_destroy(&device->vk, sync);
+       return result;
+@@ -473,8 +473,8 @@ static VkResult pvr_process_query_cmd(struct pvr_device *device,
+    result =
+       pvr_arch_compute_job_submit(queue->query_ctx,
+                                   sub_cmd,
+-                                  queue->next_job_wait_sync[PVR_JOB_TYPE_QUERY],
+-                                  sync);
++                                  (struct vk_sync_wait){ .sync = queue->next_job_wait_sync[PVR_JOB_TYPE_QUERY] },
++                                  &(const struct vk_sync_signal){ .sync = sync });
+    if (result != VK_SUCCESS) {
+       vk_sync_destroy(&device->vk, sync);
+       return result;
+diff --git a/src/imagination/vulkan/pvr_job_compute.h b/src/imagination/vulkan/pvr_job_compute.h
+index afd9a6e..c6319ef 100644
+--- a/src/imagination/vulkan/pvr_job_compute.h
++++ b/src/imagination/vulkan/pvr_job_compute.h
+@@ -33,8 +33,8 @@ struct vk_sync;
+ 
+ VkResult PVR_PER_ARCH(compute_job_submit)(struct pvr_compute_ctx *ctx,
+                                           struct pvr_sub_cmd_compute *sub_cmd,
+-                                          struct vk_sync *wait,
+-                                          struct vk_sync *signal_sync);
++                                          struct vk_sync_wait wait,
++                                          const struct vk_sync_signal *signal_sync);
+ 
+ #define pvr_arch_compute_job_submit PVR_PER_ARCH(compute_job_submit)
+ 
+diff --git a/src/imagination/vulkan/pvr_job_render.h b/src/imagination/vulkan/pvr_job_render.h
+index 8320328..fb250b9 100644
+--- a/src/imagination/vulkan/pvr_job_render.h
++++ b/src/imagination/vulkan/pvr_job_render.h
+@@ -189,10 +189,10 @@ VkResult PVR_PER_ARCH(render_target_dataset_create)(
+ 
+ VkResult PVR_PER_ARCH(render_job_submit)(struct pvr_render_ctx *ctx,
+                                          struct pvr_render_job *job,
+-                                         struct vk_sync *wait_geom,
+-                                         struct vk_sync *wait_frag,
+-                                         struct vk_sync *signal_sync_geom,
+-                                         struct vk_sync *signal_sync_frag);
++                                         struct vk_sync_wait wait_geom,
++                                         struct vk_sync_wait wait_frag,
++                                         const struct vk_sync_signal *signal_sync_geom,
++                                         const struct vk_sync_signal *signal_sync_frag);
+ 
+ #   define pvr_arch_render_job_submit PVR_PER_ARCH(render_job_submit)
+ 
+diff --git a/src/imagination/vulkan/pvr_job_transfer.h b/src/imagination/vulkan/pvr_job_transfer.h
+index 5fa011d..24cfccc 100644
+--- a/src/imagination/vulkan/pvr_job_transfer.h
++++ b/src/imagination/vulkan/pvr_job_transfer.h
+@@ -45,8 +45,8 @@ struct vk_sync;
+ 
+ VkResult PVR_PER_ARCH(transfer_job_submit)(struct pvr_transfer_ctx *ctx,
+                                            struct pvr_sub_cmd_transfer *sub_cmd,
+-                                           struct vk_sync *wait,
+-                                           struct vk_sync *signal_sync);
++                                           struct vk_sync_wait wait,
++                                           const struct vk_sync_signal *signal_sync);
+ 
+ #define pvr_arch_transfer_job_submit PVR_PER_ARCH(transfer_job_submit)
+ 
+diff --git a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_compute.c b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_compute.c
+index b25c66f..381cc49 100644
+--- a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_compute.c
++++ b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_compute.c
+@@ -170,7 +170,7 @@ VkResult pvr_drm_winsys_compute_submit(
+    const struct pvr_winsys_compute_ctx *ctx,
+    const struct pvr_winsys_compute_submit_info *submit_info,
+    UNUSED const struct pvr_device_info *dev_info,
+-   struct vk_sync *signal_sync)
++   const struct vk_sync_signal *signal_sync)
+ {
+    const struct pvr_drm_winsys *drm_ws = to_pvr_drm_winsys(ctx->ws);
+    const struct pvr_drm_winsys_compute_ctx *drm_ctx =
+@@ -192,8 +192,8 @@ VkResult pvr_drm_winsys_compute_submit(
+       .jobs = DRM_PVR_OBJ_ARRAY(1, &job_args),
+    };
+ 
+-   if (submit_info->wait) {
+-      struct vk_sync *sync = submit_info->wait;
++   if (submit_info->wait.sync) {
++      struct vk_sync *sync = submit_info->wait.sync;
+ 
+       assert(!(sync->flags & VK_SYNC_IS_TIMELINE));
+       sync_ops[job_args.sync_ops.count++] = (struct drm_pvr_sync_op){
+@@ -205,9 +205,9 @@ VkResult pvr_drm_winsys_compute_submit(
+    }
+ 
+    if (signal_sync) {
+-      assert(!(signal_sync->flags & VK_SYNC_IS_TIMELINE));
++      assert(!(signal_sync->sync->flags & VK_SYNC_IS_TIMELINE));
+       sync_ops[job_args.sync_ops.count++] = (struct drm_pvr_sync_op){
+-         .handle = vk_sync_as_drm_syncobj(signal_sync)->syncobj,
++         .handle = vk_sync_as_drm_syncobj(signal_sync->sync)->syncobj,
+          .flags = DRM_PVR_SYNC_OP_FLAG_SIGNAL |
+                   DRM_PVR_SYNC_OP_FLAG_HANDLE_TYPE_SYNCOBJ,
+          .value = 0,
+diff --git a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_compute.h b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_compute.h
+index 641b1d1..096526b 100644
+--- a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_compute.h
++++ b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_compute.h
+@@ -48,6 +48,6 @@ VkResult pvr_drm_winsys_compute_submit(
+    const struct pvr_winsys_compute_ctx *ctx,
+    const struct pvr_winsys_compute_submit_info *submit_info,
+    const struct pvr_device_info *dev_info,
+-   struct vk_sync *signal_sync);
++   const struct vk_sync_signal *signal_sync);
+ 
+ #endif /* PVR_DRM_JOB_COMPUTE_H */
+diff --git a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c
+index 1e3bcae..579d119 100644
+--- a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c
++++ b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c
+@@ -470,8 +470,8 @@ VkResult pvr_drm_winsys_render_submit(
+    const struct pvr_winsys_render_ctx *ctx,
+    const struct pvr_winsys_render_submit_info *submit_info,
+    UNUSED const struct pvr_device_info *dev_info,
+-   struct vk_sync *signal_sync_geom,
+-   struct vk_sync *signal_sync_frag)
++   const struct vk_sync_signal *signal_sync_geom,
++   const struct vk_sync_signal *signal_sync_frag)
+ 
+ {
+    const struct pvr_drm_winsys *drm_ws = to_pvr_drm_winsys(ctx->ws);
+@@ -526,8 +526,8 @@ VkResult pvr_drm_winsys_render_submit(
+ 
+    /* Geom syncs */
+ 
+-   if (submit_info->geometry.wait) {
+-      struct vk_sync *sync = submit_info->geometry.wait;
++   if (submit_info->geometry.wait.sync) {
++      struct vk_sync *sync = submit_info->geometry.wait.sync;
+ 
+       assert(!(sync->flags & VK_SYNC_IS_TIMELINE));
+       geom_sync_ops[num_geom_syncs++] = (struct drm_pvr_sync_op){
+@@ -539,9 +539,9 @@ VkResult pvr_drm_winsys_render_submit(
+    }
+ 
+    if (signal_sync_geom) {
+-      assert(!(signal_sync_geom->flags & VK_SYNC_IS_TIMELINE));
++      assert(!(signal_sync_geom->sync->flags & VK_SYNC_IS_TIMELINE));
+       geom_sync_ops[num_geom_syncs++] = (struct drm_pvr_sync_op){
+-         .handle = vk_sync_as_drm_syncobj(signal_sync_geom)->syncobj,
++         .handle = vk_sync_as_drm_syncobj(signal_sync_geom->sync)->syncobj,
+          .flags = DRM_PVR_SYNC_OP_FLAG_SIGNAL |
+                   DRM_PVR_SYNC_OP_FLAG_HANDLE_TYPE_SYNCOBJ,
+          .value = 0,
+@@ -551,8 +551,8 @@ VkResult pvr_drm_winsys_render_submit(
+    /* PR syncs */
+ 
+    if (signal_sync_geom) {
+-      assert(!(signal_sync_geom->flags & VK_SYNC_IS_TIMELINE));
+-      geom_to_pr_syncobj = vk_sync_as_drm_syncobj(signal_sync_geom)->syncobj;
++      assert(!(signal_sync_geom->sync->flags & VK_SYNC_IS_TIMELINE));
++      geom_to_pr_syncobj = vk_sync_as_drm_syncobj(signal_sync_geom->sync)->syncobj;
+    } else {
+       geom_to_pr_syncobj = drm_ctx->geom_to_pr_syncobj;
+ 
+@@ -597,8 +597,8 @@ VkResult pvr_drm_winsys_render_submit(
+        * they aren't needed.
+        */
+ 
+-      if (submit_info->fragment.wait) {
+-         struct vk_sync *sync = submit_info->fragment.wait;
++      if (submit_info->fragment.wait.sync) {
++         struct vk_sync *sync = submit_info->fragment.wait.sync;
+ 
+          assert(!(sync->flags & VK_SYNC_IS_TIMELINE));
+          frag_sync_ops[num_frag_syncs++] = (struct drm_pvr_sync_op){
+@@ -610,9 +610,9 @@ VkResult pvr_drm_winsys_render_submit(
+       }
+ 
+       if (signal_sync_frag) {
+-         assert(!(signal_sync_frag->flags & VK_SYNC_IS_TIMELINE));
++         assert(!(signal_sync_frag->sync->flags & VK_SYNC_IS_TIMELINE));
+          frag_sync_ops[num_frag_syncs++] = (struct drm_pvr_sync_op){
+-            .handle = vk_sync_as_drm_syncobj(signal_sync_frag)->syncobj,
++            .handle = vk_sync_as_drm_syncobj(signal_sync_frag->sync)->syncobj,
+             .flags = DRM_PVR_SYNC_OP_FLAG_SIGNAL |
+                      DRM_PVR_SYNC_OP_FLAG_HANDLE_TYPE_SYNCOBJ,
+             .value = 0,
+diff --git a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.h b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.h
+index 102084c..f329275 100644
+--- a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.h
++++ b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.h
+@@ -72,7 +72,7 @@ VkResult pvr_drm_winsys_render_submit(
+    const struct pvr_winsys_render_ctx *ctx,
+    const struct pvr_winsys_render_submit_info *submit_info,
+    const struct pvr_device_info *dev_info,
+-   struct vk_sync *signal_sync_geom,
+-   struct vk_sync *signal_sync_frag);
++   const struct vk_sync_signal *signal_sync_geom,
++   const struct vk_sync_signal *signal_sync_frag);
+ 
+ #endif /* PVR_DRM_JOB_RENDER_H */
+diff --git a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_transfer.c b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_transfer.c
+index 9ae0f64..75ce2f2 100644
+--- a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_transfer.c
++++ b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_transfer.c
+@@ -126,7 +126,7 @@ VkResult pvr_drm_winsys_transfer_submit(
+    const struct pvr_winsys_transfer_ctx *ctx,
+    const struct pvr_winsys_transfer_submit_info *submit_info,
+    UNUSED const struct pvr_device_info *const dev_info,
+-   struct vk_sync *signal_sync)
++   const struct vk_sync_signal *signal_sync)
+ {
+    const struct pvr_drm_winsys *drm_ws = to_pvr_drm_winsys(ctx->ws);
+    const struct pvr_drm_winsys_transfer_ctx *drm_ctx =
+@@ -149,8 +149,8 @@ VkResult pvr_drm_winsys_transfer_submit(
+ 
+    assert(submit_info->cmd_count == 1);
+ 
+-   if (submit_info->wait) {
+-      struct vk_sync *sync = submit_info->wait;
++   if (submit_info->wait.sync) {
++      struct vk_sync *sync = submit_info->wait.sync;
+ 
+       assert(!(sync->flags & VK_SYNC_IS_TIMELINE));
+       sync_ops[job_args.sync_ops.count++] = (struct drm_pvr_sync_op){
+@@ -162,9 +162,9 @@ VkResult pvr_drm_winsys_transfer_submit(
+    }
+ 
+    if (signal_sync) {
+-      assert(!(signal_sync->flags & VK_SYNC_IS_TIMELINE));
++      assert(!(signal_sync->sync->flags & VK_SYNC_IS_TIMELINE));
+       sync_ops[job_args.sync_ops.count++] = (struct drm_pvr_sync_op){
+-         .handle = vk_sync_as_drm_syncobj(signal_sync)->syncobj,
++         .handle = vk_sync_as_drm_syncobj(signal_sync->sync)->syncobj,
+          .flags = DRM_PVR_SYNC_OP_FLAG_SIGNAL |
+                   DRM_PVR_SYNC_OP_FLAG_HANDLE_TYPE_SYNCOBJ,
+          .value = 0,
+diff --git a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_transfer.h b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_transfer.h
+index f6ea0ab..5d5d4f3 100644
+--- a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_transfer.h
++++ b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_transfer.h
+@@ -46,6 +46,6 @@ VkResult pvr_drm_winsys_transfer_submit(
+    const struct pvr_winsys_transfer_ctx *ctx,
+    const struct pvr_winsys_transfer_submit_info *submit_info,
+    const struct pvr_device_info *dev_info,
+-   struct vk_sync *signal_sync);
++   const struct vk_sync_signal *signal_sync);
+ 
+ #endif /* PVR_DRM_JOB_TRANSFER_H */
+diff --git a/src/imagination/vulkan/winsys/pvr_winsys.h b/src/imagination/vulkan/winsys/pvr_winsys.h
+index 30f48db..03a69d3 100644
+--- a/src/imagination/vulkan/winsys/pvr_winsys.h
++++ b/src/imagination/vulkan/winsys/pvr_winsys.h
+@@ -298,7 +298,7 @@ struct pvr_winsys_transfer_submit_info {
+    uint32_t frame_num;
+    uint32_t job_num;
+ 
+-   struct vk_sync *wait;
++   struct vk_sync_wait wait;
+ 
+    uint32_t cmd_count;
+    struct pvr_winsys_transfer_cmd cmds[PVR_TRANSFER_MAX_PREPARES_PER_SUBMIT];
+@@ -308,7 +308,7 @@ struct pvr_winsys_compute_submit_info {
+    uint32_t frame_num;
+    uint32_t job_num;
+ 
+-   struct vk_sync *wait;
++   struct vk_sync_wait wait;
+ 
+    /* Firmware stream buffer. This is the maximum possible size taking into
+     * consideration all HW features, quirks and enhancements.
+@@ -343,7 +343,7 @@ struct pvr_winsys_render_submit_info {
+          bool use_single_core : 1;
+       } flags;
+ 
+-      struct vk_sync *wait;
++      struct vk_sync_wait wait;
+    } geometry;
+ 
+    struct pvr_winsys_fragment_state {
+@@ -363,7 +363,7 @@ struct pvr_winsys_render_submit_info {
+          bool disable_pixel_merging : 1;
+       } flags;
+ 
+-      struct vk_sync *wait;
++      struct vk_sync_wait wait;
+    } fragment, fragment_pr;
+ };
+ 
+@@ -433,8 +433,8 @@ struct pvr_winsys_ops {
+       const struct pvr_winsys_render_ctx *ctx,
+       const struct pvr_winsys_render_submit_info *submit_info,
+       const struct pvr_device_info *dev_info,
+-      struct vk_sync *signal_sync_geom,
+-      struct vk_sync *signal_sync_frag);
++      const struct vk_sync_signal *signal_sync_geom,
++      const struct vk_sync_signal *signal_sync_frag);
+ 
+    VkResult (*compute_ctx_create)(
+       struct pvr_winsys *ws,
+@@ -446,7 +446,7 @@ struct pvr_winsys_ops {
+       const struct pvr_winsys_compute_ctx *ctx,
+       const struct pvr_winsys_compute_submit_info *submit_info,
+       const struct pvr_device_info *dev_info,
+-      struct vk_sync *signal_sync);
++      const struct vk_sync_signal *signal_sync);
+ 
+    VkResult (*transfer_ctx_create)(
+       struct pvr_winsys *ws,
+@@ -457,7 +457,7 @@ struct pvr_winsys_ops {
+       const struct pvr_winsys_transfer_ctx *ctx,
+       const struct pvr_winsys_transfer_submit_info *submit_info,
+       const struct pvr_device_info *dev_info,
+-      struct vk_sync *signal_sync);
++      const struct vk_sync_signal *signal_sync);
+ 
+    VkResult (*null_job_submit)(struct pvr_winsys *ws,
+                                struct vk_sync_wait *waits,
+diff --git a/src/imagination/vulkan/winsys/pvrsrvkm/pvr_arch_srv_job_compute.c b/src/imagination/vulkan/winsys/pvrsrvkm/pvr_arch_srv_job_compute.c
+index 0121efd..4c7532b 100644
+--- a/src/imagination/vulkan/winsys/pvrsrvkm/pvr_arch_srv_job_compute.c
++++ b/src/imagination/vulkan/winsys/pvrsrvkm/pvr_arch_srv_job_compute.c
+@@ -146,7 +146,7 @@ VkResult PVR_PER_ARCH(srv_winsys_compute_submit)(
+    const struct pvr_winsys_compute_ctx *ctx,
+    const struct pvr_winsys_compute_submit_info *submit_info,
+    const struct pvr_device_info *const dev_info,
+-   struct vk_sync *signal_sync)
++   const struct vk_sync_signal *signal_sync)
+ {
+    const struct pvr_srv_winsys_compute_ctx *srv_ctx =
+       to_pvr_srv_winsys_compute_ctx(ctx);
+@@ -159,8 +159,8 @@ VkResult PVR_PER_ARCH(srv_winsys_compute_submit)(
+ 
+    srv_compute_cmd_init(submit_info, &compute_cmd, dev_info);
+ 
+-   if (submit_info->wait) {
+-      struct pvr_srv_sync *srv_wait_sync = to_srv_sync(submit_info->wait);
++   if (submit_info->wait.sync) {
++      struct pvr_srv_sync *srv_wait_sync = to_srv_sync(submit_info->wait.sync);
+ 
+       if (srv_wait_sync->fd >= 0) {
+          in_fd = os_dupfd_cloexec(srv_wait_sync->fd);
+diff --git a/src/imagination/vulkan/winsys/pvrsrvkm/pvr_arch_srv_job_render.c b/src/imagination/vulkan/winsys/pvrsrvkm/pvr_arch_srv_job_render.c
+index 2b9bd0e..c55cde3 100644
+--- a/src/imagination/vulkan/winsys/pvrsrvkm/pvr_arch_srv_job_render.c
++++ b/src/imagination/vulkan/winsys/pvrsrvkm/pvr_arch_srv_job_render.c
+@@ -761,8 +761,8 @@ VkResult PVR_PER_ARCH(srv_winsys_render_submit)(
+    const struct pvr_winsys_render_ctx *ctx,
+    const struct pvr_winsys_render_submit_info *submit_info,
+    const struct pvr_device_info *dev_info,
+-   struct vk_sync *signal_sync_geom,
+-   struct vk_sync *signal_sync_frag)
++   const struct vk_sync_signal *signal_sync_geom,
++   const struct vk_sync_signal *signal_sync_frag)
+ {
+    const struct pvr_srv_winsys_rt_dataset *srv_rt_dataset =
+       to_pvr_srv_winsys_rt_dataset(submit_info->rt_dataset);
+@@ -814,9 +814,9 @@ VkResult PVR_PER_ARCH(srv_winsys_render_submit)(
+       frag_cmd_size = sizeof(frag_cmd);
+    }
+ 
+-   if (submit_info->geometry.wait) {
++   if (submit_info->geometry.wait.sync) {
+       struct pvr_srv_sync *srv_wait_sync =
+-         to_srv_sync(submit_info->geometry.wait);
++         to_srv_sync(submit_info->geometry.wait.sync);
+ 
+       if (srv_wait_sync->fd >= 0) {
+          in_geom_fd = os_dupfd_cloexec(srv_wait_sync->fd);
+@@ -829,9 +829,9 @@ VkResult PVR_PER_ARCH(srv_winsys_render_submit)(
+       }
+    }
+ 
+-   if (submit_info->fragment.wait) {
++   if (submit_info->fragment.wait.sync) {
+       struct pvr_srv_sync *srv_wait_sync =
+-         to_srv_sync(submit_info->fragment.wait);
++         to_srv_sync(submit_info->fragment.wait.sync);
+ 
+       if (srv_wait_sync->fd >= 0) {
+          in_frag_fd = os_dupfd_cloexec(srv_wait_sync->fd);
+diff --git a/src/imagination/vulkan/winsys/pvrsrvkm/pvr_arch_srv_job_transfer.c b/src/imagination/vulkan/winsys/pvrsrvkm/pvr_arch_srv_job_transfer.c
+index ced9548..8fe07e5 100644
+--- a/src/imagination/vulkan/winsys/pvrsrvkm/pvr_arch_srv_job_transfer.c
++++ b/src/imagination/vulkan/winsys/pvrsrvkm/pvr_arch_srv_job_transfer.c
+@@ -149,7 +149,7 @@ VkResult PVR_PER_ARCH(srv_winsys_transfer_submit)(
+    const struct pvr_winsys_transfer_ctx *ctx,
+    const struct pvr_winsys_transfer_submit_info *submit_info,
+    const struct pvr_device_info *const dev_info,
+-   struct vk_sync *signal_sync)
++   const struct vk_sync_signal *signal_sync)
+ {
+    const struct pvr_srv_winsys_transfer_ctx *srv_ctx =
+       to_pvr_srv_winsys_transfer_ctx(ctx);
+@@ -186,8 +186,8 @@ VkResult PVR_PER_ARCH(srv_winsys_transfer_submit)(
+       cmds_ptr_arr[i] = &transfer_cmds[i];
+    }
+ 
+-   if (submit_info->wait) {
+-      struct pvr_srv_sync *srv_wait_sync = to_srv_sync(submit_info->wait);
++   if (submit_info->wait.sync) {
++      struct pvr_srv_sync *srv_wait_sync = to_srv_sync(submit_info->wait.sync);
+ 
+       if (srv_wait_sync->fd >= 0) {
+          in_fd = os_dupfd_cloexec(srv_wait_sync->fd);

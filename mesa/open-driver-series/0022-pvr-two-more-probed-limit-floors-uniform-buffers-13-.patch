@@ -1,0 +1,73 @@
+From e3f78b2b57bbc0f210ea589a63060a84c2fd3f22 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Thu, 8 Oct 2026 11:08:37 +0800
+Subject: [PATCH 22/43] pvr: two more probed limit floors (uniform buffers
+ 13->64, sampled images 32->128)
+
+maxPerStageDescriptorUniformBuffers was 13 - just above the spec minimum of 12 and, unlike
+its neighbours, not a round number, and with no backing constant. Probed with a new harness
+(bench/pvr-vulkan/ubos): an array of N uniform blocks where element i holds the value i, so
+the shader's sum must be the triangular number. An array element is one descriptor, so this
+uses N uniform-buffer descriptors in one stage:
+
+  N=13  got 78    want 78
+  N=16  got 120   want 120
+  N=32  got 496   want 496
+  N=48  got 1128  want 1128
+  N=64  got 2016  want 2016
+
+So at least 64 uniform buffers work per stage while 13 was advertised.
+
+maxPerStageDescriptorSampledImages was 32, which the existing samplers probe already
+disproved: a sampler2D[128] array binds and samples 128 combined image samplers, i.e. 128
+sampled images per stage. Now 128.
+
+maxDescriptorSetUniformBuffers and maxDescriptorSetSampledImages were left at a base of
+12/32 while their per-stage values were 13/32; both are now 3x their per-stage value, which
+also keeps the spec invariant maxDescriptorSet* >= maxPerStageDescriptor*.
+
+No regressions: bda, vk13, pctest, vk16, wgsize, samplers, storageimages, mrt, varyings,
+inatt, ubos all PASS.
+---
+ src/imagination/vulkan/pvr_physical_device.c | 13 +++++++++----
+ 1 file changed, 9 insertions(+), 4 deletions(-)
+
+diff --git a/src/imagination/vulkan/pvr_physical_device.c b/src/imagination/vulkan/pvr_physical_device.c
+index 84c91a1..0f67470 100644
+--- a/src/imagination/vulkan/pvr_physical_device.c
++++ b/src/imagination/vulkan/pvr_physical_device.c
+@@ -757,9 +757,14 @@ static bool pvr_physical_device_get_properties(
+        * the Vulkan minimum, which makes applications refuse to run. The vendor driver
+        * reports 32 on this part, so match that. */
+       .maxPerStageDescriptorSamplers = 32,
+-      .maxPerStageDescriptorUniformBuffers = 13,
++      /* Probed (bench/pvr-vulkan/ubos): an array of N uniform blocks, element i holding the
++       * value i, sums correctly up to at least 64 - while this reported 13 (just above the
++       * spec minimum of 12) with no backing constant. */
++      .maxPerStageDescriptorUniformBuffers = 64,
+       .maxPerStageDescriptorStorageBuffers = 16,
+-      .maxPerStageDescriptorSampledImages = 32,
++      /* Probed (bench/pvr-vulkan/samplers): a sampler2D[128] array binds and samples 128
++       * combined image samplers, i.e. 128 sampled images per stage. This reported 32. */
++      .maxPerStageDescriptorSampledImages = 128,
+       /* Probed (bench/pvr-vulkan/storageimages): 32 storage images in one stage all store
+        * and read back their own correct value, while this was reported as 4 - the Vulkan
+        * minimum - which makes applications needing more refuse to run. */
+@@ -771,7 +776,7 @@ static bool pvr_physical_device_get_properties(
+       .maxPerStageDescriptorInputAttachments = 8,
+       .maxPerStageResources = 57,
+       .maxDescriptorSetSamplers = 3U * 32U,
+-      .maxDescriptorSetUniformBuffers = 3U * 12U,
++      .maxDescriptorSetUniformBuffers = 3U * 64U,
+       .maxDescriptorSetUniformBuffersDynamic = 8U,
+       /* Must be >= maxPerStageDescriptorStorageBuffers (16), which Vulkan requires; it was
+        * 3*4 = 12, a stale derivation from when the per-stage limit was 4. An application
+@@ -779,7 +784,7 @@ static bool pvr_physical_device_get_properties(
+        * have exceeded the per-set limit. */
+       .maxDescriptorSetStorageBuffers = 3U * 16U,
+       .maxDescriptorSetStorageBuffersDynamic = 4U,
+-      .maxDescriptorSetSampledImages = 3U * 32U,
++      .maxDescriptorSetSampledImages = 3U * 128U,
+       .maxDescriptorSetStorageImages = 3U * 32U,
+       .maxDescriptorSetInputAttachments = 8U,
+ 

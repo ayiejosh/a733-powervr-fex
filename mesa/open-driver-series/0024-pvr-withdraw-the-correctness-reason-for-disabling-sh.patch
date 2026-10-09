@@ -1,0 +1,51 @@
+From f4d673eac00efef3c74f7c8ed3b2d49cc97c1a07 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Thu, 8 Oct 2026 11:28:35 +0800
+Subject: [PATCH 24/43] pvr: withdraw the correctness reason for disabling
+ shaderFloat16; keep the performance one
+
+Re-measured shaderFloat16 with the Mesa shader cache disabled, which is essential: with the
+cache enabled both settings give an identical glmark2 Score (35), because the cached shaders
+mask the feature change.
+
+  cache disabled, glmark2 -b build:use-vbo=false, 3 runs:
+    shaderFloat16=false  45 47 43  (median 45)
+    shaderFloat16=true   39 38 36  (median 38)   -> 18% faster disabled
+
+And glmark2-es2 --validate reports 27 success / 0 failure with the feature BOTH false and
+true. So the correctness failures originally recorded in the comment (20 of 27 scenes wrong)
+do not reproduce and are withdrawn; the flag stays false on performance grounds only.
+
+That reframes it as a PCO compiler-quality finding: zink implements GLES mediump with fp16
+when the feature is advertised, so PCO's fp16 emit is 18% slower than its fp32 path. Fixing
+that emit would regain the capability without the cost.
+
+PVRSRV_FP16=1 remains as a diagnostic override, default false (behaviour unchanged).
+---
+ src/imagination/vulkan/pvr_physical_device.c | 13 ++++++++++++-
+ 1 file changed, 12 insertions(+), 1 deletion(-)
+
+diff --git a/src/imagination/vulkan/pvr_physical_device.c b/src/imagination/vulkan/pvr_physical_device.c
+index 9d70109..e586eac 100644
+--- a/src/imagination/vulkan/pvr_physical_device.c
++++ b/src/imagination/vulkan/pvr_physical_device.c
+@@ -346,7 +346,18 @@ static void pvr_physical_device_get_supported_features(
+       /* Narrow ALU. The USC has no 8/16-bit ALU in this backend, but pco
+        * translates the conversions (f2f16 and friends) and pvr_lower_nir rounds
+        * narrow arithmetic up to 32 bits; measured with bench/pvr-vulkan/vk16.c. */
+-      .shaderFloat16 = false, /* ponytail: test fp16 precision as cause of validate failures */
++      /* Disabled on measured performance grounds: with the Mesa shader cache disabled,
++       * glmark2 -b build:use-vbo=false gives a 45 FPS median with this false and 38 with it
++       * true (18% faster disabled). zink implements GLES mediump with fp16 when this is
++       * advertised, so PCO's fp16 emit costs more than its fp32 path - a compiler-quality
++       * finding, not just a capability toggle.
++       *
++       * The correctness failures originally recorded here (20 of 27 glmark2 scenes wrong) do
++       * NOT reproduce: glmark2-es2 --validate reports 27 success / 0 failure with this both
++       * false and true. So the performance reason stands; the correctness reason is withdrawn.
++       *
++       * PVRSRV_FP16=1 re-enables it for diagnosis. */
++      .shaderFloat16 = getenv("PVRSRV_FP16") ? true : false, /* ponytail: test fp16 precision as cause of validate failures */
+       .shaderInt8 = true,
+       .descriptorIndexing = false,
+       .shaderInputAttachmentArrayDynamicIndexing = true,

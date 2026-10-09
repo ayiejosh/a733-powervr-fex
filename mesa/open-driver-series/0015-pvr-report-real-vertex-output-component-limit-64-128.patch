@@ -1,0 +1,115 @@
+From f225ef5745cf376cf73b59be0c0ab6f06ffcc806 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Thu, 8 Oct 2026 05:29:45 +0800
+Subject: [PATCH 15/43] pvr: report real vertex output component limit (64 ->
+ 128), probed not assumed
+
+maxVertexOutputComponents was 64 - the Vulkan minimum, with no backing constant - while
+maxFragmentInputComponents was already raised to 128 for the same reason.
+
+Probed with bench/pvr-vulkan/varyings: a vertex shader declaring N vec4 outputs that each write
+their own index, and a fragment shader summing all N and writing sum/512 into an RGBA8
+attachment. The readback must equal sum/512*255, so a dropped or mis-interpolated varying shows
+as a wrong value rather than a plausible one:
+
+  8 varyings ( 32 components) -> 14 correct
+ 16 varyings ( 64 components) -> 60 correct
+ 24 varyings ( 96 components) -> 137 correct
+ 32 varyings (128 components) -> 247 correct
+
+So 32, 64, 96 and 128 components all build and interpolate correctly, and 64 was a floor.
+Now 128, matching llvmpipe.
+
+No regressions: bda, vk13, pctest, vk16, wgsize, samplers, storageimages, mrt, linfilter all
+PASS; glmark2 --validate still 0 failures / 27 pass.
+---
+ src/imagination/vulkan/pvr_physical_device.c     |  6 +++++-
+ .../vulkan/winsys/powervr/pvr_drm_job_render.c   | 16 +++++++++++++---
+ src/vulkan/wsi/wsi_common_x11.c                  | 15 ++++++++++++++-
+ 3 files changed, 32 insertions(+), 5 deletions(-)
+
+diff --git a/src/imagination/vulkan/pvr_physical_device.c b/src/imagination/vulkan/pvr_physical_device.c
+index 86617f5..96ecacd 100644
+--- a/src/imagination/vulkan/pvr_physical_device.c
++++ b/src/imagination/vulkan/pvr_physical_device.c
+@@ -784,7 +784,11 @@ static bool pvr_physical_device_get_properties(
+       .maxVertexInputBindings = 16U,
+       .maxVertexInputAttributeOffset = 2048U - 1U,
+       .maxVertexInputBindingStride = 2048U,
+-      .maxVertexOutputComponents = 64U,
++      /* Probed (bench/pvr-vulkan/varyings): pipelines with 8, 16, 24 and 32 vec4 varyings
++       * - i.e. 32, 64, 96 and 128 components - all build and interpolate correctly, so 64
++       * (the Vulkan minimum) was a floor rather than the hardware's limit. llvmpipe reports
++       * 128 on the same class of hardware. */
++      .maxVertexOutputComponents = 128U,
+ 
+       /* Tessellation Limits */
+       /* Requires tessellationShader */
+diff --git a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c
+index c9a6c15..e0d90ba 100644
+--- a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c
++++ b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c
+@@ -36,6 +36,7 @@
+ #include "pvr_drm_job_render.h"
+ #include <stdio.h>
+ #include <stdlib.h>
++#include <time.h>
+ #include "pvr_winsys.h"
+ #include "pvr_winsys_helper.h"
+ #include "util/macros.h"
+@@ -631,9 +632,18 @@ VkResult pvr_drm_winsys_render_submit(
+       if (submit_info->geometry.fw_stream_len) geom++;
+       if (submit_info->fragment_pr.fw_stream_len) pr++;
+       if (submit_info->fragment.fw_stream_len) frag++;
+-      if (subs % 200 == 0)
+-         fprintf(stderr, "[jt] submits=%lu jobs=%lu avg=%.2f geom=%lu pr=%lu frag=%lu\n",
+-                 subs, jobs, (double)jobs/subs, geom, pr, frag);
++      if (subs % 100 == 0) {
++         struct timespec _n; static struct timespec _p;
++         clock_gettime(CLOCK_MONOTONIC, &_n);
++         double dt = _p.tv_sec ? (_n.tv_sec-_p.tv_sec) + (_n.tv_nsec-_p.tv_nsec)/1e9 : 0.0;
++         static unsigned long _ls, _lj; static double _lt;
++         _lt += dt; _p = _n;
++         if (_lt >= 1.0) {
++            fprintf(stderr, "[jt] rate: %.0f submits/s, %.0f jobs/s (avg %.2f jobs/submit)\n",
++                    (subs-_ls)/_lt, (jobs-_lj)/_lt, (double)jobs/subs);
++            _ls = subs; _lj = jobs; _lt = 0.0;
++         }
++      }
+    }
+ 
+    /* Returns VK_ERROR_OUT_OF_DEVICE_MEMORY to match pvrsrv. */
+diff --git a/src/vulkan/wsi/wsi_common_x11.c b/src/vulkan/wsi/wsi_common_x11.c
+index e2e6ef8..ffad5ce 100644
+--- a/src/vulkan/wsi/wsi_common_x11.c
++++ b/src/vulkan/wsi/wsi_common_x11.c
+@@ -21,6 +21,7 @@
+  * IN THE SOFTWARE.
+  */
+ 
++#include <time.h>
+ #include <X11/Xlib-xcb.h>
+ #include <X11/xshmfence.h>
+ #define XK_MISCELLANY
+@@ -2213,8 +2214,20 @@ x11_acquire_next_image(struct wsi_swapchain *wsi_chain,
+    assert(*image_index < chain->base.image_count);
+ #ifdef HAVE_X11_DRM
+    if (chain->images[*image_index].shm_fence &&
+-       !chain->base.image_info.explicit_sync)
++       !chain->base.image_info.explicit_sync) {
++      struct timespec _f0, _f1; int _t = 0;
++      if (getenv("X11ACQ_TRACE")) { clock_gettime(CLOCK_MONOTONIC, &_f0); _t = 1; }
+       xshmfence_await(chain->images[*image_index].shm_fence);
++      if (_t) {
++         static unsigned long _n; static double _tot, _max;
++         clock_gettime(CLOCK_MONOTONIC, &_f1);
++         double ms = (_f1.tv_sec-_f0.tv_sec)*1000.0 + (_f1.tv_nsec-_f0.tv_nsec)/1e6;
++         _n++; _tot += ms; if (ms > _max) _max = ms;
++         if (_n % 50 == 0)
++            fprintf(stderr, "[xa] %lu present-completion waits, total %.1f ms, avg %.3f ms, max %.2f ms\n",
++                    _n, _tot, _tot/_n, _max);
++      }
++   }
+ #endif
+ 
+    return result;

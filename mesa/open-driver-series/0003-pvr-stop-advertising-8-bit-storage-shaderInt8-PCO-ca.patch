@@ -1,0 +1,92 @@
+From 2552f0bc004e9463772092c2eeda9acab76f1466 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Thu, 8 Oct 2026 01:44:34 +0800
+Subject: [PATCH 03/43] pvr: stop advertising 8-bit storage/shaderInt8 - PCO
+ cannot compile them
+
+Same over-claim class as shaderFloat16, but worse: those shaders cannot compile at all.
+
+  .storageBuffer8BitAccess / uniformAndStorageBuffer8BitAccess / storagePushConstant8
+  / shaderInt8 were all advertised as true.
+
+But the ops that implement 8-bit storage access are not translated:
+extract_u8, extract_i8, insert_u8, insert_i8 have zero cases in pco_trans_nir.c
+(only vec8 among 8-bit ops is handled), and trans_conv()'s default is
+UNREACHABLE("Unsupported conversion op."). Nothing lowers them away first either:
+pco never sets nir_shader_compiler_options::lower_bit_size, so NIR keeps 8-bit ops,
+and pco_nir.c has no 8-bit lowering pass.
+
+So any shader using 8-bit storage access would abort the process. Disable until
+extract/insert_u8/i8 are implemented (they map naturally onto the bfe/bfi the
+translator already has for bitfield_extract/insert).
+
+Verified no regression: glmark2 --validate still 0 failures / 27 pass, off-screen
+179 FPS (baseline 188, within run variance). GL cannot reach this path (GLSL has no
+int8), which is why validate never caught it.
+
+Also carries PVR_JOB_TRACE in pvr_drm_job_render.c, which showed every submit issues
+3.00 hardware jobs (geometry + partial-render + fragment) for BOTH zink and native
+Vulkan clients.
+---
+ src/imagination/vulkan/pvr_physical_device.c      |  8 ++++----
+ .../vulkan/winsys/powervr/pvr_drm_job_render.c    | 15 +++++++++++++++
+ 2 files changed, 19 insertions(+), 4 deletions(-)
+
+diff --git a/src/imagination/vulkan/pvr_physical_device.c b/src/imagination/vulkan/pvr_physical_device.c
+index 197e461..eea1e61 100644
+--- a/src/imagination/vulkan/pvr_physical_device.c
++++ b/src/imagination/vulkan/pvr_physical_device.c
+@@ -338,16 +338,16 @@ static void pvr_physical_device_get_supported_features(
+       /* Vulkan 1.2 */
+       .samplerMirrorClampToEdge = true,
+       .drawIndirectCount = false,
+-      .storageBuffer8BitAccess = true,
+-      .uniformAndStorageBuffer8BitAccess = true,
+-      .storagePushConstant8 = true,
++      .storageBuffer8BitAccess = false, /* ponytail: UNREACHABLE - pco has no extract/insert_u8 */
++      .uniformAndStorageBuffer8BitAccess = false, /* ponytail: same */
++      .storagePushConstant8 = false, /* ponytail: same */
+       .shaderBufferInt64Atomics = false,
+       .shaderSharedInt64Atomics = false,
+       /* Narrow ALU. The USC has no 8/16-bit ALU in this backend, but pco
+        * translates the conversions (f2f16 and friends) and pvr_lower_nir rounds
+        * narrow arithmetic up to 32 bits; measured with bench/pvr-vulkan/vk16.c. */
+       .shaderFloat16 = false, /* ponytail: test fp16 precision as cause of validate failures */
+-      .shaderInt8 = true,
++      .shaderInt8 = false, /* ponytail: same - no 8-bit op translation in pco */
+       .descriptorIndexing = false,
+       .shaderInputAttachmentArrayDynamicIndexing = true,
+       .shaderUniformTexelBufferArrayDynamicIndexing = true,
+diff --git a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c
+index 321bdbc..c9a6c15 100644
+--- a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c
++++ b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c
+@@ -34,6 +34,8 @@
+ #include "pvr_drm_bo.h"
+ #include "pvr_drm_job_common.h"
+ #include "pvr_drm_job_render.h"
++#include <stdio.h>
++#include <stdlib.h>
+ #include "pvr_winsys.h"
+ #include "pvr_winsys_helper.h"
+ #include "util/macros.h"
+@@ -621,6 +623,19 @@ VkResult pvr_drm_winsys_render_submit(
+    if (submit_info->has_fragment_job)
+       jobs_args[2].sync_ops.count = num_frag_syncs;
+ 
++   /* ponytail: PVR_JOB_TRACE - hardware jobs per submit, to compare clients. */
++   if (getenv("PVR_JOB_TRACE")) {
++      static unsigned long subs, jobs, geom, pr, frag;
++      subs++;
++      jobs += args.jobs.count;
++      if (submit_info->geometry.fw_stream_len) geom++;
++      if (submit_info->fragment_pr.fw_stream_len) pr++;
++      if (submit_info->fragment.fw_stream_len) frag++;
++      if (subs % 200 == 0)
++         fprintf(stderr, "[jt] submits=%lu jobs=%lu avg=%.2f geom=%lu pr=%lu frag=%lu\n",
++                 subs, jobs, (double)jobs/subs, geom, pr, frag);
++   }
++
+    /* Returns VK_ERROR_OUT_OF_DEVICE_MEMORY to match pvrsrv. */
+    return pvr_ioctlf(drm_ws->base.render_fd,
+                      DRM_IOCTL_PVR_SUBMIT_JOBS,

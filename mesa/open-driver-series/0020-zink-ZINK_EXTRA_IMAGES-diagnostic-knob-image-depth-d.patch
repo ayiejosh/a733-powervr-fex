@@ -1,0 +1,33 @@
+From 2f75449d4e2297a91f5dfef3909e1ef22a133ebc Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Thu, 8 Oct 2026 09:47:10 +0800
+Subject: [PATCH 20/43] zink: ZINK_EXTRA_IMAGES diagnostic knob; image depth
+ does not fix the loop latency
+
+Measured the explicit-sync release wait directly (WSIREL_TRACE) against swapchain depth:
+
+  extra=0 (3 images)  avg 20.38 ms  max 59.41 ms
+  extra=2 (5 images)  avg 17.68 ms  max 60.40 ms
+  extra=4 (7 images)  avg 21.42 ms  max 60.54 ms
+
+More images shave a few ms off the average but the MAX is unchanged at ~60 ms, which equals
+weston's 53 ms repaint cycle. The loop is latency-bound, not starved of buffers, so buffer
+depth is not the lever. Knob kept (default 0 = no behaviour change) for future diagnosis.
+---
+ src/gallium/drivers/zink/zink_kopper.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/src/gallium/drivers/zink/zink_kopper.c b/src/gallium/drivers/zink/zink_kopper.c
+index 3c91504..5e5f5c3 100644
+--- a/src/gallium/drivers/zink/zink_kopper.c
++++ b/src/gallium/drivers/zink/zink_kopper.c
+@@ -317,7 +317,8 @@ kopper_CreateSwapchain(struct zink_screen *screen, struct kopper_displaytarget *
+       cswap->scci.clipped = VK_TRUE;
+    }
+    cswap->scci.presentMode = cdt->present_mode;
+-   cswap->scci.minImageCount = cdt->caps.minImageCount;
++   cswap->scci.minImageCount = cdt->caps.minImageCount +
++      (getenv("ZINK_EXTRA_IMAGES") ? atoi(getenv("ZINK_EXTRA_IMAGES")) : 0);
+    cswap->scci.preTransform = cdt->caps.currentTransform;
+    if (cdt->formats[1])
+       cswap->scci.pNext = &cdt->format_list;

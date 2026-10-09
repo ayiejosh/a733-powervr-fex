@@ -1,0 +1,54 @@
+From 8187b200353eb016f0946b8d8d8b03d2944b60c5 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Thu, 8 Oct 2026 05:35:37 +0800
+Subject: [PATCH 16/43] pvr: report real input-attachment limit (4 -> 8),
+ probed not assumed
+
+maxPerStageDescriptorInputAttachments was 4 - the Vulkan minimum, with no backing constant
+(input_attachments is a pointer, not a sized array) - so it was a floor candidate like the five
+already found.
+
+Probed with bench/pvr-vulkan/inatt: a 2-subpass render pass where subpass 0 writes 1/255 into
+each of N colour attachments and subpass 1 reads all N as input attachments, sums them and
+writes the sum. The readback must equal N, so a dropped input attachment shows a wrong number:
+
+  N=4   -> red=4   correct
+  N=8   -> red=8   correct
+  N=12  -> render pass and pipelines build, then crash at draw time
+  N=16+ -> fail earlier
+
+So the real per-stage limit is 8 while the driver reported 4. Now 8 (and the per-set value with
+it).
+
+No regressions: bda, vk13, pctest, vk16, wgsize, samplers, storageimages, mrt, varyings,
+linfilter all PASS; glmark2 --validate still 0 failures / 27 pass.
+---
+ src/imagination/vulkan/pvr_physical_device.c | 8 ++++++--
+ 1 file changed, 6 insertions(+), 2 deletions(-)
+
+diff --git a/src/imagination/vulkan/pvr_physical_device.c b/src/imagination/vulkan/pvr_physical_device.c
+index 96ecacd..84c91a1 100644
+--- a/src/imagination/vulkan/pvr_physical_device.c
++++ b/src/imagination/vulkan/pvr_physical_device.c
+@@ -764,7 +764,11 @@ static bool pvr_physical_device_get_properties(
+        * and read back their own correct value, while this was reported as 4 - the Vulkan
+        * minimum - which makes applications needing more refuse to run. */
+       .maxPerStageDescriptorStorageImages = 32,
+-      .maxPerStageDescriptorInputAttachments = 4,
++      /* Probed (bench/pvr-vulkan/inatt): a 2-subpass render pass where subpass 1 reads N
++       * input attachments and writes their sum. 4 and 8 both build and read back the correct
++       * sum; 12 creates pipelines but crashes at draw time and 16+ fail earlier. So the real
++       * per-stage limit is 8 while this reported the Vulkan minimum of 4. */
++      .maxPerStageDescriptorInputAttachments = 8,
+       .maxPerStageResources = 57,
+       .maxDescriptorSetSamplers = 3U * 32U,
+       .maxDescriptorSetUniformBuffers = 3U * 12U,
+@@ -777,7 +781,7 @@ static bool pvr_physical_device_get_properties(
+       .maxDescriptorSetStorageBuffersDynamic = 4U,
+       .maxDescriptorSetSampledImages = 3U * 32U,
+       .maxDescriptorSetStorageImages = 3U * 32U,
+-      .maxDescriptorSetInputAttachments = 4U,
++      .maxDescriptorSetInputAttachments = 8U,
+ 
+       /* Vertex Shader Limits */
+       .maxVertexInputAttributes = 16U,

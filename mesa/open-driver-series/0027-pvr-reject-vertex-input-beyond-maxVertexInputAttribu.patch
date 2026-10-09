@@ -1,0 +1,137 @@
+From 8c2140c342524525559a924ecc52d0c2a6e226a6 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Thu, 8 Oct 2026 13:14:20 +0800
+Subject: [PATCH 27/43] pvr: reject vertex input beyond
+ maxVertexInputAttributes instead of crashing
+
+The advertised limit is maxVertexInputAttributes = 16 (MAX_VERTEX_GENERIC_ATTRIBS), but
+nothing enforced it, and several arrays are sized from that constant with indices derived
+from the attribute location:
+
+  pco_vs_data::attribs[MAX_VERTEX_GENERIC_ATTRIBS]      indexed by location - GENERIC0
+  pvi_state::attribs[MAX_VERTEX_GENERIC_ATTRIBS]        indexed by location - GENERIC0
+  attrib_formats[VERT_ATTRIB_MAX] (32)                  generic locations start at GENERIC0
+
+VERT_ATTRIB_GENERIC0 is 15 and GENERIC15 is 30, so a 17th attribute lands at location 31 ->
+index 16 into a 16-entry array, and an 18th at location 32 -> index 32 into a 32-entry array.
+
+Observed before this change, with the vattrib harness:
+  N=16  correct
+  N=17  SIGSEGV in pco_nir_pvi (add_defs_uses <- nir_instr_insert <- lower_pvi)
+  N=18+ SIGSEGV, and at N=24 'realloc(): invalid next size' - heap corruption in
+        pvr_alloc_vs_attribs via allocate_var on the same 16-entry array
+
+Now the pipeline is rejected once, at the top of pvr_graphics_pipeline_init, with
+VK_ERROR_UNKNOWN naming the offending location:
+
+  N=16 works; N=17/18/24/32 all return a clean error and no longer crash.
+
+This also supersedes the two earlier partial fixes on this thread (a bounds check in
+pvr_init_vs_attribs and one in lower_pvi); both are kept as defence in depth, and the comment
+in pvr_init_vs_attribs that stated VERT_ATTRIB_GENERIC0 as 16 is corrected to 15.
+
+No regressions: bda, vk13, pctest, vk16, wgsize, samplers, storageimages, mrt, varyings, inatt,
+ubos, stgbuf, vattrib(16) all PASS; glmark2 --validate 27/0.
+---
+ src/imagination/pco/pco_nir_pvfio.c        | 22 ++++++++++++---
+ src/imagination/vulkan/pvr_arch_pipeline.c | 31 +++++++++++++++++++---
+ 2 files changed, 47 insertions(+), 6 deletions(-)
+
+diff --git a/src/imagination/pco/pco_nir_pvfio.c b/src/imagination/pco/pco_nir_pvfio.c
+index 71efda9..3660c75 100644
+--- a/src/imagination/pco/pco_nir_pvfio.c
++++ b/src/imagination/pco/pco_nir_pvfio.c
+@@ -865,15 +865,27 @@ static bool lower_pvi(nir_builder *b, nir_intrinsic_instr *intr, void *cb_data)
+    unsigned start_comp = nir_intrinsic_component(intr);
+    unsigned num_comps = intr->def.num_components;
+ 
+-   ASSERTED gl_vert_attrib location = nir_intrinsic_io_semantics(intr).location;
++   gl_vert_attrib location = nir_intrinsic_io_semantics(intr).location;
+    assert(location >= VERT_ATTRIB_GENERIC0 &&
+           location <= VERT_ATTRIB_GENERIC15);
+ 
+    ASSERTED nir_src *offset = &intr->src[0];
+    assert(nir_src_as_uint(*offset) == 0);
+ 
+-   nir_def *attrib = state->attribs[location - VERT_ATTRIB_GENERIC0];
+-   assert(attrib);
++   /* The assertions above are compiled out in a release build, and an application may pass
++    * more attributes than the advertised maxVertexInputAttributes (16). pco_nir_pvi only
++    * fills state.attribs[] for locations VERT_ATTRIB_GENERIC0..GENERIC15, so an input at
++    * GENERIC16 gives index 16 into a MAX_VERTEX_GENERIC_ATTRIBS (16) element array: garbage
++    * `attrib`, then nir_channels() on it, then a SIGSEGV in nir_instr_insert/add_defs_uses.
++    * Leave such an input unlowered rather than read out of bounds. A clean
++    * pipeline-creation error would be better; this removes the crash. */
++   unsigned attrib_idx = location - VERT_ATTRIB_GENERIC0;
++   if (attrib_idx >= ARRAY_SIZE(state->attribs))
++      return false;
++
++   nir_def *attrib = state->attribs[attrib_idx];
++   if (!attrib)
++      return false;
+ 
+    b->cursor = nir_before_instr(&intr->instr);
+    attrib = nir_channels(b, attrib, BITFIELD_RANGE(start_comp, num_comps));
+@@ -939,6 +951,10 @@ bool pco_nir_pvi(nir_shader *shader, pco_vs_data *vs)
+ 
+       unsigned format_dwords =
+          DIV_ROUND_UP(util_format_get_blocksize(format), sizeof(uint32_t));
++      if (getenv("PVI_TRACE"))
++         fprintf(stderr, "[pvi] u=%u location=%d format=%d blocksize=%u dwords=%u base_type=%u var=%p\n",
++                 u, (int)location, (int)format, util_format_get_blocksize(format),
++                 format_dwords, base_type, (void *)var);
+       var->type = glsl_uvec_type(format_dwords);
+ 
+       nir_def *packed_comps[4];
+diff --git a/src/imagination/vulkan/pvr_arch_pipeline.c b/src/imagination/vulkan/pvr_arch_pipeline.c
+index 90f6ca3..b0e896a 100644
+--- a/src/imagination/vulkan/pvr_arch_pipeline.c
++++ b/src/imagination/vulkan/pvr_arch_pipeline.c
+@@ -1794,12 +1794,12 @@ static void pvr_init_vs_attribs(
+       gl_vert_attrib location = attrib->location + VERT_ATTRIB_GENERIC0;
+ 
+       /* Bounds check: attrib_formats[] has VERT_ATTRIB_MAX (32) entries, i.e. locations
+-       * VERT_ATTRIB_GENERIC0 (16) .. 16 + MAX_VERTEX_GENERIC_ATTRIBS - 1 (31). The driver
++       * VERT_ATTRIB_GENERIC0 (15) .. 15 + MAX_VERTEX_GENERIC_ATTRIBS - 1 (30). The driver
+        * advertises maxVertexInputAttributes = 16, but nothing enforces that here, and an
+-       * application passing a 17th attribute (location 16 -> index 32) wrote one entry past
++       * application passing an 18th attribute (location 17 -> index 32) wrote one entry past
+        * the end of the array, corrupting the surrounding pco_data. That corruption surfaced
+        * later as a SIGSEGV inside pco_nir_pvi (add_defs_uses <- nir_instr_insert), which is
+-       * what a >16-attribute pipeline does today. Skip out-of-range locations rather than
++       * part of what a >16-attribute pipeline did. Skip out-of-range locations rather than
+        * write out of bounds; a clean pipeline-creation error would be better still. */
+       if (location >= (gl_vert_attrib)ARRAY_SIZE(data->vs.attrib_formats))
+          continue;
+@@ -3345,6 +3345,31 @@ pvr_graphics_pipeline_init(struct pvr_device *device,
+                            const VkAllocationCallbacks *allocator,
+                            struct pvr_graphics_pipeline *gfx_pipeline)
+ {
++   /* maxVertexInputAttributes is advertised as MAX_VERTEX_GENERIC_ATTRIBS (16) and nothing
++    * enforced it. Several arrays are sized from it - pco_vs_data::attribs and
++    * pvi_state::attribs have MAX_VERTEX_GENERIC_ATTRIBS entries indexed by
++    * (location - VERT_ATTRIB_GENERIC0), and attrib_formats has VERT_ATTRIB_MAX (32) entries
++    * with generic locations starting at VERT_ATTRIB_GENERIC0 (15). An application passing
++    * more attributes than advertised therefore indexed past them: a 17th attribute gave
++    * index 16 into a 16-entry array and an 18th gave index 32 into a 32-entry array,
++    * producing a SIGSEGV in pco_nir_pvi (via add_defs_uses/nir_instr_insert) and heap
++    * corruption in pvr_alloc_vs_attribs (realloc(): invalid next size). Reject it once,
++    * here, instead of crashing. */
++   if (pCreateInfo->pVertexInputState) {
++      const VkPipelineVertexInputStateCreateInfo *vis =
++         pCreateInfo->pVertexInputState;
++
++      for (uint32_t i = 0; i < vis->vertexAttributeDescriptionCount; i++) {
++         uint32_t loc = vis->pVertexAttributeDescriptions[i].location;
++
++         if (loc >= MAX_VERTEX_GENERIC_ATTRIBS)
++            return vk_errorf(device, VK_ERROR_UNKNOWN,
++                             "vertex attribute location %u exceeds "
++                             "maxVertexInputAttributes (%u)",
++                             loc, (unsigned)MAX_VERTEX_GENERIC_ATTRIBS);
++      }
++   }
++
+    struct vk_dynamic_graphics_state *const dynamic_state =
+       &gfx_pipeline->dynamic_state;
+    struct vk_graphics_pipeline_all_state all_state;

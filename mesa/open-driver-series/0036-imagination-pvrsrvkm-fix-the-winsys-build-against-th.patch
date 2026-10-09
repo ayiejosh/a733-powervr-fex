@@ -1,0 +1,146 @@
+From 80788b9198426029eee40767713ef6a41a608f77 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Thu, 8 Oct 2026 20:02:30 +0800
+Subject: [PATCH 36/43] imagination/pvrsrvkm: fix the winsys build against the
+ current submit API
+
+The pvrsrvkm winsys does not compile on main: the submit API moved to struct
+vk_sync_signal * (the open winsys reads signal_sync_geom->sync) but this winsys and its
+headers still declared struct vk_sync *. With -Dimagination-srv=true the build fails with
+'conflicting types for pvr_rogue_srv_winsys_*_submit'.
+
+Port the four call sites to signal_sync->sync, and the parameter types in
+pvr_srv_job_{compute,render,transfer}.h plus pvr_srv.c's PER_ARCH_FUNCS forward declarations.
+Builds clean with the option enabled.
+
+Note this only makes the code compile; the runtime path still rejects the installed vendor
+module, which reports DRM name 'pvr' version 24.2.6603887 while pvr_is_driver_compatible()
+requires 'pvrsrvkm' 1.17. Making that path usable would need a 24.2 bridge, which is a
+project rather than a fix, so the option stays off by default.
+---
+ .../vulkan/winsys/pvrsrvkm/pvr_arch_srv_job_compute.c     | 2 +-
+ .../vulkan/winsys/pvrsrvkm/pvr_arch_srv_job_render.c      | 4 ++--
+ .../vulkan/winsys/pvrsrvkm/pvr_arch_srv_job_transfer.c    | 2 +-
+ src/imagination/vulkan/winsys/pvrsrvkm/pvr_srv.c          | 8 ++++----
+ .../vulkan/winsys/pvrsrvkm/pvr_srv_job_compute.h          | 2 +-
+ .../vulkan/winsys/pvrsrvkm/pvr_srv_job_render.h           | 4 ++--
+ .../vulkan/winsys/pvrsrvkm/pvr_srv_job_transfer.h         | 2 +-
+ 7 files changed, 12 insertions(+), 12 deletions(-)
+
+diff --git a/src/imagination/vulkan/winsys/pvrsrvkm/pvr_arch_srv_job_compute.c b/src/imagination/vulkan/winsys/pvrsrvkm/pvr_arch_srv_job_compute.c
+index 4c7532b..babbab2 100644
+--- a/src/imagination/vulkan/winsys/pvrsrvkm/pvr_arch_srv_job_compute.c
++++ b/src/imagination/vulkan/winsys/pvrsrvkm/pvr_arch_srv_job_compute.c
+@@ -200,7 +200,7 @@ VkResult PVR_PER_ARCH(srv_winsys_compute_submit)(
+       goto end_close_in_fd;
+ 
+    if (signal_sync) {
+-      srv_signal_sync = to_srv_sync(signal_sync);
++      srv_signal_sync = to_srv_sync(signal_sync->sync);
+       pvr_srv_set_sync_payload(srv_signal_sync, fence);
+    } else if (fence != -1) {
+       close(fence);
+diff --git a/src/imagination/vulkan/winsys/pvrsrvkm/pvr_arch_srv_job_render.c b/src/imagination/vulkan/winsys/pvrsrvkm/pvr_arch_srv_job_render.c
+index c55cde3..e1b5dfd 100644
+--- a/src/imagination/vulkan/winsys/pvrsrvkm/pvr_arch_srv_job_render.c
++++ b/src/imagination/vulkan/winsys/pvrsrvkm/pvr_arch_srv_job_render.c
+@@ -923,14 +923,14 @@ VkResult PVR_PER_ARCH(srv_winsys_render_submit)(
+    sync_prim->value = current_sync_value;
+ 
+    if (signal_sync_geom) {
+-      srv_signal_sync_geom = to_srv_sync(signal_sync_geom);
++      srv_signal_sync_geom = to_srv_sync(signal_sync_geom->sync);
+       pvr_srv_set_sync_payload(srv_signal_sync_geom, fence_geom);
+    } else if (fence_geom != -1) {
+       close(fence_geom);
+    }
+ 
+    if (signal_sync_frag) {
+-      srv_signal_sync_frag = to_srv_sync(signal_sync_frag);
++      srv_signal_sync_frag = to_srv_sync(signal_sync_frag->sync);
+       pvr_srv_set_sync_payload(srv_signal_sync_frag, fence_frag);
+    } else if (fence_frag != -1) {
+       close(fence_frag);
+diff --git a/src/imagination/vulkan/winsys/pvrsrvkm/pvr_arch_srv_job_transfer.c b/src/imagination/vulkan/winsys/pvrsrvkm/pvr_arch_srv_job_transfer.c
+index 8fe07e5..95c56b1 100644
+--- a/src/imagination/vulkan/winsys/pvrsrvkm/pvr_arch_srv_job_transfer.c
++++ b/src/imagination/vulkan/winsys/pvrsrvkm/pvr_arch_srv_job_transfer.c
+@@ -229,7 +229,7 @@ VkResult PVR_PER_ARCH(srv_winsys_transfer_submit)(
+       goto end_close_in_fd;
+ 
+    if (signal_sync) {
+-      srv_signal_sync = to_srv_sync(signal_sync);
++      srv_signal_sync = to_srv_sync(signal_sync->sync);
+       pvr_srv_set_sync_payload(srv_signal_sync, fence);
+    } else if (fence != -1) {
+       close(fence);
+diff --git a/src/imagination/vulkan/winsys/pvrsrvkm/pvr_srv.c b/src/imagination/vulkan/winsys/pvrsrvkm/pvr_srv.c
+index 341f07e..a322925 100644
+--- a/src/imagination/vulkan/winsys/pvrsrvkm/pvr_srv.c
++++ b/src/imagination/vulkan/winsys/pvrsrvkm/pvr_srv.c
+@@ -630,20 +630,20 @@ static void pvr_srv_winsys_get_heaps_info(struct pvr_winsys *ws,
+       const struct pvr_winsys_render_ctx *ctx,                     \
+       const struct pvr_winsys_render_submit_info *submit_info,     \
+       const struct pvr_device_info *dev_info,                      \
+-      struct vk_sync *signal_sync_geom,                            \
+-      struct vk_sync *signal_sync_frag);                           \
++      const struct vk_sync_signal *signal_sync_geom,               \
++      const struct vk_sync_signal *signal_sync_frag);              \
+                                                                    \
+    VkResult pvr_##arch##_srv_winsys_transfer_submit(               \
+       const struct pvr_winsys_transfer_ctx *ctx,                   \
+       const struct pvr_winsys_transfer_submit_info *submit_info,   \
+       const struct pvr_device_info *const dev_info,                \
+-      struct vk_sync *signal_sync);                                \
++      const struct vk_sync_signal *signal_sync);                   \
+                                                                    \
+    VkResult pvr_##arch##_srv_winsys_compute_submit(                \
+       const struct pvr_winsys_compute_ctx *ctx,                    \
+       const struct pvr_winsys_compute_submit_info *submit_info,    \
+       const struct pvr_device_info *dev_info,                      \
+-      struct vk_sync *signal_sync)
++      const struct vk_sync_signal *signal_sync)
+ 
+ PER_ARCH_FUNCS(rogue);
+ 
+diff --git a/src/imagination/vulkan/winsys/pvrsrvkm/pvr_srv_job_compute.h b/src/imagination/vulkan/winsys/pvrsrvkm/pvr_srv_job_compute.h
+index a5eeb04..199f530 100644
+--- a/src/imagination/vulkan/winsys/pvrsrvkm/pvr_srv_job_compute.h
++++ b/src/imagination/vulkan/winsys/pvrsrvkm/pvr_srv_job_compute.h
+@@ -60,7 +60,7 @@ VkResult PVR_PER_ARCH(srv_winsys_compute_submit)(
+    const struct pvr_winsys_compute_ctx *ctx,
+    const struct pvr_winsys_compute_submit_info *submit_info,
+    const struct pvr_device_info *dev_info,
+-   struct vk_sync *signal_sync);
++   const struct vk_sync_signal *signal_sync);
+ #endif
+ 
+ #endif /* PVR_SRV_JOB_COMPUTE_H */
+diff --git a/src/imagination/vulkan/winsys/pvrsrvkm/pvr_srv_job_render.h b/src/imagination/vulkan/winsys/pvrsrvkm/pvr_srv_job_render.h
+index b6ede01..3ba3b1d 100644
+--- a/src/imagination/vulkan/winsys/pvrsrvkm/pvr_srv_job_render.h
++++ b/src/imagination/vulkan/winsys/pvrsrvkm/pvr_srv_job_render.h
+@@ -74,8 +74,8 @@ VkResult PVR_PER_ARCH(srv_winsys_render_submit)(
+    const struct pvr_winsys_render_ctx *ctx,
+    const struct pvr_winsys_render_submit_info *submit_info,
+    const struct pvr_device_info *dev_info,
+-   struct vk_sync *signal_sync_geom,
+-   struct vk_sync *signal_sync_frag);
++   const struct vk_sync_signal *signal_sync_geom,
++   const struct vk_sync_signal *signal_sync_frag);
+ 
+ VkResult PVR_PER_ARCH(srv_render_target_dataset_create)(
+    struct pvr_winsys *ws,
+diff --git a/src/imagination/vulkan/winsys/pvrsrvkm/pvr_srv_job_transfer.h b/src/imagination/vulkan/winsys/pvrsrvkm/pvr_srv_job_transfer.h
+index 62db198..85d1f73 100644
+--- a/src/imagination/vulkan/winsys/pvrsrvkm/pvr_srv_job_transfer.h
++++ b/src/imagination/vulkan/winsys/pvrsrvkm/pvr_srv_job_transfer.h
+@@ -59,7 +59,7 @@ VkResult PVR_PER_ARCH(srv_winsys_transfer_submit)(
+    const struct pvr_winsys_transfer_ctx *ctx,
+    const struct pvr_winsys_transfer_submit_info *submit_info,
+    const struct pvr_device_info *const dev_info,
+-   struct vk_sync *signal_sync);
++   const struct vk_sync_signal *signal_sync);
+ #endif
+ 
+ #endif /* PVR_SRV_JOB_TRANSFER_H */
