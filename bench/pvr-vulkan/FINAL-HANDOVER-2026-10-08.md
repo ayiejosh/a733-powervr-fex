@@ -14,7 +14,7 @@
 > | "target (2) - extra images give 19%" | **S21** | **measured ~2%, inside the noise** |
 > | "pool or timeline-back the vk_sync objects" | **S18, S19** | pooling is **unsafe** (kernel holds handle refs); the timeline needs the **two-line design** and has failed **three times** |
 > | **the current cross-driver comparison** | **S25** | render **1.68-2.46x**, straight-line compute **1.06x (parity)**, loops **1.63-2.15x**, `vkheavy` **1.42x** |
-> | **the VPU is a speedup (S26)** | **S27** | the **steps** are 1.46x/2.24x faster in isolation, but the **wrapper pipeline is 1.39x SLOWER** end to end - `vpu.sh` is a demonstration, not a speedup |
+> | **the VPU is a speedup (S26, S27)** | **S28** | **WITHDRAWN.** On 300 frames the VPU and the CPU are **equal at ~3.7 ms/frame**; the 1.46x measured **startup** on a 36-frame run. The real finding is that the device works and **nothing standard can reach it** |
 > | the four fixes are a client-level win | **S23** | **probe-level only - measured, no client effect on two scenes** |
 >
 > **Everything that survived is in S21-23 with its measurement and its uncertainty. Everything else here is
@@ -982,7 +982,7 @@ a crash.**\n
 |---|---|---|---|---|
 | **CPU** | 8 cores: 2x Cortex-A76 @ 2002 MHz + 6x Cortex-A55 @ 1794 MHz | yes | **yes** | **all pinned at max frequency; NOT a limiter** |
 | **GPU** | PowerVR BXM-4-64 MC1 | yes | yes | **2.4x behind the vendor on render** |
-| **VPU** | `/dev/cedar_dev`, `/dev/cedar_dev_ve2` | `sunxi_ve` | **yes, direct route** | **steps 1.46x/2.24x faster than software in ISOLATION - but see S27: the wrapper pipeline is 1.39x SLOWER end to end** |
+| **VPU** | `/dev/cedar_dev`, `/dev/cedar_dev_ve2` | `sunxi_ve` | **yes, direct route** | **WORKS, but NOT faster than the CPU - equal at ~3.7 ms/frame on 300 frames. See S27 and S28; the 1.46x figure is WITHDRAWN (it measured startup on a 36-frame run)** |
 | **NPU** | `/dev/vipcore` + `npu_thermal_zone` | yes | **NO** | untestable - **no userspace exists** |
 
 ### The VPU was idle and is faster than the CPU
@@ -1070,4 +1070,59 @@ with the VA driver **not obtainable in this distro** and no VA/GStreamer sources
 ### The pattern, for the eighth time
 
 **A true isolation measurement, and a wrong conclusion drawn from it.** **The VPU can decode faster AND the VPU
-route can be slower** - both are true, and only the second answers "should I use it".
+route can be slower** - both are true, and only the second answers "should I use it".\n
+---
+
+## 28. THE VPU THROUGHPUT CLAIM IS WITHDRAWN - it was startup, not decode speed
+
+**S26 and S27 both present the VPU as faster than software (1.46x decode, 2.24x encode; then "the wrapper is
+1.39x slower end to end"). Both are superseded.**
+
+### The measurement that settles it
+
+**`vdecoderdemo` takes `-n` (decode N) and `-sn` (save only M):**
+
+| decode 300 frames, save | time | output |
+|---|---|---|
+| 300 | 1.252 s | 413,337,600 B |
+| **1** | **1.135 s** | 0 B |
+| 10 | 1.044 s | 12,441,600 B |
+
+**Saving 300 instead of 1 costs only 0.12 s** - so the write is not the overhead, **and the remaining ~1.0-1.1 s
+is the demo's decode of 300 frames.**
+
+**Pure software decodes the same 300 frames in ~1.12 s.**
+
+| | per frame (300 frames, 720p) |
+|---|---|
+| **VPU** | **~3.7 ms** |
+| **software** | **~3.7 ms** |
+
+**They are EQUAL.**
+
+### Why the 1.46x was wrong
+
+**It came from a 36-frame test on a 2-second stream, where `vdecoderdemo`'s fixed startup and teardown dominate**
+- the comparison was effectively **startup versus startup**. **On 300 frames, where decode dominates, there is no
+advantage.**
+
+### Every explanation in this thread, and its fate
+
+| explanation | fate |
+|---|---|
+| "the VPU decodes 1.46x faster" | **withdrawn** - measured startup on a small run |
+| "the wrapper's I/O costs more" | **refuted** - tmpfs output made both paths slower |
+| "the demo's frame saving costs more" | **refuted** - saving 300 vs 1 differs by 0.12 s |
+
+### What survives - and it was the first thing measured
+
+* **the VPU device exists and works** - interrupts move, correct frames out;
+* **it is NOT faster than the CPU** for H.264 decode on this content;
+* **every standard consumer route is missing**: no VA-API driver (and none obtainable - `apt` has no sunxi
+  package, and no VA/GStreamer sources exist on the machine), no V4L2 M2M, no ffmpeg hwaccel, no GStreamer
+  element;
+* **the NPU has no userspace at all**, despite having a device and a thermal zone;
+* **and `vpu.sh` is a demonstration, not a speedup** - its header says so.
+
+**The finding worth keeping from the whole SoC survey is the integration gap, not a speedup.** Four measurements
+and three refuted explanations to arrive back at the thing that needed no explanation.
