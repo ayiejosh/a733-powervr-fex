@@ -13,6 +13,7 @@
 > | "target (5) CLOSED - PR job is a non-issue" | **S17, S19** | **it is the worst stage at 4.03x** |
 > | "target (2) - extra images give 19%" | **S21** | **measured ~2%, inside the noise** |
 > | "pool or timeline-back the vk_sync objects" | **S18, S19** | pooling is **unsafe** (kernel holds handle refs); the timeline needs the **two-line design** and has failed **three times** |
+> | **the current cross-driver comparison** | **S25** | render **1.68-2.46x**, straight-line compute **1.06x (parity)**, loops **1.63-2.15x**, `vkheavy` **1.42x** |
 > | the four fixes are a client-level win | **S23** | **probe-level only - measured, no client effect on two scenes** |
 >
 > **Everything that survived is in S21-23 with its measurement and its uncertainty. Everything else here is
@@ -919,4 +920,52 @@ each tile cheaper.** So:
 
 **An earlier entry attributed the geometry job reading 0.50 ms against a recorded 0.76-0.87 ms to jitter.** The
 scaling data shows it ranges **0.32-1.13 ms with size** - **so the earlier range was taken at a different size.
-The jitter explanation was wrong.**
+The jitter explanation was wrong.**\n
+---
+
+## 25. THE CURRENT CROSS-DRIVER COMPARISON (fresh, both arms, one session)
+
+**This supersedes the original ground truth's framing. Measured with `harness.py`, spreads 0.1-8.9%.**
+
+| probe | size | **open** | **vendor** | **gap** |
+|---|---|---|---|---|
+| `vkrender` | 256 | 1.000 ms | **0.596 ms** | **1.68x** |
+| `vkrender` | 512 | 1.663 | **0.743** | **2.24x** |
+| `vkrender` | 1024 | 4.182 | **1.753** | **2.39x** |
+| `vkrender` | 2048 | 13.627 | **5.538** | **2.46x** |
+| `vkrender` | 4096 | 53.933 | **22.947** | **2.35x** |
+| `vkheavy` | 2048 | 255.429 | **179.992** | **1.42x** |
+| **`cstp`** (integer, no loop) | 64 | 338.7 M inv/s | **358.8** | **1.06x - PARITY** |
+| `cstpf` (float loop) | 64 | 88.4 | **144.1** | **1.63x** |
+| `cstpi` (integer loop) | 64 | 70.6 | **145.2** | **2.06x** |
+| `cstpin` (register loop) | 64 | 71.0 | **152.3** | **2.15x** |
+
+**All render probes PASS. Gate green on the open driver** (`bda`, `vk13`, `pctest`, `vk16` 8 ok/0 failed,
+`vkrender` 2048).
+
+### The shape
+
+* **Render 1.68-2.46x**, peaking at **1024-2048**, smallest at 256.
+* **Straight-line compute 1.06x - PARITY.** **The gap is specific to loops and rendering, not to the driver as a
+  whole.**
+* **Loops 1.63-2.15x.**
+
+### Progress versus the session's recorded baselines
+
+| | session start | **now** | vendor | gap at start | **gap now** |
+|---|---|---|---|---|---|
+| `cstpi` | 26.6 M inv/s | **70.6** | 145.2 | **5.46x** | **2.06x** |
+| `cstpf` | 29.6 | **88.4** | 144.1 | **4.87x** | **1.63x** |
+| `vkheavy` | 858.5 ms | **255.4 ms** | 180.0 | **4.77x** | **1.42x** |
+| `cstp` | - | **338.7** | 358.8 | - | **1.06x** |
+| `vkrender` 2048 | - | **13.627 ms** | 5.538 | - | **2.46x** |
+
+**Loop/shader-bound work: ~4.8-5.5x behind at the start, 1.4-2.1x now.** **Raw render: ~2.4x, untouched by any
+fix** - because the fixes are codegen and the render gap is tile-bound raster cost (S24).
+
+### Procedure, after three reboots
+
+**One switch, verify the driver bound before measuring, restore afterwards.** The failed attempt used `ab.sh`,
+whose switch left the driver **unbound** so the open-arm probes ran against nothing and a kernel Oops followed.
+**The verification step is what makes a switch safe; without it, a failed switch produces silent garbage and then
+a crash.**
