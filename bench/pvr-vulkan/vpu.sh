@@ -7,8 +7,10 @@
 # ffmpeg hwaccel and no GStreamer element. So browsers and ffmpeg use the CPU while the VPU idles.
 #
 # Measured: the decode and encode STEPS are 1.46x and 2.24x faster than the CPU in isolation.
-# BUT the decode-any pipeline is 1.39x SLOWER end-to-end than plain ffmpeg, because the demux,
-# temp file and second process cost more than the decode saves. This is a working demonstration
+# BUT the decode-any pipeline is 1.39x SLOWER end-to-end than plain ffmpeg. The overhead is NOT
+# disk I/O (writing to tmpfs made it worse) and NOT the hardware - it is the vendor demo's own
+# per-frame processing, which reports 'cost 0 s' internally while wall time is 1.6 s. This is a
+demonstration
 # and a fallback, NOT a speedup. A real win needs a VA-API driver or an ffmpeg hwaccel.
 #
 #   ./vpu.sh decode <in.h264> <out.yuv> [frames]
