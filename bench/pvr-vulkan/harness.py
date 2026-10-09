@@ -247,6 +247,17 @@ def main():
         print(f"      {n:>12}  {d:9.3f} ms")
         tot = max(tot, d)
     print(f"      {'critical path':>12}  {tot:9.3f} ms")
+    # ponytail: fence pairing degrades above a few thousand jobs and then silently emits
+    # mispriced entries - once reporting a physically impossible 168 ms and once making PR
+    # and geometry equal to 0.4%. Two independent stages being equal to within a percent is
+    # that signature, so say so rather than leaving it to be noticed.
+    if len(jobs) >= 2:
+        ds = sorted((d for _, d in jobs), reverse=True)
+        for i in range(len(ds) - 1):
+            if ds[i + 1] > 0 and abs(ds[i] - ds[i + 1]) / ds[i + 1] < 0.01:
+                print(f"  WARNING    : two stages are equal to within 1% ({ds[i]:.3f} vs {ds[i+1]:.3f} ms)"
+                      f" - likely MISPRICED, do not trust this breakdown")
+                break
     print(f"  stages     : {len(jobs)} jobs in the trace window")
     if cpu:
         tot_c = cpu["user_ms"] + cpu["sys_ms"]
