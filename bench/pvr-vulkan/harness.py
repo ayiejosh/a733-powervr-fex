@@ -15,6 +15,10 @@ WHAT IT OBSERVES, AND WHAT IT CANNOT
                             and PR is roughly a third of the fragment before trusting.
   critical path  measured   from the same trace
   CPU split      measured   RUSAGE_CHILDREN, LAST REP only, not the median
+  wait states    measured   /proc/<pid>/task/*/wchan sampled while running: separates
+                            futex (userspace lock contention) from kernel waits. A thread
+                            in futex_wait is NOT in a syscall, so this CORRECTS the
+                            "kernel share" figure rather than repeating it.
   fb write       DERIVED    mpix_s x bpp - an ideal single write per pixel. Ignores
                             overdraw and read-modify-write, so a LOWER BOUND, not
                             measured DRAM traffic.
@@ -176,6 +180,24 @@ def main():
         o, _ = pr.communicate()
         return o, time.time() - t0
 
+    # Thread wait channels: WHERE the process blocks, sampled while it runs.
+    # ponytail: /proc/<pid>/task/*/wchan needs no privilege and no tracer, and it is the
+    # only way on this board to separate "blocked in a kernel call" from "blocked in a
+    # userspace lock" (futex) - perf and kprobes cannot answer it here.
+    def sample_threads(pid, acc):
+        try:
+            tids = os.listdir(f"/proc/{pid}/task")
+        except OSError:
+            return
+        for t in tids:
+            try:
+                w = open(f"/proc/{pid}/task/{t}/wchan").read().strip() or "(running)"
+            except OSError:
+                continue
+            acc[w] = acc.get(w, 0) + 1
+
+    wait_acc = {}
+
     # phase 1: ONE frame - fence handles are unique, so job pairing is exact.
     # ponytail: fence pairing degrades above a few thousand jobs, so the
     # breakdown must come from a short run. The speed comes from phase 2.
@@ -198,6 +220,7 @@ def main():
         while pr.poll() is None:
             if time.time() - t0 > secs:
                 pr.terminate(); break
+            sample_threads(pr.pid, wait_acc)
             time.sleep(0.05)
         out, _ = pr.communicate()
         wall = time.time() - t0
@@ -276,6 +299,14 @@ def main():
         print(f"  cpu        : user {cpu['user_ms']} ms  sys {cpu['sys_ms']} ms"
               f"  (kernel {100*cpu['sys_ms']/max(tot_c,1e-9):.0f}% of probe CPU"
               f"; from the LAST rep, not the median{', and it was cut short' if last_cut else ''})")
+        # Where the threads block. futex = userspace lock contention, which the "kernel
+        # share" number hides: a thread in futex_wait is NOT consuming kernel time.
+        if wait_acc:
+            tot = sum(wait_acc.values())
+            top = sorted(wait_acc.items(), key=lambda kv: -kv[1])[:4]
+            print(f"  wait states: " + "  ".join(
+                f"{k} {100*v/tot:.0f}%" for k, v in top) + f"   (n={tot} samples)")
+            rec["wait_states"] = {k: round(100*v/tot, 1) for k, v in top}
     bw = ""
     # ponytail: DERIVED, not measured. mpix_s * bpp is the ideal single write per pixel - it
     # ignores overdraw, read-modify-write and tile traffic, so it is a LOWER BOUND. Said so,
