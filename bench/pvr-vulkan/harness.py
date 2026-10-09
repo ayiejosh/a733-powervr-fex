@@ -169,16 +169,23 @@ def main():
     # never prints its summary, which is where speed and correctness come from.
     # A generous limit only guards against a hang.
     # CPU split: sample the child's utime/stime. Needs the pid, so run inline.
-    t0 = time.time()
-    pr = subprocess.Popen([f"{BENCH}/{probe}", size, str(count)], cwd=BENCH, env=env,
-                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-    ru0 = resource.getrusage(resource.RUSAGE_CHILDREN)
-    while pr.poll() is None:
-        if time.time() - t0 > secs:
-            pr.terminate(); break
-        time.sleep(0.05)
-    out, _ = pr.communicate()
-    wall = time.time() - t0
+    reps = int(os.environ.get('HARNESS_REPEATS', '3'))
+    samples = []
+    for _rep in range(reps):
+        t0 = time.time()
+        pr = subprocess.Popen([f"{BENCH}/{probe}", size, str(count)], cwd=BENCH, env=env,
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        ru0 = resource.getrusage(resource.RUSAGE_CHILDREN)
+        while pr.poll() is None:
+            if time.time() - t0 > secs:
+                pr.terminate(); break
+            time.sleep(0.05)
+        out, _ = pr.communicate()
+        wall = time.time() - t0
+        _m = re.findall(r'([\d.]+) ms/frame', out)
+        _t = re.findall(r'([\d.]+) M invocation/s', out)
+        if _m: samples.append(float(_m[-1]))
+        elif _t: samples.append(float(_t[-1]))
     ru1 = resource.getrusage(resource.RUSAGE_CHILDREN)
     cpu = {"user_ms": round((ru1.ru_utime - ru0.ru_utime) * 1000, 1),
            "sys_ms": round((ru1.ru_stime - ru0.ru_stime) * 1000, 1)}
@@ -207,6 +214,13 @@ def main():
     print(f"{'='*74}")
     print(f"  speed      : {rec['ms_per_frame']} ms/frame   {rec['mpix_s']} Mpix/s"
           f"   {rec['thr_M_inv_s']} M inv/s")
+    if len(samples) > 1:
+        _lo, _hi = min(samples), max(samples)
+        _med = sorted(samples)[len(samples) // 2]
+        _sp = 100 * (_hi - _lo) / _med if _med else 0
+        print(f'  samples    : n={len(samples)}  {_lo:.3f}-{_hi:.3f}  median {_med:.3f}  spread {_sp:.1f}%')
+        rec['samples'] = [round(x, 4) for x in samples]
+        rec['spread_pct'] = round(_sp, 1)
     print(f"  correctness: {rec['correct']}  {rec['pixels_ok'] or ''}")
     print(f"  jobs ({src}):")
     tot = 0
