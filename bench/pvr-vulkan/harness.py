@@ -231,8 +231,13 @@ def main():
     print(f"  stages     : {len(jobs)} jobs in the trace window")
     if cpu:
         tot_c = cpu["user_ms"] + cpu["sys_ms"]
+        # ponytail: RUSAGE_CHILDREN delta covers the LAST rep only (ru0 is re-read per rep, ru1
+        # once after the loop), while speed is a median over all reps. Measured, but name the
+        # provenance - and say so when the last rep was cut short by the timeout.
+        last_cut = (time.time() - t0 > secs) if 't0' in dir() else False
         print(f"  cpu        : user {cpu['user_ms']} ms  sys {cpu['sys_ms']} ms"
-              f"  (kernel {100*cpu['sys_ms']/max(tot_c,1e-9):.0f}% of probe CPU)")
+              f"  (kernel {100*cpu['sys_ms']/max(tot_c,1e-9):.0f}% of probe CPU"
+              f"; from the LAST rep, not the median{', and it was cut short' if last_cut else ''})")
     bw = ""
     # ponytail: DERIVED, not measured. mpix_s * bpp is the ideal single write per pixel - it
     # ignores overdraw, read-modify-write and tile traffic, so it is a LOWER BOUND. Said so,
