@@ -667,4 +667,61 @@ Removing 2 ioctls per barrier across every stage is the largest single item on t
   *"No PRs are performed"* does not mean *"the job costs nothing"* - it is still submitted and still runs a
   fragment-shaped pass.
 * **CPU offload does not help.** Measured on lavapipe: the CPU is **3-26x slower** than the GPU on every probe,
-  and the client frame is **already 84% kernel CPU**. **The CPU is the bottleneck, not spare capacity.**
+  and the client frame is **already 84% kernel CPU**. **The CPU is the bottleneck, not spare capacity.**\n
+---
+
+## 20. VERIFICATION AND THE srv WINSYS (rounds 222-229)
+
+### The headline figures, re-verified at the end of the session
+
+| probe | open (n) | vendor (n) | **ratio (median)** | ratio (worst case) |
+|---|---|---|---|---|
+| `vkrender` 2048 | 13.687 ms (7) | 5.735 ms (20) | **2.39x** | **1.94x** |
+| `vkrender` 512 | 1.507 ms (7) | 0.776 ms (9) | **1.94x** | 2.08x |
+
+**Spreads:** open 2048 **4.4%**, vendor 2048 **4.5%** (six consecutive runs: `5.736 5.486 5.518 5.537 5.513
+5.734`), open 512 20.4%, vendor 512 19.8%.
+
+**"About 2x" holds across the entire observed overlap**, including the worst-case extremes.
+
+**One correction recorded:** the consolidated log first showed a **32.6%** vendor spread at 2048, which was
+reported as uncertainty. **Six more runs showed it was a single early outlier at 7.260 ms** — the true
+consecutive spread is 4.5%. **The figure is firmer than the first summary implied.**
+
+**`HARNESS-LOG-SUMMARY.md`** consolidates every recorded run by driver/probe/size with the **observed range**,
+not a point value. **Six rows labelled `driver` are stale pre-fix records** from before the driver-detection
+bug was fixed — ignore them; the label is the tell.
+
+### The srv winsys: real, complete, and a porting project
+
+**Mesa contains a full winsys for the vendor kernel** — `src/imagination/vulkan/winsys/pvrsrvkm/`, **7555
+lines**, including **`pvr_srv_sync_type`** (the driver-native sync = the 60% lever's mechanism, already
+written).
+
+**It is compiled out by default.** `meson.build:311` sets `with_imagination_srv = get_option('imagination-srv')`,
+and the winsys is inside `if with_imagination_srv`. **Enabling `-Dimagination-srv=true` compiles it in** (69
+`PVR_SUPPORT_SERVICES_DRIVER` occurrences — verified).
+
+**But it still fails, and the reason is definitive:**
+
+```c
+/* Only the 1.17 driver is supported for now. */
+if (version->version_major != PVR_SRV_VERSION_MAJ ||
+    version->version_minor != PVR_SRV_VERSION_MIN) { ... return false; }
+```
+
+**`PVR_SRV_VERSION_MAJ/MIN` = 1.17. This board's vendor kernel reports 24.2** (measured: `name=pvr
+version=24.2.6603887`). **`pvr_srv_winsys_create()` calls this first → `VK_ERROR_INCOMPATIBLE_DRIVER` → 0
+physical devices.**
+
+**So using it means porting the winsys to the DDK 24.2 bridge interface — not a configuration change.**
+**Warning: updating the version constant alone compiles and then fails deeper.**
+
+**Two wrong theories were recorded and corrected along the way** (the srv branch being dead code; the build
+option being sufficient). **The constants are `PVR_DRM_DRIVER_NAME="powervr"` and `PVR_SRV_DRIVER_NAME="pvr"`,
+and the srv branch IS taken.**
+
+### Build state
+
+**`imagination-srv` was reverted to its default (False) after the experiment**, so the build matches the
+session's verified baseline. **Mesa `d253e35`, 0 modified, 43 ahead, four PCO fixes intact.**
