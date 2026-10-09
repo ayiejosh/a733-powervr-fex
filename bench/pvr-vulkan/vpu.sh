@@ -54,7 +54,12 @@ case "$1" in
   status)
     echo "devices:      $(ls /dev/cedar_dev* 2>/dev/null | tr '\n' ' ')"
     echo "module:       $(lsmod | awk '$1=="sunxi_ve"{print $1, $2"B"}')"
-    echo "libraries:    $(ls /lib/aarch64-linux-gnu/lib{cdc_base,MemAdapter,vdecoder,vencoder,fbm,sbm}.so 2>/dev/null | wc -l)/6 present"
+    # ponytail: sh has no brace expansion, so count in a loop.
+    n=0
+    for l in cdc_base MemAdapter vdecoder vencoder fbm sbm; do
+      [ -e "/lib/aarch64-linux-gnu/lib$l.so" ] && n=$((n+1))
+    done
+    echo "libraries:    $n/6 present"
     echo "dma_heap:     $(ls /dev/dma_heap 2>/dev/null | tr '\n' ' ')"
     echo "interrupts:   $(grep -E 'cedar_dev' "$IRQ" | awk '{print $NF"="$2}' | tr '\n' ' ')"
     echo "va-api:       $(vainfo 2>&1 | grep -q 'va_openDriver.*-1' && echo 'NO DRIVER (libva wants sunxi-drm_drv_video.so)' || echo 'present')"
