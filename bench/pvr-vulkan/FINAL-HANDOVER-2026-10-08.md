@@ -592,4 +592,79 @@ advance because the firmware decides.
 
 **Green probes are not sufficient.** The `insmod` module-load failure (probes never load the module), the
 mislabelled driver (silent wrong answers), and the two compositor crashes (probes issue too few barriers) —
-**the complement to `harness.py` is running the actual client.**
+**the complement to `harness.py` is running the actual client.**\n
+---
+
+## 18. THE TWO-LINE SYNC DESIGN - implementable spec for the 60% lever
+
+**Status: not implemented. Spec complete. Two earlier attempts failed and were reverted.**
+
+### The constraint the failures established
+
+```
+barrier_N+1 must wait point N AND signal point N+1 on the SAME object, in ONE null_job_submit.
+The per-job path never did that: it waited S1 and signalled S2 - two different objects.
+```
+
+**This is structural, not a bug.** One timeline cannot express it.
+
+### The design
+
+**Two persistent objects and two counters per stage:**
+
+| line | role |
+|---|---|
+| **A** (`job_wait_line`) | the barrier **signals** it; jobs and the next barrier **wait** on it |
+| **B** (`barrier_line`) | scratch - so a barrier **never waits the object it signals** |
+
+```
+barrier_N  : wait B@(N-1)   signal A@N
+job_N      : wait A@N       signal its own per-job sync   (unchanged)
+barrier_N+1: wait A@N       signal B@N
+barrier_N+2: wait B@N       signal A@(N+1)
+```
+
+**The alternation removes the self-wait while preserving identical ordering** - **2 ioctls saved per barrier**
+(create + destroy). Mirrors the per-job path with two persistent objects instead of two fresh ones per barrier.
+
+### Implementation notes
+
+* **Two arrays** in `pvr_queue.h` plus two counters per stage; created in `pvr_queue_init`, destroyed in
+  `pvr_queue_finish`. **Step 1's existing `job_sync`/`job_value` becomes line A.**
+* **`last_job_signal_sync` must stay untouched** - it is the job's own signal and both event paths depend on
+  it. **That was the first failed attempt's mistake.**
+* **The barrier path also waits on the previous barrier's signal** (`pvr_arch_queue.c:561`) - skipping that
+  wait was the second failed attempt's mistake. **The two-line form keeps it.**
+* **Convert ONE stage first (GEOM)** and run the full gate before proceeding.
+
+### The gate - not optional
+
+```
+1. probe suite via harness.py (correct ICD)     <- passed BOTH failed attempts
+2. WESTON MUST COME UP                          <- caught BOTH failures
+3. glmark2 via zink renders + validates
+```
+
+### Payoff
+
+**~190 syncobj ioctls/frame; 84% of frame time in the kernel; 60% of the real workload's recoverable cost.**
+Removing 2 ioctls per barrier across every stage is the largest single item on the board.
+
+---
+
+## 19. THE OTHER OPEN ITEMS, in the order I would take them
+
+| # | item | state | first move |
+|---|---|---|---|
+| 1 | **two-line sync** (above) | spec complete | implement GEOM only, gate it |
+| 2 | **PR job 4.03x** | target measured: 72% -> 39% of the fragment pass | make the PR pass cheap when no PR is needed (smaller range / early-out); host-side alone cannot help |
+| 3 | **target (2), zink extra images** | one literal, 19% recorded | `zink_kopper.c:321` `0` -> `2`; **unverifiable here** (19% < the 35% FPS floor) - needs a quieter host |
+| 4 | **per-surface render 2.17x** | every config excluded | needs PVRtune or a vendor command-stream diff; neither exists here |
+
+### Two corrections to carry forward
+
+* **The goal's target (5) is wrong.** The PR job is **not** a non-issue: it is **4.03x**, the worst stage.
+  *"No PRs are performed"* does not mean *"the job costs nothing"* - it is still submitted and still runs a
+  fragment-shaped pass.
+* **CPU offload does not help.** Measured on lavapipe: the CPU is **3-26x slower** than the GPU on every probe,
+  and the client frame is **already 84% kernel CPU**. **The CPU is the bottleneck, not spare capacity.**
