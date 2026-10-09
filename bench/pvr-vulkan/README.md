@@ -109,6 +109,7 @@ benchmarking session** - the harness, the A/B tooling, the safety rules, and the
 | `ab.sh` | **full A/B in one run** — closes the desktop, arm open fully, arm vendor fully, reopens via trap, prints the diff |
 | `components.sh` | 30 component checks — **run as root (`sudo ./components.sh`) or the tracing checks can only report that they could not read the path** — modules, vermagic vs running kernel, driver binding, firmware (+md5), ICDs **and whether each named library resolves**, tracepoints, guard |
 | `enumvk.c` | Vulkan extension/feature enumerator |
+| `logcheck.py` | **which `harness-log.jsonl` records are safe to read** — ~6% of the job breakdowns are impossible (fence mispairing). `--clean` emits only the trustworthy ones |
 
 ## Headline findings
 
