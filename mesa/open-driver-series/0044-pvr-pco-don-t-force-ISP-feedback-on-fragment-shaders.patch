@@ -1,0 +1,184 @@
+From 9dc8497d74f38fd663dbf20db0e2894223c7061d Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sat, 10 Oct 2026 00:16:08 +0800
+Subject: [PATCH 44/98] pvr/pco: don't force ISP feedback on fragment shaders
+ that cannot discard
+
+Every non-internal fragment shader got an implicit sample-mask check and a
+runtime-guarded alpha-to-coverage lowering. Both insert a discard, so every
+shader ran with ISP feedback (alphaf + wdf) and every draw was submitted as a
+PUNCH_THROUGH pass with triangle merging disabled.
+
+When the pipeline statically has one sample, sample 0 in a static sample
+mask, no sample shading and alpha-to-coverage statically off, neither can
+ever discard. Skip both, and only emit ISP feedback when the shader really
+discards (or needs depth feedback). Helper invocations need no feedback:
+the hardware already suppresses their writes, as it must with early
+fragment tests.
+
+vkrender FS: 34 -> 20 instruction groups, no feedback.
+BXM-4-64 (A733), median of 3: vkrender 2048 13.93 -> 10.53 ms/frame,
+vkrender 512 1.88 -> 1.25 ms/frame. vkedge coverage gate (1x/4x MSAA,
+constant and dFdx shaders, 256/1024 px) and vkrender pixel checks pass.
+---
+ src/imagination/pco/pco_data.h             | 11 ++++++
+ src/imagination/pco/pco_internal.h         |  2 +-
+ src/imagination/pco/pco_nir.c              |  4 +--
+ src/imagination/pco/pco_nir_pvfio.c        | 40 ++++++++++++++++++++--
+ src/imagination/vulkan/pvr_arch_pipeline.c | 13 +++++++
+ 5 files changed, 65 insertions(+), 5 deletions(-)
+
+diff --git a/src/imagination/pco/pco_data.h b/src/imagination/pco/pco_data.h
+index a34f034..8243e91 100644
+--- a/src/imagination/pco/pco_data.h
++++ b/src/imagination/pco/pco_data.h
+@@ -102,6 +102,17 @@ typedef struct _pco_fs_data {
+ 
+    uint16_t rasterization_samples;
+ 
++   /* The pipeline is statically single-sampled with sample 0 enabled and no
++    * alpha-to-coverage or sample shading, so the implicit sample check can
++    * never discard and is not inserted.
++    */
++   bool skip_sample_check;
++
++   /* Alpha-to-coverage is statically disabled, so the runtime-guarded
++    * alpha-to-coverage lowering would never discard and is not inserted.
++    */
++   bool no_alpha_to_coverage;
++
+    pco_range tile_buffers;
+ 
+    pco_range sample_locations;
+diff --git a/src/imagination/pco/pco_internal.h b/src/imagination/pco/pco_internal.h
+index d3e3318..ffbc3b4 100644
+--- a/src/imagination/pco/pco_internal.h
++++ b/src/imagination/pco/pco_internal.h
+@@ -1829,7 +1829,7 @@ bool pco_nir_lower_images(nir_shader *shader, pco_data *data, pco_ctx *ctx);
+ bool pco_nir_lower_interpolation(nir_shader *shader, pco_fs_data *fs);
+ bool pco_nir_lower_io(nir_shader *shader, pco_data *data);
+ bool pco_nir_lower_16bit_io(nir_shader *shader);
+-bool pco_nir_lower_sample_mask_out(nir_shader *shader);
++bool pco_nir_lower_sample_mask_out(nir_shader *shader, const pco_fs_data *fs);
+ bool pco_nir_lower_shared_io_to_global(nir_shader *shader, unsigned usc_slots);
+ bool pco_nir_lower_subgroups(nir_shader *shader);
+ bool pco_nir_lower_tex(nir_shader *shader, pco_data *data, pco_ctx *ctx);
+diff --git a/src/imagination/pco/pco_nir.c b/src/imagination/pco/pco_nir.c
+index 9b177fd..425baa5 100644
+--- a/src/imagination/pco/pco_nir.c
++++ b/src/imagination/pco/pco_nir.c
+@@ -1128,7 +1128,7 @@ void pco_lower_nir(pco_ctx *ctx, nir_shader *nir, pco_data *data)
+    NIR_PASS(_, nir, pco_nir_lower_tex, data, ctx);
+ 
+    if (nir->info.stage == MESA_SHADER_FRAGMENT) {
+-      if (!internal)
++      if (!internal && !data->fs.no_alpha_to_coverage)
+          NIR_PASS(_, nir, pco_nir_lower_alpha_to_coverage);
+ 
+       NIR_PASS(_, nir, nir_lower_blend, &data->fs.blend_opts);
+@@ -1140,7 +1140,7 @@ void pco_lower_nir(pco_ctx *ctx, nir_shader *nir, pco_data *data)
+       NIR_PASS(_, nir, nir_opt_peephole_select, &peep_opts);
+       NIR_PASS(_, nir, pco_nir_lower_interpolation, &data->fs);
+       if (!internal)
+-         NIR_PASS(_, nir, pco_nir_lower_sample_mask_out);
++         NIR_PASS(_, nir, pco_nir_lower_sample_mask_out, &data->fs);
+       NIR_PASS(_, nir, pco_nir_pfo, &data->fs);
+       NIR_PASS(_, nir, nir_lower_is_helper_invocation);
+       NIR_PASS(_, nir, pco_nir_lower_fs_intrinsics);
+diff --git a/src/imagination/pco/pco_nir_pvfio.c b/src/imagination/pco/pco_nir_pvfio.c
+index 3660c75..d6e21f0 100644
+--- a/src/imagination/pco/pco_nir_pvfio.c
++++ b/src/imagination/pco/pco_nir_pvfio.c
+@@ -498,12 +498,18 @@ static bool lower_sample_mask_out(nir_builder *b, nir_intrinsic_instr *intr, UNU
+    return true;
+ }
+ 
+-bool pco_nir_lower_sample_mask_out(nir_shader *shader)
++bool pco_nir_lower_sample_mask_out(nir_shader *shader, const pco_fs_data *fs)
+ {
+    bool progress = nir_shader_intrinsics_pass(shader, lower_sample_mask_out, nir_metadata_control_flow, NULL);
+    if (progress)
+       return true;
+ 
++   /* Statically single-sampled with sample 0 in the static mask: the check
++    * below could never discard, and inserting it would force ISP feedback.
++    */
++   if (fs->skip_sample_check)
++      return false;
++
+    /* If the sample check isn't present, then add one ourselves. */
+    nir_builder b = nir_builder_at(
+       nir_before_block(nir_start_block(nir_shader_get_entrypoint(shader))));
+@@ -513,6 +519,31 @@ bool pco_nir_lower_sample_mask_out(nir_shader *shader)
+    return true;
+ }
+ 
++static bool fs_has_discard(nir_shader *shader)
++{
++   nir_foreach_function_impl (impl, shader) {
++      nir_foreach_block (block, impl) {
++         nir_foreach_instr (instr, block) {
++            if (instr->type != nir_instr_type_intrinsic)
++               continue;
++
++            switch (nir_instr_as_intrinsic(instr)->intrinsic) {
++            case nir_intrinsic_demote:
++            case nir_intrinsic_demote_if:
++            case nir_intrinsic_demote_samples:
++            case nir_intrinsic_terminate:
++            case nir_intrinsic_terminate_if:
++               return true;
++            default:
++               break;
++            }
++         }
++      }
++   }
++
++   return false;
++}
++
+ static bool lower_isp_fb(nir_builder *b, struct pfo_state *state)
+ {
+    nir_shader *shader = b->shader;
+@@ -552,7 +583,12 @@ static bool lower_isp_fb(nir_builder *b, struct pfo_state *state)
+ 
+    nir_def *undef = nir_undef(b, 1, 32);
+ 
+-   nir_def *discard_cond = nir_is_helper_invocation(b, 1);
++   /* Without a discard there is nothing to feed back: the hardware already
++    * suppresses helper-invocation writes (as it must with early fragment
++    * tests), and feedback would force a punch-through pass.
++    */
++   nir_def *discard_cond =
++      fs_has_discard(shader) ? nir_is_helper_invocation(b, 1) : NULL;
+ 
+    /* Drop depth writes and discard cond if early fragment tests. */
+    if (shader->info.fs.early_fragment_tests) {
+diff --git a/src/imagination/vulkan/pvr_arch_pipeline.c b/src/imagination/vulkan/pvr_arch_pipeline.c
+index 54fde59..82093ca 100644
+--- a/src/imagination/vulkan/pvr_arch_pipeline.c
++++ b/src/imagination/vulkan/pvr_arch_pipeline.c
+@@ -2733,6 +2733,19 @@ pvr_preprocess_shader_data(pco_data *data,
+       if (state->ms)
+          data->fs.uses.alpha_to_coverage = state->ms->alpha_to_coverage_enable;
+ 
++      data->fs.no_alpha_to_coverage =
++         state->ms &&
++         !BITSET_TEST(state->dynamic,
++                      MESA_VK_DYNAMIC_MS_ALPHA_TO_COVERAGE_ENABLE) &&
++         !state->ms->alpha_to_coverage_enable;
++
++      data->fs.skip_sample_check =
++         data->fs.no_alpha_to_coverage &&
++         !BITSET_TEST(state->dynamic, MESA_VK_DYNAMIC_MS_RASTERIZATION_SAMPLES) &&
++         !BITSET_TEST(state->dynamic, MESA_VK_DYNAMIC_MS_SAMPLE_MASK) &&
++         state->ms->rasterization_samples == VK_SAMPLE_COUNT_1_BIT &&
++         (state->ms->sample_mask & 1) && !state->ms->sample_shading_enable;
++
+       if (BITSET_TEST(state->dynamic, MESA_VK_DYNAMIC_CB_COLOR_WRITE_ENABLES) ||
+           (state->cb && state->cb->color_write_enables !=
+                            BITFIELD_MASK(MESA_VK_MAX_COLOR_ATTACHMENTS))) {
+-- 
+2.47.3
+

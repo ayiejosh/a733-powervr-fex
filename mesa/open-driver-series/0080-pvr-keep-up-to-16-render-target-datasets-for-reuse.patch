@@ -1,0 +1,36 @@
+From 8928e2b1e84d05247c40149548e077afe3473587 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sun, 11 Oct 2026 05:17:47 +0800
+Subject: [PATCH 80/98] pvr: keep up to 16 render target datasets for reuse
+
+Four were too few for frames with many renders of several sizes, each
+kept by the command buffers of the frames in flight: glmark2's desktop
+scenes still created and destroyed a free list and RT dataset (plus
+their buffer objects) for most renders. A dataset for a window-sized
+render is a few small buffers.
+
+glmark2-es2 through zink, off-screen 800x600, FPS of two runs each,
+before -> after: desktop blur 51/51 -> 62/62, desktop shadow 144/139 ->
+152/157, the others unchanged.
+
+CTS: as for the previous commit, identical to before.
+---
+ src/imagination/vulkan/pvr_rt_dataset.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/imagination/vulkan/pvr_rt_dataset.c b/src/imagination/vulkan/pvr_rt_dataset.c
+index b827903..bd45675 100644
+--- a/src/imagination/vulkan/pvr_rt_dataset.c
++++ b/src/imagination/vulkan/pvr_rt_dataset.c
+@@ -61,7 +61,7 @@ void pvr_rt_vheap_rtc_data_fini(struct pvr_rt_dataset *rt_dataset)
+ }
+ 
+ /* Datasets kept for reuse; each holds a few BOs sized by the render area. */
+-#define PVR_RT_CACHE_MAX 4
++#define PVR_RT_CACHE_MAX 16
+ 
+ static void pvr_rt_dataset_free(struct pvr_rt_dataset *rt_dataset)
+ {
+-- 
+2.47.3
+

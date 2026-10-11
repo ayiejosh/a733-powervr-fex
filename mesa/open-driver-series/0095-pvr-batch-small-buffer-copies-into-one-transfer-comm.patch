@@ -1,0 +1,284 @@
+From 8c1ea61dd1c97e68efa2c99ad253ac553b6c1906 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sun, 11 Oct 2026 12:04:15 +0800
+Subject: [PATCH 95/98] pvr: batch small buffer copies into one transfer
+ command
+
+Every transfer command is a kernel job and a 3D kick of about 125 us.
+zink updates a vertex buffer with glBufferSubData as a staging copy per
+chunk, so the glmark2 buffer scene submitted ~50 transfer jobs per frame
+and the transfer queue took 62% of the frame.
+
+Copies of up to 32 KiB at 4-byte alignment between the same two buffers
+are now rects of one transfer command: both buffers are drawn as R32
+images with 8 KiB rows, each copy split at the row boundaries, up to 32
+rects per command. The PBE writes every pixel of the clip box, so the
+command is a clip blit that loads the box from the destination first;
+the box is kept under 1 MiB and overlapping destinations are not merged.
+Command sources get their own, larger rect array; the workaround passes
+keep theirs.
+
+A copy of up to 64 KiB in the plain path is now one rect (the widest
+divisor of its texel count), not 4 KiB rows plus a remainder row.
+
+Verified byte-exact with a scattered-copy probe (mixed alignment,
+overlapping destinations, up to 64 KiB). glmark2 buffer subdata scene
+100 -> 203 FPS, transfer jobs per frame 53 -> 3; other scenes unchanged.
+CTS unchanged: buffer_to_buffer, buffer_to_image, image_to_buffer,
+fill_and_update_buffer, buffer_update, buffer_marker, memory mapping
+subsets, and the caselist, robustness, TFBC, dynamic rendering and UBO
+lists.
+---
+ src/imagination/vulkan/pvr_cmd_buffer.h |  12 +-
+ src/imagination/vulkan/rogue/pvr_blit.c | 176 +++++++++++++++++++++++-
+ 2 files changed, 181 insertions(+), 7 deletions(-)
+
+diff --git a/src/imagination/vulkan/pvr_cmd_buffer.h b/src/imagination/vulkan/pvr_cmd_buffer.h
+index 7408599..1c17de5 100644
+--- a/src/imagination/vulkan/pvr_cmd_buffer.h
++++ b/src/imagination/vulkan/pvr_cmd_buffer.h
+@@ -34,7 +34,8 @@ struct pvr_vertex_binding {
+ 
+ #define PVR_TRANSFER_MAX_SOURCES 10U
+ #define PVR_TRANSFER_MAX_CUSTOM_MAPPINGS 6U
+-
++/* Rects of one transfer command source; batched buffer copies use many. */
++#define PVR_TRANSFER_MAX_CMD_MAPPINGS 32U
+ /** A surface describes a source or destination for a transfer operation. */
+ struct pvr_transfer_cmd_surface {
+    pvr_dev_addr_t dev_addr;
+@@ -77,8 +78,7 @@ struct pvr_transfer_cmd_source {
+    struct pvr_transfer_cmd_surface surface;
+ 
+    uint32_t mapping_count;
+-   struct pvr_rect_mapping mappings[PVR_TRANSFER_MAX_CUSTOM_MAPPINGS];
+-
++   struct pvr_rect_mapping mappings[PVR_TRANSFER_MAX_CMD_MAPPINGS];
+    /* In the case of a simple 1:1 copy, this setting does not affect the output
+     * but will affect performance. Use clamp to edge when possible.
+     */
+@@ -107,9 +107,11 @@ struct pvr_transfer_cmd {
+    union fi clear_color[4];
+ 
+    struct pvr_transfer_cmd_surface dst;
+-
+    VkRect2D scissor;
+-
++   /* Buffer copies drawn as rects of 4 KiB rows; later small copies between
++    * the same buffers are appended (see pvr_try_batch_buffer_copy()).
++    */
++   bool buffer_batch;
+    /* Pointer to cmd buffer this transfer cmd belongs to. This is mainly used
+     * to link buffer objects allocated during job submission into
+     * cmd_buffer::bo_list head.
+diff --git a/src/imagination/vulkan/rogue/pvr_blit.c b/src/imagination/vulkan/rogue/pvr_blit.c
+index 5451253..61d0a78 100644
+--- a/src/imagination/vulkan/rogue/pvr_blit.c
++++ b/src/imagination/vulkan/rogue/pvr_blit.c
+@@ -1408,6 +1408,155 @@ void pvr_rogue_CmdClearDepthStencilImage(
+                                  pRanges);
+ }
+ 
++/* Texels per row when a buffer is drawn as an R32 image: 8 KiB rows, so a
++ * rect never exceeds the transfer size limit.
++ */
++#define PVR_BUFFER_BATCH_ROW PVR_MAX_TRANSFER_SIZE_IN_TEXELS
++#define PVR_BUFFER_BATCH_MAX_COPY_BYTES (32U * 1024U)
++/* Small 4-byte aligned copies between the same two buffers are drawn as rects
++ * of one transfer command. Every transfer command is a kernel job and a 3D
++ * kick of about 125 us, which dominated when an application updated a vertex
++ * buffer in many small pieces per frame (glBufferSubData through zink).
++ *
++ * The PBE writes every pixel of the clip box, so the command is a clip blit:
++ * the box is first loaded from the destination as the background, and the
++ * rects are drawn over it. The box is kept small enough for that load to cost
++ * less than the kicks it saves.
++ */
++#define PVR_BUFFER_BATCH_MAX_BOX_BYTES (1U << 20)
++static bool pvr_try_batch_buffer_copy(struct pvr_cmd_buffer *cmd_buffer,
++                                      pvr_dev_addr_t src_addr,
++                                      VkDeviceSize src_offset,
++                                      pvr_dev_addr_t dst_addr,
++                                      VkDeviceSize dst_offset,
++                                      VkDeviceSize size)
++{
++   const uint32_t texel = sizeof(uint32_t);
++   const uint32_t row = PVR_BUFFER_BATCH_ROW;
++   /* Keeps the rows within the ISP coordinate range. */
++   const VkDeviceSize max_extent = 4U << 20;
++   struct pvr_rect_mapping pieces[12];
++   uint32_t num_pieces = 0;
++
++   if (!size || size > PVR_BUFFER_BATCH_MAX_COPY_BYTES ||
++       (size | src_offset | dst_offset) % texel ||
++       src_offset + size > max_extent || dst_offset + size > max_extent ||
++       src_addr.addr == dst_addr.addr || (src_addr.addr | dst_addr.addr) % 16U)
++      return false;
++
++   /* Split at the row boundaries of both buffers. */
++   uint64_t s = src_offset / texel;
++   uint64_t d = dst_offset / texel;
++   for (uint64_t n = size / texel; n; n -= pieces[num_pieces - 1].src_rect.extent.width) {
++      uint32_t w = MIN3(n, row - s % row, row - d % row);
++
++      if (num_pieces == ARRAY_SIZE(pieces))
++         return false;
++      pieces[num_pieces++] = (struct pvr_rect_mapping){
++         .src_rect = { { s % row, s / row }, { w, 1 } },
++         .dst_rect = { { d % row, d / row }, { w, 1 } },
++      };
++      s += w;
++      d += w;
++   }
++
++   struct pvr_sub_cmd *sub_cmd = cmd_buffer->state.current_sub_cmd;
++   struct pvr_transfer_cmd *transfer_cmd = NULL;
++   if (sub_cmd && sub_cmd->type == PVR_SUB_CMD_TYPE_TRANSFER &&
++       !list_is_empty(sub_cmd->transfer.transfer_cmds)) {
++      struct pvr_transfer_cmd *last = list_last_entry(sub_cmd->transfer.transfer_cmds,
++                                                      struct pvr_transfer_cmd,
++                                                      link);
++      if (last->buffer_batch && last->sources[0].surface.dev_addr.addr == src_addr.addr &&
++          last->dst.dev_addr.addr == dst_addr.addr &&
++          last->sources[0].mapping_count + num_pieces <= PVR_TRANSFER_MAX_CMD_MAPPINGS)
++         transfer_cmd = last;
++   }
++
++   /* Rects are drawn in order, but keep writes to the same bytes in separate
++    * commands rather than rely on that.
++    */
++   for (uint32_t i = 0; transfer_cmd && i < transfer_cmd->sources[0].mapping_count; i++) {
++      const VkRect2D *r = &transfer_cmd->sources[0].mappings[i].dst_rect;
++      uint64_t start = (uint64_t)r->offset.y * row + r->offset.x;
++
++      if (start < dst_offset / texel + size / texel &&
++          dst_offset / texel < start + r->extent.width)
++         transfer_cmd = NULL;
++   }
++
++   if (transfer_cmd) {
++      const VkRect2D *sc = &transfer_cmd->scissor;
++      int32_t x0 = sc->offset.x, y0 = sc->offset.y;
++      int32_t x1 = sc->offset.x + sc->extent.width;
++      int32_t y1 = sc->offset.y + sc->extent.height;
++
++      for (uint32_t i = 0; i < num_pieces; i++) {
++         const VkRect2D *dr = &pieces[i].dst_rect;
++         x0 = MIN2(x0, dr->offset.x);
++         y0 = MIN2(y0, dr->offset.y);
++         x1 = MAX2(x1, dr->offset.x + dr->extent.width);
++         y1 = MAX2(y1, dr->offset.y + dr->extent.height);
++      }
++
++      if ((uint64_t)(x1 - x0) * (y1 - y0) * texel > PVR_BUFFER_BATCH_MAX_BOX_BYTES)
++         transfer_cmd = NULL;
++   }
++   if (!transfer_cmd) {
++      transfer_cmd = pvr_transfer_cmd_alloc(cmd_buffer);
++      if (!transfer_cmd)
++         return false;
++
++      pvr_setup_buffer_surface(&transfer_cmd->sources[0].surface,
++                               &transfer_cmd->scissor,
++                               src_addr,
++                               0,
++                               VK_FORMAT_R32_UINT,
++                               VK_FORMAT_R32_UINT,
++                               row,
++                               0,
++                               row);
++      pvr_setup_buffer_surface(&transfer_cmd->dst,
++                               &transfer_cmd->scissor,
++                               dst_addr,
++                               0,
++                               VK_FORMAT_R32_UINT,
++                               VK_FORMAT_R32_UINT,
++                               row,
++                               0,
++                               row);
++      transfer_cmd->scissor = pieces[0].dst_rect;
++      transfer_cmd->source_count = 1;
++      transfer_cmd->flags |= PVR_TRANSFER_CMD_FLAGS_FAST2D;
++      transfer_cmd->buffer_batch = true;
++      if (pvr_arch_cmd_buffer_add_transfer_cmd(cmd_buffer, transfer_cmd) != VK_SUCCESS) {
++         vk_free(&cmd_buffer->vk.pool->alloc, transfer_cmd);
++         return false;
++      }
++   }
++
++   struct pvr_transfer_cmd_source *src = &transfer_cmd->sources[0];
++   for (uint32_t i = 0; i < num_pieces; i++) {
++      const VkRect2D *sr = &pieces[i].src_rect;
++      const VkRect2D *dr = &pieces[i].dst_rect;
++
++      src->mappings[src->mapping_count++] = pieces[i];
++      src->surface.height = MAX2(src->surface.height, sr->offset.y + 1);
++      transfer_cmd->dst.height = MAX2(transfer_cmd->dst.height, dr->offset.y + 1);
++
++      /* The scissor is the bounding box of the dst rects. */
++      VkRect2D *sc = &transfer_cmd->scissor;
++      int32_t x1 = MAX2(sc->offset.x + sc->extent.width, dr->offset.x + dr->extent.width);
++      int32_t y1 = MAX2(sc->offset.y + sc->extent.height, dr->offset.y + dr->extent.height);
++      sc->offset.x = MIN2(sc->offset.x, dr->offset.x);
++      sc->offset.y = MIN2(sc->offset.y, dr->offset.y);
++      sc->extent.width = x1 - sc->offset.x;
++      sc->extent.height = y1 - sc->offset.y;
++   }
++
++   return true;
++}
++
+ static VkResult pvr_cmd_copy_buffer_region(struct pvr_cmd_buffer *cmd_buffer,
+                                            pvr_dev_addr_t src_addr,
+                                            VkDeviceSize src_offset,
+@@ -1419,6 +1568,13 @@ static VkResult pvr_cmd_copy_buffer_region(struct pvr_cmd_buffer *cmd_buffer,
+ {
+    VkDeviceSize offset = 0;
+ 
++   if (!is_fill && pvr_try_batch_buffer_copy(cmd_buffer,
++                                             src_addr,
++                                             src_offset,
++                                             dst_addr,
++                                             dst_offset,
++                                             size))
++      return VK_SUCCESS;
+    while (offset < size) {
+       const VkDeviceSize remaining_size = size - offset;
+       struct pvr_transfer_cmd *transfer_cmd;
+@@ -1471,7 +1627,24 @@ static VkResult pvr_cmd_copy_buffer_region(struct pvr_cmd_buffer *cmd_buffer,
+       const uint32_t max_width =
+          is_fill ? PVR_MAX_TRANSFER_SIZE_IN_TEXELS
+                  : MIN2(PVR_MAX_TRANSFER_SIZE_IN_TEXELS, 4096U / texel_width);
+-      if (texels > max_width) {
++      /* A transfer command is a kernel job and a 3D kick of about 125 us,
++       * so a small copy is worth one rect of any shape: the widest one whose
++       * texel count divides the copy, instead of 4 KiB rows plus a remainder
++       * row.
++       */
++      width = 0;
++      if (!is_fill && chunk <= 64U * 1024U) {
++         for (uint32_t w = MIN2(texels, PVR_MAX_TRANSFER_SIZE_IN_TEXELS); w > 0; w--) {
++            if (texels % w == 0 && texels / w <= PVR_MAX_TRANSFER_SIZE_IN_TEXELS) {
++               width = w;
++               height = texels / w;
++               break;
++            }
++         }
++      }
++
++      if (width) {
++      } else if (texels > max_width) {
+          width = max_width;
+          height = texels / max_width;
+          height = MIN2(height, PVR_MAX_TRANSFER_SIZE_IN_TEXELS);
+@@ -1479,7 +1652,6 @@ static VkResult pvr_cmd_copy_buffer_region(struct pvr_cmd_buffer *cmd_buffer,
+          width = texels;
+          height = 1;
+       }
+-
+       transfer_cmd = pvr_transfer_cmd_alloc(cmd_buffer);
+       if (!transfer_cmd)
+          return VK_ERROR_OUT_OF_HOST_MEMORY;
+-- 
+2.47.3
+

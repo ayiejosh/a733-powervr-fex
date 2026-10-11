@@ -347,7 +347,7 @@ because that checkout's only remote is **upstream `gitlab.freedesktop.org/mesa/m
 | file | what it is |
 |---|---|
 | `mesa-main-open-driver-all.patch` | the whole delta as one patch, like `mesa-main-local-all.patch` |
-| `open-driver-series/` | the same 43 commits as numbered `format-patch` files, in apply order |
+| `open-driver-series/` | the commits as numbered `format-patch` files, in apply order: 0001-0043 from 2026-10-09, 0044-0098 from 2026-10-11, 0099-0105 from 2026-10-14 |
 
 **Apply with:**
 
@@ -386,3 +386,122 @@ git apply ../mesa-main-open-driver-all.patch   # one squashed change
   `WSIREL_POINTS`), and are off by default.
 * **Two commits are reverts of earlier commits in the same series** — kept rather than squashed, because the
   reversal is the finding.
+
+## Added 2026-10-11: the performance series, commits 44-98
+
+The same checkout, 55 more commits on top of commit 43 (`d253e35`), carried the same two
+ways: `mesa-main-open-driver-all.patch` is regenerated as the whole delta against upstream
+`9a2b374`, and `open-driver-series/0044…0098` continue the numbered series in apply order.
+Goal of this work: make the open stack (mainline `powervr` kernel driver + Mesa `pvr`/`pco`,
+GL through zink) match and beat the vendor `pvrsrvkm` stack on the `bench/` workloads.
+
+**Where it stands (board at 1104 MHz GPU, off-screen, pinned to the A76 cores):**
+
+| workload | open, before this series | open, now | vendor |
+|---|---|---|---|
+| glmark2-es2 score (zink on open Mesa / vendor native GLES) | 233 | **627** | 930 |
+| vkrender 2048 draw passes, ms/frame | — | **1.77** | 1.97 |
+| vkheavy 2048, ms/frame | — | **171.7** | 179.8 |
+| compute throughput `cstp`, M inv/s | — | **448** | 373 |
+| vkrender 512 draw+copy, ms/frame | — | 0.637 | 0.608 |
+| vkmany 512 / 2048 (many small draws), ms/frame | — | 0.817 / 5.73 | 0.801 / 5.62 |
+
+Vulkan rows are the 3-round alternating A/B of 2026-10-11 morning, before the last 12 commits;
+the two rows where open is 2–5 % behind are host-side latency, not GPU work. The glmark2 gap that
+remains is concentrated in a few scenes (desktop blur/shadow ~30 %, uniform-count loops 47 %,
+effect2d 50 %); build, texture and gouraud are at 85–95 % of vendor.
+
+**What the 55 commits do, by class:**
+
+1. **Lossless framebuffer compression (TFBC)** for colour targets, then for sampled, input-attachment
+   and transfer-destination images and `MUTABLE_FORMAT` views (the zink colour targets), with the
+   render-pass fixes it needed: `DONT_CARE` attachments get a render-init entry so a partial render
+   area keeps the pixels around it, the hardware-render index bug in `vkCmdClearAttachments`, an
+   8×8 minimum extent (a 5×1 image overran its 256-byte block slot).
+2. **Fewer per-frame jobs and compiles.** The load-op program cache never matched because a render
+   target descriptor left bytes uninitialised; the end-of-tile program cache held one entry. Both
+   recompiled a shader on every render pass of a multi-target frame (desktop blur +42 %). Small
+   buffer copies (`glBufferSubData` through zink) are batched into one transfer command instead of
+   one 3D kick each (buffer subdata scene 100 → 203 FPS, 53 → 3 transfer jobs per frame).
+3. **`pco` compiler.** Descriptor null/robustness checks made by the driver at draw time instead of
+   in every pixel; colour-write-enable emulation that reads the framebuffer only when an output is
+   disabled (every GL fragment shader was a translucent read-modify-write before); ifs and loops
+   whose condition is the same in every instance lowered to plain branches instead of
+   execution-mask counting, with a new `tstp` op that compares straight into the branch predicate;
+   register reads propagated into their uses; native `ffract`, `imul`→`iadd` folding, uniform
+   buffer preloading into shared registers, push constants through a pseudo move.
+4. **Driver-side caches and fixes:** render-target dataset reuse across command buffers,
+   control-stream block recycling, pixel-rate vs sample-rate resolved at compile time, no forced ISP
+   feedback for shaders that cannot discard, buffer copy alignment and row-size fixes.
+
+**How it was checked.** Every commit was built and A/B measured on the board (alternating blocks,
+`bench/` harnesses, glmark2 off-screen), run through the Vulkan CTS subsets that cover what it
+touches (the lists are named in each commit message; the pco, render-pass, TFBC, dynamic rendering,
+robustness, UBO and control-flow lists were run on every compiler change), and through a weston +
+Xwayland `glmark2-es2 --validate` (27/27 scenes). This is not a full CTS mustpass run; the known
+pre-existing failures (47 in the pco list, 7 in dynamic rendering, 2 robustness crashes) are
+unchanged throughout. Three bugs found by review and fixed before this PR: an instruction sunk past
+a register write by the dual-issue scheduler, a backwards live range for a register first written
+inside a loop, and condition producers marked `(ignorepe)` inside loops that turn out divergent.
+
+## Added 2026-10-14: seven more commits, 99-105, and a sync bug fix
+
+The same two carriers again: `open-driver-series/0099…0105` continue the numbered series and
+`mesa-main-open-driver-all.patch` is regenerated as the whole delta against upstream `9a2b374`
+(`git am` of all 105 patches onto `9a2b374` gives exactly the tree of the Mesa branch).
+
+**A bug in patch 0018, found and fixed (patch 0105).** Patch 0018 registered the emulated timeline
+sync type after the DRM syncobj type. With kernel timeline syncobj support both types advertise
+`VK_SYNC_FEATURE_TIMELINE`, and the Vulkan runtime supports one: debug builds assert in
+`get_timeline_mode()`, release builds mixed the two types. The CTS timeline semaphore cases showed it:
+of 5637 `dEQP-VK.synchronization*` cases (basic, timeline, a sample of signal_order, op,
+cross_instance, synchronization2), **596 crashed (109) or lost the device (486)** on a build without
+the fix, every one a `timeline_semaphore` case (`device_host`, `signal_order`, `one_to_n`,
+`wait_before_signal`). Patch 0105 registers the emulated type only when the syncobj type has no
+timeline support, as anv and radv do, and drops the per-queue `job_sync[]` timeline syncobjs that
+were created from that type and never used (on a debug build they hit `vk_sync_type_validate:
+Assertion 'type->init'` once the emulated type is no longer registered). With it, 595 of the 596 pass.
+The assert build passes all 1235 syncset cases that pass on the release build, the 20 `foldtest` and
+130 `nantest` checks, and `glmark2-es2 --validate` (27 ok, 0 failed, 6 reported unknown by the
+validator).
+
+Two syncset cases still `Fail` in the first full pass. One is a binary-semaphore `cross_instance`
+case (`write_ssbo_fragment_read_vertex_input.buffer_262144`) that fails the same way on the build
+without the fix, so it is not caused by this. The other is a timeline case
+(`device_host.write_ssbo_compute_indirect_read_vertex_input.buffer_262144`): it failed once while
+four test processes shared the GPU, and passed 60 of 60 reruns alone on the release build and 60 of 60
+on the assert build. That one is unexplained and may be a load dependent race.
+
+**The six performance commits, with the numbers measured for each** (glmark2-es2 off-screen through
+zink, GPU 1104 MHz, pinned to the A76 cores, A/B in alternating blocks):
+
+| patch | what it does | measured |
+|---|---|---|
+| 0099 | a pending `glClear` that zink submits as its own render pass is held until a later pass uses the image, which takes it as its own load op | desktop shadow 258 → 286, desktop blur 209 → 224, shadow 242 → 312 FPS; suite 641 → 643 |
+| 0100 | second fragment shader per pipeline without the colour write enable read-modify-write, picked at draw time when no output is masked | loop 764 → 877, desktop shadow 277 → 327, effect2d 445 → 505, jellyfish 248 → 270, shadow 283 → 314 |
+| 0101 | null checks of texture descriptors made when the draw is recorded, not in the shader, when a shader has two or more texture terms | bump +11 %, shadow +6 %, jellyfish +4 % |
+| 0102 | `pco_shrink_vecs` also drops dead trailing channels of vecs that contain multi channel sources | effect2d 31 → 16 temporaries, +15 %; desktop shadow +16 %; bump +3 % |
+| 0103 | no NaN-preserving expansion for `fmin`/`fmax` with a non-NaN constant operand | +1 to +3 % on shading, bump, ideas, texture, shadow |
+| 0104 | a uniform if's other branch no longer forces a DITR pre-fence | jellyfish and bump lose 3 groups on the executed path |
+
+Temporary count is the lever that paid here: the shaders with the most temporaries (effect2d,
+desktop shadow) gained the most from 0102, while a synthetic probe with growing temporary counts shows
+only a mild slope elsewhere.
+
+**Where the whole glmark2-es2 suite stands** (33 scenes, two full runs of the final build, same
+conditions): score **690 and 687** (vendor 930; the series at 0098 measured 641 in the session that
+measured 0099, and different sessions drift by about 3 %). Per-scene geometric mean of open over
+vendor: **0.719 and 0.715**. Per scene, open as a share of vendor: texture 84–95 %, gouraud 87 %,
+buffer 63–95 %, conditionals 69–90 %, phong 72 %, bump 66–80 %, jellyfish 75 %, function 64–73 %,
+effect2d 62–68 %, loops 60–74 %, desktop shadow 40–46 %, desktop blur 39 %. The remaining gap is
+the same few scenes as before: desktop blur and shadow, the uniform-count loops, effect2d.
+
+**How it was checked.** Each performance commit was built, A/B measured and run through the CTS
+lists that cover what it touches (named in its commit message). The sync fix was checked as
+described above, plus a speed A/B of the build without and with it, which is inside the run to run
+noise off-screen and windowed through weston and Xwayland (every scene within 3 %). The full
+15-list CTS gate was not re-run on the very last tree, because patch 0105 does not touch the compiler
+or the render paths; the lists were run on the build that has 0099–0104. Still open: about 30 debug
+trace hooks (`getenv` checks such as `XGEOM_TRACE`, `ZINK_TIMING`, `PVR_SUBMIT_MIX`, `PVR_JOB_TRACE`)
+are in zink, wsi and pvr paths of the branch diff; they are off by default and have to go before any
+of this can be sent upstream.
