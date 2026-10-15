@@ -1,0 +1,43 @@
+From 06834217cbbf29297880ebd5016e54c1d4864fb8 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sat, 10 Oct 2026 02:44:14 +0800
+Subject: [PATCH 57/98] pco: don't back-propagate pixout into source-encoded
+ dests
+
+Fixes 2280bf4 ("pco: back-propagate pixel output writes again").
+
+The data register of e.g. a texture sample is encoded as a source
+(dest_intrn_map), so the legalizer treats a pixout dest there like a
+source and inserts a mov *from* the pixout register before the sample:
+the sampled value never reached the output. Hit by internal transfer
+shaders, e.g. the depth readback in
+dEQP-VK.fragment_operations.early_fragment.samplemask_no_early_fragment_tests_depth_samples_{2,4}.
+
+Only back-propagate pixout into instructions whose dest is a real
+destination. Both tests pass again; a 5062-case CTS selection (glsl
+operators/builtins, compute, fragment_operations, discard/demote,
+SPIR-V integer ops) now matches the d253e35 baseline exactly.
+---
+ src/imagination/pco/pco_opt.c | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/src/imagination/pco/pco_opt.c b/src/imagination/pco/pco_opt.c
+index fac4293..a4d9822 100644
+--- a/src/imagination/pco/pco_opt.c
++++ b/src/imagination/pco/pco_opt.c
+@@ -263,6 +263,12 @@ static inline bool try_back_prop_instr(struct pco_use *uses, pco_instr *instr)
+ 
+    if (pco_ref_is_reg(*pdest_from) &&
+        pco_ref_get_reg_class(*pdest_from) == PCO_REG_CLASS_PIXOUT) {
++      /* A dest encoded as a source register (e.g. the data register of a
++       * sample) is legalized like a source, which would read the pixout reg
++       * before the write instead of moving the result into it after.
++       */
++      if (pco_op_info[instr->op].dest_intrn_map[0])
++         return false;
+ 
+       bool has_isp_fb = false;
+ 
+-- 
+2.47.3
+

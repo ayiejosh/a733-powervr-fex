@@ -1,0 +1,547 @@
+From f0067acb1bef51401a39d8f6353e36c6078cab23 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sun, 11 Oct 2026 13:12:15 +0800
+Subject: [PATCH 96/98] pco: lower loops that every instance runs alike to
+ plain branches
+
+A loop whose breaks and continues all sit under uniform conditions runs
+the same iterations in every instance, so it needs none of the execution
+mask counting (cndst, cndsm, cndend, cndlt) of the general lowering.
+
+Uniformity now follows virtual registers through their writers, with a
+writer that reads the register again (a loop counter) accepted, and
+requires every writer to sit where all instances execute. A pre-pass
+decides which ifs and loops are uniform; the lowering pass then keeps
+the masking nesting count as before. A uniform loop's break branches to
+an exit block after the back edge, a continue branches to the back
+edge, both on the same condition as the break or continue.
+
+The condition producers are no longer made (ignorepe): every instance
+is active wherever a uniform if or loop is lowered, and a producer
+inside a divergent loop would keep running for instances that already
+left it.
+
+The register allocator takes the start of a loop from its body when the
+prologue block is empty, and extends the life of a value whose last use
+is the loop's first instruction.
+
+glmark2 loop fragment-uniform=true (zink, off-screen): the loop body goes
+from 11 to 9 instruction groups per iteration with no control ops, 397 ->
+502 FPS. Other scenes unchanged. CTS unchanged: glsl loops, switch,
+functions, return, discard, demote, subgroups vote/ballot/basic, SPIR-V
+control flow, graphicsfuzz, and the pco, caselist, compute, robustness,
+UBO, null image, TFBC and dynamic rendering lists.
+---
+ src/imagination/pco/pco_cf.c       | 301 ++++++++++++++++++++++++-----
+ src/imagination/pco/pco_internal.h |   4 +
+ src/imagination/pco/pco_ra.c       |   5 +-
+ 3 files changed, 257 insertions(+), 53 deletions(-)
+
+diff --git a/src/imagination/pco/pco_cf.c b/src/imagination/pco/pco_cf.c
+index 4e0d820..3345626 100644
+--- a/src/imagination/pco/pco_cf.c
++++ b/src/imagination/pco/pco_cf.c
+@@ -328,29 +328,58 @@ lower_if_uniform(pco_if *pif,
+ /* Whether a value is the same in every instance: computed only by pure ALU
+  * ops from shared registers, constants and immediates.
+  */
+-static bool ref_is_uniform(pco_instr **writes,
+-                           unsigned num_writes,
+-                           pco_ref ref,
+-                           struct util_dynarray *producers,
+-                           unsigned depth)
++/* Uniformity: a value is the same in every instance when it is computed only
++ * by pure ALU ops from shared registers, constants and immediates. A virtual
++ * register is uniform when all its writers are, and every instance executes
++ * them; a writer that reads the register again (a loop counter) is fine.
++ */
++struct uniform_ctx {
++   pco_instr **writes; /** SSA def -> producer. */
++   unsigned num_writes;
++   struct util_dynarray *vreg_writes; /** vreg -> producers. */
++   unsigned num_vregs;
++   BITSET_WORD *visiting; /** vregs on the current path. */
++   unsigned visits; /** Instructions seen by the current query. */
++};
++
++/* Bound on the instructions one query walks: the walk is not memoised. */
++#define UNIFORM_MAX_VISITS 4096U
++
++static bool ref_is_uniform(struct uniform_ctx *ctx, pco_ref ref, unsigned depth);
++
++/* Whether every instance executes the instructions of a block: no divergent
++ * if or loop around it. A loop whose uniformity is being decided counts as
++ * uniform.
++ */
++static bool block_is_uniform(pco_block *block)
+ {
+-   if (pco_ref_is_null(ref) || pco_ref_is_imm(ref))
+-      return true;
++   for (pco_cf_node *node = block->cf_node.parent; node; node = node->parent) {
++      if (node->type == PCO_CF_NODE_TYPE_FUNC)
++         break;
+ 
+-   if (pco_ref_is_hwreg(ref)) {
+-      enum pco_reg_class reg_class = pco_ref_get_reg_class(ref);
+-      return reg_class == PCO_REG_CLASS_SHARED ||
+-             reg_class == PCO_REG_CLASS_CONST;
++      if (node->type == PCO_CF_NODE_TYPE_IF &&
++          !pco_cf_node_as_if(node)->uniform_cond)
++         return false;
++
++      if (node->type == PCO_CF_NODE_TYPE_LOOP) {
++         pco_loop *loop = pco_cf_node_as_loop(node);
++         if (!loop->analyzing && !loop->uniform)
++            return false;
++      }
+    }
+ 
+-   if (!pco_ref_is_ssa(ref) || ref.val >= num_writes || !depth)
++   return true;
++}
++
++static bool instr_is_uniform(struct uniform_ctx *ctx,
++                             pco_instr *instr,
++                             unsigned depth)
++{
++   if (++ctx->visits > UNIFORM_MAX_VISITS)
+       return false;
+ 
+-   /* (ignorepe) producers come from an earlier uniform if. */
+-   pco_instr *instr = writes[ref.val];
+-   if (!instr || !pco_instr_has_exec_cnd(instr) ||
+-       (!pco_instr_has_default_exec(instr) &&
+-        pco_instr_get_exec_cnd(instr) != PCO_EXEC_CND_EX_ZX))
++   /* A predicated producer runs in some instances only. */
++   if (!pco_instr_has_exec_cnd(instr) || !pco_instr_has_default_exec(instr))
+       return false;
+ 
+    switch (instr->op) {
+@@ -360,6 +389,7 @@ static bool ref_is_uniform(pco_instr **writes,
+    case PCO_OP_LOGICAL:
+    case PCO_OP_SHIFT:
+    case PCO_OP_IADD32:
++   case PCO_OP_IMADD32:
+    case PCO_OP_BCMP:
+    case PCO_OP_BCSEL:
+    case PCO_OP_CSEL:
+@@ -374,15 +404,79 @@ static bool ref_is_uniform(pco_instr **writes,
+          return false;
+    }
+ 
++   if (!block_is_uniform(instr->parent_block))
++      return false;
++
+    pco_foreach_instr_src (psrc, instr) {
+-      if (!ref_is_uniform(writes, num_writes, *psrc, producers, depth - 1))
++      if (!ref_is_uniform(ctx, *psrc, depth - 1))
+          return false;
+    }
+ 
+-   util_dynarray_append(producers, instr);
+    return true;
+ }
+ 
++static bool ref_is_uniform(struct uniform_ctx *ctx, pco_ref ref, unsigned depth)
++{
++   if (pco_ref_is_null(ref) || pco_ref_is_imm(ref))
++      return true;
++
++   if (pco_ref_is_vreg(ref)) {
++      if (!depth || ref.val >= ctx->num_vregs)
++         return false;
++
++      /* Already on the path: a loop counter. */
++      if (BITSET_TEST(ctx->visiting, ref.val))
++         return true;
++
++      struct util_dynarray *writers = &ctx->vreg_writes[ref.val];
++      if (!util_dynarray_num_elements(writers, pco_instr *))
++         return false;
++
++      BITSET_SET(ctx->visiting, ref.val);
++      bool uniform = true;
++      util_dynarray_foreach (writers, pco_instr *, writer) {
++         if (!instr_is_uniform(ctx, *writer, depth)) {
++            uniform = false;
++            break;
++         }
++      }
++      BITSET_CLEAR(ctx->visiting, ref.val);
++
++      return uniform;
++   }
++
++   if (pco_ref_is_hwreg(ref)) {
++      enum pco_reg_class reg_class = pco_ref_get_reg_class(ref);
++      return reg_class == PCO_REG_CLASS_SHARED ||
++             reg_class == PCO_REG_CLASS_CONST;
++   }
++
++   if (!pco_ref_is_ssa(ref) || !depth || ref.val >= ctx->num_writes ||
++       !ctx->writes[ref.val])
++      return false;
++
++   return instr_is_uniform(ctx, ctx->writes[ref.val], depth);
++}
++
++/* The loop a break or continue belongs to, and whether only uniform ifs lie
++ * between them.
++ */
++static pco_loop *break_loop(pco_block *block, bool *uniform)
++{
++   *uniform = true;
++   for (pco_cf_node *node = block->cf_node.parent; node; node = node->parent) {
++      if (node->type == PCO_CF_NODE_TYPE_LOOP)
++         return pco_cf_node_as_loop(node);
++
++      assert(node->type == PCO_CF_NODE_TYPE_IF);
++      if (!pco_cf_node_as_if(node)->uniform_cond)
++         *uniform = false;
++   }
++
++   UNREACHABLE("break or continue outside of a loop");
++}
++
++
+ static inline unsigned body_num_instrs(struct list_head *body)
+ {
+    if (list_is_empty(body))
+@@ -393,7 +487,7 @@ static inline unsigned body_num_instrs(struct list_head *body)
+ }
+ 
+ static inline void
+-lower_if(pco_if *pif, pco_func *func, pco_instr **writes, unsigned num_writes)
++lower_if(pco_if *pif, pco_func *func, struct uniform_ctx *ctx)
+ {
+    assert(!pco_ref_is_null(pif->cond));
+    assert(list_is_empty(&pif->prologue));
+@@ -420,11 +514,11 @@ lower_if(pco_if *pif, pco_func *func, pco_instr **writes, unsigned num_writes)
+    assert(has_then);
+ 
+    if (pif->pred_exec)
+-      lower_if_pred_exec(pif, func, has_else, invert_cond, writes, num_writes);
++      lower_if_pred_exec(pif, func, has_else, invert_cond, ctx->writes, ctx->num_writes);
+    else if (pif->uniform)
+-      lower_if_uniform(pif, func, has_else, invert_cond, writes, num_writes);
++      lower_if_uniform(pif, func, has_else, invert_cond, ctx->writes, ctx->num_writes);
+    else
+-      lower_if_cond_exec(pif, func, has_else, invert_cond, writes, num_writes);
++      lower_if_cond_exec(pif, func, has_else, invert_cond, ctx->writes, ctx->num_writes);
+ 
+    pif->cond = pco_ref_null();
+ }
+@@ -500,6 +594,43 @@ static inline void lower_loop(pco_loop *loop, pco_func *func)
+           .branch_cnd = PCO_BRANCH_CND_EXEC_COND);
+ }
+ 
++
++/* A loop that every instance runs the same number of times (all its breaks and
++ * continues are under uniform ifs) is a plain branch loop: nothing masks
++ * instances. The prologue block stays empty; the epilogue is the back edge
++ * followed by the exit block that breaks branch to.
++ */
++static inline void lower_loop_uniform(pco_loop *loop, pco_func *func)
++{
++   assert(list_is_empty(&loop->prologue));
++   assert(list_is_empty(&loop->interlogue));
++   assert(list_is_empty(&loop->epilogue));
++
++   cf_section_create(func,
++                     &loop->cf_node,
++                     &loop->prologue,
++                     PCO_CF_NODE_FLAG_PROLOGUE);
++   pco_block *backedge = cf_section_create(func,
++                                           &loop->cf_node,
++                                           &loop->epilogue,
++                                           PCO_CF_NODE_FLAG_EPILOGUE);
++   pco_block *exit = cf_section_create(func,
++                                       &loop->cf_node,
++                                       &loop->epilogue,
++                                       PCO_CF_NODE_FLAG_EPILOGUE);
++   loop->exit = &exit->cf_node;
++
++   pco_builder b = pco_builder_create(func, pco_cursor_after_block(backedge));
++   pco_br(&b, pco_cf_node_head(&loop->body), .exec_cnd = PCO_EXEC_CND_EX_ZX);
++
++   /* Keeps the exit block, a branch target and the loop's end for the
++    * register allocator, from being empty.
++    */
++   b.cursor = pco_cursor_after_block(exit);
++   pco_nop(&b);
++}
++
++
+ static inline void lower_break_continue(pco_instr *instr,
+                                         pco_func *func,
+                                         pco_if *pif,
+@@ -508,9 +639,20 @@ static inline void lower_break_continue(pco_instr *instr,
+                                         bool is_continue)
+ {
+    pco_builder b = pco_builder_create(func, pco_cursor_before_instr(instr));
+-   pco_ref emc = pco_emc_ref(func, &b);
+    enum pco_exec_cnd exec_cnd = pco_instr_get_exec_cnd(instr);
+ 
++   if (loop->uniform) {
++      /* Every instance leaves or continues together: branch. */
++      pco_br(&b,
++             is_continue ? pco_cf_node_head(&loop->epilogue) : loop->exit,
++             .exec_cnd = exec_cnd == PCO_EXEC_CND_E1_ZX ? PCO_EXEC_CND_EX_ZX
++                                                        : exec_cnd);
++      pco_instr_delete(instr);
++      return;
++   }
++
++   pco_ref emc = pco_emc_ref(func, &b);
++
+    pco_ref val = pco_ref_new_ssa32(func);
+    pco_movi32(&b,
+               val,
+@@ -552,8 +694,8 @@ static inline void lower_break_continue(pco_instr *instr,
+ static inline bool pco_lower_cf(pco_func *func)
+ {
+    bool progress = false;
+-
+    void *mem_ctx = ralloc_context(NULL);
++
+    unsigned loop_nestings = 0;
+    struct util_dynarray loop_nestings_stack;
+    struct util_dynarray pif_stack;
+@@ -565,39 +707,102 @@ static inline bool pco_lower_cf(pco_func *func)
+ 
+    /* Loops and conditionally executed ifs that can mask instances. */
+    unsigned masking_nestings = 0;
+-   unsigned num_writes = func->next_ssa;
+-   pco_instr **writes = rzalloc_array(mem_ctx, pco_instr *, num_writes);
++
++   struct uniform_ctx ctx = {
++      .num_writes = func->next_ssa,
++      .num_vregs = func->next_vreg,
++   };
++   ctx.writes = rzalloc_array(mem_ctx, pco_instr *, ctx.num_writes);
++   ctx.vreg_writes =
++      rzalloc_array(mem_ctx, struct util_dynarray, ctx.num_vregs);
++   ctx.visiting =
++      rzalloc_array(mem_ctx, BITSET_WORD, BITSET_WORDS(ctx.num_vregs));
++   for (unsigned v = 0; v < ctx.num_vregs; ++v)
++      util_dynarray_init(&ctx.vreg_writes[v], mem_ctx);
++
+    pco_foreach_instr_in_func (instr, func) {
+       pco_foreach_instr_dest_ssa (pdest, instr) {
+-         writes[pdest->val] = instr;
++         ctx.writes[pdest->val] = instr;
++      }
++      pco_foreach_instr_dest_vreg (pdest, instr) {
++         util_dynarray_append(&ctx.vreg_writes[pdest->val], instr);
++      }
++   }
++
++   /* Decide which ifs and loops are uniform before lowering anything. */
++   pco_foreach_cf_node_in_func_structured (cf_node, cf_node_completed, func) {
++      if (cf_node_completed &&
++          cf_node_completed->type == PCO_CF_NODE_TYPE_LOOP)
++         pco_cf_node_as_loop(cf_node_completed)->analyzing = false;
++
++      switch (cf_node->type) {
++      case PCO_CF_NODE_TYPE_IF: {
++         pco_if *pif = pco_cf_node_as_if(cf_node);
++
++         /* Every instance is active wherever a uniform if or loop is
++          * lowered, so the condition's producers need no (ignorepe): that
++          * would make instances masked out of a divergent loop keep running
++          * a counter.
++          */
++         ctx.visits = 0;
++         pif->uniform_cond = !PCO_DEBUG(NO_PRED_CF) &&
++                             ref_is_uniform(&ctx, pif->cond, 32);
++         break;
++      }
++
++      case PCO_CF_NODE_TYPE_LOOP: {
++         pco_loop *loop = pco_cf_node_as_loop(cf_node);
++         loop->analyzing = true;
++         loop->uniform = !PCO_DEBUG(NO_PRED_CF);
++         break;
++      }
++
++      case PCO_CF_NODE_TYPE_BLOCK: {
++         pco_block *block = pco_cf_node_as_block(cf_node);
++         pco_foreach_instr_in_block (instr, block) {
++            if (instr->op != PCO_OP_BREAK && instr->op != PCO_OP_CONTINUE)
++               continue;
++
++            /* A break or continue under a divergent if masks instances. */
++            bool uniform;
++            pco_loop *loop = break_loop(block, &uniform);
++            if (!uniform)
++               loop->uniform = false;
++         }
++         break;
++      }
++
++      default:
++         break;
+       }
+    }
++
+    pco_foreach_cf_node_in_func_structured (cf_node, cf_node_completed, func) {
+       /* Handle the end of an if/loop. */
+       if (cf_node_completed) {
+          switch (cf_node_completed->type) {
+          case PCO_CF_NODE_TYPE_IF: {
+             pco_if *pif = pco_cf_node_as_if(cf_node_completed);
+-
+             ASSERTED pco_if *last_pif = util_dynarray_pop(&pif_stack, pco_if *);
+             assert(pif == last_pif);
++
+             if (!pif->pred_exec && !pif->uniform) {
+                --loop_nestings;
+                --masking_nestings;
+             }
+-
+             break;
+          }
+ 
+          case PCO_CF_NODE_TYPE_LOOP: {
+-            ASSERTED pco_loop *loop = pco_cf_node_as_loop(cf_node_completed);
++            pco_loop *loop = pco_cf_node_as_loop(cf_node_completed);
+             ASSERTED pco_loop *last_loop =
+                util_dynarray_pop(&loop_stack, pco_loop *);
+             assert(loop == last_loop);
+ 
+             assert(loop_nestings == 0);
+             loop_nestings = util_dynarray_pop(&loop_nestings_stack, unsigned);
+-            --masking_nestings;
++            if (!loop->uniform)
++               --masking_nestings;
+             break;
+          }
+ 
+@@ -612,14 +817,7 @@ static inline bool pco_lower_cf(pco_func *func)
+          pco_if *pif = pco_cf_node_as_if(cf_node);
+          pif->pred_exec = can_pred_exec(pif);
+ 
+-         struct util_dynarray producers;
+-         util_dynarray_init(&producers, mem_ctx);
+-         bool uniform = !masking_nestings && !PCO_DEBUG(NO_PRED_CF) &&
+-                        ref_is_uniform(writes,
+-                                       num_writes,
+-                                       pif->cond,
+-                                       &producers,
+-                                       8);
++         bool uniform = pif->uniform_cond && !masking_nestings;
+ 
+          /* Predicated bodies are issued either way; branch over large ones. */
+          if (pif->pred_exec && uniform &&
+@@ -630,10 +828,6 @@ static inline bool pco_lower_cf(pco_func *func)
+          }
+ 
+          pif->uniform = uniform && !pif->pred_exec;
+-         if (pif->uniform) {
+-            util_dynarray_foreach (&producers, pco_instr *, producer)
+-               pco_instr_set_exec_cnd(*producer, PCO_EXEC_CND_EX_ZX);
+-         }
+ 
+          util_dynarray_append(&pif_stack, pif);
+          if (!pif->pred_exec && !pif->uniform) {
+@@ -641,23 +835,27 @@ static inline bool pco_lower_cf(pco_func *func)
+             ++masking_nestings;
+          }
+ 
+-         lower_if(pif, func, writes, num_writes);
++         lower_if(pif, func, &ctx);
+          progress = true;
+-
+          break;
+       }
+ 
+       case PCO_CF_NODE_TYPE_LOOP: {
++         pco_loop *loop = pco_cf_node_as_loop(cf_node);
++         loop->uniform = loop->uniform && !masking_nestings;
++
+          util_dynarray_append(&loop_nestings_stack, loop_nestings);
+          loop_nestings = 0;
+-         ++masking_nestings;
++         if (!loop->uniform)
++            ++masking_nestings;
+ 
+-         pco_loop *loop = pco_cf_node_as_loop(cf_node);
+          util_dynarray_append(&loop_stack, loop);
+ 
+-         lower_loop(loop, func);
++         if (loop->uniform)
++            lower_loop_uniform(loop, func);
++         else
++            lower_loop(loop, func);
+          progress = true;
+-
+          break;
+       }
+ 
+@@ -686,10 +884,8 @@ static inline bool pco_lower_cf(pco_func *func)
+                                  current_loop,
+                                  loop_nestings,
+                                  instr->op == PCO_OP_CONTINUE);
+-
+             progress = true;
+          }
+-
+          break;
+       }
+ 
+@@ -708,6 +904,7 @@ static inline bool pco_lower_cf(pco_func *func)
+    return progress;
+ }
+ 
++
+ /**
+  * \brief Control-flow pass.
+  *
+diff --git a/src/imagination/pco/pco_internal.h b/src/imagination/pco/pco_internal.h
+index 71063ab..dc97a3f 100644
+--- a/src/imagination/pco/pco_internal.h
++++ b/src/imagination/pco/pco_internal.h
+@@ -314,6 +314,7 @@ typedef struct _pco_if {
+    pco_ref cond; /** If condition. */
+    bool pred_exec; /** Whether this if construct uses predicated execution. */
+    bool uniform; /** Whether this if construct branches on a uniform condition. */
++   bool uniform_cond; /** Whether the condition is the same in every instance. */
+    struct list_head prologue; /** List of pco_cf_nodes for if prologue. */
+    struct list_head then_body; /** List of pco_cf_nodes for if body. */
+    struct list_head interlogue; /** List of pco_cf_nodes for if interlogue. */
+@@ -331,6 +332,9 @@ typedef struct _pco_loop {
+    struct list_head interlogue; /** List of pco_cf_nodes for loop interlogue. */
+    struct list_head epilogue; /** List of pco_cf_nodes for loop epilogue. */
+    unsigned index; /** Loop index. */
++   bool uniform; /** Whether every instance runs the same iterations. */
++   bool analyzing; /** Set while the loop's uniformity is being decided. */
++   pco_cf_node *exit; /** Where a break of a uniform loop branches to. */
+ } pco_loop;
+ 
+ #define VEC_USER_MULTI ((void *)(~0ULL))
+diff --git a/src/imagination/pco/pco_ra.c b/src/imagination/pco/pco_ra.c
+index 1a8354f..879c653 100644
+--- a/src/imagination/pco/pco_ra.c
++++ b/src/imagination/pco/pco_ra.c
+@@ -759,6 +759,9 @@ static bool pco_ra_func(pco_func *func, pco_ra_ctx *ctx)
+       pco_block *epilogue_block =
+          pco_cf_node_as_block(pco_cf_node_tail(&loop->epilogue));
+ 
++      /* A uniform loop has an empty prologue: it starts at its body. */
++      if (list_is_empty(&prologue_block->instrs))
++         prologue_block = pco_next_block_nonempty(prologue_block);
+       unsigned loop_start_index = pco_first_instr(prologue_block)->index;
+       unsigned loop_end_index = pco_last_instr(epilogue_block)->index;
+ 
+@@ -768,7 +771,7 @@ static bool pco_ra_func(pco_func *func, pco_ra_ctx *ctx)
+ 
+       for (unsigned var = 0; var < num_vars; ++var) {
+          if (live_ranges[var].start < loop_start_index &&
+-             live_ranges[var].end > loop_start_index &&
++             live_ranges[var].end >= loop_start_index &&
+              live_ranges[var].end < loop_end_index) {
+             live_ranges[var].end = loop_end_index;
+          }
+-- 
+2.47.3
+

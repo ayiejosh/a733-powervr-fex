@@ -1,0 +1,90 @@
+From 98f4701439ea48426e2fe592c333f6ffa4b6b913 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sat, 10 Oct 2026 16:09:36 +0800
+Subject: [PATCH 68/98] pvr: keep render target data in the device cache
+
+The vheap/RTC, TPC, MTA, MList and region header buffers of a render
+target dataset were all allocated GPU-uncached, so every tile of every
+render fetched its region header and control stream pointers past the
+SLC. They are only accessed by the device (written by the TA/PM, read
+back by the ISP), and the device cache is flushed after every job, which
+is what the uAPI documents DRM_PVR_BO_BYPASS_DEVICE_CACHE for: buffers
+the CPU updates, like the free list, which stays uncached.
+
+BXM-4-64, 20 render passes per submit: constant-colour 2048x2048 pass
+1.466 -> 1.396 ms, 512x512 0.397 -> 0.382 ms; with a fence wait per
+frame, render 2048 2.25 -> 1.97 ms, render+copy 512 0.816 -> 0.772 ms.
+Partial renders (free list capped, 8192-triangle grid drawn 32-64 times
+a frame, 3-8 partial renders per frame): pixel-exact. CTS (5062 + 9170
++ 838 + 282 cases): identical; gate 44/44.
+---
+ src/imagination/vulkan/pvr_arch_job_render.c | 18 +++++++++++++-----
+ 1 file changed, 13 insertions(+), 5 deletions(-)
+
+diff --git a/src/imagination/vulkan/pvr_arch_job_render.c b/src/imagination/vulkan/pvr_arch_job_render.c
+index 4befa9e..8a64b85 100644
+--- a/src/imagination/vulkan/pvr_arch_job_render.c
++++ b/src/imagination/vulkan/pvr_arch_job_render.c
+@@ -197,6 +197,14 @@ pvr_rt_get_isp_region_size(struct pvr_device *device,
+    return rgn_size;
+ }
+ 
++/* Render target data (vheap/RTC, TPC, MTA, MList, region headers) is only
++ * accessed by the device (written by the TA/PM, read back by the ISP), so it
++ * stays in the device cache, which is flushed after every job: every tile of
++ * every render fetches its region header through it. Bypassing the SLC (as
++ * the CPU-updated free list does) costs ~4% on a full-screen render.
++ */
++#define PVR_RT_DATA_BO_FLAGS 0
++
+ static VkResult pvr_rt_vheap_rtc_data_init(struct pvr_device *device,
+                                            struct pvr_rt_dataset *rt_dataset,
+                                            uint32_t layers)
+@@ -229,7 +237,7 @@ static VkResult pvr_rt_vheap_rtc_data_init(struct pvr_device *device,
+                          device->heaps.general_heap,
+                          vheap_size + rtc_size,
+                          alignment,
+-                         PVR_BO_ALLOC_FLAG_GPU_UNCACHED,
++                         PVR_RT_DATA_BO_FLAGS,
+                          &rt_dataset->vheap_rtc_bo);
+    if (result != VK_SUCCESS)
+       return result;
+@@ -309,7 +317,7 @@ static VkResult pvr_rt_tpc_data_init(struct pvr_device *device,
+                        device->heaps.general_heap,
+                        tpc_size,
+                        ROGUE_CR_TE_TPC_ADDR_BASE_ALIGNMENT,
+-                       PVR_BO_ALLOC_FLAG_GPU_UNCACHED,
++                       PVR_RT_DATA_BO_FLAGS,
+                        &rt_dataset->tpc_bo);
+ }
+ 
+@@ -411,7 +419,7 @@ static VkResult pvr_rt_mta_data_init(struct pvr_device *device,
+                          device->heaps.general_heap,
+                          mta_size * num_rt_datas,
+                          ROGUE_CR_PM_MTILE_ARRAY_BASE_ADDR_ALIGNMENT,
+-                         PVR_BO_ALLOC_FLAG_GPU_UNCACHED,
++                         PVR_RT_DATA_BO_FLAGS,
+                          &rt_dataset->mta_bo);
+    if (result != VK_SUCCESS)
+       return result;
+@@ -445,7 +453,7 @@ pvr_rt_mlist_data_init(struct pvr_device *device,
+                          device->heaps.general_heap,
+                          mlist_size * num_rt_datas,
+                          ROGUE_CR_PM_MTILE_ARRAY_BASE_ADDR_ALIGNMENT,
+-                         PVR_BO_ALLOC_FLAG_GPU_UNCACHED |
++                         PVR_RT_DATA_BO_FLAGS |
+                             PVR_BO_ALLOC_FLAG_PM_FW_PROTECT,
+                          &rt_dataset->mlist_bo);
+    if (result != VK_SUCCESS)
+@@ -482,7 +490,7 @@ pvr_rt_rgn_headers_data_init(struct pvr_device *device,
+                          device->heaps.rgn_hdr_heap,
+                          rgn_headers_size * num_rt_datas,
+                          ROGUE_CR_TE_PSGREGION_ADDR_BASE_ALIGNMENT,
+-                         PVR_BO_ALLOC_FLAG_GPU_UNCACHED,
++                         PVR_RT_DATA_BO_FLAGS,
+                          &rt_dataset->rgn_headers_bo);
+    if (result != VK_SUCCESS)
+       return result;
+-- 
+2.47.3
+

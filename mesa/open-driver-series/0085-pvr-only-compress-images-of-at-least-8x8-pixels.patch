@@ -1,0 +1,31 @@
+From 46c46b3d5e1b57b0019bfc83164301268d11f805 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sun, 11 Oct 2026 08:08:32 +0800
+Subject: [PATCH 85/98] pvr: only compress images of at least 8x8 pixels
+
+A TFBC block takes a full slot in place, so an image whose twiddled
+extent is narrower or shorter than 8 pixels (5x1 pads to 8x1, 32 bytes)
+had its 256-byte block written past its end. Found with
+draw.renderpass.basic_draw.misc.flat_b_sat_error once such images could
+be compressed.
+---
+ src/imagination/vulkan/pvr_image.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/src/imagination/vulkan/pvr_image.c b/src/imagination/vulkan/pvr_image.c
+index f55c70a..932531e 100644
+--- a/src/imagination/vulkan/pvr_image.c
++++ b/src/imagination/vulkan/pvr_image.c
+@@ -334,6 +334,9 @@ void pvr_image_init(struct pvr_device *device,
+                 PVR_HAS_FEATURE(dev_info, tpu_image_state_v2) &&
+                 PVR_GET_FEATURE_VALUE(dev_info, fbcdc_algorithm, 0) == 50 &&
+                 image->memlayout == PVR_MEMLAYOUT_TWIDDLED &&
++                /* Whole 8x8 blocks: each takes a full slot in place. */
++                image->planes[0].physical_extent.width >= 8 &&
++                image->planes[0].physical_extent.height >= 8 &&
+                 image->vk.image_type == VK_IMAGE_TYPE_2D &&
+                 image->vk.samples == VK_SAMPLE_COUNT_1_BIT &&
+                 image->vk.mip_levels == 1 && image->vk.array_layers == 1 &&
+-- 
+2.47.3
+

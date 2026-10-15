@@ -69,3 +69,23 @@ Native arm64ec DXVK-Sarek (FL 11_0). Headless RTT and windowed present, indicati
 
 > Add your board as a new row. Different SoC revision, OS/kernel, DDK, cooling, or
 > governor all move these — that's exactly the data we want to collect.
+
+## GPU — open Mesa `pvr` + zink vs vendor GLES, glmark2-es2 off-screen (trixie)
+Open = mainline `powervr` + Mesa main with `mesa/open-driver-series` 0001–0105, GL through zink;
+vendor = DDK 24.2 native GLES. 800×600 off-screen, GPU 1104 MHz, pinned to cores 6-7.
+
+| Board | Kernel | open 2026-10-10 | open 2026-10-11 | open 2026-10-14 | vendor | Notes |
+|---|---|---|---|---|---|---|
+| Radxa Cubie A7A | 6.6.98-5-aw2511 | 233 | 627 | **688** | 930 | 2026-10-14: two runs 690 / 687, per-scene geomean vs vendor 0.72, texture 84–95 %, gouraud 87 %, phong 72 %, effect2d 62–68 %, desktop 39–46 %. 2026-10-11, per-scene: build 86 %, texture 85–95 %, gouraud 87 %, phong 65 %, effect2d 50 %, desktop 30 % of vendor |
+
+## GPU — open Mesa `pvr` vs vendor `pvrsrvkm`, native Vulkan (`bench/pvr-vulkan`, trixie)
+3 alternating open/vendor rounds, medians, pinned to cores 6-7, `performance` governor.
+
+| workload | open | vendor |
+|---|---|---|
+| vkrender 512 / 2048 render, ms/frame | 0.358 / **1.766** | 0.358 / 1.969 |
+| vkrender 512 / 2048 render+copy, ms/frame | 0.637 / 5.358 | 0.608 / 5.321 |
+| vkrender 512 / 2048 copy, ms/frame | 0.237 / 2.530 | 0.242 / 2.529 |
+| vkheavy 2048, ms/frame | **171.7** | 179.8 |
+| cstp / cstpf / cstpi, M inv/s | **447.9** / 148.6 / 151.6 | 372.5 / 146.2 / 147.1 |
+| vkmany 512 / 2048, ms/frame | 0.817 / 5.729 | 0.801 / 5.615 |
