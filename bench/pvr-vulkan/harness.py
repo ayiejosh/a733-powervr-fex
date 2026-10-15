@@ -15,6 +15,9 @@ WHAT IT OBSERVES, AND WHAT IT CANNOT
                             and PR is roughly a third of the fragment before trusting.
   critical path  measured   from the same trace
   CPU split      measured   RUSAGE_CHILDREN, LAST REP only, not the median
+  driver config  measured   the module params + firmware hash + timestamp each record was taken
+                            under. Without it records from different configurations pool into
+                            medians that describe nothing.
   GPU busy       measured   critical path / the probe's OWN ms/frame from the SAME traced
                             run. NOT the phase-2 median (untraced) and NOT phase-1's wall
                             time (includes startup + tracing: 201-1602 ms for a 1-23 ms
@@ -135,6 +138,45 @@ def switch_to(want):
     time.sleep(4)
     return driver() == want, (r.stdout + r.stderr).strip().splitlines()[-1] if (r.stdout + r.stderr).strip() else ""
 
+
+
+# ponytail: the log spans many configurations (pre-perf-series, post-perf, tuned), and without
+# this a record cannot be attributed to the setup that produced it - pooling them produced
+# medians describing nothing. Captured per record; absent files are simply omitted.
+def _driver_cfg():
+    import os, time as _t
+    cfg = {"when": _t.strftime("%Y-%m-%dT%H:%M:%S")}
+    try:
+        with open("/sys/module/powervr/parameters/chain_frag") as f: cfg["chain_frag"] = f.read().strip()
+        for k in ("combine_pr", "active_pm_latency_ms", "ctxswitch_profile"):
+            try:
+                with open(f"/sys/module/powervr/parameters/{k}") as f: cfg[k] = f.read().strip()
+            except OSError: pass
+    except OSError:
+        cfg["powervr"] = "unloaded"
+    try:
+        with open("/lib/firmware/powervr/rogue_36.56.104.183_v1.fw", "rb") as f:
+            import hashlib; cfg["fw"] = hashlib.md5(f.read()).hexdigest()[:12]
+    except OSError: pass
+    # The module BUILD, not just its parameters. Without this a source change (e.g. the CCCB
+    # size constants) is invisible in the log, and records from two different builds pool
+    # into medians that describe neither.
+    import glob, hashlib
+    import subprocess
+    krel = subprocess.run(["uname", "-r"], capture_output=True, text=True).stdout.strip()
+    for ko in glob.glob(f"/lib/modules/{krel}/extra/powervr/powervr.ko"):
+        try:
+            with open(ko, "rb") as f: cfg["ko_md5"] = hashlib.md5(f.read()).hexdigest()[:12]
+        except OSError: pass
+    # the build-id the module was linked with - matches what systemd services report
+    try:
+        with open("/sys/module/powervr/notes/.note.gnu.build-id", "rb") as f:
+            cfg["build_id"] = f.read().hex()[-16:]
+    except OSError: pass
+    try:
+        with open("/sys/module/powervr/srcversion") as f: cfg["srcversion"] = f.read().strip()
+    except OSError: pass
+    return cfg
 
 def main():
     argv = [a for a in sys.argv[1:] if not a.startswith("--driver=")]
@@ -264,6 +306,7 @@ def main():
            "pixels_ok": (correct[-1][1] + "/" + correct[-1][2]) if correct else None,
            "jobs": [[n, round(d, 3)] for n, d in jobs[:6]],
            "phase1_ms": round(p1_wall * 1000, 3) if p1_wall else None,
+           "cfg": _driver_cfg(),
            "phase1_frame_ms": p1_frame_ms,
            "trace": src}
 
