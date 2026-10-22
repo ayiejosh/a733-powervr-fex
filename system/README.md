@@ -90,3 +90,17 @@ clean reboot from an abnormal power loss.)
 Software-ejecting the SD card (or otherwise tearing down the `sunxi-mmc` controller while
 mounted/active) triggers a kernel **Oops** in the sunxi-mmc teardown path. Avoid the
 software eject; unmount cleanly and prefer a power-off before removing the card.
+
+## zram — compressed swap, `zram/`
+
+The board sees **5.8 GiB** of its 8 GiB. zram keeps swap pages compressed in RAM rather than
+writing them to the SSD: measured **985.6 MiB of data in 253.5 MiB of RAM (3.9:1)**, ~**732 MiB**
+of usable RAM reclaimed, with an 8 GiB `/swapfile` at priority −2 behind it as the fallback.
+
+lz4 primary for the write path, zstd secondary for pages that have gone cold, plus a 2 GiB
+writeback image for incompressible ones. Files and install steps: [`zram/`](zram/).
+
+> ⚠️ **`/proc/config.gz` lies about zram on this kernel** — it reports `CONFIG_ZRAM_WRITEBACK`,
+> `CONFIG_ZRAM_MULTI_COMP` and `CONFIG_ZRAM_TRACK_ENTRY_ACTIME` as not set, while the shipped
+> `zram.ko.xz` has all three and the live sysfs exposes them. Check sysfs or the module, and note
+> the module is xz-compressed (`plain strings` finds nothing). See [`zram/README.md`](zram/README.md).

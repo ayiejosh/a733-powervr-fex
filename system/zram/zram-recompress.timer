@@ -1,0 +1,10 @@
+[Unit]
+Description=Periodic idempotent-aging recompression of zram pages
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=10min
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target
