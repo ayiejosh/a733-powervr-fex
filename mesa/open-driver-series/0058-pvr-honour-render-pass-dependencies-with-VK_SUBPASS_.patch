@@ -1,0 +1,145 @@
+From 538357e938a5b4fd0da2da1bbc985a70f9a9cb86 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sat, 10 Oct 2026 02:48:34 +0800
+Subject: [PATCH 58/98] pvr: honour render pass dependencies with
+ VK_SUBPASS_EXTERNAL
+
+vkCreateRenderPass2 only looked at dependencies between subpasses, so a
+dependency from the last subpass to VK_SUBPASS_EXTERNAL (e.g. colour
+attachment output -> transfer read) was dropped. A copy recorded after
+vkCmdEndRenderPass2 then had nothing ordering it after the fragment job
+and could read the image before it was written: on BXM-4-64 a render +
+copy-to-buffer read back an empty image in ~2-7% of runs (on upstream
+9a2b374 as well). The same applies to external -> first subpass.
+
+Record the stage masks of external dependencies (including a
+VkMemoryBarrier2 in pNext) and emit them as barrier events when the pass
+begins and ends, as vkCmdPipelineBarrier2 would.
+
+Render + copy readback: 0/300 failures (was 2-4/50 per config).
+5062-case CTS selection unchanged vs d253e35; vkrender/vkheavy timings
+unchanged within noise.
+---
+ src/imagination/vulkan/pvr_arch_cmd_buffer.c | 37 ++++++++++++++++++++
+ src/imagination/vulkan/pvr_arch_pass.c       | 20 +++++++++++
+ src/imagination/vulkan/pvr_pass.h            |  9 +++++
+ 3 files changed, 66 insertions(+)
+
+diff --git a/src/imagination/vulkan/pvr_arch_cmd_buffer.c b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
+index 07f1e1c..7f25af6 100644
+--- a/src/imagination/vulkan/pvr_arch_cmd_buffer.c
++++ b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
+@@ -4012,6 +4012,30 @@ pvr_resolve_unemitted_resolve_attachments(struct pvr_cmd_buffer *cmd_buffer,
+    return pvr_arch_cmd_buffer_end_sub_cmd(cmd_buffer);
+ }
+ 
++static VkResult
++pvr_cmd_buffer_insert_barrier_event(struct pvr_cmd_buffer *cmd_buffer,
++                                    uint32_t src_stage_mask,
++                                    uint32_t dst_stage_mask);
++
++/* Orders work across a render pass boundary for a dependency with
++ * VK_SUBPASS_EXTERNAL, e.g. a transfer reading what the pass rendered.
++ */
++static VkResult
++pvr_cmd_buffer_external_dep_barrier(struct pvr_cmd_buffer *cmd_buffer,
++                                    VkPipelineStageFlags2 vk_src_stages,
++                                    VkPipelineStageFlags2 vk_dst_stages)
++{
++   const uint32_t src_stage_mask = pvr_stage_mask_src(vk_src_stages);
++   const uint32_t dst_stage_mask = pvr_stage_mask_dst(vk_dst_stages);
++
++   if (!src_stage_mask || !dst_stage_mask)
++      return VK_SUCCESS;
++
++   return pvr_cmd_buffer_insert_barrier_event(cmd_buffer,
++                                              src_stage_mask,
++                                              dst_stage_mask);
++}
++
+ void PVR_PER_ARCH(CmdBeginRenderPass2)(
+    VkCommandBuffer commandBuffer,
+    const VkRenderPassBeginInfo *pRenderPassBeginInfo,
+@@ -4065,6 +4089,12 @@ void PVR_PER_ARCH(CmdBeginRenderPass2)(
+    assert(pass->subpasses[0].pipeline_bind_point ==
+           VK_PIPELINE_BIND_POINT_GRAPHICS);
+ 
++   result = pvr_cmd_buffer_external_dep_barrier(cmd_buffer,
++                                                pass->ext_begin_src_stages,
++                                                pass->ext_begin_dst_stages);
++   if (result != VK_SUCCESS)
++      return;
++
+    result =
+       pvr_arch_cmd_buffer_start_sub_cmd(cmd_buffer, PVR_SUB_CMD_TYPE_GRAPHICS);
+    if (result != VK_SUCCESS)
+@@ -9049,6 +9079,13 @@ void PVR_PER_ARCH(CmdEndRenderPass2)(VkCommandBuffer commandBuffer,
+    if (result != VK_SUCCESS)
+       return;
+ 
++   result = pvr_cmd_buffer_external_dep_barrier(
++      cmd_buffer,
++      state->render_pass_info.pass->ext_end_src_stages,
++      state->render_pass_info.pass->ext_end_dst_stages);
++   if (result != VK_SUCCESS)
++      return;
++
+    /* Save the required fields before clearing render_pass_info struct. */
+    attachments = state->render_pass_info.attachments;
+    clear_values = state->render_pass_info.clear_values;
+diff --git a/src/imagination/vulkan/pvr_arch_pass.c b/src/imagination/vulkan/pvr_arch_pass.c
+index f9dec8a..7dcaa3b 100644
+--- a/src/imagination/vulkan/pvr_arch_pass.c
++++ b/src/imagination/vulkan/pvr_arch_pass.c
+@@ -862,8 +862,28 @@ PVR_PER_ARCH(CreateRenderPass2)(VkDevice _device,
+    }
+ 
+    /* Count how many dependencies each subpass has. */
++   pass->ext_begin_src_stages = 0;
++   pass->ext_begin_dst_stages = 0;
++   pass->ext_end_src_stages = 0;
++   pass->ext_end_dst_stages = 0;
+    for (uint32_t i = 0; i < pCreateInfo->dependencyCount; i++) {
+       const VkSubpassDependency2 *dep = &pCreateInfo->pDependencies[i];
++      const VkMemoryBarrier2 *barrier2 =
++         vk_find_struct_const(dep->pNext, MEMORY_BARRIER_2);
++      const VkPipelineStageFlags2 src_stages =
++         barrier2 ? barrier2->srcStageMask : dep->srcStageMask;
++      const VkPipelineStageFlags2 dst_stages =
++         barrier2 ? barrier2->dstStageMask : dep->dstStageMask;
++
++      if (dep->srcSubpass == VK_SUBPASS_EXTERNAL &&
++          dep->dstSubpass != VK_SUBPASS_EXTERNAL) {
++         pass->ext_begin_src_stages |= src_stages;
++         pass->ext_begin_dst_stages |= dst_stages;
++      } else if (dep->srcSubpass != VK_SUBPASS_EXTERNAL &&
++                 dep->dstSubpass == VK_SUBPASS_EXTERNAL) {
++         pass->ext_end_src_stages |= src_stages;
++         pass->ext_end_dst_stages |= dst_stages;
++      }
+ 
+       if (dep->srcSubpass != VK_SUBPASS_EXTERNAL &&
+           dep->dstSubpass != VK_SUBPASS_EXTERNAL &&
+diff --git a/src/imagination/vulkan/pvr_pass.h b/src/imagination/vulkan/pvr_pass.h
+index 1b52787..33758be 100644
+--- a/src/imagination/vulkan/pvr_pass.h
++++ b/src/imagination/vulkan/pvr_pass.h
+@@ -125,6 +125,15 @@ struct pvr_render_pass {
+     * pvr_render_pass::multiview_enabled.
+     */
+    bool multiview_enabled;
++
++   /* Stage masks of the dependencies with VK_SUBPASS_EXTERNAL, applied as
++    * barriers when the pass begins (external -> pass) and ends
++    * (pass -> external).
++    */
++   VkPipelineStageFlags2 ext_begin_src_stages;
++   VkPipelineStageFlags2 ext_begin_dst_stages;
++   VkPipelineStageFlags2 ext_end_src_stages;
++   VkPipelineStageFlags2 ext_end_dst_stages;
+ };
+ 
+ VK_DEFINE_NONDISP_HANDLE_CASTS(pvr_render_pass,
+-- 
+2.47.3
+

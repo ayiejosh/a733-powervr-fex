@@ -1,0 +1,41 @@
+From a91aab5f55ef1838ba466645e0101ad794e47e47 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sun, 11 Oct 2026 13:12:20 +0800
+Subject: [PATCH 97/98] pco: keep a register first written inside a loop live
+ across it
+
+A register whose only write before a loop was an undefined phi value is
+first written inside the loop and read earlier in the body, so its live
+range ran backwards: the range test saw no overlap and another value
+could share its register between the read and the write. Extend such a
+range to the whole loop.
+---
+ src/imagination/pco/pco_ra.c | 12 ++++++++++++
+ 1 file changed, 12 insertions(+)
+
+diff --git a/src/imagination/pco/pco_ra.c b/src/imagination/pco/pco_ra.c
+index 879c653..bb1b790 100644
+--- a/src/imagination/pco/pco_ra.c
++++ b/src/imagination/pco/pco_ra.c
+@@ -775,6 +775,18 @@ static bool pco_ra_func(pco_func *func, pco_ra_ctx *ctx)
+              live_ranges[var].end < loop_end_index) {
+             live_ranges[var].end = loop_end_index;
+          }
++
++         /* A register first written in the loop (a phi with an undefined
++          * value from before it) and read earlier in the body has an inverted
++          * range: it is live across the whole loop.
++          */
++         if (live_ranges[var].start != ~0U &&
++             live_ranges[var].start > live_ranges[var].end &&
++             live_ranges[var].end >= loop_start_index &&
++             live_ranges[var].start <= loop_end_index) {
++            live_ranges[var].start = loop_start_index;
++            live_ranges[var].end = loop_end_index;
++         }
+       }
+    }
+ 
+-- 
+2.47.3
+

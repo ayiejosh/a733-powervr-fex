@@ -1,0 +1,192 @@
+From c737360e571400cfb5d642eee1ccd9558c2dd2b6 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sun, 11 Oct 2026 13:12:24 +0800
+Subject: [PATCH 98/98] pco: propagate register reads into their uses
+
+A read of a virtual register was an opaque mbyp, so a value held in a
+register (a loop-carried value or the result of an if) was always copied
+to a temporary before use. The read is now a mov, and forward
+propagation substitutes the register for the temporary when the use is
+in the same block and nothing writes the register in between. The
+compare into p0 before an if accepts a register source on the same
+condition, up to the end of the compare's block when the if follows it.
+
+The dual issue scheduler sank an instruction below a later one checking
+only that nothing between read its result; an instruction that now reads
+a register directly must also not move past a write to that register.
+
+glmark2 loop fragment-uniform=true (zink, off-screen): the loop body goes
+from 9 to 6 instruction groups per iteration, 502 -> 650 FPS; bump
+normals +3%. Other scenes unchanged. CTS unchanged (same lists as the
+uniform loop commit).
+---
+ src/imagination/pco/pco_cf.c           | 33 ++++++++++++++++++++------
+ src/imagination/pco/pco_group_instrs.c |  5 +++-
+ src/imagination/pco/pco_opt.c          | 27 ++++++++++++++++++---
+ src/imagination/pco/pco_trans_nir.c    |  2 +-
+ 4 files changed, 55 insertions(+), 12 deletions(-)
+
+diff --git a/src/imagination/pco/pco_cf.c b/src/imagination/pco/pco_cf.c
+index 3345626..6fbd947 100644
+--- a/src/imagination/pco/pco_cf.c
++++ b/src/imagination/pco/pco_cf.c
+@@ -133,13 +133,30 @@ static inline void set_body_exec_cnd(struct list_head *body,
+ }
+ 
+ /* Whether a comparison source has the same value wherever the comparison is
+- * recomputed before its if.
++ * recomputed before its if: a virtual register must not be written between
++ * the comparison and the if, which follows the comparison's block.
+  */
+-static inline bool cmp_src_is_stable(pco_ref ref)
++static inline bool cmp_src_is_stable(pco_ref ref, pco_instr *cmp, pco_if *pif)
+ {
+    if (pco_ref_is_ssa(ref) || pco_ref_is_imm(ref))
+       return true;
+ 
++   if (pco_ref_is_vreg(ref)) {
++      pco_block *block = cmp->parent_block;
++      if (pif->cf_node.link.prev != &block->cf_node.link)
++         return false;
++
++      for (pco_instr *instr = list_entry(cmp->link.next, pco_instr, link);
++           &instr->link != &block->instrs;
++           instr = list_entry(instr->link.next, pco_instr, link)) {
++         pco_foreach_instr_dest_vreg (pdest, instr) {
++            if (pdest->val == ref.val)
++               return false;
++         }
++      }
++
++      return true;
++   }
+    if (!pco_ref_is_hwreg(ref))
+       return false;
+ 
+@@ -153,6 +170,7 @@ static inline bool cmp_src_is_stable(pco_ref ref)
+  * comparison if nothing else uses it.
+  */
+ static bool set_p0_from_cond(pco_builder *b,
++                             pco_if *pif,
+                              pco_ref cond,
+                              enum pco_exec_cnd exec_cnd,
+                              pco_instr **writes,
+@@ -162,8 +180,9 @@ static bool set_p0_from_cond(pco_builder *b,
+                        ? writes[cond.val]
+                        : NULL;
+ 
+-   if (cmp && cmp->op == PCO_OP_BCMP && cmp_src_is_stable(cmp->src[0]) &&
+-       cmp_src_is_stable(cmp->src[1])) {
++   if (cmp && cmp->op == PCO_OP_BCMP &&
++       cmp_src_is_stable(cmp->src[0], cmp, pif) &&
++       cmp_src_is_stable(cmp->src[1], cmp, pif)) {
+       pco_tstp(b,
+                pco_ref_null(),
+                pco_ref_pred(PCO_PRED_P0),
+@@ -201,7 +220,7 @@ lower_if_pred_exec(pco_if *pif,
+    pco_builder b = pco_builder_create(func, pco_cursor_after_block(prologue));
+ 
+    invert_cond ^=
+-      set_p0_from_cond(&b, pif->cond, PCO_EXEC_CND_E1_ZX, writes, num_writes);
++      set_p0_from_cond(&b, pif, pif->cond, PCO_EXEC_CND_E1_ZX, writes, num_writes);
+ 
+    set_body_exec_cnd(&pif->then_body,
+                      invert_cond ? PCO_EXEC_CND_E1_Z1 : PCO_EXEC_CND_E1_Z0);
+@@ -242,7 +261,7 @@ lower_if_cond_exec(pco_if *pif,
+    pco_ref emc = pco_emc_ref(func, &b);
+ 
+    invert_cond ^=
+-      set_p0_from_cond(&b, pif->cond, PCO_EXEC_CND_E1_ZX, writes, num_writes);
++      set_p0_from_cond(&b, pif, pif->cond, PCO_EXEC_CND_E1_ZX, writes, num_writes);
+ 
+    pco_cndst(&b,
+              pco_ref_pred(PCO_PRED_PE),
+@@ -312,7 +331,7 @@ lower_if_uniform(pco_if *pif,
+ 
+    pco_builder b = pco_builder_create(func, pco_cursor_after_block(prologue));
+    invert_cond ^=
+-      set_p0_from_cond(&b, pif->cond, PCO_EXEC_CND_EX_ZX, writes, num_writes);
++      set_p0_from_cond(&b, pif, pif->cond, PCO_EXEC_CND_EX_ZX, writes, num_writes);
+ 
+    /* Skip the then body when the condition is false. */
+    pco_br(&b,
+diff --git a/src/imagination/pco/pco_group_instrs.c b/src/imagination/pco/pco_group_instrs.c
+index 539cc9e..4d1fa30 100644
+--- a/src/imagination/pco/pco_group_instrs.c
++++ b/src/imagination/pco/pco_group_instrs.c
+@@ -597,7 +597,10 @@ find_sink(pco_block *block, pco_instr *a, struct set *paired)
+       bool used = false;
+       for (struct list_head *m = b->link.next;; m = m->next) {
+          pco_instr *user = list_entry(m, pco_instr, link);
+-         if (reads_def_of(user, b)) {
++         /* Nothing up to a may read b's result, nor write a register b
++          * reads (a virtual register, with b after its load was propagated).
++          */
++         if (reads_def_of(user, b) || depends_on(b, user)) {
+             used = true;
+             break;
+          }
+diff --git a/src/imagination/pco/pco_opt.c b/src/imagination/pco/pco_opt.c
+index 76afe3a..0ed126d 100644
+--- a/src/imagination/pco/pco_opt.c
++++ b/src/imagination/pco/pco_opt.c
+@@ -406,19 +406,40 @@ static inline bool can_fwd_prop_src(const pco_instr *to_instr,
+  * \param[in] instr Instruction to try and forward-propagate.
+  * \return True if forward-propagation was successful.
+  */
++/* Whether a virtual register keeps its value from one instruction to a later
++ * one: both in the same block, with no write to the register in between.
++ */
++static bool vreg_unchanged_between(pco_ref vreg, pco_instr *from, pco_instr *to)
++{
++   if (from->parent_block != to->parent_block)
++      return false;
++
++   for (pco_instr *instr = list_entry(from->link.next, pco_instr, link);
++        instr != to;
++        instr = list_entry(instr->link.next, pco_instr, link)) {
++      pco_foreach_instr_dest_vreg (pdest, instr) {
++         if (pdest->val == vreg.val)
++            return false;
++      }
++   }
++
++   return true;
++}
++
+ static inline bool try_fwd_prop_instr(pco_instr **writes, pco_instr *instr)
+ {
+    bool progress = false;
+-
+    pco_foreach_instr_src_ssa (psrc, instr) {
+       pco_instr *parent_instr = writes[psrc->val];
+-
+       if (!parent_instr || parent_instr->op != PCO_OP_MOV)
+          continue;
+-
+       if (!can_fwd_prop_src(instr, psrc, &parent_instr->src[0]))
+          continue;
+ 
++      /* A register read must stay before the next write to the register. */
++      if (pco_ref_is_vreg(parent_instr->src[0]) &&
++          !vreg_unchanged_between(parent_instr->src[0], parent_instr, instr))
++         continue;
+       /* Propagate the source. */
+       pco_ref repl = parent_instr->src[0];
+       if (psrc->flr)
+diff --git a/src/imagination/pco/pco_trans_nir.c b/src/imagination/pco/pco_trans_nir.c
+index b5b5eb0..914e1e7 100644
+--- a/src/imagination/pco/pco_trans_nir.c
++++ b/src/imagination/pco/pco_trans_nir.c
+@@ -2433,7 +2433,7 @@ static pco_instr *trans_reg_intr(trans_ctx *tctx,
+       assert(!nir_intrinsic_legacy_fabs(intr));
+       assert(!nir_intrinsic_legacy_fneg(intr));
+ 
+-      return pco_mbyp(&tctx->b, dest, pco_ref_ssa_vreg(func, src0, reg_bits));
++      return pco_mov(&tctx->b, dest, pco_ref_ssa_vreg(func, src0, reg_bits));
+ 
+    case nir_intrinsic_store_reg:
+       assert(!nir_intrinsic_base(intr));
+-- 
+2.47.3
+

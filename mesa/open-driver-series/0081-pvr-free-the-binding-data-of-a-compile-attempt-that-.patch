@@ -1,0 +1,42 @@
+From 10b3f7d6e5ae4582121ae055f2f4acb8e68602d7 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sun, 11 Oct 2026 05:32:50 +0800
+Subject: [PATCH 81/98] pvr: free the binding data of a compile attempt that
+ spilled
+
+When a stage is compiled again without versioned descriptor checks, its
+shader data is restored from before lowering, and lowering allocates the
+descriptor binding arrays again: the first attempt's arrays leaked.
+
+CTS: the robustness2 storage_image null_descriptor cases that take this
+path (158 run, 41 pass, the rest not supported) pass.
+---
+ src/imagination/vulkan/pvr_arch_pipeline.c | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/src/imagination/vulkan/pvr_arch_pipeline.c b/src/imagination/vulkan/pvr_arch_pipeline.c
+index f393253..9164bc6 100644
+--- a/src/imagination/vulkan/pvr_arch_pipeline.c
++++ b/src/imagination/vulkan/pvr_arch_pipeline.c
+@@ -1092,6 +1092,10 @@ static VkResult pvr_compute_pipeline_compile(
+           !shader_data.common.checks_versioned)
+          break;
+ 
++      /* Lowering allocated binding data again; free this attempt's. */
++      for (unsigned u = 0; u < ARRAY_SIZE(shader_data.common.desc_sets); ++u)
++         ralloc_free(shader_data.common.desc_sets[u].bindings);
++
+       nir = unversioned_nir;
+       shader_data = *unversioned_data;
+       shader_data.common.no_check_versioning = true;
+@@ -3207,6 +3211,7 @@ pvr_graphics_pipeline_compile(struct pvr_device *const device,
+              !shader_data[stage].common.checks_versioned)
+             break;
+ 
++         pvr_pipeline_destroy_shader_data(&shader_data[stage]);
+          nir_shaders[stage] = unversioned_nir[stage];
+          shader_data[stage] = *unversioned_data[stage];
+          shader_data[stage].common.no_check_versioning = true;
+-- 
+2.47.3
+

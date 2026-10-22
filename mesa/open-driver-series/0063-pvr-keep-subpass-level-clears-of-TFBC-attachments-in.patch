@@ -1,0 +1,291 @@
+From bc1be45ba37025b77209aec6b22a35beed9cf52e Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sat, 10 Oct 2026 11:23:44 +0800
+Subject: [PATCH 63/98] pvr: keep subpass-level clears of TFBC attachments
+ inside the render area
+
+When an attachment's output registers were used by an earlier attachment of
+the same hardware render (an unstored attachment of an earlier subpass), its
+CLEAR runs as a full-screen "soft" background object at the start of its
+subpass. With a TFBC attachment and a partial render area the block-aligned
+PBE clip then stored the clear colour in up to 7 pixels around the render
+area.
+
+Give such subpasses a second load op that loads the attachments that could
+be TFBC compressed instead of clearing them, pick it at record time when a
+TFBC attachment has a partial render area, and clear the render area with
+CmdClearAttachments once the subpass is current.
+
+Reproduced with a two-subpass pass (BY_REGION, unstored attachment in
+subpass 0, TFBC image first used with CLEAR in subpass 1): areas 13,7,101,59
+and 1,1,1,1 differed from PVR_DEBUG=nofbc before, byte-exact after.
+9170-case renderpass / dynamic_rendering / copy_and_blit selection matches
+d253e35; gate 44/44.
+---
+ src/imagination/vulkan/pvr_arch_cmd_buffer.c | 93 +++++++++++++++++++-
+ src/imagination/vulkan/pvr_arch_pass.c       | 59 +++++++++++--
+ src/imagination/vulkan/pvr_hw_pass.h         |  6 ++
+ 3 files changed, 151 insertions(+), 7 deletions(-)
+
+diff --git a/src/imagination/vulkan/pvr_arch_cmd_buffer.c b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
+index 87a4417..129b7f3 100644
+--- a/src/imagination/vulkan/pvr_arch_cmd_buffer.c
++++ b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
+@@ -1683,6 +1683,86 @@ pvr_render_needs_fbc_load(const struct pvr_cmd_buffer *cmd_buffer,
+    return false;
+ }
+ 
++/* With a partial render area a subpass-level clear of a TFBC attachment must
++ * not cover the whole tile buffer (the block-aligned PBE clip would store the
++ * clear colour around the render area), so the soft background loads such
++ * attachments instead (load_op_fbc) and pvr_fbc_subpass_clears() clears the
++ * render area with draws.
++ */
++static bool
++pvr_subpass_needs_fbc_load(const struct pvr_cmd_buffer *cmd_buffer,
++                           const struct pvr_renderpass_hwsetup_subpass *hw_subpass)
++{
++   const struct pvr_render_pass_info *info =
++      &cmd_buffer->state.render_pass_info;
++   const struct pvr_render_subpass *subpass =
++      &info->pass->subpasses[hw_subpass->index];
++
++   if (!hw_subpass->load_op_fbc)
++      return false;
++
++   for (uint32_t i = 0; i < subpass->color_count; i++) {
++      const uint32_t attachment_idx = subpass->color_attachments[i];
++      const struct pvr_image_view *iview;
++
++      if (attachment_idx == VK_ATTACHMENT_UNUSED ||
++          hw_subpass->color_initops[i] != VK_ATTACHMENT_LOAD_OP_CLEAR)
++         continue;
++
++      iview = info->attachments[attachment_idx];
++      if (pvr_image_view_get_image(iview)->fbc &&
++          !pvr_is_render_area_tile_aligned(cmd_buffer, iview))
++         return true;
++   }
++
++   return false;
++}
++
++/* Clears, over the render area, the attachments load_op_fbc loads instead of
++ * clearing. The subpass must be the current one.
++ */
++static void
++pvr_fbc_subpass_clears(struct pvr_cmd_buffer *cmd_buffer,
++                       const struct pvr_renderpass_hwsetup_subpass *hw_subpass)
++{
++   const struct pvr_render_pass_info *info =
++      &cmd_buffer->state.render_pass_info;
++   const struct pvr_render_pass *pass = info->pass;
++   const struct pvr_render_subpass *subpass =
++      &pass->subpasses[hw_subpass->index];
++   const VkClearRect rect = {
++      .rect = info->render_area,
++      .baseArrayLayer = 0,
++      .layerCount = 1,
++   };
++
++   for (uint32_t i = 0; i < subpass->color_count; i++) {
++      const uint32_t attachment_idx = subpass->color_attachments[i];
++      const struct pvr_render_pass_attachment *attachment;
++
++      if (attachment_idx == VK_ATTACHMENT_UNUSED ||
++          hw_subpass->color_initops[i] != VK_ATTACHMENT_LOAD_OP_CLEAR)
++         continue;
++
++      attachment = &pass->attachments[attachment_idx];
++      if (attachment->sample_count != 1 ||
++          !pvr_image_format_may_fbc(attachment->vk_format))
++         continue;
++
++      assert(attachment_idx < info->clear_value_count);
++      PVR_PER_ARCH(CmdClearAttachments)(
++         pvr_cmd_buffer_to_handle(cmd_buffer),
++         1,
++         &(VkClearAttachment){
++            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
++            .colorAttachment = i,
++            .clearValue = info->clear_values[attachment_idx],
++         },
++         1,
++         &rect);
++   }
++}
++
+ static VkResult pvr_render_targets_dataset_init(
+    struct pvr_device *device,
+    struct pvr_render_state *rstate,
+@@ -4149,12 +4229,18 @@ void PVR_PER_ARCH(CmdBeginRenderPass2)(
+     */
+    hw_subpass = pvr_arch_get_hw_subpass(pass, 0);
+    if (hw_subpass->load_op) {
++      const bool fbc_load = pvr_subpass_needs_fbc_load(cmd_buffer, hw_subpass);
++
+       result = pvr_cs_write_load_op(cmd_buffer,
+                                     &cmd_buffer->state.current_sub_cmd->gfx,
+-                                    hw_subpass->load_op,
++                                    fbc_load ? hw_subpass->load_op_fbc
++                                             : hw_subpass->load_op,
+                                     0);
+       if (result != VK_SUCCESS)
+          return;
++
++      if (fbc_load)
++         pvr_fbc_subpass_clears(cmd_buffer, hw_subpass);
+    }
+ 
+    pvr_perform_start_of_render_clears(cmd_buffer, false);
+@@ -9649,7 +9735,8 @@ void PVR_PER_ARCH(CmdNextSubpass2)(VkCommandBuffer commandBuffer,
+    }
+ 
+    hw_subpass = &next_hw_render->subpasses[next_map->subpass];
+-   hw_subpass_load_op = hw_subpass->load_op;
++   const bool fbc_load = pvr_subpass_needs_fbc_load(cmd_buffer, hw_subpass);
++   hw_subpass_load_op = fbc_load ? hw_subpass->load_op_fbc : hw_subpass->load_op;
+ 
+    if (hw_subpass_load_op) {
+       result = pvr_cs_write_load_op(cmd_buffer,
+@@ -9689,6 +9776,8 @@ void PVR_PER_ARCH(CmdNextSubpass2)(VkCommandBuffer commandBuffer,
+    if (next_map->subpass == 0 &&
+        pvr_render_needs_fbc_load(cmd_buffer, next_hw_render))
+       pvr_perform_start_of_render_clears(cmd_buffer, false);
++   if (fbc_load)
++      pvr_fbc_subpass_clears(cmd_buffer, hw_subpass);
+    state->dirty.isp_userpass = true;
+ 
+    rp_info->pipeline_bind_point =
+diff --git a/src/imagination/vulkan/pvr_arch_pass.c b/src/imagination/vulkan/pvr_arch_pass.c
+index 21d9629..ab02134 100644
+--- a/src/imagination/vulkan/pvr_arch_pass.c
++++ b/src/imagination/vulkan/pvr_arch_pass.c
+@@ -137,6 +137,39 @@ static inline bool pvr_has_output_register_writes(
+    return false;
+ }
+ 
++/* Whether an attachment could be a TFBC image (see pvr_image_init()). */
++static bool
++pvr_attachment_may_fbc(const struct pvr_render_pass_attachment *attachment)
++{
++   return attachment->sample_count == 1 &&
++          pvr_image_format_may_fbc(attachment->vk_format);
++}
++
++/* Whether a subpass-level load op clears a colour attachment that could be a
++ * TFBC image.
++ */
++static bool
++pvr_subpass_may_need_fbc_load(const struct pvr_render_pass *pass,
++                              const struct pvr_renderpass_hwsetup_render *hw_render,
++                              uint32_t hw_subpass_idx)
++{
++   const struct pvr_renderpass_hwsetup_subpass *hw_subpass =
++      &hw_render->subpasses[hw_subpass_idx];
++   const struct pvr_render_subpass *subpass =
++      &pass->subpasses[hw_subpass->index];
++
++   for (uint32_t i = 0; i < subpass->color_count; i++) {
++      const uint32_t attachment_idx = subpass->color_attachments[i];
++
++      if (attachment_idx != VK_ATTACHMENT_UNUSED &&
++          hw_subpass->color_initops[i] == VK_ATTACHMENT_LOAD_OP_CLEAR &&
++          pvr_attachment_may_fbc(&pass->attachments[attachment_idx]))
++         return true;
++   }
++
++   return false;
++}
++
+ /* TODO: pvr_subpass_load_op_init() and pvr_render_load_op_init() are quite
+  * similar. See if we can dedup them?
+  */
+@@ -145,7 +178,8 @@ pvr_subpass_load_op_init(struct pvr_device *device,
+                          const VkAllocationCallbacks *allocator,
+                          const struct pvr_render_pass *pass,
+                          struct pvr_renderpass_hwsetup_render *hw_render,
+-                         uint32_t hw_subpass_idx)
++                         uint32_t hw_subpass_idx,
++                         bool force_fbc_load)
+ {
+    const struct pvr_renderpass_hwsetup_subpass *hw_subpass =
+       &hw_render->subpasses[hw_subpass_idx];
+@@ -200,6 +234,10 @@ pvr_subpass_load_op_init(struct pvr_device *device,
+ 
+       if (hw_subpass->color_initops[i] == VK_ATTACHMENT_LOAD_OP_LOAD)
+          load_op->clears_loads_state.rt_load_mask |= BITFIELD_BIT(i);
++      else if (hw_subpass->color_initops[i] == VK_ATTACHMENT_LOAD_OP_CLEAR &&
++               force_fbc_load &&
++               pvr_attachment_may_fbc(&pass->attachments[attachment_idx]))
++         load_op->clears_loads_state.rt_load_mask |= BITFIELD_BIT(i);
+       else if (hw_subpass->color_initops[i] == VK_ATTACHMENT_LOAD_OP_CLEAR)
+          load_op->clears_loads_state.rt_clear_mask |= BITFIELD_BIT(i);
+    }
+@@ -220,7 +258,10 @@ pvr_subpass_load_op_init(struct pvr_device *device,
+       load_op->view_count++;
+    }
+ 
+-   hw_render->subpasses[hw_subpass_idx].load_op = load_op;
++   if (force_fbc_load)
++      hw_render->subpasses[hw_subpass_idx].load_op_fbc = load_op;
++   else
++      hw_render->subpasses[hw_subpass_idx].load_op = load_op;
+ 
+    return VK_SUCCESS;
+ }
+@@ -379,8 +420,7 @@ pvr_render_may_need_fbc_load(const struct pvr_render_pass *pass,
+          &pass->attachments[hw_render->color_init[i].index];
+ 
+       if (hw_render->color_init[i].op != VK_ATTACHMENT_LOAD_OP_LOAD &&
+-          attachment->sample_count == 1 &&
+-          pvr_image_format_may_fbc(attachment->vk_format))
++          pvr_attachment_may_fbc(attachment))
+          return true;
+    }
+ 
+@@ -621,6 +661,11 @@ pvr_subpass_load_op_cleanup(struct pvr_device *device,
+                              allocator,
+                              hw_render->subpasses[subpass_idx].load_op);
+       }
++      if (hw_render->subpasses[subpass_idx].load_op_fbc) {
++         pvr_load_op_destroy(device,
++                             allocator,
++                             hw_render->subpasses[subpass_idx].load_op_fbc);
++      }
+    }
+ }
+ 
+@@ -636,7 +681,11 @@ pvr_subpass_load_op_setup(struct pvr_device *device,
+       if (!pvr_is_load_op_needed(pass, hw_render, i))
+          continue;
+ 
+-      result = pvr_subpass_load_op_init(device, allocator, pass, hw_render, i);
++      result = pvr_subpass_load_op_init(device, allocator, pass, hw_render, i,
++                                        false);
++      if (result == VK_SUCCESS && pvr_subpass_may_need_fbc_load(pass, hw_render, i))
++         result = pvr_subpass_load_op_init(device, allocator, pass, hw_render, i,
++                                           true);
+       if (result != VK_SUCCESS) {
+          /* pvr_subpass_load_op_setup() is responsible for cleaning
+           * up all load_ops created in this loop for this hw_render.
+diff --git a/src/imagination/vulkan/pvr_hw_pass.h b/src/imagination/vulkan/pvr_hw_pass.h
+index 6438ee7..e8e232e 100644
+--- a/src/imagination/vulkan/pvr_hw_pass.h
++++ b/src/imagination/vulkan/pvr_hw_pass.h
+@@ -104,6 +104,12 @@ struct pvr_renderpass_hwsetup_subpass {
+ 
+    struct pvr_load_op *load_op;
+ 
++   /* Same as load_op, but colour attachments that could be TFBC compressed
++    * are loaded instead of cleared; the clear is then a draw over the render
++    * area (see pvr_render_needs_fbc_load()). NULL if not needed.
++    */
++   struct pvr_load_op *load_op_fbc;
++
+    struct {
+       enum pvr_renderpass_hwsetup_input_access type;
+       uint32_t on_chip_rt;
+-- 
+2.47.3
+

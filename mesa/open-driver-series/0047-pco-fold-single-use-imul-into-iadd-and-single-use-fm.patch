@@ -1,0 +1,125 @@
+From 31ce4a932f051f1d3a5297bfeb263bae74332ae9 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sat, 10 Oct 2026 00:57:51 +0800
+Subject: [PATCH 47/98] pco: fold single-use imul into iadd and single-use
+ fmad/fmul/fadd into fsat
+
+NIR ALU ops were translated one to one: iadd(imul(a, b), c) became an
+imul32 plus an iadd32, and fsat(x) became fadd.sat(x, 0) after x had
+already been computed.
+
+The hardware has a three-operand imadd32, and fmad, fmul and fadd all take
+a saturate modifier. When the producer's only user is the iadd or fsat,
+emit one instruction instead; the producer is left dead and removed by DCE.
+Results are bit-identical (low 32 bits of a * b + c; the same hardware
+saturate).
+
+cstpf main body 175 -> 143 instruction groups, cstpi 141 -> 109.
+BXM-4-64 (A733), interleaved A/B, 5 runs each: cstpf 87.0 -> 103.7 and
+cstpi 72.3 -> 83.9 M invocations/s; cstp and vkheavy unchanged. Output
+buffer hashes of cstp/cstpf/cstpi identical to the previous build;
+vkedge and vkrender gates pass.
+---
+ src/imagination/pco/pco_trans_nir.c | 70 +++++++++++++++++++++++++++--
+ 1 file changed, 66 insertions(+), 4 deletions(-)
+
+diff --git a/src/imagination/pco/pco_trans_nir.c b/src/imagination/pco/pco_trans_nir.c
+index 6ca9203..b250dd2 100644
+--- a/src/imagination/pco/pco_trans_nir.c
++++ b/src/imagination/pco/pco_trans_nir.c
+@@ -3772,6 +3772,26 @@ trans_conv(trans_ctx *tctx, nir_op op, pco_ref dest, pco_ref src)
+  * \param[in] alu The nir alu instruction.
+  * \return The PCO instruction.
+  */
++/**
++ * \brief Returns the scalar 32-bit ALU instruction of type \p op producing source
++ * \p s of \p alu if \p alu is its only user, so it can be folded into \p alu
++ * (the producer is then left dead and removed by DCE).
++ */
++static nir_alu_instr *
++single_use_alu_src(const nir_alu_instr *alu, unsigned s, nir_op op)
++{
++   nir_def *def = alu->src[s].src.ssa;
++   if (nir_def_instr_type(def) != nir_instr_type_alu)
++      return NULL;
++
++   nir_alu_instr *prod = nir_def_as_alu(def);
++   if (prod->op != op || prod->def.bit_size != 32 ||
++       prod->def.num_components != 1 || !list_is_singular(&prod->def.uses))
++      return NULL;
++
++   return prod;
++}
++
+ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
+ {
+    const nir_op_info *info = &nir_op_infos[alu->op];
+@@ -3837,9 +3857,33 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
+       instr = pco_fsign(&tctx->b, dest, src[0]);
+       break;
+ 
+-   case nir_op_fsat:
+-      instr = pco_fadd(&tctx->b, dest, src[0], pco_zero, .sat = true);
++   case nir_op_fsat: {
++      /* Saturate the producing fmad/fmul/fadd directly. */
++      nir_alu_instr *prod;
++      if ((prod = single_use_alu_src(alu, 0, nir_op_ffma))) {
++         instr = pco_fmad(&tctx->b,
++                          dest,
++                          pco_ref_nir_alu_src_t(prod, 0, tctx),
++                          pco_ref_nir_alu_src_t(prod, 1, tctx),
++                          pco_ref_nir_alu_src_t(prod, 2, tctx),
++                          .sat = true);
++      } else if ((prod = single_use_alu_src(alu, 0, nir_op_fmul))) {
++         instr = pco_fmul(&tctx->b,
++                          dest,
++                          pco_ref_nir_alu_src_t(prod, 0, tctx),
++                          pco_ref_nir_alu_src_t(prod, 1, tctx),
++                          .sat = true);
++      } else if ((prod = single_use_alu_src(alu, 0, nir_op_fadd))) {
++         instr = pco_fadd(&tctx->b,
++                          dest,
++                          pco_ref_nir_alu_src_t(prod, 0, tctx),
++                          pco_ref_nir_alu_src_t(prod, 1, tctx),
++                          .sat = true);
++      } else {
++         instr = pco_fadd(&tctx->b, dest, src[0], pco_zero, .sat = true);
++      }
+       break;
++   }
+ 
+    case nir_op_fsin:
+    case nir_op_fcos:
+@@ -3872,9 +3916,27 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
+                          .s = true);
+       break;
+ 
+-   case nir_op_iadd:
+-      instr = pco_iadd32(&tctx->b, dest, src[0], src[1], pco_ref_null());
++   case nir_op_iadd: {
++      /* a * b + c in one imadd32 (low 32 bits are identical). */
++      unsigned other = 1;
++      nir_alu_instr *mul = single_use_alu_src(alu, 0, nir_op_imul);
++      if (!mul) {
++         mul = single_use_alu_src(alu, 1, nir_op_imul);
++         other = 0;
++      }
++
++      if (mul) {
++         instr = pco_imadd32(&tctx->b,
++                             dest,
++                             pco_ref_nir_alu_src_t(mul, 0, tctx),
++                             pco_ref_nir_alu_src_t(mul, 1, tctx),
++                             src[other],
++                             pco_ref_null());
++      } else {
++         instr = pco_iadd32(&tctx->b, dest, src[0], src[1], pco_ref_null());
++      }
+       break;
++   }
+ 
+    /* TODO: PCO pass to combine u{add,sub}{carry,borrow}s with the same srcs. */
+    case nir_op_uadd_carry:
+-- 
+2.47.3
+
