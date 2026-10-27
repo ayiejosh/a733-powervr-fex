@@ -46,7 +46,10 @@ int main(void)
    glGenFramebuffers(1, &fbo); glBindFramebuffer(GL_FRAMEBUFFER, fbo);
    if (getenv("GLTRI_TEX")) {
       glGenTextures(1, &tex); glBindTexture(GL_TEXTURE_2D, tex);
-      glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, W, H, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+      if (getenv("GLTRI_BGRA"))
+         glTexImage2D(GL_TEXTURE_2D, 0, GL_BGRA_EXT, W, H, 0, GL_BGRA_EXT, GL_UNSIGNED_BYTE, NULL);
+      else
+         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, W, H, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
       glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
       fprintf(stderr, "after TexImage2D: err 0x%x\n", glGetError());
       glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
@@ -61,11 +64,20 @@ int main(void)
    if (st != GL_FRAMEBUFFER_COMPLETE) { fprintf(stderr, "fbo incomplete: status 0x%x, glGetError 0x%x\n", st, glGetError()); return 2; }
 
    GLuint p = glCreateProgram();
-   glAttachShader(p, sh(GL_VERTEX_SHADER, "attribute vec2 pos; void main() { gl_Position = vec4(pos, 0.0, 1.0); }"));
-   glAttachShader(p, sh(GL_FRAGMENT_SHADER, "precision mediump float; void main() { gl_FragColor = vec4(1.0, 0.0, 0.0, 1.0); }"));
+   const int vary = getenv("GLTRI_VARYING") != NULL;
+   glAttachShader(p, sh(GL_VERTEX_SHADER, vary
+      ? "attribute vec2 pos; varying vec2 v; void main() { v = pos * 0.5 + 0.5; gl_Position = vec4(pos, 0.0, 1.0); }"
+      : "attribute vec2 pos; void main() { gl_Position = vec4(pos, 0.0, 1.0); }"));
+   glAttachShader(p, sh(GL_FRAGMENT_SHADER, vary
+      ? "precision mediump float; varying vec2 v; void main() { gl_FragColor = vec4(v, 0.0, 1.0); }"
+      : getenv("GLTRI_UNIFORM")
+      ? "precision mediump float; uniform vec2 rg; void main() { gl_FragColor = vec4(rg, 0.0, 1.0); }"
+      : "precision mediump float; void main() { gl_FragColor = vec4(1.0, 0.0, 0.0, 1.0); }"));
    glBindAttribLocation(p, 0, "pos");
    glLinkProgram(p);
+   { GLint lk = 0; glGetProgramiv(p, GL_LINK_STATUS, &lk); if (!lk) { char log[1024]; glGetProgramInfoLog(p, sizeof log, NULL, log); fprintf(stderr, "link failed: %s\n", log); return 2; } }
    glUseProgram(p);
+   if (getenv("GLTRI_UNIFORM")) glUniform2f(glGetUniformLocation(p, "rg"), 1.0f, 0.0f);
 
    static const float tri[] = { -0.5f, -0.5f, 0.5f, -0.5f, 0.0f, 0.5f };
    GLuint vb;
@@ -95,6 +107,20 @@ int main(void)
          putchar(q[0] > 200 && q[1] < 50 ? 'R' : q[1] > 200 && q[0] < 50 ? '.' : '?');
       }
       putchar('\n');
+   }
+   if (vary) {
+      /* v = pos * 0.5 + 0.5 is the window position over the size: red = x/W, green = y/H. */
+      static const int pts[][2] = { { 256, 200 }, { 200, 150 }, { 300, 160 }, { 256, 300 } };
+      int bad = 0;
+      for (unsigned i = 0; i < 4; i++) {
+         const int x = pts[i][0], y = pts[i][1];
+         unsigned char *q = px + 4 * (y * W + x);
+         const int er = (int)((x + 0.5f) / W * 255.0f + 0.5f), eg = (int)((y + 0.5f) / H * 255.0f + 0.5f);
+         const int ok = abs(q[0] - er) <= 3 && abs(q[1] - eg) <= 3 && q[2] == 0;
+         bad += !ok;
+         printf("varying (%d,%d): %02x %02x %02x expected %02x %02x 00 %s\n", x, y, q[0], q[1], q[2], er, eg, ok ? "ok" : "BAD");
+      }
+      return bad ? 1 : 0;
    }
    return (red > 30000 && red < 35500 && green > 220000) ? 0 : 1;
 }

@@ -2283,10 +2283,10 @@ index 00000000..57b6e662
 +#endif /* PVR_CONTEXT_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_csb.c b/src/gallium/drivers/pvr_native/pvr_csb.c
 new file mode 100644
-index 00000000..78a9d98b
+index 00000000..b9e88847
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_csb.c
-@@ -0,0 +1,1535 @@
+@@ -0,0 +1,1536 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + */
@@ -2769,13 +2769,13 @@ index 00000000..78a9d98b
 +   const uint32_t words = ROGUE_TA_STATE_PDS_SIZEINFO1_length +
 +                          ROGUE_TA_STATE_PDS_SIZEINFO2_length;
 +   struct ROGUE_TA_STATE_PDS_SIZEINFO1 info1 = {
-+      .pds_uniformsize = DIV_ROUND_UP(sizes->uniform_bytes,
++      .pds_uniformsize = DIV_ROUND_UP(sizes->uniform_dwords,
 +         ROGUE_TA_STATE_PDS_SIZEINFO1_PDS_UNIFORMSIZE_UNIT_SIZE),
-+      .pds_texturestatesize = DIV_ROUND_UP(sizes->texturestate_bytes,
++      .pds_texturestatesize = DIV_ROUND_UP(sizes->texturestate_dwords,
 +         ROGUE_TA_STATE_PDS_SIZEINFO1_PDS_TEXTURESTATESIZE_UNIT_SIZE),
-+      .pds_varyingsize = DIV_ROUND_UP(sizes->varying_bytes,
++      .pds_varyingsize = DIV_ROUND_UP(sizes->varying_dwords,
 +         ROGUE_TA_STATE_PDS_SIZEINFO1_PDS_VARYINGSIZE_UNIT_SIZE),
-+      .usc_varyingsize = DIV_ROUND_UP(sizes->usc_varying_bytes,
++      .usc_varyingsize = DIV_ROUND_UP(sizes->usc_varying_dwords,
 +         ROGUE_TA_STATE_PDS_SIZEINFO1_USC_VARYINGSIZE_UNIT_SIZE),
 +      .pds_tempsize = DIV_ROUND_UP(sizes->temp_count,
 +         ROGUE_TA_STATE_PDS_SIZEINFO1_PDS_TEMPSIZE_UNIT_SIZE),
@@ -3343,6 +3343,7 @@ index 00000000..78a9d98b
 +      .pres_ispctl_bb = pres->ispctl_bb,
 +      .pres_ispctl_dbsc = pres->ispctl_dbsc,
 +      .pres_pds_state_ptr0 = pres->pds_state_ptr0,
++      .pres_pds_state_ptr1 = pres->pds_state_ptr1,
 +      .pres_pds_state_ptr3 = pres->pds_state_ptr3,
 +      .pres_region_clip = pres->region_clip,
 +      .pres_viewport = pres->viewport,
@@ -3824,10 +3825,10 @@ index 00000000..78a9d98b
 +}
 diff --git a/src/gallium/drivers/pvr_native/pvr_csb.h b/src/gallium/drivers/pvr_native/pvr_csb.h
 new file mode 100644
-index 00000000..d2f56c5a
+index 00000000..41797178
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_csb.h
-@@ -0,0 +1,807 @@
+@@ -0,0 +1,806 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -4119,6 +4120,7 @@ index 00000000..d2f56c5a
 +   bool ispctl_bb;
 +   bool ispctl_dbsc;
 +   bool pds_state_ptr0;  /* SHADERBASE, TEXUNICODEBASE, SIZEINFO1, SIZEINFO2 */
++   bool pds_state_ptr1;  /* VARYINGBASE: the coefficient (varying) program */
 +   bool pds_state_ptr3;  /* UNIFORMDATABASE */
 +   bool region_clip;
 +   bool viewport;
@@ -4311,26 +4313,24 @@ index 00000000..d2f56c5a
 +
 +/* TA_STATE_PDS_SIZEINFO1/2: how much PDS and USC storage a program needs.
 + *
-+ * The caller passes SIZES IN BYTES (or counts) and this function applies the units, because the
-+ * units are per-field and differ:
++ * The caller passes DWORD COUNTS (registers, PDS data dwords) and this function applies the units,
++ * because the units are per-field and differ:
 + *
 + *   pds_uniformsize       / 4      pds_texturestatesize / 4
 + *   pds_varyingsize       / 4      pds_tempsize        / 4
 + *   usc_varyingsize       / 16     usc_sharedsize      / 16
 + *
-+ * The USC fields use a SIXTEEN-byte unit while the PDS fields use four - so a caller that
-+ * divided by one unit for all of them is wrong by a factor of four on half the fields, and the
-+ * hardware would read a differently-sized region with nothing reporting it. That is why the
-+ * division is inside this function rather than at the call site: a caller cannot get it wrong if
-+ * it never does it.
++ * The units count dwords, as the reference uses them (pvr_arch_cmd_buffer.c divides
++ * pds_coeff_program.data_size and fs_data->common.coeffs, both dwords, by these units). Passing
++ * bytes makes every field four times too large.
 + *
 + * All divisions round UP, as the reference does - a size that is not a whole number of units must
 + * still allocate the last one. */
 +struct pvr_pds_sizes {
-+   uint32_t uniform_bytes;
-+   uint32_t texturestate_bytes;
-+   uint32_t varying_bytes;
-+   uint32_t usc_varying_bytes;
++   uint32_t uniform_dwords;
++   uint32_t texturestate_dwords;
++   uint32_t varying_dwords;
++   uint32_t usc_varying_dwords;
 +   uint32_t temp_count;
 +   uint32_t usc_shared_count;
 +};
@@ -4637,10 +4637,10 @@ index 00000000..d2f56c5a
 +#endif /* PVR_CSB_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_draw.c b/src/gallium/drivers/pvr_native/pvr_draw.c
 new file mode 100644
-index 00000000..08dac7f8
+index 00000000..14331c93
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_draw.c
-@@ -0,0 +1,732 @@
+@@ -0,0 +1,832 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -4887,6 +4887,93 @@ index 00000000..08dac7f8
 +   return fs->pds_offset != 0;
 +}
 +
++/* The coefficient (varying) program of a fragment variant against a vertex shader, as the Vulkan
++ * driver's pvr_graphics_pipeline_setup_fragment_coeff_program: one DOUTI iterator for z, w and each
++ * varying slot, reading the vertex's vtxout offset (in 16-bit units, position x/y dropped and z/w
++ * dropped when the fragment shader does not read them) into the slot's coefficient registers.
++ * Returns false when the shader reads no varyings and needs no program. */
++static bool
++draw_coeff_program(struct pvr_screen *scr, struct pvr_shader *fs, const struct pvr_shader *vs,
++                   bool flat_first)
++{
++   struct pvr_pds_coeff_loading_program prog = { .z_iterator = ~0u };
++   unsigned fpu = 0, dest = 0;
++
++   if (fs->coeff_vs == vs)
++      return fs->coeff_offset != 0;
++   fs->coeff_vs = vs;
++   fs->coeff_offset = 0;
++   if (!fs->uses_z && !fs->uses_w && !fs->varyings_read)
++      return false;
++
++   if (fs->uses_z) {
++      struct ROGUE_PDSINST_DOUT_FIELDS_DOUTI_SRC src = {
++         .f32_offset = fs->uses_w ? 1 * sizeof(uint16_t) : 0,
++         .shademodel = ROGUE_PDSINST_DOUTI_SHADEMODEL_GOURUAD,
++         .size = ROGUE_PDSINST_DOUTI_SIZE_1D,
++      };
++      src.f16_offset = src.f32_offset;
++      ROGUE_PDSINST_DOUT_FIELDS_DOUTI_SRC_pack(&prog.FPU_iterators[fpu], &src);
++      prog.z_iterator = fpu;
++      prog.destination[fpu++] = dest++;
++   }
++   if (fs->uses_w) {
++      const struct ROGUE_PDSINST_DOUT_FIELDS_DOUTI_SRC src = {
++         .shademodel = ROGUE_PDSINST_DOUTI_SHADEMODEL_GOURUAD,
++         .size = ROGUE_PDSINST_DOUTI_SIZE_1D,
++      };
++      ROGUE_PDSINST_DOUT_FIELDS_DOUTI_SRC_pack(&prog.FPU_iterators[fpu], &src);
++      prog.destination[fpu++] = dest++;
++   }
++   uint64_t read = fs->varyings_read;
++   while (read) {
++      const unsigned slot = u_bit_scan64(&read);
++      const unsigned count = fs->varyings[slot].count / ROGUE_USC_COEFFICIENT_SET_SIZE;
++      if (vs->varyings[slot].count != count || vs->varyings[slot].start < 4 ||
++          fpu >= PVR_MAXIMUM_ITERATIONS - 1)
++         return false;
++      unsigned vtxout = vs->varyings[slot].start - 2;
++      if (!fs->uses_z)
++         vtxout--;
++      if (!fs->uses_w)
++         vtxout--;
++      struct ROGUE_PDSINST_DOUT_FIELDS_DOUTI_SRC src = {
++         .f32_offset = vtxout * sizeof(uint16_t),
++         .size = ROGUE_PDSINST_DOUTI_SIZE_1D + count - 1,
++      };
++      src.f16_offset = src.f32_offset;
++      switch (fs->varyings[slot].interp) {
++      case INTERP_MODE_FLAT:
++         /* GL's default provoking vertex is the last one. */
++         src.shademodel = flat_first ? ROGUE_PDSINST_DOUTI_SHADEMODEL_FLAT_VERTEX0
++                                     : ROGUE_PDSINST_DOUTI_SHADEMODEL_FLAT_VERTEX2;
++         break;
++      case INTERP_MODE_NOPERSPECTIVE:
++         src.shademodel = ROGUE_PDSINST_DOUTI_SHADEMODEL_GOURUAD;
++         break;
++      default:
++         src.perspective = true;
++         src.shademodel = ROGUE_PDSINST_DOUTI_SHADEMODEL_GOURUAD;
++         break;
++      }
++      ROGUE_PDSINST_DOUT_FIELDS_DOUTI_SRC_pack(&prog.FPU_iterators[fpu], &src);
++      prog.destination[fpu++] = fs->varyings[slot].start / ROGUE_USC_COEFFICIENT_SET_SIZE;
++   }
++   prog.num_fpu_iterators = fpu;
++
++   /* Data then code in one upload: the hardware runs the code that follows the data segment. */
++   uint32_t buf[2 * PVR_MAXIMUM_ITERATIONS + 4 + PVR_MAXIMUM_ITERATIONS] = { 0 };
++   pvr_pds_coefficient_loading(&prog, NULL, PDS_GENERATE_SIZES);
++   if (prog.data_size + prog.code_size > ARRAY_SIZE(buf))
++      return false;
++   pvr_pds_coefficient_loading(&prog, buf, PDS_GENERATE_CODEDATA_SEGMENTS);
++   fs->coeff_offset =
++      (uint32_t)draw_upload_pds(scr, buf, (prog.data_size + prog.code_size) * 4);
++   fs->coeff_data_dwords = prog.data_size;
++   fs->coeff_temps = prog.temps_used;
++   return fs->coeff_offset != 0;
++}
++
 +/* The background object for a clear colour: a constant-colour fragment program. */
 +static uint64_t
 +draw_bg_program(struct pvr_context *ctx, struct pvr_draw_state *d, uint32_t color)
@@ -4988,7 +5075,7 @@ index 00000000..08dac7f8
 +   uint64_t vb_addr[PIPE_MAX_ATTRIBS] = { 0 };
 +   uint32_t vb_stride[PIPE_MAX_ATTRIBS] = { 0 };
 +   const uint64_t pds_base = scr->vm.heaps[DRM_PVR_HEAP_PDS_CODE_DATA].base;
-+   uint64_t code_addr, data_addr;
++   uint64_t code_addr = 0, data_addr = 0;
 +   uint32_t *code, *data;
 +   bool ok = true;
 +
@@ -5156,6 +5243,11 @@ index 00000000..08dac7f8
 +   if (!draw_vertex_program(ctx, d, vs, &vcode, &vdata, &vtemps, &vdwords))
 +      return false;
 +
++   /* Varyings: the coefficient program and the TA's per-vertex varying counts. */
++   const bool flat_first = ctx->rasterizer && ctx->rasterizer->flatshade_first;
++   const bool coeff = draw_coeff_program(scr, fsv, vs, flat_first);
++   if (!coeff && (fsv->uses_z || fsv->uses_w || fsv->varyings_read))
++      return false;
 +   /* TA state block. */
 +   uint64_t ta_addr;
 +   uint32_t *ta = arena_alloc(&d->gen, 256, 64, &ta_addr);
@@ -5164,7 +5256,7 @@ index 00000000..08dac7f8
 +   struct pvr_csb block;
 +   const struct pvr_ta_presence pres = {
 +      .ispctl = true, .ispctl_fa = true, .ispctl_fb = true, .ispctl_dbsc = true,
-+      .pds_state_ptr0 = true, .pds_state_ptr3 = true, .region_clip = true, .viewport = true,
++      .pds_state_ptr0 = true, .pds_state_ptr1 = coeff, .pds_state_ptr3 = true, .region_clip = true, .viewport = true,
 +      .viewport_count = 1, .wclamp = true, .outselects = true, .varying_words = true,
 +      .ppp_ctrl = true, .stream_out_size = true,
 +   };
@@ -5184,7 +5276,9 @@ index 00000000..08dac7f8
 +   };
 +   const struct ROGUE_TA_STATE_ISPDBSC dbsc = { 0 };
 +   const struct pvr_pds_sizes pds_sizes = {
-+      .usc_varying_bytes = fsv->coeffs * 4,
++      .varying_dwords = coeff ? fsv->coeff_data_dwords : 0,
++      .usc_varying_dwords = fsv->coeffs,
++      .temp_count = coeff ? fsv->coeff_temps : 0,
 +      .usc_shared_count = fsv->shareds,
 +   };
 +   const struct pipe_viewport_state *pv = &ctx->viewports[0];
@@ -5193,7 +5287,9 @@ index 00000000..08dac7f8
 +      .a1 = fui(pv->translate[1]), .m1 = fui(pv->scale[1]),
 +      .a2 = fui(pv->translate[2]), .m2 = fui(pv->scale[2]),
 +   };
-+   const struct ROGUE_TA_STATE_VARYING0 varying0 = { 0 };
++   const struct ROGUE_TA_STATE_VARYING0 varying0 = {
++      .f32_linear = vs->f32_smooth, .f32_flat = vs->f32_flat, .f32_npc = vs->f32_npc,
++   };
 +   const struct ROGUE_TA_STATE_VARYING1 varying1 = { 0 };
 +   /* shortcut: no face culling yet (draws both faces; visible output is the same for closed
 +    * meshes). Map rasterizer->cull_face/front_ccw when a scene needs it. */
@@ -5204,7 +5300,10 @@ index 00000000..08dac7f8
 +      .flatshade_vtx = ROGUE_TA_FLATSHADE_VTX_VERTEX_0,
 +      .wclampen = true,
 +   };
-+   const struct pvr_ta_output_sel outsel = { .vtxsize = vs->vtxouts, .psprite_size_pres = true };
++   const struct pvr_ta_output_sel outsel = {
++      .vtxsize = vs->vtxouts, .rhw_pres = fsv->uses_w, .tsp_unclamped_z_pres = fsv->uses_z,
++      .psprite_size_pres = true,
++   };
 +   struct pvr_region_clip clip;
 +   pvr_region_clip_from_rect(0, 0, d->rt_w, d->rt_h, 16, &clip);
 +   pvr_csb_init(&block, ta, 256, 0);
@@ -5215,6 +5314,7 @@ index 00000000..08dac7f8
 +       !pvr_csb_emit_ta_pds_base(&block, PVR_PDS_BASE_SHADER, fsv->pds_offset) ||
 +       !pvr_csb_emit_ta_pds_base(&block, PVR_PDS_BASE_TEXUNICODE, 0) ||
 +       !pvr_csb_emit_ta_pds_sizeinfo(&block, &pds_sizes, true, 0) ||
++       (coeff && !pvr_csb_emit_ta_pds_base(&block, PVR_PDS_BASE_VARYING, fsv->coeff_offset)) ||
 +       !pvr_csb_emit_ta_pds_base(&block, PVR_PDS_BASE_UNIFORMDATA, 0) ||
 +       !pvr_csb_emit_ta_region_clip(&block, &clip) || !pvr_csb_emit_ta_viewport(&block, &vp) ||
 +       !pvr_csb_emit_ta_wclamp(&block, PVR_TA_WCLAMP_MIN_W) ||
@@ -5526,7 +5626,7 @@ index 00000000..716dbcb8
 +#endif /* PVR_HWRT_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
 new file mode 100644
-index 00000000..e72e70db
+index 00000000..31d3aad7
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_probe.c
 @@ -0,0 +1,5896 @@
@@ -6546,7 +6646,7 @@ index 00000000..e72e70db
 +                        const struct ROGUE_TA_STATE_ISPDBSC dbsc = { 0 };
 +                        const struct pvr_pds_sizes pds_sizes = {
 +                           /* No uniform/coefficient/texture-state programs yet. */
-+                           .usc_varying_bytes = g_fs_shader->coeffs * 4,
++                           .usc_varying_dwords = g_fs_shader->coeffs,
 +                           .usc_shared_count = g_fs_shader->shareds,
 +                        };
 +                        const struct pvr_viewport_words vp = {
@@ -11639,10 +11739,10 @@ index 00000000..247b892d
 +#endif /* PVR_RESOURCE_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_screen.c b/src/gallium/drivers/pvr_native/pvr_screen.c
 new file mode 100644
-index 00000000..2e244a18
+index 00000000..d61017ab
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_screen.c
-@@ -0,0 +1,318 @@
+@@ -0,0 +1,325 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -11834,6 +11934,9 @@ index 00000000..2e244a18
 +       * Reporting the hardware's full texture capability here would be claiming
 +       * features the resource code would reject. */
 +      caps->max_texture_2d_size = rogue_get_render_size_max(&screen->dev_info);
++      /* Varying vec4 slots between stages. ES2 needs 8; each one is one DOUTI iterator of the
++       * coefficient program (pvr_draw.c), well under PVR_MAXIMUM_ITERATIONS. */
++      caps->max_varyings = 16;
 +      caps->max_texture_cube_levels = 0;
 +      caps->max_texture_3d_levels = 0;
 +      caps->max_texture_array_layers = 1;
@@ -11932,6 +12035,8 @@ index 00000000..2e244a18
 +      sc->max_tex_instructions = 512;
 +      sc->max_tex_indirections = 8;
 +      sc->max_inputs = 16;
++      /* Position, point size and the varyings. */
++      sc->max_outputs = 18;
 +      sc->max_temps = 64;
 +      sc->max_const_buffer0_size = 1024;
 +      sc->max_const_buffers = 4;
@@ -11946,6 +12051,8 @@ index 00000000..2e244a18
 +      sc->max_tex_instructions = 512;
 +      sc->max_tex_indirections = 8;
 +      sc->max_inputs = 16;
++      /* One colour target. */
++      sc->max_outputs = 1;
 +      sc->max_temps = 64;
 +      sc->max_const_buffer0_size = 1024;
 +      sc->max_const_buffers = 4;
@@ -12026,10 +12133,10 @@ index 00000000..f64f95cb
 +#endif /* PVR_SCREEN_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_shader.c b/src/gallium/drivers/pvr_native/pvr_shader.c
 new file mode 100644
-index 00000000..bf5213b9
+index 00000000..56284bb0
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_shader.c
-@@ -0,0 +1,837 @@
+@@ -0,0 +1,884 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + */
@@ -12128,6 +12235,28 @@ index 00000000..bf5213b9
 +{
 +   ranges[location] = (pco_range){ .start = *counter, .count = count };
 +   *counter += count;
++}
++
++/* Fragment inputs, as the Vulkan driver's pvr_alloc_fs_varyings: z/w first, then each varying slot
++ * in location order, ROGUE_USC_COEFFICIENT_SET_SIZE coefficient registers per component. */
++static void
++pvr_shader_init_fs_alloc(struct nir_shader *nir, pco_data *data)
++{
++   uint64_t vars_mask = nir->info.inputs_read & BITFIELD64_RANGE(VARYING_SLOT_VAR0, MAX_VARYING);
++   const unsigned zw_count = !!data->fs.uses.z + !!data->fs.uses.w;
++
++   pvr_shader_alloc_sysval(data->fs.varyings, &data->common.coeffs, VARYING_SLOT_POS,
++                           zw_count * ROGUE_USC_COEFFICIENT_SET_SIZE);
++   while (vars_mask) {
++      const int location = u_bit_scan64(&vars_mask);
++      unsigned slots = 0;
++      nir_foreach_variable_with_modes (var, nir, nir_var_shader_in) {
++         if (var->data.location == location)
++            slots += glsl_count_dword_slots(var->type, false);
++      }
++      pvr_shader_alloc_sysval(data->fs.varyings, &data->common.coeffs, location,
++                              slots * ROGUE_USC_COEFFICIENT_SET_SIZE);
++   }
 +}
 +
 +/* The vertex-input and varying maps, ported from the Vulkan driver's
@@ -12300,6 +12429,29 @@ index 00000000..bf5213b9
 +      shader->vtxins = data.common.vtxins;
 +   }
 +   shader->vtxouts = data.vs.vtxouts;
++   if (nir->info.stage == MESA_SHADER_VERTEX) {
++      for (unsigned l = 0; l < ARRAY_SIZE(shader->varyings); l++) {
++         shader->varyings[l].start = data.vs.varyings[l].start;
++         shader->varyings[l].count = data.vs.varyings[l].count;
++      }
++      shader->f32_smooth = data.vs.f32_smooth;
++      shader->f32_flat = data.vs.f32_flat;
++      shader->f32_npc = data.vs.f32_npc;
++   }
++   if (nir->info.stage == MESA_SHADER_FRAGMENT) {
++      shader->varyings_read =
++         nir->info.inputs_read & BITFIELD64_RANGE(VARYING_SLOT_VAR0, MAX_VARYING);
++      for (unsigned l = 0; l < ARRAY_SIZE(shader->varyings); l++) {
++         shader->varyings[l].start = data.fs.varyings[l].start;
++         shader->varyings[l].count = data.fs.varyings[l].count;
++      }
++      nir_foreach_variable_with_modes (var, nir, nir_var_shader_in) {
++         if (var->data.location >= 0 && var->data.location < ARRAY_SIZE(shader->varyings))
++            shader->varyings[var->data.location].interp = var->data.interpolation;
++      }
++      shader->uses_z = data.fs.uses.z;
++      shader->uses_w = data.fs.uses.w;
++   }
 +
 +   if (nir->info.stage == MESA_SHADER_FRAGMENT) {
 +      shader->shareds = data.common.shareds;
@@ -12612,6 +12764,8 @@ index 00000000..bf5213b9
 +
 +   if (nir->info.stage == MESA_SHADER_VERTEX)
 +      pvr_shader_init_vs_alloc(nir, data);
++   if (nir->info.stage == MESA_SHADER_FRAGMENT)
++      pvr_shader_init_fs_alloc(nir, data);
 +
 +   /* The colour output goes to output register 0, sized for the target format (Vulkan's
 +    * pvr_setup_fs_outputs with one output-register MRT). */
@@ -12869,10 +13023,10 @@ index 00000000..bf5213b9
 +}
 diff --git a/src/gallium/drivers/pvr_native/pvr_shader.h b/src/gallium/drivers/pvr_native/pvr_shader.h
 new file mode 100644
-index 00000000..c7dd68bf
+index 00000000..7456c08c
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_shader.h
-@@ -0,0 +1,186 @@
+@@ -0,0 +1,203 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -12954,6 +13108,23 @@ index 00000000..c7dd68bf
 +   uint32_t pds_offset;
 +   uint32_t pds_data_dwords;
 +   uint32_t pds_temps;
++
++   /* Varyings. Vertex shader: per slot, the vtxout range (position at 0) and the f32 component
++    * counts the TA's VARYING0 word takes. Fragment shader: per slot, the coefficient range and
++    * interpolation, plus whether it reads z/w (both iterated ahead of the varyings). */
++   struct {
++      uint8_t start, count, interp;
++   } varyings[64];
++   uint64_t varyings_read;
++   unsigned f32_smooth, f32_flat, f32_npc;
++   bool uses_z, uses_w;
++
++   /* Draw-path coefficient program of this fragment variant, for the vertex shader it was built
++    * against (pvr_draw.c). */
++   const struct pvr_shader *coeff_vs;
++   uint32_t coeff_offset;
++   uint32_t coeff_data_dwords;
++   uint32_t coeff_temps;
 +};
 +
 +struct pvr_shader *pvr_shader_create(struct nir_shader *nir, pco_ctx *ctx);
