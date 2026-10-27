@@ -561,3 +561,26 @@ Integration notes:
   arrived with no performance regression. Re-validated after including patch 0294: Vulkan PASS as both user and
   root, zink GLES 3.1, glmark2 578. The driver still needs `PVR_I_WANT_A_BROKEN_VULKAN_DRIVER=1` (BXM-4-64 is
   not declared conformant), as before.
+
+## Added 2026-10-27 (evening): the native DM2/TA blocker fixed, patches 0295-0296
+
+The native Gallium client's geometry kick (TA processed by the firmware, DM2 never finishing) was not a
+firmware, MTS or kernel limit. An ioctl-level capture and replay of the working Vulkan client and of the
+native probe (`open-driver-perf/tools/pvrcap/`) reproduced both outcomes, and grafting one component at a
+time showed the native context, HWRT data set and free lists are fine: the native process runs the Vulkan
+draw data to `TA finished`. The draw data the native driver builds was wrong:
+
+- **0295** `pvr_vm_map()` did not reserve code-heap pages. The shader stage maps the vertex PDS program, its
+  data and the VS/FS USC code at the first usable page of the PDS/USC heaps; the render context later
+  allocated the same pages, and VM_MAP silently replaced the earlier mappings (drm_gpuvm unmaps what a new
+  mapping overlaps), so the VDM ran a zero-filled buffer as the vertex program. Also
+  `pvr_shader_vertex_data()` wrote the PDS const map at byte offsets (the map gives dword offsets) and skipped
+  the literal entries, so the attribute DMA had base 0, stride 0, control 0. Each bug alone still hangs.
+- **0296** once the TA ran, the 3D stage faulted: the PBE line stride was given in bytes instead of pixels
+  (writes past the render target), and the render's completion syncobj was never signalled.
+
+Result on the board: native geometry-only probe `Kick TA -> TA finished` 3/3, no HWR; the full native render
+runs `TA finished -> 3D finished` with no fault and the GPU writes the whole target. The written image is all
+black (no visible triangle yet) - that is the next item, so native GL is not usable yet. Note for anyone
+bisecting: a terminate-only VDM stream hangs the TA even for the working Vulkan driver, so it is not a valid
+"minimal" test.

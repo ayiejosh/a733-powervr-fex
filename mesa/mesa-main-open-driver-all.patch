@@ -2180,10 +2180,10 @@ index 00000000..23e21400
 +#endif /* PVR_CONTEXT_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_csb.c b/src/gallium/drivers/pvr_native/pvr_csb.c
 new file mode 100644
-index 00000000..fc6eb65d
+index 00000000..9f7a9906
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_csb.c
-@@ -0,0 +1,1529 @@
+@@ -0,0 +1,1531 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + */
@@ -2729,16 +2729,18 @@ index 00000000..fc6eb65d
 +}
 +
 +uint32_t
-+pvr_pbe_linestride(uint32_t stride_bytes)
++pvr_pbe_linestride(uint32_t stride_px)
 +{
++   /* The field counts pixels in units of two (pbestate.xml), like the Vulkan driver's
++    * pvr_stride_from_pitch() input; a byte stride spaces the rows bpp times too far apart. */
 +   /* A zero stride would underflow into a huge value rather than fail - the same shape as the
 +    * texture descriptor's zero-extent case. */
-+   if (stride_bytes == 0) {
++   if (stride_px == 0) {
 +      mesa_loge("pvr: PBE linestride from a zero stride");
 +      return 0;
 +   }
 +
-+   return (stride_bytes - 1) / ROGUE_PBESTATE_REG_WORD0_LINESTRIDE_UNIT_SIZE;
++   return (stride_px - 1) / ROGUE_PBESTATE_REG_WORD0_LINESTRIDE_UNIT_SIZE;
 +}
 +
 +#define PVR_CMD_DW(x) ROGUE_##x##_length
@@ -3008,7 +3010,7 @@ index 00000000..fc6eb65d
 +      .tilerelative = true,
 +      .memlayout = ROGUE_PBESTATE_MEMLAYOUT_LINEAR,
 +      .rotation = ROGUE_PBESTATE_ROTATION_TYPE_0_DEG,
-+      .linestride = pvr_pbe_linestride(stride_bytes),
++      .linestride = pvr_pbe_linestride(stride_bytes / util_format_get_blocksize(format)),
 +   };
 +   struct ROGUE_PBESTATE_REG_WORD1 reg1 = {
 +      .maxclip_x = width - 1,
@@ -3715,7 +3717,7 @@ index 00000000..fc6eb65d
 +}
 diff --git a/src/gallium/drivers/pvr_native/pvr_csb.h b/src/gallium/drivers/pvr_native/pvr_csb.h
 new file mode 100644
-index 00000000..567b1d3c
+index 00000000..5c1aa62b
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_csb.h
 @@ -0,0 +1,807 @@
@@ -4307,7 +4309,7 @@ index 00000000..567b1d3c
 + * ceiling), so targets are LINEAR and the twiddled modes are deliberately not offered - a target
 + * described as twiddled while its memory is linear would be read with the wrong addressing, and
 + * that is the kind of wrong that produces a picture rather than an error. */
-+uint32_t pvr_pbe_linestride(uint32_t stride_bytes);
++uint32_t pvr_pbe_linestride(uint32_t stride_px);
 +
 +/* The PBE's size fields are the LOG2 of the pixel dimension, not the dimension:
 + *   reg.size_x = util_logbase2_ceil(surface_params->width);
@@ -4646,10 +4648,10 @@ index 00000000..716dbcb8
 +#endif /* PVR_HWRT_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
 new file mode 100644
-index 00000000..b6b5a84a
+index 00000000..e7b8a3ea
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_probe.c
-@@ -0,0 +1,5825 @@
+@@ -0,0 +1,5836 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -6080,6 +6082,17 @@ index 00000000..b6b5a84a
 +                         "after %u us (first word 0x%08x, was 0x%08x)\n", glen, f2,
 +                         changed ? "CHANGED BY THE GPU" : "unchanged", waited_us,
 +                         *(uint32_t *)rt, before);
++                  /* Probe hook: write the render target as a PPM to look at the draw. */
++                  if (getenv("PVR_PROBE_DUMP_RT") != NULL) {
++                     FILE *ppm = fopen(getenv("PVR_PROBE_DUMP_RT"), "wb");
++                     const uint8_t *px = (const uint8_t *)rt;
++                     if (ppm != NULL) {
++                        fprintf(ppm, "P6 %u %u 255\n", RTW, RTH);
++                        for (uint32_t i = 0; i < RTW * RTH; i++)
++                           fwrite(&px[4 * i], 1, 3, ppm);
++                        fclose(ppm);
++                     }
++                  }
 +               } else {
 +                  printf("hwrt:          the render submit was refused\n");
 +               }
@@ -11075,10 +11088,10 @@ index 00000000..f64f95cb
 +#endif /* PVR_SCREEN_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_shader.c b/src/gallium/drivers/pvr_native/pvr_shader.c
 new file mode 100644
-index 00000000..c1034f6e
+index 00000000..a49d7592
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_shader.c
-@@ -0,0 +1,760 @@
+@@ -0,0 +1,777 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + */
@@ -11377,6 +11390,17 @@ index 00000000..c1034f6e
 +                       PVR_ROGUE_PDSINST_DOUT_FIELDS_DOUTU_SAMPLE_RATE_INSTANCE, false);
 +}
 +
++/* PDS const-map offsets are in dwords (the Vulkan driver's PVR_WRITE indexes a typed buffer), not
++ * bytes: writing at a byte offset lands each value inside the previous one. */
++static void
++pvr_shader_data_write(void *data, uint32_t data_bytes, uint32_t const_offset_dw, const void *value,
++                      uint32_t value_bytes)
++{
++   const uint32_t at = const_offset_dw * sizeof(uint32_t);
++   if (at + value_bytes <= data_bytes)
++      memcpy((uint8_t *)data + at, value, value_bytes);
++}
++
 +uint32_t
 +pvr_shader_vertex_data(const struct pvr_device_info *dev_info,
 +                       uint64_t vertex_buffer_addr, uint64_t usc_exec_addr,
@@ -11431,8 +11455,7 @@ index 00000000..c1034f6e
 +         pvr_set_usc_execution_address64(&value, usc_exec_addr);
 +         value |= e->doutu_control;
 +
-+         if ((uint32_t)e->const_offset + sizeof(value) <= produced)
-+            memcpy((uint8_t *)data_out + e->const_offset, &value, sizeof(value));
++         pvr_shader_data_write(data_out, produced, e->const_offset, &value, sizeof(value));
 +         entry += sizeof(*e);
 +         break;
 +      }
@@ -11441,8 +11464,7 @@ index 00000000..c1034f6e
 +         const struct pvr_const_map_entry_vertex_attribute_address *e = (const void *)entry;
 +         const uint64_t addr = vertex_buffer_addr + e->offset;
 +
-+         if ((uint32_t)e->const_offset + sizeof(addr) <= produced)
-+            memcpy((uint8_t *)data_out + e->const_offset, &addr, sizeof(addr));
++         pvr_shader_data_write(data_out, produced, e->const_offset, &addr, sizeof(addr));
 +         entry += sizeof(*e);
 +         break;
 +      }
@@ -11452,19 +11474,27 @@ index 00000000..c1034f6e
 +
 +         /* The DMA computes address = buffer + (index * stride) + offset; the stride is the one
 +          * fact here that comes from the draw, not from the shader. */
-+         if ((uint32_t)e->const_offset + sizeof(stride) <= produced)
-+            memcpy((uint8_t *)data_out + e->const_offset, &stride, sizeof(stride));
++         pvr_shader_data_write(data_out, produced, e->const_offset, &stride, sizeof(stride));
 +         entry += sizeof(*e);
 +         break;
 +      }
 +
-+      case PVR_PDS_CONST_MAP_ENTRY_TYPE_LITERAL32:
-+         entry += sizeof(struct pvr_const_map_entry_literal32);
++      case PVR_PDS_CONST_MAP_ENTRY_TYPE_LITERAL32: {
++         /* Literals are values the generated code reads from the data segment (the DMA control
++          * word among them); skipping them leaves those constants zero. */
++         const struct pvr_const_map_entry_literal32 *e = (const void *)entry;
++         pvr_shader_data_write(data_out, produced, e->const_offset, &e->literal_value,
++                               sizeof(e->literal_value));
++         entry += sizeof(*e);
 +         break;
-+
-+      case PVR_PDS_CONST_MAP_ENTRY_TYPE_LITERAL64:
-+         entry += sizeof(struct pvr_const_map_entry_literal64);
++      }
++      case PVR_PDS_CONST_MAP_ENTRY_TYPE_LITERAL64: {
++         const struct pvr_const_map_entry_literal64 *e = (const void *)entry;
++         pvr_shader_data_write(data_out, produced, e->const_offset, &e->literal_value,
++                               sizeof(e->literal_value));
++         entry += sizeof(*e);
 +         break;
++      }
 +
 +      default:
 +         /* An entry type with no patch rule here would leave a data word zero that the generator
@@ -12726,10 +12756,10 @@ index 00000000..8317cd94
 +#endif /* PVR_STATIC_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_vm.c b/src/gallium/drivers/pvr_native/pvr_vm.c
 new file mode 100644
-index 00000000..f3869af5
+index 00000000..0d4d2bd2
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_vm.c
-@@ -0,0 +1,1058 @@
+@@ -0,0 +1,1074 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -13419,7 +13449,7 @@ index 00000000..f3869af5
 +    * scheduled fence). Submitting fewer than that leaves the firmware with a render it never
 +    * completes: accepted by the kernel, no pixels, no error. */
 +   uint32_t geom_sync = 0, pr_sync = 0, done_sync = 0;
-+   struct drm_pvr_sync_op geom_ops[1], pr_ops[2], frag_ops[1];
++   struct drm_pvr_sync_op geom_ops[1], pr_ops[2], frag_ops[2];
 +   struct drm_pvr_job jobs[3];
 +   struct drm_pvr_ioctl_submit_jobs_args args = {
 +      .jobs = { .stride = sizeof(jobs[0]), .count = ARRAY_SIZE(jobs),
@@ -13455,6 +13485,11 @@ index 00000000..f3869af5
 +      .handle = pr_sync,
 +      .flags = DRM_PVR_SYNC_OP_FLAG_WAIT | DRM_PVR_SYNC_OP_FLAG_HANDLE_TYPE_SYNCOBJ,
 +   };
++   /* done_sync is what the caller waits on: the fragment job has to signal it. */
++   frag_ops[1] = (struct drm_pvr_sync_op){
++      .handle = done_sync,
++      .flags = DRM_PVR_SYNC_OP_FLAG_SIGNAL | DRM_PVR_SYNC_OP_FLAG_HANDLE_TYPE_SYNCOBJ,
++   };
 +
 +   jobs[0] = (struct drm_pvr_job){
 +      .type = DRM_PVR_JOB_TYPE_GEOMETRY,
@@ -13487,7 +13522,7 @@ index 00000000..f3869af5
 +      .context_handle = context_handle,
 +      .cmd_stream = (uint64_t)(uintptr_t)frag_stream,
 +      .cmd_stream_len = frag_len,
-+      .sync_ops = { .stride = sizeof(frag_ops[0]), .count = 1,
++      .sync_ops = { .stride = sizeof(frag_ops[0]), .count = ARRAY_SIZE(frag_ops),
 +                    .array = (__u64)(uintptr_t)frag_ops },
 +      .hwrt = { .set_handle = hwrt_set_handle,
 +                .data_index = getenv("PVR_PROBE_HWRT_IDX")
@@ -13765,7 +13800,18 @@ index 00000000..f3869af5
 +                dev_addr, handle, size, strerror(errno));
 +      return false;
 +   }
-+
++   /* A buffer mapped at a chosen address inside a code heap has to move that heap's bump pointer
++    * past it. Otherwise a later pvr_vm_heap_alloc() hands out the same pages, and VM_MAP silently
++    * replaces the earlier mapping (drm_gpuvm unmaps what a new mapping overlaps): the GPU then
++    * runs whatever the newer buffer holds instead of the program that was placed there. */
++   for (uint16_t h = 0; h < DRM_PVR_HEAP_COUNT; h++) {
++      const struct pvr_heap *heap = &vm->heaps[h];
++      if (h == DRM_PVR_HEAP_GENERAL || heap->size == 0 || dev_addr < heap->base ||
++          dev_addr >= heap->base + heap->size)
++         continue;
++      if (vm->heap_next[h] < dev_addr + size)
++         vm->heap_next[h] = dev_addr + size;
++   }
 +   return true;
 +}
 +
