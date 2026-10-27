@@ -1,0 +1,174 @@
+From 91b6c9a7979cba9189deb1701e03460f77d6381c Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 00:32:48 +0800
+Subject: [PATCH 301/303] pvr: keep unconsumed semaphore waits on the GPU
+ instead of CPU-waiting
+
+A queue submit waited on the CPU for the previous submit's semaphore waits
+that no job of a matching type consumed. Under zink with a window, the
+acquire wait covers every job type, so nearly every vkQueueSubmit blocked:
+15769 of 15777 submits, 8.7 s of a 32 s glmark2 run.
+
+The leftover wait is now merged into the next wait of the same job type and
+into queue signals, so the ordering is kept on the GPU side.
+---
+ src/imagination/vulkan/pvr_arch_queue.c | 90 ++++++++++---------------
+ 1 file changed, 37 insertions(+), 53 deletions(-)
+
+diff --git a/src/imagination/vulkan/pvr_arch_queue.c b/src/imagination/vulkan/pvr_arch_queue.c
+index 657f076e..fd0c38b6 100644
+--- a/src/imagination/vulkan/pvr_arch_queue.c
++++ b/src/imagination/vulkan/pvr_arch_queue.c
+@@ -62,6 +62,7 @@
+ #include "vk_sync_dummy.h"
+ #include "vk_util.h"
+ 
++
+ static inline enum pvr_winsys_ctx_priority
+ pvr_winsys_from_vk_queue_priority(const VkQueueGlobalPriority priority)
+ {
+@@ -899,56 +900,11 @@ static VkResult pvr_process_cmd_buffer(struct pvr_device *device,
+    return VK_SUCCESS;
+ }
+ 
+-/*
+- * Semaphore waits of the previous submit that no job consumed (no job of that
+- * type) are waited for here, as before. The previous submit's job signal syncs
+- * are kept rather than waited for: barriers and queue signals in later submits
+- * wait on them on the GPU side, and pvr_update_job_syncs() drops each one when
+- * a job of its type replaces it. Waiting for them here blocked every
+- * vkQueueSubmit() until the previous submit had finished on the GPU.
+- */
+-static VkResult pvr_clear_last_submits_syncs(struct pvr_queue *queue)
+-{
+-   struct vk_sync_wait waits[PVR_JOB_TYPE_MAX];
+-   uint32_t wait_count = 0;
+-   VkResult result;
+-
+-   for (uint32_t i = 0; i < PVR_JOB_TYPE_MAX; i++) {
+-      if (queue->next_job_wait_sync[i]) {
+-         waits[wait_count++] = (struct vk_sync_wait){
+-            .sync = queue->next_job_wait_sync[i],
+-            .stage_mask = ~(VkPipelineStageFlags2)0,
+-            .wait_value = 0,
+-         };
+-      }
+-   }
+-
+-   if (!wait_count)
+-      return VK_SUCCESS;
+-
+-   result = vk_sync_wait_many(&queue->device->vk,
+-                              wait_count,
+-                              waits,
+-                              VK_SYNC_WAIT_COMPLETE,
+-                              UINT64_MAX);
+-   if (result != VK_SUCCESS)
+-      return vk_error(queue, result);
+-
+-   for (uint32_t i = 0; i < PVR_JOB_TYPE_MAX; i++) {
+-      if (queue->next_job_wait_sync[i]) {
+-         vk_sync_destroy(&queue->device->vk, queue->next_job_wait_sync[i]);
+-         queue->next_job_wait_sync[i] = NULL;
+-      }
+-   }
+-
+-   return VK_SUCCESS;
+-}
+-
+ static VkResult pvr_process_queue_signals(struct pvr_queue *queue,
+                                           struct vk_sync_signal *signals,
+                                           uint32_t signal_count)
+ {
+-   struct vk_sync_wait signal_waits[PVR_JOB_TYPE_MAX];
++   struct vk_sync_wait signal_waits[PVR_JOB_TYPE_MAX * 2];
+    struct pvr_device *device = queue->device;
+    VkResult result;
+ 
+@@ -975,6 +931,18 @@ static VkResult pvr_process_queue_signals(struct pvr_queue *queue,
+          };
+       }
+ 
++      /* Semaphore waits no job has consumed yet still order the signal. */
++      for (uint32_t i = 0; i < PVR_JOB_TYPE_MAX; i++) {
++         if (!queue->next_job_wait_sync[i])
++            continue;
++
++         signal_waits[wait_count++] = (struct vk_sync_wait){
++            .sync = queue->next_job_wait_sync[i],
++            .stage_mask = ~(VkPipelineStageFlags2)0,
++            .wait_value = 0,
++         };
++      }
++
+       result = device->ws->ops->null_job_submit(device->ws,
+                                                 signal_waits,
+                                                 wait_count,
+@@ -993,7 +961,7 @@ static VkResult pvr_process_queue_waits(struct pvr_queue *queue,
+    struct pvr_device *device = queue->device;
+    VkResult result;
+ 
+-   STACK_ARRAY(struct vk_sync_wait, stage_waits, wait_count);
++   STACK_ARRAY(struct vk_sync_wait, stage_waits, wait_count + 1);
+    if (!stage_waits)
+       return vk_error(queue, VK_ERROR_OUT_OF_HOST_MEMORY);
+ 
+@@ -1017,13 +985,27 @@ static VkResult pvr_process_queue_waits(struct pvr_queue *queue,
+       if (!stage_wait_count)
+          continue;
+ 
++      /* A wait left by an earlier submit with no job of this type is kept,
++       * not waited for on the CPU: the new wait includes it.
++       */
++      struct vk_sync *const leftover = queue->next_job_wait_sync[i];
++      if (leftover) {
++         stage_waits[stage_wait_count++] = (struct vk_sync_wait){
++            .sync = leftover,
++            .stage_mask = ~(VkPipelineStageFlags2)0,
++            .wait_value = 0,
++         };
++      }
++
+       result = vk_sync_create(&device->vk,
+                               &device->pdevice->ws->syncobj_type,
+                               0U,
+                               0UL,
+                               &queue->next_job_wait_sync[i]);
+-      if (result != VK_SUCCESS)
++      if (result != VK_SUCCESS) {
++         queue->next_job_wait_sync[i] = leftover;
+          goto err_free_waits;
++      }
+ 
+       next_job_wait_signal_sync = (struct vk_sync_signal){
+          .sync = queue->next_job_wait_sync[i],
+@@ -1035,8 +1017,14 @@ static VkResult pvr_process_queue_waits(struct pvr_queue *queue,
+                                                 stage_waits,
+                                                 stage_wait_count,
+                                                 &next_job_wait_signal_sync);
+-      if (result != VK_SUCCESS)
++      if (result != VK_SUCCESS) {
++         vk_sync_destroy(&device->vk, queue->next_job_wait_sync[i]);
++         queue->next_job_wait_sync[i] = leftover;
+          goto err_free_waits;
++      }
++
++      if (leftover)
++         vk_sync_destroy(&device->vk, leftover);
+    }
+ 
+    STACK_ARRAY_FINISH(stage_waits);
+@@ -1056,10 +1044,6 @@ static VkResult pvr_driver_queue_submit(struct vk_queue *queue,
+    struct pvr_device *device = driver_queue->device;
+    VkResult result;
+ 
+-   result = pvr_clear_last_submits_syncs(driver_queue);
+-   if (result != VK_SUCCESS)
+-      return result;
+-
+    if (submit->wait_count) {
+       result = pvr_process_queue_waits(driver_queue,
+                                        submit->waits,
+-- 
+2.47.3
+

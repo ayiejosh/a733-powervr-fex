@@ -1,0 +1,15 @@
+#version 450
+layout(local_size_x = 64) in;
+layout(std430, binding = 0) readonly buffer I { uvec4 i[]; };
+layout(std430, binding = 1) writeonly buffer O { uint o[]; };
+void main() {
+   uint id = gl_GlobalInvocationID.x; uvec4 v = i[id];
+   uint a = v.x, b = v.y, c = v.z;
+   for (uint k = 0u; k < v.w; k++) { uint t = a + b; a = b; b = t; }      /* swap through a temporary */
+   uint p = v.x, q = v.y;
+   for (uint k = 0u; k < v.w; k++) { uint t = p; p = q; q = t ^ k; }      /* pure swap */
+   uint x = v.z, y = v.x, z = v.y;
+   for (uint k = 0u; k < (v.w & 7u); k++) { uint t = x; x = y; y = z; z = t + 1u; } /* 3-way rotate */
+   o[id * 16u + 0u] = a; o[id * 16u + 1u] = b; o[id * 16u + 2u] = p; o[id * 16u + 3u] = q;
+   o[id * 16u + 4u] = x; o[id * 16u + 5u] = y; o[id * 16u + 6u] = z; o[id * 16u + 7u] = c;
+}

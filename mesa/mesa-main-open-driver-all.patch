@@ -132,39 +132,6 @@ index c80a232f..e4c23c28 100644
  # Load the current slot's number/id.
  intrinsic("load_slot_num_pco", dest_comp=1, flags=[CAN_ELIMINATE, CAN_REORDER], bit_sizes=[32])
  
-diff --git a/src/egl/drivers/dri2/platform_x11.c b/src/egl/drivers/dri2/platform_x11.c
-index a31a9d35..f5d4cf08 100644
---- a/src/egl/drivers/dri2/platform_x11.c
-+++ b/src/egl/drivers/dri2/platform_x11.c
-@@ -25,6 +25,7 @@
-  *    Kristian Høgsberg <krh@bitplanet.net>
-  */
- 
-+#include <time.h>
- #include <dlfcn.h>
- #include <errno.h>
- #include <fcntl.h>
-@@ -120,9 +121,20 @@ x11_get_drawable_info(struct dri_drawable *draw, int *x, int *y, int *w, int *h,
-    xcb_get_geometry_reply_t *reply;
-    xcb_generic_error_t *error;
-    bool ret;
-+   struct timespec _g0, _g1; int _timed = 0;
-+   if (getenv("XGEOM_TRACE")) { clock_gettime(CLOCK_MONOTONIC, &_g0); _timed = 1; }
- 
-    cookie = xcb_get_geometry(dri2_dpy->conn, dri2_surf->drawable);
-    reply = xcb_get_geometry_reply(dri2_dpy->conn, cookie, &error);
-+   if (_timed) {
-+      static unsigned long _n; static double _tot, _max;
-+      clock_gettime(CLOCK_MONOTONIC, &_g1);
-+      double ms = (_g1.tv_sec-_g0.tv_sec)*1000.0 + (_g1.tv_nsec-_g0.tv_nsec)/1e6;
-+      _n++; _tot += ms; if (ms > _max) _max = ms;
-+      if (_n % 100 == 0)
-+         fprintf(stderr, "[xg] %lu geometry round-trips, total %.1f ms, avg %.3f ms, max %.2f ms\n",
-+                 _n, _tot, _tot/_n, _max);
-+   }
-    if (reply == NULL)
-       return false;
- 
 diff --git a/src/gallium/auxiliary/pipe-loader/pipe_loader_drm.c b/src/gallium/auxiliary/pipe-loader/pipe_loader_drm.c
 index dc631b4c..60206f89 100644
 --- a/src/gallium/auxiliary/pipe-loader/pipe_loader_drm.c
@@ -3857,7 +3824,7 @@ index 00000000..78a9d98b
 +}
 diff --git a/src/gallium/drivers/pvr_native/pvr_csb.h b/src/gallium/drivers/pvr_native/pvr_csb.h
 new file mode 100644
-index 00000000..5aad5121
+index 00000000..d2f56c5a
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_csb.h
 @@ -0,0 +1,807 @@
@@ -3871,7 +3838,7 @@ index 00000000..5aad5121
 + * raising an error anyone will see. That is why emit() refuses rather than truncating.
 + *
 + * The packet layouts are NOT defined here - they come from csbgen, the same generator
-+ * the Vulkan driver uses (csbgen/*.xml -> the headers below, which provide a field
++ * the Vulkan driver uses (the csbgen XML files -> the headers below, which provide a field
 + * struct plus pack/unpack per packet). Only the stream plumbing is ours.
 + */
 +#ifndef PVR_CSB_H
@@ -15095,100 +15062,11 @@ index 00000000..a0bc5494
 +bool pvr_vm_unmap(struct pvr_vm *vm, uint64_t dev_addr, uint64_t size);
 +
 +#endif /* PVR_VM_H */
-diff --git a/src/gallium/drivers/zink/zink_batch.c b/src/gallium/drivers/zink/zink_batch.c
-index c615d47e..3a4f17bf 100644
---- a/src/gallium/drivers/zink/zink_batch.c
-+++ b/src/gallium/drivers/zink/zink_batch.c
-@@ -1,4 +1,5 @@
- #include "zink_batch.h"
-+#include <time.h>
- #include "zink_context.h"
- #include "zink_descriptors.h"
- #include "zink_kopper.h"
-@@ -815,7 +816,12 @@ submit_queue(void *data, void *gdata, int thread_index)
- 
-    simple_mtx_lock(screen->queue_lock);
-    VRAM_ALLOC_LOOP(result,
--      VKSCR(QueueSubmit)(screen->queue, num_si, submit, VK_NULL_HANDLE),
-+      ({ struct timespec _q0,_q1; clock_gettime(CLOCK_MONOTONIC,&_q0);
-+         VkResult _r = VKSCR(QueueSubmit)(screen->queue, num_si, submit, VK_NULL_HANDLE);
-+         clock_gettime(CLOCK_MONOTONIC,&_q1);
-+         if (getenv("ZINK_TIMING")) { double _ms=(_q1.tv_sec-_q0.tv_sec)*1000.0+(_q1.tv_nsec-_q0.tv_nsec)/1e6;
-+            if (_ms>1.0) fprintf(stderr,"[zt] queuesubmit %.2f ms\n",_ms); }
-+         _r; }),
-       if (result != VK_SUCCESS) {
-          mesa_loge("ZINK: vkQueueSubmit failed (%s)", vk_Result_to_str(result));
-          bs->is_device_lost = true;
-@@ -864,6 +870,7 @@ end:
- void
- zink_end_batch(struct zink_context *ctx)
- {
-+   struct timespec _e0,_e1; clock_gettime(CLOCK_MONOTONIC,&_e0);
-    MESA_TRACE_FUNC();
-    if (!ctx->queries_disabled)
-       zink_suspend_queries(ctx);
-@@ -1223,6 +1230,8 @@ static void
- batch_usage_wait(struct zink_context *ctx, struct zink_batch_usage *u, unsigned submit_count, bool trywait)
- {
-    MESA_TRACE_FUNC();
-+   struct timespec _b0, _b1; int _timed = 0;
-+   if (getenv("BATCH_WAIT_TRACE")) { clock_gettime(CLOCK_MONOTONIC, &_b0); _timed = 1; }
-    if (!zink_batch_usage_exists(u))
-       return;
-    /* this batch state was already completed and reset */
-@@ -1230,6 +1239,15 @@ batch_usage_wait(struct zink_context *ctx, struct zink_batch_usage *u, unsigned
-       return;
-    if (zink_batch_usage_unflushed_wait(ctx, u, submit_count, trywait))
-       zink_wait_on_batch(ctx, u->usage);
-+   if (_timed) {
-+      static unsigned long _n; static double _tot, _max;
-+      clock_gettime(CLOCK_MONOTONIC, &_b1);
-+      double ms = (_b1.tv_sec-_b0.tv_sec)*1000.0 + (_b1.tv_nsec-_b0.tv_nsec)/1e6;
-+      _n++; _tot += ms; if (ms > _max) _max = ms;
-+      if (_n % 500 == 0)
-+         fprintf(stderr, "[bw] %lu waits, total %.1f ms, avg %.3f ms, max %.2f ms\n",
-+                 _n, _tot, _tot/_n, _max);
-+   }
- }
- 
- void
 diff --git a/src/gallium/drivers/zink/zink_context.c b/src/gallium/drivers/zink/zink_context.c
-index e1781507..5553a1ba 100644
+index e1781507..7310b368 100644
 --- a/src/gallium/drivers/zink/zink_context.c
 +++ b/src/gallium/drivers/zink/zink_context.c
-@@ -23,6 +23,7 @@
- 
- #include "zink_clear.h"
- #include "zink_context.h"
-+#include <stdio.h>
- #include "zink_descriptors.h"
- #include "zink_fence.h"
- #include "zink_format.h"
-@@ -3890,8 +3891,12 @@ zink_evaluate_depth_buffer(struct pipe_context *pctx)
- static void
- sync_flush(struct zink_context *ctx, struct zink_batch_state *bs)
- {
--   if (zink_screen(ctx->base.screen)->threaded_submit)
-+   if (zink_screen(ctx->base.screen)->threaded_submit) {
-+      if (getenv("ZINK_FENCE_TRACE"))
-+         fprintf(stderr, "[zf] sync_flush: waiting on flush_completed (signalled=%d)\n",
-+                 util_queue_fence_is_signalled(&bs->flush_completed));
-       util_queue_fence_wait(&bs->flush_completed);
-+   }
- }
- 
- static inline VkAccessFlags
-@@ -4050,6 +4055,9 @@ flush_batch(struct zink_context *ctx, bool sync)
-       zink_flush_clears(ctx);
-    zink_batch_no_rp_safe(ctx);
- 
-+   if (getenv("ZINK_FENCE_TRACE"))
-+      fprintf(stderr, "[zf] flush_batch: waiting on unsync_fence (signalled=%d)\n",
-+              util_queue_fence_is_signalled(&ctx->unsync_fence));
-    util_queue_fence_wait(&ctx->unsync_fence);
-    util_queue_fence_reset(&ctx->flush_fence);
-    zink_end_batch(ctx);
-@@ -5175,8 +5183,14 @@ zink_copy_image_buffer(struct zink_context *ctx, struct zink_resource *dst, stru
+@@ -5175,8 +5175,14 @@ zink_copy_image_buffer(struct zink_context *ctx, struct zink_resource *dst, stru
  
     if (buf2img) {
        if (zink_is_swapchain(img)) {
@@ -15204,147 +15082,6 @@ index e1781507..5553a1ba 100644
        }
        zink_resource_image_transfer_dst_barrier(ctx, img, level, box, unsync);
        if (!unsync)
-diff --git a/src/gallium/drivers/zink/zink_kopper.c b/src/gallium/drivers/zink/zink_kopper.c
-index 60eb9ef2..5e5f5c39 100644
---- a/src/gallium/drivers/zink/zink_kopper.c
-+++ b/src/gallium/drivers/zink/zink_kopper.c
-@@ -22,6 +22,7 @@
-  * DEALINGS IN THE SOFTWARE.
-  */
- 
-+#include <stdio.h>
- #include "util/detect_os.h"
- 
- #include "zink_context.h"
-@@ -29,6 +30,7 @@
- #include "zink_surface.h"
- #include "zink_resource.h"
- #include "zink_kopper.h"
-+#include <time.h>
- 
- static void
- zink_kopper_set_present_mode_for_interval(struct kopper_displaytarget *cdt, int interval)
-@@ -56,6 +58,9 @@ zink_kopper_set_present_mode_for_interval(struct kopper_displaytarget *cdt, int
-    } else if (interval > 0) {
-       cdt->present_mode = VK_PRESENT_MODE_FIFO_KHR;
-    }
-+   if (getenv("ZINK_PM_TRACE"))
-+      fprintf(stderr, "[pm] interval=%d type=%d -> present_mode=%d\n",
-+              interval, cdt->type, cdt->present_mode);
-    assert(cdt->present_modes & BITFIELD_BIT(cdt->present_mode));
- #endif
- }
-@@ -312,7 +317,8 @@ kopper_CreateSwapchain(struct zink_screen *screen, struct kopper_displaytarget *
-       cswap->scci.clipped = VK_TRUE;
-    }
-    cswap->scci.presentMode = cdt->present_mode;
--   cswap->scci.minImageCount = cdt->caps.minImageCount;
-+   cswap->scci.minImageCount = cdt->caps.minImageCount +
-+      (getenv("ZINK_EXTRA_IMAGES") ? atoi(getenv("ZINK_EXTRA_IMAGES")) : 0);
-    cswap->scci.preTransform = cdt->caps.currentTransform;
-    if (cdt->formats[1])
-       cswap->scci.pNext = &cdt->format_list;
-@@ -400,6 +406,10 @@ kopper_GetSwapchainImages(struct zink_screen *screen, struct kopper_swapchain *c
-       }
-    }
-    cswap->max_acquires = cswap->num_images - cswap->scci.minImageCount + 1;
-+   if (getenv("SWAPCHAIN_INFO"))
-+      fprintf(stderr, "[sc] num_images=%u minImageCount=%u presentMode=%d -> max_acquires=%u\n",
-+              cswap->num_images, cswap->scci.minImageCount, (int)cswap->scci.presentMode,
-+              cswap->max_acquires);
-    return error;
- }
- 
-@@ -565,6 +575,8 @@ static VkResult
- kopper_acquire(struct zink_screen *screen, struct zink_resource *res, uint64_t timeout)
- {
-    struct kopper_displaytarget *cdt = res->obj->dt;
-+   struct timespec _t0, _t1;
-+   clock_gettime(CLOCK_MONOTONIC, &_t0);
- 
-    /* if:
-     * - we don't need a new image
-@@ -619,7 +631,15 @@ kopper_acquire(struct zink_screen *screen, struct zink_resource *res, uint64_t t
-          if (!acquire)
-             return VK_ERROR_OUT_OF_HOST_MEMORY;
-       }
-+      { struct timespec _a0,_a1; int _at=getenv("ACQ_TRACE")!=NULL;
-+        if(_at) clock_gettime(CLOCK_MONOTONIC,&_a0);
-       ret = VKSCR(AcquireNextImageKHR)(screen->dev, cdt->swapchain->swapchain, timeout, acquire, VK_NULL_HANDLE, &res->obj->dt_idx);
-+      if(_at){ static unsigned long _an; static double _atot,_amax;
-+        clock_gettime(CLOCK_MONOTONIC,&_a1);
-+        double _ms=(_a1.tv_sec-_a0.tv_sec)*1000.0+(_a1.tv_nsec-_a0.tv_nsec)/1e6;
-+        _an++; _atot+=_ms; if(_ms>_amax)_amax=_ms;
-+        if(_an%50==0) fprintf(stderr,"[acq] AcquireNextImage waits=%lu total=%.1fms avg=%.2fms max=%.2fms\n",
-+            _an,_atot,_atot/_an,_amax); } }
-       if (ret != VK_SUCCESS && ret != VK_SUBOPTIMAL_KHR) {
-          if (ret == VK_ERROR_OUT_OF_DATE_KHR) {
-             res->obj->new_dt = true;
-@@ -641,6 +661,19 @@ kopper_acquire(struct zink_screen *screen, struct zink_resource *res, uint64_t t
-    if (cdt->swapchain->images[res->obj->dt_idx].readback)
-       zink_resource(cdt->swapchain->images[res->obj->dt_idx].readback)->valid = false;
-    res->obj->image = cdt->swapchain->images[res->obj->dt_idx].image;
-+   /* ponytail: SWAPCHAIN_INFO - what kind of image is the render target when windowed? */
-+   if (getenv("SWAPCHAIN_INFO")) {
-+      static int _done;
-+      if (!_done++) {
-+         uint32_t _mods = res->modifiers_count;
-+         uint64_t _m0 = _mods ? res->modifiers[0] : 0;
-+         fprintf(stderr, "[swi] swapchain target: fmt=%d %ux%u linear=%d modifiers=%u m0=0x%llx "
-+                 "vkusage=0x%llx layout=%d\n",
-+                 (int)res->base.b.format, res->base.b.width0, res->base.b.height0,
-+                 res->linear, _mods, (unsigned long long)_m0,
-+                 (unsigned long long)res->obj->vkusage, (int)res->layout);
-+      }
-+   }
-    if (!cdt->age_locked)
-       zink_kopper_update_last_written(res);
-    cdt->swapchain->images[res->obj->dt_idx].acquired = NULL;
-@@ -666,6 +699,9 @@ kopper_acquire(struct zink_screen *screen, struct zink_resource *res, uint64_t t
-       p_atomic_inc(&cdt->swapchain->num_acquires);
-    }
-    cdt->swapchain->images[res->obj->dt_idx].dt_has_data = false;
-+   clock_gettime(CLOCK_MONOTONIC, &_t1);
-+   { double _ms = (_t1.tv_sec-_t0.tv_sec)*1000.0 + (_t1.tv_nsec-_t0.tv_nsec)/1e6;
-+     if (getenv("ZINK_TIMING") && _ms > 2.0) fprintf(stderr, "[zt] acquire %.2f ms\n", _ms); }
-    return VK_SUCCESS;
- }
- 
-@@ -760,6 +796,8 @@ static void
- kopper_present(void *data, void *gdata, int thread_idx)
- {
-    struct zink_kopper_present_info *cpi = data;
-+   struct timespec _p0, _p1;
-+   clock_gettime(CLOCK_MONOTONIC, &_p0);
-    struct kopper_displaytarget *cdt = cpi->res->obj->dt;
-    struct kopper_swapchain *swapchain = cpi->swapchain;
-    struct zink_screen *screen = gdata;
-@@ -797,6 +835,9 @@ kopper_present(void *data, void *gdata, int thread_idx)
-       cpi->info.waitSemaphoreCount = 0;
-    }
-    VkResult error2 = VKSCR(QueuePresentKHR)(screen->queue, &cpi->info);
-+   clock_gettime(CLOCK_MONOTONIC, &_p1);
-+   if (getenv("ZINK_TIMING")) fprintf(stderr, "[zt] present %.2f ms\n",
-+      (_p1.tv_sec-_p0.tv_sec)*1000.0 + (_p1.tv_nsec-_p0.tv_nsec)/1e6);
-    zink_screen_debug_marker_end(screen, screen->frame_marker_emitted);
-    zink_screen_debug_marker_begin(screen, "frame");
-    simple_mtx_unlock(screen->queue_lock);
-diff --git a/src/gallium/drivers/zink/zink_resource.c b/src/gallium/drivers/zink/zink_resource.c
-index c37fa55f..27215c75 100644
---- a/src/gallium/drivers/zink/zink_resource.c
-+++ b/src/gallium/drivers/zink/zink_resource.c
-@@ -1907,6 +1907,11 @@ resource_create(struct pipe_screen *pscreen,
-          res->queue = VK_QUEUE_FAMILY_FOREIGN_EXT;
-       res->layout = res->dmabuf ? VK_IMAGE_LAYOUT_PREINITIALIZED : VK_IMAGE_LAYOUT_UNDEFINED;
-       res->linear = linear;
-+      if (getenv("ZINK_TILING"))
-+         fprintf(stderr, "[tl] %ux%u linear=%d modifiers=%d m0=0x%llx dt=%d\n",
-+                 templ->width0, templ->height0, linear, res->modifiers_count,
-+                 res->modifiers_count ? (unsigned long long)res->modifiers[0] : 0,
-+                 !!res->obj->dt);
-       res->aspect = aspect_from_format(templ->format);
-    }
- 
 diff --git a/src/gallium/frontends/dri/dri_screen.h b/src/gallium/frontends/dri/dri_screen.h
 index a9dd5101..aff629f0 100644
 --- a/src/gallium/frontends/dri/dri_screen.h
@@ -15359,10 +15096,10 @@ index a9dd5101..aff629f0 100644
  
  /* vim: set sw=3 ts=8 sts=3 expandtab: */
 diff --git a/src/gallium/frontends/dri/kopper.c b/src/gallium/frontends/dri/kopper.c
-index c565d773..a8e58aaa 100644
+index c565d773..d2189798 100644
 --- a/src/gallium/frontends/dri/kopper.c
 +++ b/src/gallium/frontends/dri/kopper.c
-@@ -364,7 +364,20 @@ kopper_update_drawable_info(struct dri_drawable *drawable)
+@@ -364,7 +364,12 @@ kopper_update_drawable_info(struct dri_drawable *drawable)
                                  drawable->textures[ST_ATTACHMENT_BACK_LEFT] :
                                  drawable->textures[ST_ATTACHMENT_FRONT_LEFT];
  
@@ -15373,64 +15110,9 @@ index c565d773..a8e58aaa 100644
 +    * validation, measured at 21.7 ms per frame. The XCB-surface-create-info check below
 +    * already identifies a Vulkan surface, so require only that. */
 +   bool do_kopper_update = is_window && ptex;
-+   if (getenv("KOpper_BRANCH")) {
-+      static int _n;
-+      if (++_n % 50 == 1)
-+         fprintf(stderr, "[kb] is_window=%d ptex=%d screen_fd=%d sType=0x%x -> %s\n",
-+                 is_window, !!ptex, screen->fd, drawable->info.bos.sType,
-+                 (drawable->info.bos.sType == VK_STRUCTURE_TYPE_XCB_SURFACE_CREATE_INFO_KHR && do_kopper_update)
-+                    ? "FASTPATH(no round-trip)" : "get_drawable_info(ROUND-TRIP)");
-+   }
     if (drawable->info.bos.sType == VK_STRUCTURE_TYPE_XCB_SURFACE_CREATE_INFO_KHR && do_kopper_update)
        zink_kopper_update(kopper_get_zink_screen(screen->base.screen), ptex, &drawable->w, &drawable->h);
     else
-@@ -522,6 +535,15 @@ kopper_destroy_drawable(struct dri_drawable *drawable)
- int64_t
- kopperSwapBuffersWithDamage(struct dri_drawable *drawable, uint32_t flush_flags, int nrects, const int *rects)
- {
-+   /* ponytail: SWAP_TIMING - separate time spent INSIDE eglSwapBuffers (the present path)
-+    * from the frame period, so the client-side cost can be attributed. */
-+   struct timespec _s0, _s1;
-+   static struct timespec _last;
-+   static int _n;
-+   clock_gettime(CLOCK_MONOTONIC, &_s0);
-+   double _period = 0.0;
-+   if (_last.tv_sec)
-+      _period = (_s0.tv_sec-_last.tv_sec)*1000.0 + (_s0.tv_nsec-_last.tv_nsec)/1e6;
-    struct dri_context *ctx = dri_get_current();
-    struct pipe_resource *ptex;
- 
-@@ -557,6 +579,14 @@ kopperSwapBuffersWithDamage(struct dri_drawable *drawable, uint32_t flush_flags,
-    if (drawable->is_window && !zink_kopper_check(ptex))
-       return -1;
-    if (!drawable->textures[ST_ATTACHMENT_FRONT_LEFT]) {
-+      if (getenv("SWAP_TIMING")) {
-+         clock_gettime(CLOCK_MONOTONIC, &_s1);
-+         double inside = (_s1.tv_sec-_s0.tv_sec)*1000.0 + (_s1.tv_nsec-_s0.tv_nsec)/1e6;
-+         if (++_n > 20 && _n % 20 == 0)
-+            fprintf(stderr, "[swap] frame %d: period %.2f ms, inside swap %.2f ms, outside %.2f ms\n",
-+                    _n, _period, inside, _period - inside);
-+      }
-+      clock_gettime(CLOCK_MONOTONIC, &_last);
-       return 0;
-    }
- 
-@@ -564,6 +594,15 @@ kopperSwapBuffersWithDamage(struct dri_drawable *drawable, uint32_t flush_flags,
-    drawable->textures[ST_ATTACHMENT_BACK_LEFT] = drawable->textures[ST_ATTACHMENT_FRONT_LEFT];
-    drawable->textures[ST_ATTACHMENT_FRONT_LEFT] = ptex;
- 
-+   if (getenv("SWAP_TIMING")) {
-+      clock_gettime(CLOCK_MONOTONIC, &_s1);
-+      double inside = (_s1.tv_sec-_s0.tv_sec)*1000.0 + (_s1.tv_nsec-_s0.tv_nsec)/1e6;
-+      if (++_n > 20 && _n % 20 == 0)
-+         fprintf(stderr, "[swap] frame %d: period %.2f ms, inside swap %.2f ms, outside %.2f ms\n",
-+                 _n, _period, inside, _period - inside);
-+   }
-+   clock_gettime(CLOCK_MONOTONIC, &_last);
-+
-    return 0;
- }
- 
 diff --git a/src/gallium/meson.build b/src/gallium/meson.build
 index 67011f56..e633fa70 100644
 --- a/src/gallium/meson.build
@@ -18400,7 +18082,7 @@ index cca59f85..9f976d06 100644
     hdr=(I_IGRP_HDR_BITWISE, [
        ('opcnt', ['p0', 'p2']),
 diff --git a/src/imagination/pco/pco_nir.c b/src/imagination/pco/pco_nir.c
-index 2ef81062..cac45351 100644
+index 2ef81062..609f8073 100644
 --- a/src/imagination/pco/pco_nir.c
 +++ b/src/imagination/pco/pco_nir.c
 @@ -12,8 +12,10 @@
@@ -18535,11 +18217,10 @@ index 2ef81062..cac45351 100644
  /**
   * \brief Returns if shared memory should be spilled according to the threshold.
   *
-@@ -900,10 +950,45 @@ static inline bool should_spill_shmem(const pco_ctx *ctx, unsigned shared_size)
-  * \param[in,out] nir NIR shader.
-  * \param[in,out] data Shader data.
-  */
-+
+@@ -893,6 +943,37 @@ static inline bool should_spill_shmem(const pco_ctx *ctx, unsigned shared_size)
+    return ((float)shared_size / (float)max_shmem) > PCO_SHMEM_THRESHOLD;
+ }
+ 
 +/**
 + * \brief Access shape for a buffer access pco cannot do as written.
 + *
@@ -18571,7 +18252,10 @@ index 2ef81062..cac45351 100644
 +   };
 +}
 +
- void pco_lower_nir(pco_ctx *ctx, nir_shader *nir, pco_data *data)
+ /**
+  * \brief Lowers a NIR shader.
+  *
+@@ -904,6 +985,9 @@ void pco_lower_nir(pco_ctx *ctx, nir_shader *nir, pco_data *data)
  {
     bool internal = nir->info.internal;
  
@@ -18581,7 +18265,7 @@ index 2ef81062..cac45351 100644
     NIR_PASS(_,
              nir,
              nir_opt_access,
-@@ -940,6 +1025,25 @@ void pco_lower_nir(pco_ctx *ctx, nir_shader *nir, pco_data *data)
+@@ -940,6 +1024,25 @@ void pco_lower_nir(pco_ctx *ctx, nir_shader *nir, pco_data *data)
              nir_var_mem_global,
              nir_address_format_2x32bit_global);
  
@@ -18607,7 +18291,7 @@ index 2ef81062..cac45351 100644
     nir_move_options move_options = nir_move_load_global | nir_move_load_ubo |
                                     nir_move_load_ssbo | nir_move_load_input |
                                     nir_move_load_frag_coord | nir_move_alu |
-@@ -966,13 +1070,32 @@ void pco_lower_nir(pco_ctx *ctx, nir_shader *nir, pco_data *data)
+@@ -966,13 +1069,32 @@ void pco_lower_nir(pco_ctx *ctx, nir_shader *nir, pco_data *data)
              NULL,
              NULL);
  
@@ -18647,7 +18331,7 @@ index 2ef81062..cac45351 100644
  
     if (nir->info.stage == MESA_SHADER_COMPUTE &&
         (PCO_DEBUG(GLOBAL_SHMEM) ||
-@@ -982,13 +1105,42 @@ void pco_lower_nir(pco_ctx *ctx, nir_shader *nir, pco_data *data)
+@@ -982,13 +1104,42 @@ void pco_lower_nir(pco_ctx *ctx, nir_shader *nir, pco_data *data)
        data->cs.global_shmem = true;
     }
  
@@ -18693,7 +18377,7 @@ index 2ef81062..cac45351 100644
     NIR_PASS(_, nir, pco_nir_lower_vk, data);
     NIR_PASS(_, nir, pco_nir_lower_io, data);
  
-@@ -1036,7 +1188,7 @@ void pco_lower_nir(pco_ctx *ctx, nir_shader *nir, pco_data *data)
+@@ -1036,7 +1187,7 @@ void pco_lower_nir(pco_ctx *ctx, nir_shader *nir, pco_data *data)
     NIR_PASS(_, nir, pco_nir_lower_tex, data, ctx);
  
     if (nir->info.stage == MESA_SHADER_FRAGMENT) {
@@ -18702,7 +18386,7 @@ index 2ef81062..cac45351 100644
           NIR_PASS(_, nir, pco_nir_lower_alpha_to_coverage);
  
        NIR_PASS(_, nir, nir_lower_blend, &data->fs.blend_opts);
-@@ -1048,11 +1200,15 @@ void pco_lower_nir(pco_ctx *ctx, nir_shader *nir, pco_data *data)
+@@ -1048,11 +1199,15 @@ void pco_lower_nir(pco_ctx *ctx, nir_shader *nir, pco_data *data)
        NIR_PASS(_, nir, nir_opt_peephole_select, &peep_opts);
        NIR_PASS(_, nir, pco_nir_lower_interpolation, &data->fs);
        if (!internal)
@@ -18719,7 +18403,7 @@ index 2ef81062..cac45351 100644
        NIR_PASS(_,
                 nir,
                 nir_lower_point_size,
-@@ -1102,6 +1258,13 @@ void pco_lower_nir(pco_ctx *ctx, nir_shader *nir, pco_data *data)
+@@ -1102,6 +1257,13 @@ void pco_lower_nir(pco_ctx *ctx, nir_shader *nir, pco_data *data)
              NULL,
              NULL);
  
@@ -18733,18 +18417,11 @@ index 2ef81062..cac45351 100644
     NIR_PASS(_, nir, nir_lower_vars_to_ssa);
     NIR_PASS(_, nir, nir_opt_copy_prop_vars);
     NIR_PASS(_, nir, nir_opt_dead_write_vars);
-@@ -1176,6 +1339,7 @@ remat_load_const(nir_builder *b, nir_instr *instr, UNUSED void *cb_data)
+@@ -1176,6 +1338,109 @@ remat_load_const(nir_builder *b, nir_instr *instr, UNUSED void *cb_data)
  
     return true;
  }
 +
- /**
-  * \brief Runs post-processing passes on a NIR shader.
-  *
-@@ -1183,6 +1347,108 @@ remat_load_const(nir_builder *b, nir_instr *instr, UNUSED void *cb_data)
-  * \param[in,out] nir NIR shader.
-  * \param[in,out] data Shader data.
-  */
 +/* Uniform buffer ranges larger than this stay in memory. */
 +#define PCO_UBO_PRELOAD_MAX_DWORDS 256U
 +#define PCO_UBO_PRELOAD_TOTAL_DWORDS 256U
@@ -18847,10 +18524,10 @@ index 2ef81062..cac45351 100644
 +   }
 +}
 +
- void pco_postprocess_nir(pco_ctx *ctx, nir_shader *nir, pco_data *data)
- {
-    bool internal = nir->info.internal;
-@@ -1208,6 +1474,16 @@ void pco_postprocess_nir(pco_ctx *ctx, nir_shader *nir, pco_data *data)
+ /**
+  * \brief Runs post-processing passes on a NIR shader.
+  *
+@@ -1208,6 +1473,16 @@ void pco_postprocess_nir(pco_ctx *ctx, nir_shader *nir, pco_data *data)
  
     pco_nir_opt(ctx, nir, data, false);
  
@@ -20379,7 +20056,7 @@ index ca868c79..b0dd8906 100644
  O_ST32_REGBL = hw_op('st32.regbl', OM_ALU_RPT1 + [OM_MCU_CACHE_MODE_ST, OM_IDF], 0, 5)
  
 diff --git a/src/imagination/pco/pco_opt.c b/src/imagination/pco/pco_opt.c
-index b9aedeae..b1d961d5 100644
+index b9aedeae..7977c1bb 100644
 --- a/src/imagination/pco/pco_opt.c
 +++ b/src/imagination/pco/pco_opt.c
 @@ -145,6 +145,7 @@ static inline bool pco_opt_prep_mods(pco_shader *shader,
@@ -20420,10 +20097,10 @@ index b9aedeae..b1d961d5 100644
  
        bool has_isp_fb = false;
  
-@@ -401,19 +406,40 @@ static inline bool can_fwd_prop_src(const pco_instr *to_instr,
-  * \param[in] instr Instruction to try and forward-propagate.
-  * \return True if forward-propagation was successful.
-  */
+@@ -394,6 +399,26 @@ static inline bool can_fwd_prop_src(const pco_instr *to_instr,
+    return true;
+ }
+ 
 +/* Whether a virtual register keeps its value from one instruction to a later
 + * one: both in the same block, with no write to the register in between.
 + */
@@ -20444,6 +20121,10 @@ index b9aedeae..b1d961d5 100644
 +   return true;
 +}
 +
+ /**
+  * \brief Tries to forward-propagate an instruction.
+  *
+@@ -404,16 +429,17 @@ static inline bool can_fwd_prop_src(const pco_instr *to_instr,
  static inline bool try_fwd_prop_instr(pco_instr **writes, pco_instr *instr)
  {
     bool progress = false;
@@ -20564,7 +20245,7 @@ index 1a8354f2..bb1b790e 100644
     }
  
 diff --git a/src/imagination/pco/pco_trans_nir.c b/src/imagination/pco/pco_trans_nir.c
-index 6dde9d20..3339b720 100644
+index 6dde9d20..67b0aec8 100644
 --- a/src/imagination/pco/pco_trans_nir.c
 +++ b/src/imagination/pco/pco_trans_nir.c
 @@ -15,6 +15,8 @@
@@ -20945,10 +20626,10 @@ index 6dde9d20..3339b720 100644
     case nir_intrinsic_load_fs_meta_pco:
        assert(tctx->stage == MESA_SHADER_FRAGMENT);
        assert(tctx->shader->data.fs.meta.count > 0);
-@@ -3531,6 +3645,14 @@ static inline bool is_min(nir_op op)
-  * \param[in] src Instruction source.
-  * \return The translated PCO instruction.
-  */
+@@ -3523,6 +3637,14 @@ static inline bool is_min(nir_op op)
+    UNREACHABLE("");
+ }
+ 
 +/* Whether an ALU source resolves to a constant that is not NaN. */
 +static bool alu_src_is_nonnan_const(const nir_alu_instr *alu, unsigned i)
 +{
@@ -20957,9 +20638,9 @@ index 6dde9d20..3339b720 100644
 +   return nir_scalar_is_const(c) && !isnan(nir_scalar_as_float(c));
 +}
 +
- static pco_instr *trans_min_max(trans_ctx *tctx,
-                                 nir_op op,
-                                 pco_ref dest,
+ /**
+  * \brief Translates a NIR min/max op into PCO.
+  *
 @@ -3638,6 +3760,19 @@ trans_conv(trans_ctx *tctx, nir_op op, pco_ref dest, pco_ref src)
                         op == nir_op_b2f32 ? pco_fone : pco_one,
                         pco_zero);
@@ -21005,10 +20686,10 @@ index 6dde9d20..3339b720 100644
     default:
        UNREACHABLE("Unsupported conversion op.");
     }
-@@ -3710,6 +3863,33 @@ trans_conv(trans_ctx *tctx, nir_op op, pco_ref dest, pco_ref src)
-  * \param[in] alu The nir alu instruction.
-  * \return The PCO instruction.
-  */
+@@ -3703,6 +3856,33 @@ trans_conv(trans_ctx *tctx, nir_op op, pco_ref dest, pco_ref src)
+                           .roundzero = roundzero);
+ }
+ 
 +/**
 + * \brief Returns the scalar 32-bit ALU instruction of type \p op producing source
 + * \p s of \p alu if \p alu is its only user, so it can be folded into \p alu
@@ -21036,9 +20717,9 @@ index 6dde9d20..3339b720 100644
 +   return prod;
 +}
 +
- static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
- {
-    const nir_op_info *info = &nir_op_infos[alu->op];
+ /**
+  * \brief Translates a NIR alu instruction into PCO.
+  *
 @@ -3735,6 +3915,15 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
        instr = pco_fflr(&tctx->b, dest, src[0]);
        break;
@@ -22357,7 +22038,7 @@ index 0b58cbab..a426901a 100644
           default:
              break;
 diff --git a/src/imagination/vulkan/pvr_arch_cmd_buffer.c b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
-index f21b3202..34153c59 100644
+index f21b3202..a7c8e087 100644
 --- a/src/imagination/vulkan/pvr_arch_cmd_buffer.c
 +++ b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
 @@ -21,6 +21,7 @@
@@ -22380,7 +22061,15 @@ index f21b3202..34153c59 100644
  #include "util/bitscan.h"
  #include "util/bitset.h"
  #include "util/compiler.h"
-@@ -122,6 +127,27 @@ struct pvr_renderpass_hwsetup_render *pvr_arch_pass_info_get_hw_render(
+@@ -82,6 +87,7 @@
+ #include "vk_synchronization.h"
+ #include "vk_util.h"
+ 
++
+ /* Structure used to pass data into pvr_compute_generate_control_stream()
+  * function.
+  */
+@@ -122,6 +128,27 @@ struct pvr_renderpass_hwsetup_render *pvr_arch_pass_info_get_hw_render(
     return &render_pass_info->pass->hw_setup->renders[idx];
  }
  
@@ -22408,7 +22097,7 @@ index f21b3202..34153c59 100644
  static void pvr_cmd_buffer_free_sub_cmd(struct pvr_cmd_buffer *cmd_buffer,
                                          struct pvr_sub_cmd *sub_cmd)
  {
-@@ -238,6 +264,9 @@ static void pvr_cmd_buffer_destroy(struct vk_command_buffer *vk_cmd_buffer)
+@@ -238,6 +265,9 @@ static void pvr_cmd_buffer_destroy(struct vk_command_buffer *vk_cmd_buffer)
     struct pvr_cmd_buffer *cmd_buffer =
        container_of(vk_cmd_buffer, struct pvr_cmd_buffer, vk);
  
@@ -22418,7 +22107,7 @@ index f21b3202..34153c59 100644
     pvr_cmd_buffer_free_resources(cmd_buffer);
     vk_command_buffer_finish(&cmd_buffer->vk);
     vk_free(&cmd_buffer->vk.pool->alloc, cmd_buffer);
-@@ -272,6 +301,9 @@ static VkResult pvr_cmd_buffer_create(struct pvr_device *device,
+@@ -272,6 +302,9 @@ static VkResult pvr_cmd_buffer_create(struct pvr_device *device,
  
     cmd_buffer->device = device;
  
@@ -22428,7 +22117,7 @@ index f21b3202..34153c59 100644
     cmd_buffer->depth_bias_array = UTIL_DYNARRAY_INIT;
     cmd_buffer->scissor_array = UTIL_DYNARRAY_INIT;
     cmd_buffer->deferred_csb_commands = UTIL_DYNARRAY_INIT;
-@@ -401,23 +433,40 @@ err_free_depth_bias_bo:
+@@ -401,23 +434,40 @@ err_free_depth_bias_bo:
  
  static VkResult
  pvr_cmd_buffer_emit_ppp_state(const struct pvr_cmd_buffer *const cmd_buffer,
@@ -22475,7 +22164,7 @@ index f21b3202..34153c59 100644
     }
  
     pvr_csb_clear_relocation_mark(csb);
-@@ -558,7 +607,6 @@ static VkResult pvr_sub_cmd_gfx_per_job_fragment_programs_create_and_upload(
+@@ -558,7 +608,6 @@ static VkResult pvr_sub_cmd_gfx_per_job_fragment_programs_create_and_upload(
     };
     uint32_t *staging_buffer;
     uint32_t usc_temp_count;
@@ -22483,7 +22172,7 @@ index f21b3202..34153c59 100644
     VkResult result;
  
     bool has_tile_buffers = false;
-@@ -582,17 +630,86 @@ static VkResult pvr_sub_cmd_gfx_per_job_fragment_programs_create_and_upload(
+@@ -582,17 +631,86 @@ static VkResult pvr_sub_cmd_gfx_per_job_fragment_programs_create_and_upload(
           props.msaa_samples = 1;
     }
  
@@ -22520,12 +22209,7 @@ index f21b3202..34153c59 100644
 +            break;
 +         }
 +      }
- 
--   result = pvr_cmd_buffer_upload_usc(cmd_buffer,
--                                      pco_shader_binary_data(eot),
--                                      pco_shader_binary_size(eot),
--                                      4,
--                                      &usc_eot_program);
++
 +      if (!entry) {
 +         pco_shader *const eot = pvr_usc_eot(dev->pdevice->pco_ctx, &props,
 +                                             &dev->pdevice->dev_info);
@@ -22537,7 +22221,12 @@ index f21b3202..34153c59 100644
 +            simple_mtx_unlock(&dev->eot_cache.mtx);
 +            return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 +         }
-+
+ 
+-   result = pvr_cmd_buffer_upload_usc(cmd_buffer,
+-                                      pco_shader_binary_data(eot),
+-                                      pco_shader_binary_size(eot),
+-                                      4,
+-                                      &usc_eot_program);
 +         memcpy(binary, pco_shader_binary_data(eot), size);
  
 -   ralloc_free(eot);
@@ -22579,7 +22268,7 @@ index f21b3202..34153c59 100644
  
     if (result != VK_SUCCESS)
        return result;
-@@ -652,7 +769,7 @@ static VkResult pvr_sub_cmd_gfx_build_terminate_ctrl_stream(
+@@ -652,7 +770,7 @@ static VkResult pvr_sub_cmd_gfx_build_terminate_ctrl_stream(
  
     pvr_csb_init(device, PVR_CMD_STREAM_TYPE_GRAPHICS, &csb);
  
@@ -22588,7 +22277,7 @@ index f21b3202..34153c59 100644
     if (result != VK_SUCCESS)
        goto err_csb_finish;
  
-@@ -1151,7 +1268,7 @@ static void pvr_setup_pbe_state(
+@@ -1151,7 +1269,7 @@ static void pvr_setup_pbe_state(
      * level?
      */
     surface_params.addr = PVR_DEV_ADDR_OFFSET(
@@ -22597,7 +22286,7 @@ index f21b3202..34153c59 100644
        plane->layer_size * view_index +
           plane->mip_levels[iview->vk.base_mip_level].offset);
  
-@@ -1168,6 +1285,7 @@ static void pvr_setup_pbe_state(
+@@ -1168,6 +1286,7 @@ static void pvr_setup_pbe_state(
     surface_params.height = iview->vk.extent.height;
     surface_params.z_only_render = false;
     surface_params.down_scale = down_scale;
@@ -22605,7 +22294,7 @@ index f21b3202..34153c59 100644
  
     /* Setup render parameters. */
  
-@@ -1217,6 +1335,18 @@ static void pvr_setup_pbe_state(
+@@ -1217,6 +1336,18 @@ static void pvr_setup_pbe_state(
  
  #undef PVR_DEC_IF_NOT_ZERO
  
@@ -22624,7 +22313,7 @@ index f21b3202..34153c59 100644
     render_params.slice = iview->vk.storage.z_slice_offset;
  
     render_params.mrt_index = mrt_index;
-@@ -1589,6 +1719,134 @@ pvr_is_render_area_tile_aligned(const struct pvr_cmd_buffer *cmd_buffer,
+@@ -1589,6 +1720,134 @@ pvr_is_render_area_tile_aligned(const struct pvr_cmd_buffer *cmd_buffer,
            render_area->extent.width == iview->vk.extent.width;
  }
  
@@ -22759,7 +22448,7 @@ index f21b3202..34153c59 100644
  static VkResult pvr_render_targets_dataset_init(
     struct pvr_device *device,
     struct pvr_render_state *rstate,
-@@ -1714,22 +1972,30 @@ static VkResult pvr_sub_cmd_gfx_job_init(const struct pvr_device_info *dev_info,
+@@ -1714,22 +1973,30 @@ static VkResult pvr_sub_cmd_gfx_job_init(const struct pvr_device_info *dev_info,
        /* Configure the job view state for a barrier load */
        assert(!job->view_state.view_index);
        job->view_state.force_pds_bgnd_reg_values_zero = true;
@@ -22803,7 +22492,7 @@ index f21b3202..34153c59 100644
     }
  
     if (!hw_render->requires_frag_pr) {
-@@ -2381,6 +2647,49 @@ err_csb_finish:
+@@ -2381,6 +2648,49 @@ err_csb_finish:
     return result;
  }
  
@@ -22853,7 +22542,7 @@ index f21b3202..34153c59 100644
  VkResult pvr_arch_cmd_buffer_end_sub_cmd(struct pvr_cmd_buffer *cmd_buffer)
  {
     struct pvr_cmd_buffer_state *state = &cmd_buffer->state;
-@@ -2451,6 +2760,8 @@ VkResult pvr_arch_cmd_buffer_end_sub_cmd(struct pvr_cmd_buffer *cmd_buffer)
+@@ -2451,6 +2761,8 @@ VkResult pvr_arch_cmd_buffer_end_sub_cmd(struct pvr_cmd_buffer *cmd_buffer)
  
        /* TODO: Check if the sub_cmd can be skipped based on
         * sub_cmd->gfx.empty_cmd flag and if dynamic rendering isn't enabled.
@@ -22862,7 +22551,7 @@ index f21b3202..34153c59 100644
         */
  
        /* TODO: Set the state in the functions called with the command buffer
-@@ -2462,7 +2773,8 @@ VkResult pvr_arch_cmd_buffer_end_sub_cmd(struct pvr_cmd_buffer *cmd_buffer)
+@@ -2462,7 +2774,8 @@ VkResult pvr_arch_cmd_buffer_end_sub_cmd(struct pvr_cmd_buffer *cmd_buffer)
           return pvr_cmd_buffer_set_error_unwarned(cmd_buffer, result);
  
        result = pvr_cmd_buffer_emit_ppp_state(cmd_buffer,
@@ -22872,7 +22561,7 @@ index f21b3202..34153c59 100644
        if (result != VK_SUCCESS)
           return pvr_cmd_buffer_set_error_unwarned(cmd_buffer, result);
  
-@@ -2480,11 +2792,15 @@ VkResult pvr_arch_cmd_buffer_end_sub_cmd(struct pvr_cmd_buffer *cmd_buffer)
+@@ -2480,11 +2793,15 @@ VkResult pvr_arch_cmd_buffer_end_sub_cmd(struct pvr_cmd_buffer *cmd_buffer)
              return pvr_cmd_buffer_set_error_unwarned(cmd_buffer, result);
        }
  
@@ -22893,7 +22582,7 @@ index f21b3202..34153c59 100644
  
        if (pvr_sub_cmd_gfx_requires_split_submit(gfx_sub_cmd)) {
           result = pvr_sub_cmd_gfx_build_terminate_ctrl_stream(device,
-@@ -2575,7 +2891,11 @@ VkResult pvr_arch_cmd_buffer_end_sub_cmd(struct pvr_cmd_buffer *cmd_buffer)
+@@ -2575,7 +2892,11 @@ VkResult pvr_arch_cmd_buffer_end_sub_cmd(struct pvr_cmd_buffer *cmd_buffer)
        cmd_buffer->state.current_sub_cmd->event = (struct pvr_sub_cmd_event){
           .type = PVR_EVENT_TYPE_BARRIER,
           .barrier = {
@@ -22906,7 +22595,7 @@ index f21b3202..34153c59 100644
              .wait_at_stage_mask = PVR_PIPELINE_STAGE_QUERY_BIT,
           },
        };
-@@ -2671,6 +2991,22 @@ pvr_render_pass_info_get_view_mask(const struct pvr_render_pass_info *rp_info)
+@@ -2671,6 +2992,22 @@ pvr_render_pass_info_get_view_mask(const struct pvr_render_pass_info *rp_info)
     return hw_render->view_mask;
  }
  
@@ -22929,7 +22618,7 @@ index f21b3202..34153c59 100644
  VkResult pvr_arch_cmd_buffer_start_sub_cmd(struct pvr_cmd_buffer *cmd_buffer,
                                             enum pvr_sub_cmd_type type)
  {
-@@ -2683,6 +3019,16 @@ VkResult pvr_arch_cmd_buffer_start_sub_cmd(struct pvr_cmd_buffer *cmd_buffer,
+@@ -2683,6 +3020,16 @@ VkResult pvr_arch_cmd_buffer_start_sub_cmd(struct pvr_cmd_buffer *cmd_buffer,
     if (vk_command_buffer_has_error(&cmd_buffer->vk))
        return vk_command_buffer_get_record_result(&cmd_buffer->vk);
  
@@ -22946,7 +22635,7 @@ index f21b3202..34153c59 100644
     pvr_cmd_buffer_update_barriers(cmd_buffer, type);
  
     /* TODO: Add proper support for joining consecutive event sub_cmd? */
-@@ -2722,29 +3068,40 @@ VkResult pvr_arch_cmd_buffer_start_sub_cmd(struct pvr_cmd_buffer *cmd_buffer,
+@@ -2722,29 +3069,40 @@ VkResult pvr_arch_cmd_buffer_start_sub_cmd(struct pvr_cmd_buffer *cmd_buffer,
                                 1);
        sub_cmd->gfx.rstate = state->render_pass_info.rstate;
        sub_cmd->gfx.empty_cmd = true;
@@ -23006,7 +22695,7 @@ index f21b3202..34153c59 100644
  
        pvr_arch_reset_graphics_dirty_state(cmd_buffer, true);
  
-@@ -2990,6 +3347,14 @@ void PVR_PER_ARCH(CmdBindDescriptorSets2KHR)(
+@@ -2990,6 +3348,14 @@ void PVR_PER_ARCH(CmdBindDescriptorSets2KHR)(
                       pBindDescriptorSetsInfo->pDescriptorSets[u]);
        unsigned desc_set = u + pBindDescriptorSetsInfo->firstSet;
  
@@ -23021,7 +22710,7 @@ index f21b3202..34153c59 100644
        const struct pvr_descriptor_set_layout *set_layout =
           vk_to_pvr_descriptor_set_layout(
              pipeline_layout->set_layouts[desc_set]);
-@@ -3040,7 +3405,17 @@ void PVR_PER_ARCH(CmdBindVertexBuffers2)(VkCommandBuffer commandBuffer,
+@@ -3040,7 +3406,17 @@ void PVR_PER_ARCH(CmdBindVertexBuffers2)(VkCommandBuffer commandBuffer,
  
     PVR_CHECK_COMMAND_BUFFER_BUILDING_STATE(cmd_buffer);
  
@@ -23040,7 +22729,7 @@ index f21b3202..34153c59 100644
        VK_FROM_HANDLE(pvr_buffer, buffer, pBuffers[i]);
        const uint64_t size = pSizes ? pSizes[i] : VK_WHOLE_SIZE;
  
-@@ -3054,7 +3429,7 @@ void PVR_PER_ARCH(CmdBindVertexBuffers2)(VkCommandBuffer commandBuffer,
+@@ -3054,7 +3430,7 @@ void PVR_PER_ARCH(CmdBindVertexBuffers2)(VkCommandBuffer commandBuffer,
     if (pStrides != NULL) {
        vk_cmd_set_vertex_binding_strides(&cmd_buffer->vk,
                                          firstBinding,
@@ -23049,7 +22738,7 @@ index f21b3202..34153c59 100644
                                          pStrides);
     }
  
-@@ -3429,17 +3804,12 @@ pvr_perform_start_of_render_clears(struct pvr_cmd_buffer *cmd_buffer,
+@@ -3429,17 +3805,12 @@ pvr_perform_start_of_render_clears(struct pvr_cmd_buffer *cmd_buffer,
                                                     resume_render);
     }
  
@@ -23070,7 +22759,7 @@ index f21b3202..34153c59 100644
  
     if (hw_render->ds_attach_idx != VK_ATTACHMENT_UNUSED) {
        uint32_t ds_index_list = 0;
-@@ -3471,18 +3841,9 @@ static bool pvr_loadops_contain_clear(struct pvr_renderpass_hwsetup *hw_setup)
+@@ -3471,18 +3842,9 @@ static bool pvr_loadops_contain_clear(struct pvr_renderpass_hwsetup *hw_setup)
  {
     for (uint32_t i = 0; i < hw_setup->render_count; i++) {
        struct pvr_renderpass_hwsetup_render *hw_render = &hw_setup->renders[i];
@@ -23092,7 +22781,7 @@ index f21b3202..34153c59 100644
        }
        if (hw_render->depth_init == VK_ATTACHMENT_LOAD_OP_CLEAR ||
            hw_render->stencil_init == VK_ATTACHMENT_LOAD_OP_CLEAR) {
-@@ -3941,6 +4302,30 @@ pvr_resolve_unemitted_resolve_attachments(struct pvr_cmd_buffer *cmd_buffer,
+@@ -3941,6 +4303,30 @@ pvr_resolve_unemitted_resolve_attachments(struct pvr_cmd_buffer *cmd_buffer,
     return pvr_arch_cmd_buffer_end_sub_cmd(cmd_buffer);
  }
  
@@ -23123,7 +22812,7 @@ index f21b3202..34153c59 100644
  void PVR_PER_ARCH(CmdBeginRenderPass2)(
     VkCommandBuffer commandBuffer,
     const VkRenderPassBeginInfo *pRenderPassBeginInfo,
-@@ -3957,6 +4342,11 @@ void PVR_PER_ARCH(CmdBeginRenderPass2)(
+@@ -3957,6 +4343,11 @@ void PVR_PER_ARCH(CmdBeginRenderPass2)(
  
     PVR_CHECK_COMMAND_BUFFER_BUILDING_STATE(cmd_buffer);
  
@@ -23135,7 +22824,7 @@ index f21b3202..34153c59 100644
     assert(!state->render_pass_info.pass);
     assert(cmd_buffer->vk.level == VK_COMMAND_BUFFER_LEVEL_PRIMARY);
  
-@@ -3994,6 +4384,12 @@ void PVR_PER_ARCH(CmdBeginRenderPass2)(
+@@ -3994,6 +4385,12 @@ void PVR_PER_ARCH(CmdBeginRenderPass2)(
     assert(pass->subpasses[0].pipeline_bind_point ==
            VK_PIPELINE_BIND_POINT_GRAPHICS);
  
@@ -23148,7 +22837,7 @@ index f21b3202..34153c59 100644
     result =
        pvr_arch_cmd_buffer_start_sub_cmd(cmd_buffer, PVR_SUB_CMD_TYPE_GRAPHICS);
     if (result != VK_SUCCESS)
-@@ -4004,12 +4400,18 @@ void PVR_PER_ARCH(CmdBeginRenderPass2)(
+@@ -4004,12 +4401,18 @@ void PVR_PER_ARCH(CmdBeginRenderPass2)(
      */
     hw_subpass = pvr_arch_get_hw_subpass(pass, 0);
     if (hw_subpass->load_op) {
@@ -23168,7 +22857,7 @@ index f21b3202..34153c59 100644
     }
  
     pvr_perform_start_of_render_clears(cmd_buffer, false);
-@@ -4082,6 +4484,17 @@ static VkResult pvr_dynamic_rendering_output_attachments_setup(
+@@ -4082,6 +4485,17 @@ static VkResult pvr_dynamic_rendering_output_attachments_setup(
     struct pvr_dynamic_render_info *dr_info,
     uint32_t *attach_idx)
  {
@@ -23186,7 +22875,7 @@ index f21b3202..34153c59 100644
     VkFormat attachment_formats[pRenderingInfo->colorAttachmentCount];
     uint32_t mrt_attachment_map[pRenderingInfo->colorAttachmentCount];
     uint32_t mrt_count = 0, eot_mrt_count = 0, eot_mrt_idx = 0,
-@@ -4149,6 +4562,20 @@ static VkResult pvr_dynamic_rendering_output_attachments_setup(
+@@ -4149,6 +4563,20 @@ static VkResult pvr_dynamic_rendering_output_attachments_setup(
        attachment->load_op = attachment_info->loadOp;
        attachment->store_op = attachment_info->storeOp;
        attachment->resolve_mode = attachment_info->resolveMode;
@@ -23207,7 +22896,7 @@ index f21b3202..34153c59 100644
        attachment->stencil_load_op = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
        attachment->stencil_store_op = VK_ATTACHMENT_STORE_OP_DONT_CARE;
        attachment->stencil_resolve_mode = VK_RESOLVE_MODE_NONE;
-@@ -4742,77 +5169,595 @@ static inline uint64_t pvr_render_pass_info_get_scratch_buffer_size(
+@@ -4742,76 +5170,594 @@ static inline uint64_t pvr_render_pass_info_get_scratch_buffer_size(
        info->rstate->height);
  }
  
@@ -23425,7 +23114,6 @@ index f21b3202..34153c59 100644
 -      state->depth_format = iview->vk.format;
 -   } else if (pRenderingInfo->pStencilAttachment &&
 -              pRenderingInfo->pStencilAttachment->imageView) {
--      struct pvr_image_view *iview = pvr_image_view_from_handle(
 +   state->pending_clear_flushing = false;
 +}
 +
@@ -23855,11 +23543,10 @@ index f21b3202..34153c59 100644
 +      state->depth_format = iview->vk.format;
 +   } else if (pRenderingInfo->pStencilAttachment &&
 +              pRenderingInfo->pStencilAttachment->imageView) {
-+      struct pvr_image_view *iview = pvr_image_view_from_handle(
+       struct pvr_image_view *iview = pvr_image_view_from_handle(
           pRenderingInfo->pStencilAttachment->imageView);
        state->depth_format = iview->vk.format;
-    } else {
-@@ -4883,6 +5828,9 @@ void PVR_PER_ARCH(CmdEndRendering)(VkCommandBuffer commandBuffer)
+@@ -4883,6 +5829,9 @@ void PVR_PER_ARCH(CmdEndRendering)(VkCommandBuffer commandBuffer)
     VK_FROM_HANDLE(pvr_cmd_buffer, cmd_buffer, commandBuffer);
     struct pvr_cmd_buffer_state *state = &cmd_buffer->state;
     VkResult result;
@@ -23869,7 +23556,7 @@ index f21b3202..34153c59 100644
  
     PVR_CHECK_COMMAND_BUFFER_BUILDING_STATE(cmd_buffer);
  
-@@ -4890,6 +5838,25 @@ void PVR_PER_ARCH(CmdEndRendering)(VkCommandBuffer commandBuffer)
+@@ -4890,6 +5839,25 @@ void PVR_PER_ARCH(CmdEndRendering)(VkCommandBuffer commandBuffer)
        return;
     }
  
@@ -23895,7 +23582,7 @@ index f21b3202..34153c59 100644
     result = pvr_arch_cmd_buffer_end_sub_cmd(cmd_buffer);
     if (result != VK_SUCCESS) {
        vk_command_buffer_set_error(&cmd_buffer->vk, result);
-@@ -4907,6 +5874,12 @@ exit_teardown_render:
+@@ -4907,6 +5875,12 @@ exit_teardown_render:
     state->render_pass_info.dynamic_render = false;
     pvr_cmd_buffer_clear_values_free(cmd_buffer);
     pvr_cmd_buffer_attachments_free(cmd_buffer);
@@ -23908,7 +23595,7 @@ index f21b3202..34153c59 100644
  }
  
  static void pvr_cmd_buffer_state_from_dynamic_inheritance(
-@@ -5493,6 +6466,97 @@ pvr_setup_vertex_buffers(struct pvr_cmd_buffer *cmd_buffer,
+@@ -5493,6 +6467,97 @@ pvr_setup_vertex_buffers(struct pvr_cmd_buffer *cmd_buffer,
  static VkResult pvr_cmd_upload_push_consts(struct pvr_cmd_buffer *cmd_buffer,
                                             enum pvr_stage_allocation stage);
  
@@ -24006,7 +23693,7 @@ index f21b3202..34153c59 100644
  static VkResult pvr_setup_descriptor_mappings(
     struct pvr_cmd_buffer *const cmd_buffer,
     enum pvr_stage_allocation stage,
-@@ -5536,7 +6600,7 @@ static VkResult pvr_setup_descriptor_mappings(
+@@ -5536,7 +6601,7 @@ static VkResult pvr_setup_descriptor_mappings(
  
     case PVR_STAGE_ALLOCATION_FRAGMENT:
        desc_state = &cmd_buffer->state.gfx_desc_state;
@@ -24015,7 +23702,7 @@ index f21b3202..34153c59 100644
        break;
  
     case PVR_STAGE_ALLOCATION_COMPUTE:
-@@ -5594,6 +6658,37 @@ static VkResult pvr_setup_descriptor_mappings(
+@@ -5594,6 +6659,37 @@ static VkResult pvr_setup_descriptor_mappings(
              (struct pvr_const_map_entry_special_buffer *)entries;
  
           switch (special_buff_entry->buffer_type) {
@@ -24053,7 +23740,7 @@ index f21b3202..34153c59 100644
           case PVR_BUFFER_TYPE_DYNAMIC: {
              unsigned desc_set = special_buff_entry->data;
              const struct pvr_descriptor_set *descriptor_set;
-@@ -5819,7 +6914,7 @@ static VkResult pvr_setup_descriptor_mappings(
+@@ -5819,7 +6915,7 @@ static VkResult pvr_setup_descriptor_mappings(
                 &device->tile_buffer_state;
              const struct pvr_graphics_pipeline *const gfx_pipeline =
                 cmd_buffer->state.gfx_pipeline;
@@ -24062,7 +23749,7 @@ index f21b3202..34153c59 100644
  
              unsigned num_tile_buffers =
                 fs_data->fs.tile_buffers.count / fs_data->fs.tile_buffers.stride;
-@@ -5954,6 +7049,14 @@ static VkResult pvr_setup_descriptor_mappings(
+@@ -5954,6 +7050,14 @@ static VkResult pvr_setup_descriptor_mappings(
              break;
           }
  
@@ -24077,78 +23764,7 @@ index f21b3202..34153c59 100644
           case PVR_BUFFER_TYPE_GLOBAL_SHMEM: {
              assert(stage == PVR_STAGE_ALLOCATION_COMPUTE);
              assert(data->cs.global_shmem);
-@@ -6031,6 +7134,20 @@ static VkResult pvr_setup_descriptor_mappings(
-       pvr_bo->dev_addr.addr -
-       device->heaps.pds_heap->base_addr.addr;
- 
-+   if (getenv("PVR_DUMP_COMPUTE_DESCRIPTORS") && stage == PVR_STAGE_ALLOCATION_COMPUTE) {
-+      FILE *f = fopen(getenv("PVR_DUMP_COMPUTE_DESCRIPTORS"), "ab");
-+      uint32_t i;
-+
-+      if (f) {
-+         fprintf(f, "DESC off=0x%x size_dw=%u:", *descriptor_data_offset_out,
-+                 pds_info->data_size_in_dwords);
-+         for (i = 0; i < pds_info->data_size_in_dwords; i++)
-+            fprintf(f, " %08x", dword_buffer[i]);
-+         fprintf(f, "\n");
-+         fclose(f);
-+      }
-+   }
-+
-    return VK_SUCCESS;
- }
- 
-@@ -6313,6 +7430,49 @@ static void pvr_compute_update_kernel(
-       }
-    }
- 
-+   if (getenv("PVR_DUMP_COMPUTE_PDS_RUNTIME")) {
-+      FILE *f = fopen(getenv("PVR_DUMP_COMPUTE_PDS_RUNTIME"), "ab");
-+      uint32_t i;
-+
-+      if (f) {
-+         struct {
-+            const char *name;
-+            struct pvr_suballoc_bo *bo;
-+            uint32_t off, dwords;
-+         } blobs[] = {
-+            { "cs_code", pipeline->pds_cs_program.pvr_bo,
-+              pipeline->pds_cs_program.code_offset, program_info->code_size_in_dwords },
-+            { "cs_data", pipeline->pds_cs_program.pvr_bo,
-+              pipeline->pds_cs_program.data_offset, program_info->data_size_in_dwords },
-+            { "desc_code", pipeline->descriptor_state.pds_code.pvr_bo,
-+              pipeline->descriptor_state.pds_code.code_offset,
-+              pipeline->descriptor_state.pds_info.code_size_in_dwords },
-+         };
-+
-+         for (i = 0; i < ARRAY_SIZE(blobs); i++) {
-+            const uint32_t *dw;
-+            uint32_t j;
-+
-+            if (blobs[i].bo == NULL)
-+               continue;
-+            const uint8_t *map = pvr_bo_suballoc_get_map_addr(blobs[i].bo);
-+            uint64_t base = blobs[i].bo->dev_addr.addr;
-+            uint64_t start = cmd_buffer->device->heaps.pds_heap->base_addr.addr + blobs[i].off;
-+            uint32_t local;
-+
-+            if (map == NULL || start < base)
-+               continue;
-+            local = (uint32_t)(start - base);
-+            dw = (const uint32_t *)(map + local);
-+            fprintf(f, "PDSRT %s off=0x%x dw=%u:", blobs[i].name, blobs[i].off, blobs[i].dwords);
-+            for (j = 0; j < blobs[i].dwords; j++)
-+               fprintf(f, " %08x", dw[j]);
-+            fprintf(f, "\n");
-+         }
-+         fclose(f);
-+      }
-+   }
-+
-    struct pvr_compute_kernel_info info = {
-       .indirect_buffer_addr = indirect_addr,
-       .usc_target = ROGUE_CDMCTRL_USC_TARGET_ANY,
-@@ -6414,6 +7574,8 @@ static void pvr_cmd_dispatch(
+@@ -6414,6 +7518,8 @@ static void pvr_cmd_dispatch(
     struct pvr_sub_cmd_compute *sub_cmd;
     VkResult result;
  
@@ -24157,7 +23773,7 @@ index f21b3202..34153c59 100644
     pvr_arch_cmd_buffer_start_sub_cmd(cmd_buffer, PVR_SUB_CMD_TYPE_COMPUTE);
  
     sub_cmd = &state->current_sub_cmd->compute;
-@@ -6424,7 +7586,7 @@ static void pvr_cmd_dispatch(
+@@ -6424,7 +7530,7 @@ static void pvr_cmd_dispatch(
        result =
           pvr_cmd_upload_push_consts(cmd_buffer, PVR_STAGE_ALLOCATION_COMPUTE);
        if (result != VK_SUCCESS)
@@ -24166,7 +23782,7 @@ index f21b3202..34153c59 100644
  
        /* Regenerate the PDS program to use the new push consts buffer. */
        state->dirty.compute_desc_dirty = true;
-@@ -6439,7 +7601,7 @@ static void pvr_cmd_dispatch(
+@@ -6439,7 +7545,7 @@ static void pvr_cmd_dispatch(
           NULL,
           &state->pds_compute_descriptor_data_offset);
        if (result != VK_SUCCESS)
@@ -24175,7 +23791,7 @@ index f21b3202..34153c59 100644
     }
  
     pvr_compute_update_shared(cmd_buffer, sub_cmd);
-@@ -6448,6 +7610,8 @@ static void pvr_cmd_dispatch(
+@@ -6448,6 +7554,8 @@ static void pvr_cmd_dispatch(
                               indirect_addr,
                               base_group,
                               workgroup_size);
@@ -24184,7 +23800,7 @@ index f21b3202..34153c59 100644
  }
  
  void PVR_PER_ARCH(CmdDispatchBase)(VkCommandBuffer commandBuffer,
-@@ -6520,6 +7684,11 @@ static uint32_t pvr_calc_shared_regs_count(
+@@ -6520,6 +7628,11 @@ static uint32_t pvr_calc_shared_regs_count(
  
     if (gfx_pipeline->shader_state.fragment.shader_bo) {
        uint32_t fragment_regs = gfx_pipeline->fs_data.common.shareds;
@@ -24196,7 +23812,7 @@ index f21b3202..34153c59 100644
        shared_regs = MAX2(shared_regs, fragment_regs);
     }
  
-@@ -6557,7 +7726,12 @@ pvr_emit_dirty_pds_state(const struct pvr_cmd_buffer *const cmd_buffer,
+@@ -6557,7 +7670,12 @@ pvr_emit_dirty_pds_state(const struct pvr_cmd_buffer *const cmd_buffer,
  
     pvr_csb_emit (csb, VDMCTRL_PDS_STATE1, state1) {
        state1.pds_data_addr = PVR_DEV_ADDR(pds_vertex_descriptor_data_offset);
@@ -24210,7 +23826,7 @@ index f21b3202..34153c59 100644
     }
  
     pvr_csb_emit (csb, VDMCTRL_PDS_STATE2, state2) {
-@@ -6575,7 +7749,7 @@ static void pvr_setup_output_select(struct pvr_cmd_buffer *const cmd_buffer)
+@@ -6575,7 +7693,7 @@ static void pvr_setup_output_select(struct pvr_cmd_buffer *const cmd_buffer)
     struct ROGUE_TA_STATE_HEADER *const header = &cmd_buffer->state.emit_header;
     struct pvr_ppp_state *const ppp_state = &cmd_buffer->state.ppp_state;
     const pco_data *const vs_data = &gfx_pipeline->vs_data;
@@ -24219,7 +23835,7 @@ index f21b3202..34153c59 100644
     uint32_t output_selects;
     uint32_t varying[2];
  
-@@ -6595,6 +7769,17 @@ static void pvr_setup_output_select(struct pvr_cmd_buffer *const cmd_buffer)
+@@ -6595,6 +7713,17 @@ static void pvr_setup_output_select(struct pvr_cmd_buffer *const cmd_buffer)
        state.rhw_pres = fs_data->fs.uses.w;
        state.tsp_unclamped_z_pres = fs_data->fs.uses.z;
  
@@ -24237,14 +23853,10 @@ index f21b3202..34153c59 100644
        state.vtxsize = vs_data->vs.vtxouts;
        state.psprite_size_pres = has_point_size;
        state.vpt_tgt_pres = has_viewport;
-@@ -6659,7 +7844,20 @@ pvr_needs_fs_passthrough(const struct vk_dynamic_graphics_state *dynamic_state)
-    bool partial_sample_mask =
-       (dynamic_state->ms.sample_mask & full_sample_mask) != full_sample_mask;
+@@ -6662,13 +7791,26 @@ pvr_needs_fs_passthrough(const struct vk_dynamic_graphics_state *dynamic_state)
+    return partial_sample_mask;
+ }
  
--   return partial_sample_mask;
-+   return partial_sample_mask;
-+}
-+
 +/* The colour write enable emulation reads the framebuffer when a colour
 + * output the fragment shader writes is disabled.
 + */
@@ -24256,10 +23868,11 @@ index f21b3202..34153c59 100644
 +                      << PVR_FS_META_COLOR_WRITE_ENABLE_OFFSET;
 +
 +   return (enables & fs_data->cwe_meta_mask) != fs_data->cwe_meta_mask;
- }
- 
++}
++
  static void
-@@ -6668,7 +7866,7 @@ pvr_setup_isp_faces_and_control(struct pvr_cmd_buffer *const cmd_buffer,
+ pvr_setup_isp_faces_and_control(struct pvr_cmd_buffer *const cmd_buffer,
+                                 struct ROGUE_TA_STATE_ISPA *const ispa_out)
  {
     struct ROGUE_TA_STATE_HEADER *const header = &cmd_buffer->state.emit_header;
     const struct pvr_fragment_shader_state *const fragment_shader_state =
@@ -24268,7 +23881,7 @@ index f21b3202..34153c59 100644
     const struct pvr_render_pass_info *const pass_info =
        &cmd_buffer->state.render_pass_info;
     struct vk_dynamic_graphics_state *dynamic_state =
-@@ -6697,6 +7895,19 @@ pvr_setup_isp_faces_and_control(struct pvr_cmd_buffer *const cmd_buffer,
+@@ -6697,6 +7839,19 @@ pvr_setup_isp_faces_and_control(struct pvr_cmd_buffer *const cmd_buffer,
              : NULL;
     }
  
@@ -24288,7 +23901,7 @@ index f21b3202..34153c59 100644
     const enum ROGUE_TA_OBJTYPE obj_type =
        pvr_ta_objtype(dynamic_state->ia.primitive_topology);
  
-@@ -6755,7 +7966,9 @@ pvr_setup_isp_faces_and_control(struct pvr_cmd_buffer *const cmd_buffer,
+@@ -6755,7 +7910,9 @@ pvr_setup_isp_faces_and_control(struct pvr_cmd_buffer *const cmd_buffer,
  
        ispa.passtype = fragment_shader_state->pass_type;
  
@@ -24299,7 +23912,7 @@ index f21b3202..34153c59 100644
            fragment_shader_state->pass_type == ROGUE_TA_PASSTYPE_OPAQUE)
           ispa.passtype = ROGUE_TA_PASSTYPE_TRANSLUCENT;
  
-@@ -7116,7 +8329,6 @@ pvr_setup_isp_depth_bias_scissor_state(struct pvr_cmd_buffer *const cmd_buffer)
+@@ -7116,7 +8273,6 @@ pvr_setup_isp_depth_bias_scissor_state(struct pvr_cmd_buffer *const cmd_buffer)
        assert(dynamic_state->vp.viewport_count == 1);
        /* We don't support multiple scissor calculations. */
        assert(dynamic_state->vp.scissor_count == 1);
@@ -24307,7 +23920,7 @@ index f21b3202..34153c59 100644
        pvr_get_viewport_scissor_overlap(viewport, scissor, &overlap_rect);
  
        x = overlap_rect.offset.x;
-@@ -7217,13 +8429,84 @@ pvr_setup_triangle_merging_flag(struct pvr_cmd_buffer *const cmd_buffer,
+@@ -7217,13 +8373,84 @@ pvr_setup_triangle_merging_flag(struct pvr_cmd_buffer *const cmd_buffer,
     }
  }
  
@@ -24393,7 +24006,7 @@ index f21b3202..34153c59 100644
     const struct vk_dynamic_graphics_state *const dynamic_state =
        &cmd_buffer->vk.dynamic_graphics_state;
     const struct pvr_pds_kickusc_program *program =
-@@ -7269,7 +8552,7 @@ setup_pds_coeff_program(struct pvr_cmd_buffer *const cmd_buffer,
+@@ -7269,7 +8496,7 @@ setup_pds_coeff_program(struct pvr_cmd_buffer *const cmd_buffer,
  {
     struct pvr_cmd_buffer_state *const state = &cmd_buffer->state;
     const struct pvr_fragment_shader_state *const fragment_shader_state =
@@ -24402,7 +24015,7 @@ index f21b3202..34153c59 100644
     const struct vk_dynamic_graphics_state *const dynamic_state =
        &cmd_buffer->vk.dynamic_graphics_state;
     const VkProvokingVertexModeEXT provoking_vertex =
-@@ -7336,10 +8619,10 @@ pvr_setup_fragment_state_pointers(struct pvr_cmd_buffer *const cmd_buffer,
+@@ -7336,10 +8563,10 @@ pvr_setup_fragment_state_pointers(struct pvr_cmd_buffer *const cmd_buffer,
                                    struct pvr_sub_cmd_gfx *const sub_cmd)
  {
     struct pvr_cmd_buffer_state *const state = &cmd_buffer->state;
@@ -24415,7 +24028,7 @@ index f21b3202..34153c59 100644
     const struct pvr_stage_allocation_descriptor_state *descriptor_shader_state =
        &fragment_shader_state->descriptor_state;
     const struct pvr_pipeline_stage_state *fragment_state =
-@@ -7821,10 +9104,22 @@ static VkResult pvr_emit_ppp_state(struct pvr_cmd_buffer *const cmd_buffer,
+@@ -7821,10 +9048,22 @@ static VkResult pvr_emit_ppp_state(struct pvr_cmd_buffer *const cmd_buffer,
      * inheriting a non-zero value set elsewhere.
      */
     if (header->pres_stream_out_size) {
@@ -24439,7 +24052,7 @@ index f21b3202..34153c59 100644
     assert(EMIT_MASK_IS_CLEAR);
  
  #undef EMIT_MASK_GET
-@@ -7906,6 +9201,76 @@ static VkResult pvr_emit_ppp_state(struct pvr_cmd_buffer *const cmd_buffer,
+@@ -7906,6 +9145,76 @@ static VkResult pvr_emit_ppp_state(struct pvr_cmd_buffer *const cmd_buffer,
     return VK_SUCCESS;
  }
  
@@ -24516,7 +24129,7 @@ index f21b3202..34153c59 100644
  static inline bool pvr_ppp_dynamic_state_isp_faces_and_control_dirty(
     const BITSET_WORD *const dynamic_dirty)
  {
-@@ -7922,7 +9287,9 @@ static inline bool pvr_ppp_dynamic_state_isp_faces_and_control_dirty(
+@@ -7922,7 +9231,9 @@ static inline bool pvr_ppp_dynamic_state_isp_faces_and_control_dirty(
                        MESA_VK_DYNAMIC_RS_RASTERIZER_DISCARD_ENABLE) ||
            BITSET_TEST(dynamic_dirty,
                        MESA_VK_DYNAMIC_MS_RASTERIZATION_SAMPLES) ||
@@ -24527,7 +24140,7 @@ index f21b3202..34153c59 100644
  }
  
  static inline bool
-@@ -7947,8 +9314,9 @@ pvr_ppp_state_update_required(const struct pvr_cmd_buffer *cmd_buffer)
+@@ -7947,8 +9258,9 @@ pvr_ppp_state_update_required(const struct pvr_cmd_buffer *cmd_buffer)
            header->pres_wclamp || header->pres_outselects ||
            header->pres_varying_word0 || header->pres_varying_word1 ||
            header->pres_varying_word2 || header->pres_stream_out_program ||
@@ -24539,7 +24152,7 @@ index f21b3202..34153c59 100644
            state->push_consts[PVR_STAGE_ALLOCATION_FRAGMENT].dirty ||
            pvr_ppp_dynamic_state_isp_faces_and_control_dirty(dynamic_dirty) ||
            BITSET_TEST(dynamic_dirty, MESA_VK_DYNAMIC_RS_DEPTH_BIAS_FACTORS) ||
-@@ -7967,7 +9335,7 @@ pvr_emit_dirty_ppp_state(struct pvr_cmd_buffer *const cmd_buffer,
+@@ -7967,7 +9279,7 @@ pvr_emit_dirty_ppp_state(struct pvr_cmd_buffer *const cmd_buffer,
     struct vk_dynamic_graphics_state *const dynamic_state =
        &cmd_buffer->vk.dynamic_graphics_state;
     const struct pvr_fragment_shader_state *fragment_state =
@@ -24548,7 +24161,7 @@ index f21b3202..34153c59 100644
     VkResult result;
  
     /* TODO: The emit_header will be dirty only if
-@@ -7996,8 +9364,8 @@ pvr_emit_dirty_ppp_state(struct pvr_cmd_buffer *const cmd_buffer,
+@@ -7996,8 +9308,8 @@ pvr_emit_dirty_ppp_state(struct pvr_cmd_buffer *const cmd_buffer,
                    !pvr_needs_fs_passthrough(dynamic_state);
     if (!dynamic_state->rs.rasterizer_discard_enable &&
         state->dirty.fragment_descriptors &&
@@ -24559,7 +24172,7 @@ index f21b3202..34153c59 100644
        result = pvr_setup_fragment_state_pointers(cmd_buffer, sub_cmd);
        if (result != VK_SUCCESS)
           return result;
-@@ -8046,6 +9414,8 @@ pvr_emit_dirty_ppp_state(struct pvr_cmd_buffer *const cmd_buffer,
+@@ -8046,6 +9358,8 @@ pvr_emit_dirty_ppp_state(struct pvr_cmd_buffer *const cmd_buffer,
        break;
     }
  
@@ -24568,7 +24181,7 @@ index f21b3202..34153c59 100644
     result = pvr_emit_ppp_state(cmd_buffer, sub_cmd);
     if (result != VK_SUCCESS)
        return result;
-@@ -8196,8 +9566,14 @@ static void pvr_emit_dirty_vdm_state(struct pvr_cmd_buffer *const cmd_buffer,
+@@ -8196,8 +9510,14 @@ static void pvr_emit_dirty_vdm_state(struct pvr_cmd_buffer *const cmd_buffer,
         * Vulkan doesn't support stream output and the vertex position is
         * always emitted to the UVB.
         */
@@ -24585,7 +24198,7 @@ index f21b3202..34153c59 100644
  
        header = state0;
     }
-@@ -8247,6 +9623,27 @@ static void pvr_emit_dirty_vdm_state(struct pvr_cmd_buffer *const cmd_buffer,
+@@ -8247,6 +9567,27 @@ static void pvr_emit_dirty_vdm_state(struct pvr_cmd_buffer *const cmd_buffer,
     pvr_csb_clear_relocation_mark(csb);
  }
  
@@ -24613,7 +24226,7 @@ index f21b3202..34153c59 100644
  static VkResult pvr_validate_draw_state(struct pvr_cmd_buffer *cmd_buffer)
  {
     struct pvr_cmd_buffer_state *const state = &cmd_buffer->state;
-@@ -8254,7 +9651,9 @@ static VkResult pvr_validate_draw_state(struct pvr_cmd_buffer *cmd_buffer)
+@@ -8254,7 +9595,9 @@ static VkResult pvr_validate_draw_state(struct pvr_cmd_buffer *cmd_buffer)
        &cmd_buffer->vk.dynamic_graphics_state;
     const struct pvr_graphics_pipeline *const gfx_pipeline = state->gfx_pipeline;
     const pco_data *const vs_data = &gfx_pipeline->vs_data;
@@ -24624,7 +24237,7 @@ index f21b3202..34153c59 100644
     struct pvr_sub_cmd_gfx *sub_cmd;
     bool fstencil_writemask_zero;
     bool bstencil_writemask_zero;
-@@ -8378,16 +9777,26 @@ static VkResult pvr_validate_draw_state(struct pvr_cmd_buffer *cmd_buffer)
+@@ -8378,16 +9721,26 @@ static VkResult pvr_validate_draw_state(struct pvr_cmd_buffer *cmd_buffer)
      */
     state->dirty.vertex_descriptors |= state->dirty.gfx_desc_dirty;
     state->dirty.fragment_descriptors |= state->dirty.gfx_desc_dirty;
@@ -24653,7 +24266,7 @@ index f21b3202..34153c59 100644
     bool skip_fs = fragment_shader_state->is_passthrough &&
                    !pvr_needs_fs_passthrough(dynamic_state);
  
-@@ -8395,7 +9804,7 @@ static VkResult pvr_validate_draw_state(struct pvr_cmd_buffer *cmd_buffer)
+@@ -8395,7 +9748,7 @@ static VkResult pvr_validate_draw_state(struct pvr_cmd_buffer *cmd_buffer)
        result = pvr_setup_descriptor_mappings(
           cmd_buffer,
           PVR_STAGE_ALLOCATION_FRAGMENT,
@@ -24662,7 +24275,7 @@ index f21b3202..34153c59 100644
           NULL,
           &state->pds_fragment_descriptor_data_offset);
        if (result != VK_SUCCESS) {
-@@ -8781,11 +10190,15 @@ void PVR_PER_ARCH(CmdDraw)(VkCommandBuffer commandBuffer,
+@@ -8781,11 +10134,15 @@ void PVR_PER_ARCH(CmdDraw)(VkCommandBuffer commandBuffer,
  
     PVR_CHECK_COMMAND_BUFFER_BUILDING_STATE(cmd_buffer);
  
@@ -24679,7 +24292,7 @@ index f21b3202..34153c59 100644
  
     /* Write the VDM control stream for the primitive. */
     pvr_emit_vdm_index_list(cmd_buffer,
-@@ -8799,6 +10212,9 @@ void PVR_PER_ARCH(CmdDraw)(VkCommandBuffer commandBuffer,
+@@ -8799,6 +10156,9 @@ void PVR_PER_ARCH(CmdDraw)(VkCommandBuffer commandBuffer,
                             0U,
                             0U,
                             0U);
@@ -24689,7 +24302,7 @@ index f21b3202..34153c59 100644
  }
  
  void PVR_PER_ARCH(CmdDrawIndexed)(VkCommandBuffer commandBuffer,
-@@ -8822,11 +10238,15 @@ void PVR_PER_ARCH(CmdDrawIndexed)(VkCommandBuffer commandBuffer,
+@@ -8822,11 +10182,15 @@ void PVR_PER_ARCH(CmdDrawIndexed)(VkCommandBuffer commandBuffer,
  
     PVR_CHECK_COMMAND_BUFFER_BUILDING_STATE(cmd_buffer);
  
@@ -24706,7 +24319,7 @@ index f21b3202..34153c59 100644
  
     /* Write the VDM control stream for the primitive. */
     pvr_emit_vdm_index_list(cmd_buffer,
-@@ -8840,6 +10260,9 @@ void PVR_PER_ARCH(CmdDrawIndexed)(VkCommandBuffer commandBuffer,
+@@ -8840,6 +10204,9 @@ void PVR_PER_ARCH(CmdDrawIndexed)(VkCommandBuffer commandBuffer,
                             0U,
                             0U,
                             0U);
@@ -24716,7 +24329,7 @@ index f21b3202..34153c59 100644
  }
  
  void PVR_PER_ARCH(CmdDrawIndexedIndirect)(VkCommandBuffer commandBuffer,
-@@ -8862,11 +10285,15 @@ void PVR_PER_ARCH(CmdDrawIndexedIndirect)(VkCommandBuffer commandBuffer,
+@@ -8862,11 +10229,15 @@ void PVR_PER_ARCH(CmdDrawIndexedIndirect)(VkCommandBuffer commandBuffer,
  
     PVR_CHECK_COMMAND_BUFFER_BUILDING_STATE(cmd_buffer);
  
@@ -24733,7 +24346,7 @@ index f21b3202..34153c59 100644
  
     /* Write the VDM control stream for the primitive. */
     pvr_emit_vdm_index_list(cmd_buffer,
-@@ -8880,6 +10307,9 @@ void PVR_PER_ARCH(CmdDrawIndexedIndirect)(VkCommandBuffer commandBuffer,
+@@ -8880,6 +10251,9 @@ void PVR_PER_ARCH(CmdDrawIndexedIndirect)(VkCommandBuffer commandBuffer,
                             offset,
                             drawCount,
                             stride);
@@ -24743,7 +24356,7 @@ index f21b3202..34153c59 100644
  }
  
  void PVR_PER_ARCH(CmdDrawIndirect)(VkCommandBuffer commandBuffer,
-@@ -8901,11 +10331,15 @@ void PVR_PER_ARCH(CmdDrawIndirect)(VkCommandBuffer commandBuffer,
+@@ -8901,11 +10275,15 @@ void PVR_PER_ARCH(CmdDrawIndirect)(VkCommandBuffer commandBuffer,
  
     PVR_CHECK_COMMAND_BUFFER_BUILDING_STATE(cmd_buffer);
  
@@ -24760,7 +24373,7 @@ index f21b3202..34153c59 100644
  
     /* Write the VDM control stream for the primitive. */
     pvr_emit_vdm_index_list(cmd_buffer,
-@@ -8919,6 +10353,219 @@ void PVR_PER_ARCH(CmdDrawIndirect)(VkCommandBuffer commandBuffer,
+@@ -8919,6 +10297,219 @@ void PVR_PER_ARCH(CmdDrawIndirect)(VkCommandBuffer commandBuffer,
                             offset,
                             drawCount,
                             stride);
@@ -24980,7 +24593,7 @@ index f21b3202..34153c59 100644
  }
  
  void PVR_PER_ARCH(CmdEndRenderPass2)(VkCommandBuffer commandBuffer,
-@@ -8944,6 +10591,13 @@ void PVR_PER_ARCH(CmdEndRenderPass2)(VkCommandBuffer commandBuffer,
+@@ -8944,6 +10535,13 @@ void PVR_PER_ARCH(CmdEndRenderPass2)(VkCommandBuffer commandBuffer,
     if (result != VK_SUCCESS)
        return;
  
@@ -24994,7 +24607,7 @@ index f21b3202..34153c59 100644
     /* Save the required fields before clearing render_pass_info struct. */
     attachments = state->render_pass_info.attachments;
     clear_values = state->render_pass_info.clear_values;
-@@ -9278,6 +10932,8 @@ void PVR_PER_ARCH(CmdExecuteCommands)(VkCommandBuffer commandBuffer,
+@@ -9278,6 +10876,8 @@ void PVR_PER_ARCH(CmdExecuteCommands)(VkCommandBuffer commandBuffer,
  
     PVR_CHECK_COMMAND_BUFFER_BUILDING_STATE(cmd_buffer);
  
@@ -25003,7 +24616,7 @@ index f21b3202..34153c59 100644
     assert(cmd_buffer->vk.level == VK_COMMAND_BUFFER_LEVEL_PRIMARY);
  
     /* Reset the CPU copy of the most recent PPP state of the primary command
-@@ -9432,7 +11088,7 @@ void PVR_PER_ARCH(CmdNextSubpass2)(VkCommandBuffer commandBuffer,
+@@ -9432,7 +11032,7 @@ void PVR_PER_ARCH(CmdNextSubpass2)(VkCommandBuffer commandBuffer,
        /* If this subpass contains any load ops the HW Background Object must be
         * run to do the clears/loads.
         */
@@ -25012,7 +24625,7 @@ index f21b3202..34153c59 100644
           rp_info->enable_bg_tag = true;
  
           if (pass->multiview_enabled) {
-@@ -9463,7 +11119,8 @@ void PVR_PER_ARCH(CmdNextSubpass2)(VkCommandBuffer commandBuffer,
+@@ -9463,7 +11063,8 @@ void PVR_PER_ARCH(CmdNextSubpass2)(VkCommandBuffer commandBuffer,
     }
  
     hw_subpass = &next_hw_render->subpasses[next_map->subpass];
@@ -25022,7 +24635,7 @@ index f21b3202..34153c59 100644
  
     if (hw_subpass_load_op) {
        result = pvr_cs_write_load_op(cmd_buffer,
-@@ -9495,6 +11152,16 @@ void PVR_PER_ARCH(CmdNextSubpass2)(VkCommandBuffer commandBuffer,
+@@ -9495,6 +11096,16 @@ void PVR_PER_ARCH(CmdNextSubpass2)(VkCommandBuffer commandBuffer,
     rp_info->subpass_idx++;
  
     rp_info->isp_userpass = pass->subpasses[rp_info->subpass_idx].isp_userpass;
@@ -25039,7 +24652,7 @@ index f21b3202..34153c59 100644
     state->dirty.isp_userpass = true;
  
     rp_info->pipeline_bind_point =
-@@ -9603,7 +11270,7 @@ static bool pvr_is_stencil_store_load_needed(
+@@ -9603,7 +11214,7 @@ static bool pvr_is_stencil_store_load_needed(
     return false;
  }
  
@@ -25048,7 +24661,7 @@ index f21b3202..34153c59 100644
  pvr_cmd_buffer_insert_mid_frag_barrier_event(struct pvr_cmd_buffer *cmd_buffer,
                                               uint32_t src_stage_mask,
                                               uint32_t dst_stage_mask)
-@@ -9615,10 +11282,12 @@ pvr_cmd_buffer_insert_mid_frag_barrier_event(struct pvr_cmd_buffer *cmd_buffer,
+@@ -9615,10 +11226,12 @@ pvr_cmd_buffer_insert_mid_frag_barrier_event(struct pvr_cmd_buffer *cmd_buffer,
  
     cmd_buffer->state.current_sub_cmd->gfx.empty_cmd = false;
  
@@ -25063,7 +24676,7 @@ index f21b3202..34153c59 100644
     result =
        pvr_arch_cmd_buffer_start_sub_cmd(cmd_buffer, PVR_SUB_CMD_TYPE_EVENT);
     if (result != VK_SUCCESS)
-@@ -9631,8 +11300,15 @@ pvr_cmd_buffer_insert_mid_frag_barrier_event(struct pvr_cmd_buffer *cmd_buffer,
+@@ -9631,8 +11244,15 @@ pvr_cmd_buffer_insert_mid_frag_barrier_event(struct pvr_cmd_buffer *cmd_buffer,
           .wait_at_stage_mask = dst_stage_mask,
        },
     };
@@ -25081,7 +24694,7 @@ index f21b3202..34153c59 100644
  
     cmd_buffer->state.current_sub_cmd->gfx.dr_info = prev_sub_cmd->gfx.dr_info;
     prev_sub_cmd->gfx.dr_info = NULL;
-@@ -9651,29 +11327,6 @@ pvr_cmd_buffer_insert_mid_frag_barrier_event(struct pvr_cmd_buffer *cmd_buffer,
+@@ -9651,29 +11271,6 @@ pvr_cmd_buffer_insert_mid_frag_barrier_event(struct pvr_cmd_buffer *cmd_buffer,
     return VK_SUCCESS;
  }
  
@@ -25111,7 +24724,7 @@ index f21b3202..34153c59 100644
  /* This is just enough to handle vkCmdPipelineBarrier().
   * TODO: Complete?
   */
-@@ -9695,6 +11348,10 @@ void PVR_PER_ARCH(CmdPipelineBarrier2)(VkCommandBuffer commandBuffer,
+@@ -9695,6 +11292,10 @@ void PVR_PER_ARCH(CmdPipelineBarrier2)(VkCommandBuffer commandBuffer,
  
     PVR_CHECK_COMMAND_BUFFER_BUILDING_STATE(cmd_buffer);
  
@@ -25122,7 +24735,7 @@ index f21b3202..34153c59 100644
     for (uint32_t i = 0; i < pDependencyInfo->memoryBarrierCount; i++) {
        vk_src_stage_mask |= pDependencyInfo->pMemoryBarriers[i].srcStageMask;
        vk_dst_stage_mask |= pDependencyInfo->pMemoryBarriers[i].dstStageMask;
-@@ -9852,6 +11509,8 @@ void PVR_PER_ARCH(CmdSetEvent2)(VkCommandBuffer commandBuffer,
+@@ -9852,6 +11453,8 @@ void PVR_PER_ARCH(CmdSetEvent2)(VkCommandBuffer commandBuffer,
  
     PVR_CHECK_COMMAND_BUFFER_BUILDING_STATE(cmd_buffer);
  
@@ -25131,7 +24744,7 @@ index f21b3202..34153c59 100644
     result =
        pvr_arch_cmd_buffer_start_sub_cmd(cmd_buffer, PVR_SUB_CMD_TYPE_EVENT);
     if (result != VK_SUCCESS)
-@@ -9883,6 +11542,8 @@ void PVR_PER_ARCH(CmdWaitEvents2)(VkCommandBuffer commandBuffer,
+@@ -9883,6 +11486,8 @@ void PVR_PER_ARCH(CmdWaitEvents2)(VkCommandBuffer commandBuffer,
  
     PVR_CHECK_COMMAND_BUFFER_BUILDING_STATE(cmd_buffer);
  
@@ -25140,36 +24753,7 @@ index f21b3202..34153c59 100644
     VK_MULTIALLOC(ma);
     vk_multialloc_add(&ma, &events_array, __typeof__(*events_array), eventCount);
     vk_multialloc_add(&ma, &stage_masks, __typeof__(*stage_masks), eventCount);
-@@ -9939,8 +11600,28 @@ void PVR_PER_ARCH(CmdWriteTimestamp2)(VkCommandBuffer commandBuffer,
-    UNREACHABLE("Timestamp queries are not supported.");
- }
- 
-+extern uint64_t pvr_alloc_count, pvr_alloc_bytes;
-+
- VkResult PVR_PER_ARCH(EndCommandBuffer)(VkCommandBuffer commandBuffer)
- {
-+   /* Report what this command buffer allocated, for PVR_ALLOC_TRACE=1. A driver that
-+    * allocates buffers per command buffer pays for them every frame. */
-+   {
-+      static uint64_t last_count, last_bytes;
-+      static int last_frames;
-+      extern uint64_t pvr_alloc_count, pvr_alloc_bytes;
-+
-+      if (getenv("PVR_ALLOC_TRACE")) {
-+         uint64_t dcount = pvr_alloc_count - last_count;
-+         uint64_t dbytes = pvr_alloc_bytes - last_bytes;
-+         last_count = pvr_alloc_count;
-+         last_bytes = pvr_alloc_bytes;
-+         if (++last_frames <= 5 || last_frames % 50 == 0)
-+            fprintf(stderr, "[alloc] command buffer %d: %llu bo(s), %llu KiB\n", last_frames,
-+                    (unsigned long long)dcount, (unsigned long long)(dbytes / 1024));
-+      }
-+   }
-+
-    VK_FROM_HANDLE(pvr_cmd_buffer, cmd_buffer, commandBuffer);
-    struct pvr_cmd_buffer_state *state = &cmd_buffer->state;
-    VkResult result;
-@@ -9948,6 +11629,8 @@ VkResult PVR_PER_ARCH(EndCommandBuffer)(VkCommandBuffer commandBuffer)
+@@ -9948,6 +11553,8 @@ VkResult PVR_PER_ARCH(EndCommandBuffer)(VkCommandBuffer commandBuffer)
     if (vk_command_buffer_has_error(&cmd_buffer->vk))
        return vk_command_buffer_end(&cmd_buffer->vk);
  
@@ -25305,7 +24889,7 @@ index 66edec76..2337e4b1 100644
        vk_error(csb->device, result);
        csb->status = result;
 diff --git a/src/imagination/vulkan/pvr_arch_descriptor_set.c b/src/imagination/vulkan/pvr_arch_descriptor_set.c
-index 4e53459b..b5bc6e39 100644
+index 4e53459b..9adbd08a 100644
 --- a/src/imagination/vulkan/pvr_arch_descriptor_set.c
 +++ b/src/imagination/vulkan/pvr_arch_descriptor_set.c
 @@ -4,6 +4,9 @@
@@ -25318,31 +24902,15 @@ index 4e53459b..b5bc6e39 100644
  #include "pvr_descriptor_set.h"
  
  #include "vk_descriptor_update_template.h"
-@@ -46,6 +49,23 @@ write_buffer(const struct pvr_descriptor_set *set,
+@@ -46,6 +49,7 @@ write_buffer(const struct pvr_descriptor_set *set,
     };
  
     memcpy(desc_mapping, &buffer_desc, sizeof(buffer_desc));
 +
-+   if (getenv("PVR_DUMP_DESC_SET")) {
-+      FILE *f = fopen(getenv("PVR_DUMP_DESC_SET"), "ab");
-+
-+      if (f) {
-+         const uint32_t *dw = (const uint32_t *)((const uint8_t *)set->mapping + (desc_offset & ~3u));
-+         uint32_t i;
-+
-+         fprintf(f, "SET addr=0x%llx size=%u desc_off=%u buffer_addr=0x%llx range=%u words:",
-+                 (unsigned long long)set->dev_addr.addr, set->size, desc_offset,
-+                 (unsigned long long)buffer_addr.addr, (unsigned)range);
-+         for (i = 0; i < 4; i++)
-+            fprintf(f, " %08x", dw[i]);
-+         fprintf(f, "\n");
-+         fclose(f);
-+      }
-+   }
  }
  
  static void
-@@ -99,7 +119,7 @@ write_sampler(const struct pvr_descriptor_set *set,
+@@ -99,7 +103,7 @@ write_sampler(const struct pvr_descriptor_set *set,
  }
  
  static void
@@ -25351,7 +24919,7 @@ index 4e53459b..b5bc6e39 100644
                      const VkDescriptorImageInfo *image_info,
                      const struct pvr_descriptor_set_layout_binding *binding,
                      uint32_t elem)
-@@ -121,6 +141,7 @@ write_image_sampler(const struct pvr_descriptor_set *set,
+@@ -121,6 +125,7 @@ write_image_sampler(const struct pvr_descriptor_set *set,
  
     if (image_info->imageView != VK_NULL_HANDLE) {
        VK_FROM_HANDLE(pvr_image_view, image_view, image_info->imageView);
@@ -25359,7 +24927,7 @@ index 4e53459b..b5bc6e39 100644
        image_sampler_desc.image =
           image_view->image_state[PVR_TEXTURE_STATE_SAMPLE];
  
-@@ -145,12 +166,13 @@ write_image_sampler(const struct pvr_descriptor_set *set,
+@@ -145,12 +150,13 @@ write_image_sampler(const struct pvr_descriptor_set *set,
  }
  
  static void
@@ -25374,7 +24942,7 @@ index 4e53459b..b5bc6e39 100644
  
     const unsigned desc_offset = binding->offset + (elem * binding->stride);
     void *desc_mapping = (uint8_t *)set->mapping + desc_offset;
-@@ -162,13 +184,14 @@ write_input_attachment(const struct pvr_descriptor_set *set,
+@@ -162,13 +168,14 @@ write_input_attachment(const struct pvr_descriptor_set *set,
  }
  
  static void
@@ -25390,7 +24958,7 @@ index 4e53459b..b5bc6e39 100644
  
     const unsigned desc_offset = binding->offset + (elem * binding->stride);
     void *desc_mapping = (uint8_t *)set->mapping + desc_offset;
-@@ -183,7 +206,7 @@ write_sampled_image(const struct pvr_descriptor_set *set,
+@@ -183,7 +190,7 @@ write_sampled_image(const struct pvr_descriptor_set *set,
  }
  
  static void
@@ -25399,7 +24967,7 @@ index 4e53459b..b5bc6e39 100644
                      const VkDescriptorImageInfo *image_info,
                      const struct pvr_descriptor_set_layout_binding *binding,
                      uint32_t elem,
-@@ -199,6 +222,8 @@ write_storage_image(const struct pvr_descriptor_set *set,
+@@ -199,6 +206,8 @@ write_storage_image(const struct pvr_descriptor_set *set,
  
     VK_FROM_HANDLE(pvr_image_view, image_view, image_info->imageView);
  
@@ -25408,7 +24976,7 @@ index 4e53459b..b5bc6e39 100644
     bool is_cube = image_view->vk.view_type == VK_IMAGE_VIEW_TYPE_CUBE ||
                    image_view->vk.view_type == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY;
  
-@@ -417,6 +442,13 @@ void PVR_PER_ARCH(UpdateDescriptorSets)(
+@@ -417,6 +426,13 @@ void PVR_PER_ARCH(UpdateDescriptorSets)(
        VK_FROM_HANDLE(pvr_descriptor_set, src_set, copy->srcSet);
        VK_FROM_HANDLE(pvr_descriptor_set, dst_set, copy->dstSet);
  
@@ -25423,7 +24991,7 @@ index 4e53459b..b5bc6e39 100644
        const struct pvr_descriptor_set_layout *dst_layout = dst_set->layout;
        const struct pvr_descriptor_set_layout_binding *src_binding;
 diff --git a/src/imagination/vulkan/pvr_arch_device.c b/src/imagination/vulkan/pvr_arch_device.c
-index af9d6980..ae120293 100644
+index af9d6980..71d048be 100644
 --- a/src/imagination/vulkan/pvr_arch_device.c
 +++ b/src/imagination/vulkan/pvr_arch_device.c
 @@ -26,11 +26,14 @@
@@ -25533,7 +25101,7 @@ index af9d6980..ae120293 100644
     /* FIXME: Move this to a later stage and possibly somewhere other than
      * pvr_device. The purpose of this is so that we don't have to get the size
      * on each kick.
-@@ -907,11 +967,29 @@ VkResult PVR_PER_ARCH(create_device)(struct pvr_physical_device *pdevice,
+@@ -907,11 +967,33 @@ VkResult PVR_PER_ARCH(create_device)(struct pvr_physical_device *pdevice,
  
     simple_mtx_init(&device->rs_mtx, mtx_plain);
     list_inithead(&device->render_states);
@@ -25550,6 +25118,10 @@ index af9d6980..ae120293 100644
 +   result = pvr_device_dummy_rt_init(device);
 +   if (result != VK_SUCCESS) {
 +      pvr_rt_dataset_cache_finish(device);
++      pvr_arch_mrt_load_op_cache_finish(device);
++      pvr_arch_spm_eot_cache_finish(device);
++      simple_mtx_destroy(&device->rs_mtx);
++      pvr_device_utrace_finish(device);
 +      goto err_pvr_border_color_table_finish;
 +   }
  
@@ -25563,7 +25135,7 @@ index af9d6980..ae120293 100644
  err_pvr_robustness_buffer_finish:
     pvr_robustness_buffer_finish(device);
  
-@@ -921,6 +999,7 @@ err_pvr_spm_finish_scratch_buffer_store:
+@@ -921,6 +1003,7 @@ err_pvr_spm_finish_scratch_buffer_store:
     pvr_arch_queues_destroy(device);
  
  err_pvr_finish_tile_buffer_state:
@@ -25571,7 +25143,7 @@ index af9d6980..ae120293 100644
     pvr_device_finish_tile_buffer_state(device);
     pvr_arch_device_finish_spm_load_state(device);
  
-@@ -961,6 +1040,7 @@ err_dec_device_count:
+@@ -961,6 +1044,7 @@ err_dec_device_count:
     pvr_bo_suballocator_fini(&device->suballoc_transfer);
     pvr_bo_suballocator_fini(&device->suballoc_pds);
     pvr_bo_suballocator_fini(&device->suballoc_general);
@@ -25579,7 +25151,7 @@ index af9d6980..ae120293 100644
  
     pvr_bo_store_destroy(device);
  
-@@ -983,6 +1063,9 @@ void PVR_PER_ARCH(destroy_device)(struct pvr_device *device,
+@@ -983,6 +1067,9 @@ void PVR_PER_ARCH(destroy_device)(struct pvr_device *device,
     if (!device)
        return;
  
@@ -25589,7 +25161,7 @@ index af9d6980..ae120293 100644
     simple_mtx_lock(&device->rs_mtx);
     list_for_each_entry_safe (struct pvr_render_state,
                               rstate,
-@@ -996,10 +1079,16 @@ void PVR_PER_ARCH(destroy_device)(struct pvr_device *device,
+@@ -996,10 +1083,16 @@ void PVR_PER_ARCH(destroy_device)(struct pvr_device *device,
     simple_mtx_unlock(&device->rs_mtx);
     simple_mtx_destroy(&device->rs_mtx);
  
@@ -25606,7 +25178,7 @@ index af9d6980..ae120293 100644
     pvr_device_finish_tile_buffer_state(device);
     pvr_arch_device_finish_spm_load_state(device);
     pvr_device_finish_graphics_static_clear_state(device);
-@@ -1020,6 +1109,7 @@ void PVR_PER_ARCH(destroy_device)(struct pvr_device *device,
+@@ -1020,6 +1113,7 @@ void PVR_PER_ARCH(destroy_device)(struct pvr_device *device,
     pvr_bo_suballocator_fini(&device->suballoc_transfer);
     pvr_bo_suballocator_fini(&device->suballoc_pds);
     pvr_bo_suballocator_fini(&device->suballoc_general);
@@ -25736,7 +25308,7 @@ index f420deb6..b43f0120 100644
  
        /* r, y or depth*/
 diff --git a/src/imagination/vulkan/pvr_arch_job_compute.c b/src/imagination/vulkan/pvr_arch_job_compute.c
-index 0a394353..5a31f64f 100644
+index 0a394353..75cb0c4b 100644
 --- a/src/imagination/vulkan/pvr_arch_job_compute.c
 +++ b/src/imagination/vulkan/pvr_arch_job_compute.c
 @@ -194,7 +194,7 @@ pvr_submit_info_flags_init(const struct pvr_device_info *const dev_info,
@@ -25759,59 +25331,8 @@ index 0a394353..5a31f64f 100644
  {
     struct pvr_winsys_compute_submit_info submit_info;
     struct pvr_device *device = ctx->device;
-@@ -230,6 +230,50 @@ VkResult pvr_arch_compute_job_submit(struct pvr_compute_ctx *ctx,
-    }
- #endif
- 
-+   if (getenv("PVR_DUMP_COMPUTE_JOB")) {
-+      char path[512];
-+      FILE *f;
-+
-+      snprintf(path, sizeof(path), "%s/fw_stream.bin", getenv("PVR_DUMP_COMPUTE_JOB"));
-+      f = fopen(path, "wb");
-+      if (f) {
-+         uint32_t len = submit_info.fw_stream_len;
-+
-+         fwrite(&len, sizeof(len), 1, f);
-+         fwrite(submit_info.fw_stream, 1, len, f);
-+         fclose(f);
-+      }
-+
-+      snprintf(path, sizeof(path), "%s/ctrl_stream.bin", getenv("PVR_DUMP_COMPUTE_JOB"));
-+      f = fopen(path, "wb");
-+      if (f) {
-+         const struct pvr_csb *cs = &sub_cmd->control_stream;
-+         uint64_t addr = pvr_csb_get_start_address(cs).addr;
-+         uint32_t len = (uint32_t)((const uint8_t *)cs->next - (const uint8_t *)cs->start);
-+
-+         fwrite(&addr, sizeof(addr), 1, f);
-+         fwrite(&len, sizeof(len), 1, f);
-+         fwrite(cs->start, 1, len, f);
-+         fclose(f);
-+      }
-+
-+      snprintf(path, sizeof(path), "%s/state_bo.bin", getenv("PVR_DUMP_COMPUTE_JOB"));
-+      f = fopen(path, "wb");
-+      if (f) {
-+         struct pvr_bo *bo = ctx->ctx_switch.compute_state_bo;
-+         uint64_t addr = bo->vma->dev_addr.addr;
-+         uint32_t size = bo->bo->size;
-+         void *map = bo->bo->map;
-+
-+         fwrite(&addr, sizeof(addr), 1, f);
-+         fwrite(&size, sizeof(size), 1, f);
-+         if (map)
-+            fwrite(map, 1, size, f);
-+         fclose(f);
-+      }
-+      fprintf(stderr, "PVR_DUMP_COMPUTE_JOB: captured compute job to %s\n", getenv("PVR_DUMP_COMPUTE_JOB"));
-+   }
-+
-    return device->ws->ops->compute_submit(ctx->ws_ctx,
-                                           &submit_info,
-                                           &device->pdevice->dev_info,
 diff --git a/src/imagination/vulkan/pvr_arch_job_render.c b/src/imagination/vulkan/pvr_arch_job_render.c
-index bf96f552..ac61dcf1 100644
+index bf96f552..3e2d847b 100644
 --- a/src/imagination/vulkan/pvr_arch_job_render.c
 +++ b/src/imagination/vulkan/pvr_arch_job_render.c
 @@ -197,6 +197,14 @@ pvr_rt_get_isp_region_size(struct pvr_device *device,
@@ -25896,37 +25417,17 @@ index bf96f552..ac61dcf1 100644
                                        struct pvr_winsys_geometry_state *state)
  {
     pvr_geom_state_stream_init(ctx, job, state);
-@@ -1140,6 +1154,29 @@ static void pvr_frag_state_stream_init(struct pvr_render_ctx *ctx,
+@@ -1140,6 +1154,9 @@ static void pvr_frag_state_stream_init(struct pvr_render_ctx *ctx,
                                 rt_dataset->width,
                                 rt_dataset->height,
                                 rt_dataset->samples);
 +   /* PVR_TILE_TRACE=1: what tiling does this job actually use, and does it take the
 +    * skip_init_hdrs path? One line, so the numbers can be checked against the
 +    * timing rather than inferred. */
-+   if (getenv("PVR_TILE_TRACE")) {
-+      static bool traced;
-+      if (!traced) {
-+         traced = true;
-+         fprintf(stderr,
-+                 "[tile] rt %ux%u samples=%u -> tiles %ux%u mtiles %ux%u tiles_per_mtile "
-+                 "%ux%u x_tile_max=%u y_tile_max=%u\n",
-+                 rt_dataset->width, rt_dataset->height, rt_dataset->samples,
-+                 tiling_info.num_tiles_x, tiling_info.num_tiles_y, tiling_info.mtiles_x,
-+                 tiling_info.mtiles_y, tiling_info.tiles_per_mtile_x,
-+                 tiling_info.tiles_per_mtile_y, tiling_info.x_tile_max, tiling_info.y_tile_max);
-+         fprintf(stderr,
-+                 "[tile] features: simple_internal_parameter_format=%d gpu_multicore_support=%d "
-+                 "process_empty_tiles=%d -> skip_init_hdrs=%d\n",
-+                 PVR_HAS_FEATURE(dev_info, simple_internal_parameter_format),
-+                 PVR_HAS_FEATURE(dev_info, gpu_multicore_support), job->process_empty_tiles,
-+                 (PVR_HAS_FEATURE(dev_info, gpu_multicore_support) &&
-+                  PVR_HAS_FEATURE(dev_info, simple_internal_parameter_format)));
-+      }
-+   }
     pvr_csb_pack (stream_ptr, CR_ISP_CTL, value) {
        value.sample_pos = true;
        value.process_empty_tiles = job->process_empty_tiles;
-@@ -1340,7 +1377,7 @@ pvr_frag_state_flags_init(const struct pvr_render_job *const job,
+@@ -1340,7 +1357,7 @@ pvr_frag_state_flags_init(const struct pvr_render_job *const job,
  static void
  pvr_render_job_ws_fragment_state_init(struct pvr_render_ctx *ctx,
                                        struct pvr_render_job *job,
@@ -25935,7 +25436,7 @@ index bf96f552..ac61dcf1 100644
                                        struct pvr_winsys_fragment_state *state)
  {
     pvr_frag_state_stream_init(ctx, job, state);
-@@ -1366,7 +1403,7 @@ pvr_render_job_ws_fragment_state_init(struct pvr_render_ctx *ctx,
+@@ -1366,7 +1383,7 @@ pvr_render_job_ws_fragment_state_init(struct pvr_render_ctx *ctx,
  static void pvr_render_job_ws_fragment_pr_init_based_on_fragment_state(
     const struct pvr_render_ctx *ctx,
     struct pvr_render_job *job,
@@ -25944,7 +25445,7 @@ index bf96f552..ac61dcf1 100644
     struct pvr_winsys_fragment_state *frag,
     struct pvr_winsys_fragment_state *state)
  {
-@@ -1376,6 +1413,22 @@ static void pvr_render_job_ws_fragment_pr_init_based_on_fragment_state(
+@@ -1376,6 +1393,11 @@ static void pvr_render_job_ws_fragment_pr_init_based_on_fragment_state(
        pvr_frag_km_stream_pbe_reg_words_offset(dev_info);
     const uint32_t eot_data_addr_byte_offset =
        pvr_frag_km_stream_pds_eot_data_addr_offset(dev_info);
@@ -25952,22 +25453,11 @@ index bf96f552..ac61dcf1 100644
 +    * can be diffed against it instead of against my transcription of the helper. */
 +   /* ponytail: PVR_CSB_TAIL - dump the bytes from the EOT offset to the end of the stream, plus the two
 +    * length values, which is everything round 82 could not answer by reading. */
-+   if (getenv("PVR_CSB_TAIL")) {
-+      const uint32_t main_len = pvr_csb_unpack((uint64_t *)state->fw_stream, KMD_STREAM_HDR).length;
-+      fprintf(stderr, "[tail] fw_stream_len=%u main_len=%u eot=%u:", state->fw_stream_len, main_len,
-+              eot_data_addr_byte_offset);
-+      for (uint32_t b = eot_data_addr_byte_offset; b + 4 <= state->fw_stream_len && b < 440; b += 4) {
-+         uint32_t w; memcpy(&w, &state->fw_stream[b], 4); fprintf(stderr, " %08x", w);
-+      }
-+      fprintf(stderr, "\n");
-+   }
 +
-+   if (getenv("PVR_CSB_OFFSETS"))
-+      fprintf(stderr, "[off] pbe=%u eot=%u\n", pbe_reg_byte_offset, eot_data_addr_byte_offset);
     const uint32_t view_index =
        job->view_state.force_pds_pixel_event_data_offset_zero
           ? 0
-@@ -1409,8 +1462,8 @@ static void pvr_render_job_ws_fragment_pr_init_based_on_fragment_state(
+@@ -1409,8 +1431,8 @@ static void pvr_render_job_ws_fragment_pr_init_based_on_fragment_state(
  static void pvr_render_job_ws_submit_info_init(
     struct pvr_render_ctx *ctx,
     struct pvr_render_job *job,
@@ -25978,7 +25468,7 @@ index bf96f552..ac61dcf1 100644
     struct pvr_winsys_render_submit_info *submit_info)
  {
     memset(submit_info, 0, sizeof(*submit_info));
-@@ -1454,10 +1507,10 @@ static void pvr_render_job_ws_submit_info_init(
+@@ -1454,10 +1476,10 @@ static void pvr_render_job_ws_submit_info_init(
  
  VkResult pvr_arch_render_job_submit(struct pvr_render_ctx *ctx,
                                      struct pvr_render_job *job,
@@ -25993,7 +25483,7 @@ index bf96f552..ac61dcf1 100644
  {
     struct pvr_rt_dataset *rt_dataset =
        job->view_state.rt_datasets[job->view_state.view_index];
-@@ -1504,7 +1557,7 @@ VkResult pvr_arch_render_job_submit(struct pvr_render_ctx *ctx,
+@@ -1504,7 +1526,7 @@ VkResult pvr_arch_render_job_submit(struct pvr_render_ctx *ctx,
           (rt_dataset->rt_data_idx + 1) % ARRAY_SIZE(rt_dataset->rt_datas);
  
        rt_dataset->need_frag = false;
@@ -26633,7 +26123,7 @@ index f9dec8a8..b6303af6 100644
        if (dep->srcSubpass != VK_SUBPASS_EXTERNAL &&
            dep->dstSubpass != VK_SUBPASS_EXTERNAL &&
 diff --git a/src/imagination/vulkan/pvr_arch_pipeline.c b/src/imagination/vulkan/pvr_arch_pipeline.c
-index d7a37a6b..a4d53b8e 100644
+index d7a37a6b..f299d789 100644
 --- a/src/imagination/vulkan/pvr_arch_pipeline.c
 +++ b/src/imagination/vulkan/pvr_arch_pipeline.c
 @@ -24,6 +24,7 @@
@@ -26668,7 +26158,7 @@ index d7a37a6b..a4d53b8e 100644
     if (stage == MESA_SHADER_FRAGMENT &&
         data->common.sys_vals[SYSTEM_VALUE_FRONT_FACE].count > 0) {
        program.buffers[program.buffer_count++] = (struct pvr_pds_buffer){
-@@ -617,6 +635,38 @@ static VkResult pvr_pds_descriptor_program_create_and_upload(
+@@ -617,6 +635,24 @@ static VkResult pvr_pds_descriptor_program_create_and_upload(
        };
     }
  
@@ -26688,26 +26178,12 @@ index d7a37a6b..a4d53b8e 100644
 +         .destination = data->common.literals.start,
 +      };
 +
-+      if (getenv("PVR_DUMP_LITERALS")) {
-+         FILE *f = fopen(getenv("PVR_DUMP_LITERALS"), "ab");
-+         uint32_t i;
-+
-+         if (f) {
-+            fprintf(f, "LIT addr=0x%llx count=%u:",
-+                    (unsigned long long)descriptor_state->static_consts->dev_addr.addr,
-+                    data->common.literals.count);
-+            for (i = 0; i < data->common.literals.count; i++)
-+               fprintf(f, " %08x", data->common.literal_vals[i]);
-+            fprintf(f, "\n");
-+            fclose(f);
-+         }
-+      }
 +   }
 +
     /* Pass the 64-bit address (as 2x32-bit regs) of the global shmem buffer. */
     if (stage == MESA_SHADER_COMPUTE && data->cs.shmem.count > 0 &&
         data->cs.global_shmem) {
-@@ -732,7 +782,8 @@ static void pvr_pds_compute_program_setup(
+@@ -732,7 +768,8 @@ static void pvr_pds_compute_program_setup(
     }
  
     for (unsigned u = 0; u < ARRAY_SIZE(program->work_group_input_regs); ++u) {
@@ -26717,7 +26193,7 @@ index d7a37a6b..a4d53b8e 100644
           program->work_group_input_regs[u] =
              sys_vals[SYSTEM_VALUE_WORKGROUP_ID].start + u;
        }
-@@ -929,6 +980,17 @@ static void pvr_early_init_shader_data(pco_data *data,
+@@ -929,6 +966,17 @@ static void pvr_early_init_shader_data(pco_data *data,
                                         const void *pCreateInfo,
                                         struct pvr_device *const device);
  
@@ -26735,7 +26211,7 @@ index d7a37a6b..a4d53b8e 100644
  static void
  pvr_preprocess_shader_data(pco_data *data,
                             nir_shader *nir,
-@@ -1024,33 +1086,65 @@ static VkResult pvr_compute_pipeline_compile(
+@@ -1024,33 +1072,65 @@ static VkResult pvr_compute_pipeline_compile(
  
     pvr_early_init_shader_data(&shader_data, nir, pCreateInfo, device);
     pco_preprocess_nir(pco_ctx, nir, &shader_data);
@@ -26825,7 +26301,7 @@ index d7a37a6b..a4d53b8e 100644
     pco_encode_ir(pco_ctx, cs);
  
     pvr_compute_state_save(compute_pipeline, cs);
-@@ -1168,6 +1262,28 @@ pvr_compute_pipeline_init(struct pvr_device *device,
+@@ -1168,6 +1248,28 @@ pvr_compute_pipeline_init(struct pvr_device *device,
     return VK_SUCCESS;
  }
  
@@ -26854,7 +26330,7 @@ index d7a37a6b..a4d53b8e 100644
  static VkResult
  pvr_compute_pipeline_create(struct pvr_device *device,
                              struct vk_pipeline_cache *cache,
-@@ -1178,6 +1294,13 @@ pvr_compute_pipeline_create(struct pvr_device *device,
+@@ -1178,6 +1280,13 @@ pvr_compute_pipeline_create(struct pvr_device *device,
     struct pvr_compute_pipeline *compute_pipeline;
     VkResult result;
  
@@ -26868,7 +26344,7 @@ index d7a37a6b..a4d53b8e 100644
     compute_pipeline = vk_zalloc2(&device->vk.alloc,
                                   allocator,
                                   sizeof(*compute_pipeline),
-@@ -1202,7 +1325,7 @@ pvr_compute_pipeline_create(struct pvr_device *device,
+@@ -1202,7 +1311,7 @@ pvr_compute_pipeline_create(struct pvr_device *device,
     return VK_SUCCESS;
  }
  
@@ -26877,7 +26353,7 @@ index d7a37a6b..a4d53b8e 100644
  
  static void pvr_compute_pipeline_destroy(
     struct pvr_device *const device,
-@@ -1219,7 +1342,7 @@ static void pvr_compute_pipeline_destroy(
+@@ -1219,7 +1328,7 @@ static void pvr_compute_pipeline_destroy(
     pvr_bo_suballoc_free(compute_pipeline->shader_state.coeff_update_shader_bo);
     pvr_bo_suballoc_free(compute_pipeline->shader_state.shader_bo);
  
@@ -26886,7 +26362,7 @@ index d7a37a6b..a4d53b8e 100644
  
     pvr_pipeline_finish(device, &compute_pipeline->base);
  
-@@ -1260,12 +1383,50 @@ VkResult PVR_PER_ARCH(CreateComputePipelines)(
+@@ -1260,12 +1369,50 @@ VkResult PVR_PER_ARCH(CreateComputePipelines)(
  /******************************************************************************
     Graphics pipeline functions
   ******************************************************************************/
@@ -26897,14 +26373,14 @@ index d7a37a6b..a4d53b8e 100644
 +{
 +   struct pvr_xfb_shader_state *const local_xfb_state =
 +      &gfx_pipeline->shader_state.xfb_shader_state;
-+
+ 
+-static void pvr_pipeline_destroy_shader_data(pco_data *data)
 +   pvr_bo_suballoc_free(local_xfb_state->indirect_byte_count);
 +   local_xfb_state->indirect_byte_count = NULL;
 +
 +   pvr_bo_suballoc_free(local_xfb_state->counter_buffer_offsets);
 +   local_xfb_state->counter_buffer_offsets = NULL;
- 
--static void pvr_pipeline_destroy_shader_data(pco_data *data)
++
 +   vk_free2(&device->vk.alloc, allocator, local_xfb_state->varyings);
 +   local_xfb_state->varyings = NULL;
 +}
@@ -26938,7 +26414,7 @@ index d7a37a6b..a4d53b8e 100644
  }
  
  static void
-@@ -1304,11 +1465,14 @@ pvr_graphics_pipeline_destroy(struct pvr_device *const device,
+@@ -1304,11 +1451,14 @@ pvr_graphics_pipeline_destroy(struct pvr_device *const device,
  
     pvr_bo_suballoc_free(gfx_pipeline->shader_state.fragment.shader_bo);
     pvr_bo_suballoc_free(gfx_pipeline->shader_state.vertex.shader_bo);
@@ -26955,7 +26431,7 @@ index d7a37a6b..a4d53b8e 100644
  
     vk_free2(&device->vk.alloc, allocator, gfx_pipeline->vs_stats);
     vk_free2(&device->vk.alloc, allocator, gfx_pipeline->fs_stats);
-@@ -1560,7 +1724,7 @@ static void pvr_graphics_pipeline_setup_fragment_coeff_program(
+@@ -1560,7 +1710,7 @@ static void pvr_graphics_pipeline_setup_fragment_coeff_program(
                        "amend nir var linking.");
        }
  
@@ -26964,7 +26440,7 @@ index d7a37a6b..a4d53b8e 100644
  
        unsigned vtxout = vtxout_range->start;
  
-@@ -1764,6 +1928,17 @@ static void pvr_init_vs_attribs(
+@@ -1764,6 +1914,17 @@ static void pvr_init_vs_attribs(
  
        gl_vert_attrib location = attrib->location + VERT_ATTRIB_GENERIC0;
  
@@ -26982,7 +26458,7 @@ index d7a37a6b..a4d53b8e 100644
        data->vs.attrib_formats[location] =
           vk_format_to_pipe_format(attrib->format);
     }
-@@ -1804,7 +1979,7 @@ static void pvr_alloc_vs_varyings(pco_data *data, nir_shader *nir)
+@@ -1804,7 +1965,7 @@ static void pvr_alloc_vs_varyings(pco_data *data, nir_shader *nir)
  
        switch (var->data.interpolation) {
        case INTERP_MODE_NONE:
@@ -26991,7 +26467,7 @@ index d7a37a6b..a4d53b8e 100644
           var->data.interpolation = INTERP_MODE_SMOOTH;
           FALLTHROUGH;
  
-@@ -2265,6 +2440,13 @@ static void pvr_init_fs_blend(pco_data *data,
+@@ -2265,6 +2426,13 @@ static void pvr_init_fs_blend(pco_data *data,
        }
  
        blend_opts->rt[u].colormask = rt->write_mask;
@@ -27005,7 +26481,7 @@ index d7a37a6b..a4d53b8e 100644
     }
  }
  
-@@ -2423,6 +2605,29 @@ static void pvr_alloc_cs_sysvals(pco_data *data, nir_shader *nir)
+@@ -2423,6 +2591,29 @@ static void pvr_alloc_cs_sysvals(pco_data *data, nir_shader *nir)
  
     check_unused_sysvals(system_values_read);
     assert(BITSET_IS_EMPTY(system_values_read));
@@ -27035,7 +26511,7 @@ index d7a37a6b..a4d53b8e 100644
  }
  
  static void pvr_alloc_cs_shmem(pco_data *data, nir_shader *nir)
-@@ -2477,6 +2682,10 @@ static void pvr_init_descriptors(pco_data *data,
+@@ -2477,6 +2668,10 @@ static void pvr_init_descriptors(pco_data *data,
  
           binding_data->is_inline_ubo = layout_binding->type ==
                                         VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK;
@@ -27046,7 +26522,7 @@ index d7a37a6b..a4d53b8e 100644
        }
     }
  }
-@@ -2582,6 +2791,7 @@ static void pvr_setup_descriptors(pco_data *data,
+@@ -2582,6 +2777,7 @@ static void pvr_setup_descriptors(pco_data *data,
                 sizeof(uint32_t),
              .stride = layout_binding->stride / sizeof(uint32_t),
           };
@@ -27054,7 +26530,7 @@ index d7a37a6b..a4d53b8e 100644
        }
     }
  
-@@ -2630,7 +2840,7 @@ static void pvr_setup_descriptors(pco_data *data,
+@@ -2630,7 +2826,7 @@ static void pvr_setup_descriptors(pco_data *data,
        data->common.shareds += ROGUE_NUM_TEXSTATE_DWORDS;
     }
  
@@ -27063,7 +26539,7 @@ index d7a37a6b..a4d53b8e 100644
        data->common.spill_info = (pco_range){
           .start = data->common.shareds,
           .count = 3,
-@@ -2693,12 +2903,26 @@ pvr_preprocess_shader_data(pco_data *data,
+@@ -2693,12 +2889,26 @@ pvr_preprocess_shader_data(pco_data *data,
        if (state->ms)
           data->fs.uses.alpha_to_coverage = state->ms->alpha_to_coverage_enable;
  
@@ -27094,7 +26570,7 @@ index d7a37a6b..a4d53b8e 100644
        if (state->ms)
           nir->info.fs.uses_sample_shading |= state->ms->sample_shading_enable;
  
-@@ -2727,6 +2951,11 @@ static void pvr_postprocess_shader_data(pco_data *data,
+@@ -2727,6 +2937,11 @@ static void pvr_postprocess_shader_data(pco_data *data,
  {
     const VkGraphicsPipelineCreateInfo *pGraphicsCreateInfo = pCreateInfo;
  
@@ -27106,7 +26582,7 @@ index d7a37a6b..a4d53b8e 100644
     switch (nir->info.stage) {
     case MESA_SHADER_VERTEX: {
        pvr_alloc_vs_sysvals(data, nir);
-@@ -2775,6 +3004,14 @@ static void pvr_postprocess_shader_data(pco_data *data,
+@@ -2775,6 +2990,14 @@ static void pvr_postprocess_shader_data(pco_data *data,
  
     pvr_setup_descriptors(data, nir, layout);
  
@@ -27121,7 +26597,7 @@ index d7a37a6b..a4d53b8e 100644
     /* TODO: common things, like large constants being put into shareds. */
  }
  
-@@ -2789,10 +3026,25 @@ static void pvr_early_init_shader_data(pco_data *data,
+@@ -2789,10 +3012,25 @@ static void pvr_early_init_shader_data(pco_data *data,
        device->vk.enabled_features.robustBufferAccess;
  
     data->common.null_descriptor = device->vk.enabled_features.nullDescriptor;
@@ -27147,7 +26623,7 @@ index d7a37a6b..a4d53b8e 100644
     switch (nir->info.stage) {
     case MESA_SHADER_VERTEX:
     case MESA_SHADER_FRAGMENT: {
-@@ -2827,6 +3079,227 @@ static void pvr_early_init_shader_data(pco_data *data,
+@@ -2827,6 +3065,227 @@ static void pvr_early_init_shader_data(pco_data *data,
     }
  }
  
@@ -27375,7 +26851,7 @@ index d7a37a6b..a4d53b8e 100644
  static bool pvr_build_fs_passthrough(bool no_fragment_shader,
                                       const struct pvr_device_info *dev_info)
  {
-@@ -2836,6 +3309,126 @@ static bool pvr_build_fs_passthrough(bool no_fragment_shader,
+@@ -2836,6 +3295,126 @@ static bool pvr_build_fs_passthrough(bool no_fragment_shader,
  }
  
  /* Compiles and uploads shaders and PDS programs. */
@@ -27502,7 +26978,7 @@ index d7a37a6b..a4d53b8e 100644
  static VkResult
  pvr_graphics_pipeline_compile(struct pvr_device *const device,
                                struct vk_pipeline_cache *cache,
-@@ -2979,40 +3572,63 @@ pvr_graphics_pipeline_compile(struct pvr_device *const device,
+@@ -2979,40 +3558,63 @@ pvr_graphics_pipeline_compile(struct pvr_device *const device,
        nir_shaders[MESA_SHADER_FRAGMENT] = fs_pass;
     }
  
@@ -27589,7 +27065,7 @@ index d7a37a6b..a4d53b8e 100644
     for (mesa_shader_stage stage = 0; stage < MESA_SHADER_STAGES; ++stage) {
        pco_shader **pco = &pco_shaders[stage];
  
-@@ -3020,19 +3636,67 @@ pvr_graphics_pipeline_compile(struct pvr_device *const device,
+@@ -3020,19 +3622,67 @@ pvr_graphics_pipeline_compile(struct pvr_device *const device,
        if (!nir_shaders[stage])
           continue;
  
@@ -27665,7 +27141,7 @@ index d7a37a6b..a4d53b8e 100644
     pvr_vertex_state_save(gfx_pipeline, *vs);
  
     if (pCreateInfo->flags & VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR) {
-@@ -3069,6 +3733,10 @@ pvr_graphics_pipeline_compile(struct pvr_device *const device,
+@@ -3069,6 +3719,10 @@ pvr_graphics_pipeline_compile(struct pvr_device *const device,
     if (result != VK_SUCCESS)
        goto err_free_build_context;
  
@@ -27676,7 +27152,7 @@ index d7a37a6b..a4d53b8e 100644
     if (*fs) {
        pvr_fragment_state_save(gfx_pipeline, *fs);
        fragment_state->is_passthrough = build_fs_passthrough;
-@@ -3103,7 +3771,7 @@ pvr_graphics_pipeline_compile(struct pvr_device *const device,
+@@ -3103,7 +3757,7 @@ pvr_graphics_pipeline_compile(struct pvr_device *const device,
                                    cache_line_size,
                                    &fragment_state->shader_bo);
        if (result != VK_SUCCESS)
@@ -27685,7 +27161,7 @@ index d7a37a6b..a4d53b8e 100644
  
        result = pvr_pds_coeff_program_create_and_upload(device,
                                                         allocator,
-@@ -3132,6 +3800,16 @@ pvr_graphics_pipeline_compile(struct pvr_device *const device,
+@@ -3132,6 +3786,16 @@ pvr_graphics_pipeline_compile(struct pvr_device *const device,
         * `fragment_state->stage_state.pds_temps_count` appropriately.
         */
        assert(fragment_state->descriptor_state.pds_info.temps_required == 0);
@@ -27702,7 +27178,7 @@ index d7a37a6b..a4d53b8e 100644
     }
  
     result = pvr_pds_vertex_attrib_programs_create_and_upload(
-@@ -3174,6 +3852,7 @@ err_free_vertex_attrib_program:
+@@ -3174,6 +3838,7 @@ err_free_vertex_attrib_program:
        pvr_pds_vertex_attrib_program_destroy(device, allocator, attrib_program);
     }
  err_free_frag_descriptor_program:
@@ -27710,7 +27186,7 @@ index d7a37a6b..a4d53b8e 100644
     pvr_pds_descriptor_program_destroy(device,
                                        allocator,
                                        &fragment_state->descriptor_state);
-@@ -3187,6 +3866,8 @@ err_free_coeff_program:
+@@ -3187,6 +3852,8 @@ err_free_coeff_program:
              fragment_state->pds_coeff_program_buffer);
  err_free_fragment_bo:
     pvr_bo_suballoc_free(fragment_state->shader_bo);
@@ -27719,7 +27195,7 @@ index d7a37a6b..a4d53b8e 100644
  err_free_vertex_bo:
     pvr_bo_suballoc_free(vertex_state->shader_bo);
  err_free_build_context:
-@@ -3291,6 +3972,31 @@ pvr_graphics_pipeline_init(struct pvr_device *device,
+@@ -3291,6 +3958,31 @@ pvr_graphics_pipeline_init(struct pvr_device *device,
                             const VkAllocationCallbacks *allocator,
                             struct pvr_graphics_pipeline *gfx_pipeline)
  {
@@ -27751,7 +27227,7 @@ index d7a37a6b..a4d53b8e 100644
     struct vk_dynamic_graphics_state *const dynamic_state =
        &gfx_pipeline->dynamic_state;
     struct vk_graphics_pipeline_all_state all_state;
-@@ -3387,6 +4093,19 @@ pvr_graphics_pipeline_create(struct pvr_device *device,
+@@ -3387,6 +4079,19 @@ pvr_graphics_pipeline_create(struct pvr_device *device,
     struct pvr_graphics_pipeline *gfx_pipeline;
     VkResult result;
  
@@ -27847,10 +27323,18 @@ index d9915f04..828f34d3 100644
        break;
     }
 diff --git a/src/imagination/vulkan/pvr_arch_queue.c b/src/imagination/vulkan/pvr_arch_queue.c
-index cb6203ea..657f076e 100644
+index cb6203ea..fd0c38b6 100644
 --- a/src/imagination/vulkan/pvr_arch_queue.c
 +++ b/src/imagination/vulkan/pvr_arch_queue.c
-@@ -206,6 +206,7 @@ err_queues_finish:
+@@ -62,6 +62,7 @@
+ #include "vk_sync_dummy.h"
+ #include "vk_util.h"
+ 
++
+ static inline enum pvr_winsys_ctx_priority
+ pvr_winsys_from_vk_queue_priority(const VkQueueGlobalPriority priority)
+ {
+@@ -206,6 +207,7 @@ err_queues_finish:
  
  static void pvr_queue_finish(struct pvr_queue *queue)
  {
@@ -27858,7 +27342,7 @@ index cb6203ea..657f076e 100644
     for (uint32_t i = 0; i < ARRAY_SIZE(queue->next_job_wait_sync); i++) {
        if (queue->next_job_wait_sync[i])
           vk_sync_destroy(&queue->device->vk, queue->next_job_wait_sync[i]);
-@@ -308,8 +309,8 @@ pvr_process_graphics_cmd_for_view(struct pvr_device *device,
+@@ -308,8 +310,8 @@ pvr_process_graphics_cmd_for_view(struct pvr_device *device,
        result = pvr_arch_render_job_submit(
           queue->gfx_ctx,
           &sub_cmd->job,
@@ -27869,7 +27353,7 @@ index cb6203ea..657f076e 100644
           NULL,
           NULL);
  
-@@ -336,10 +337,10 @@ pvr_process_graphics_cmd_for_view(struct pvr_device *device,
+@@ -336,10 +338,10 @@ pvr_process_graphics_cmd_for_view(struct pvr_device *device,
     result =
        pvr_arch_render_job_submit(queue->gfx_ctx,
                                   &sub_cmd->job,
@@ -27884,7 +27368,7 @@ index cb6203ea..657f076e 100644
  
     if (original_ctrl_stream_addr.addr > 0)
        job->ctrl_stream_addr = original_ctrl_stream_addr;
-@@ -407,8 +408,8 @@ static VkResult pvr_process_compute_cmd(struct pvr_device *device,
+@@ -407,8 +409,8 @@ static VkResult pvr_process_compute_cmd(struct pvr_device *device,
     result = pvr_arch_compute_job_submit(
        queue->compute_ctx,
        sub_cmd,
@@ -27895,7 +27379,7 @@ index cb6203ea..657f076e 100644
     if (result != VK_SUCCESS) {
        vk_sync_destroy(&device->vk, sync);
        return result;
-@@ -437,8 +438,8 @@ static VkResult pvr_process_transfer_cmds(struct pvr_device *device,
+@@ -437,8 +439,8 @@ static VkResult pvr_process_transfer_cmds(struct pvr_device *device,
     result = pvr_arch_transfer_job_submit(
        queue->transfer_ctx,
        sub_cmd,
@@ -27906,7 +27390,7 @@ index cb6203ea..657f076e 100644
     if (result != VK_SUCCESS) {
        vk_sync_destroy(&device->vk, sync);
        return result;
-@@ -473,8 +474,8 @@ static VkResult pvr_process_query_cmd(struct pvr_device *device,
+@@ -473,8 +475,8 @@ static VkResult pvr_process_query_cmd(struct pvr_device *device,
     result =
        pvr_arch_compute_job_submit(queue->query_ctx,
                                    sub_cmd,
@@ -27917,29 +27401,24 @@ index cb6203ea..657f076e 100644
     if (result != VK_SUCCESS) {
        vk_sync_destroy(&device->vk, sync);
        return result;
-@@ -898,9 +899,17 @@ static VkResult pvr_process_cmd_buffer(struct pvr_device *device,
+@@ -898,59 +900,11 @@ static VkResult pvr_process_cmd_buffer(struct pvr_device *device,
     return VK_SUCCESS;
  }
  
-+/*
-+ * Semaphore waits of the previous submit that no job consumed (no job of that
-+ * type) are waited for here, as before. The previous submit's job signal syncs
-+ * are kept rather than waited for: barriers and queue signals in later submits
-+ * wait on them on the GPU side, and pvr_update_job_syncs() drops each one when
-+ * a job of its type replaces it. Waiting for them here blocked every
-+ * vkQueueSubmit() until the previous submit had finished on the GPU.
-+ */
- static VkResult pvr_clear_last_submits_syncs(struct pvr_queue *queue)
- {
+-static VkResult pvr_clear_last_submits_syncs(struct pvr_queue *queue)
+-{
 -   struct vk_sync_wait waits[PVR_JOB_TYPE_MAX * 2];
-+   struct vk_sync_wait waits[PVR_JOB_TYPE_MAX];
-    uint32_t wait_count = 0;
-    VkResult result;
- 
-@@ -912,22 +921,16 @@ static VkResult pvr_clear_last_submits_syncs(struct pvr_queue *queue)
-             .wait_value = 0,
-          };
-       }
+-   uint32_t wait_count = 0;
+-   VkResult result;
+-
+-   for (uint32_t i = 0; i < PVR_JOB_TYPE_MAX; i++) {
+-      if (queue->next_job_wait_sync[i]) {
+-         waits[wait_count++] = (struct vk_sync_wait){
+-            .sync = queue->next_job_wait_sync[i],
+-            .stage_mask = ~(VkPipelineStageFlags2)0,
+-            .wait_value = 0,
+-         };
+-      }
 -
 -      if (queue->last_job_signal_sync[i]) {
 -         waits[wait_count++] = (struct vk_sync_wait){
@@ -27948,32 +27427,125 @@ index cb6203ea..657f076e 100644
 -            .wait_value = 0,
 -         };
 -      }
-    }
- 
-+   if (!wait_count)
-+      return VK_SUCCESS;
-+
-    result = vk_sync_wait_many(&queue->device->vk,
-                               wait_count,
-                               waits,
-                               VK_SYNC_WAIT_COMPLETE,
-                               UINT64_MAX);
+-   }
 -
-    if (result != VK_SUCCESS)
-       return vk_error(queue, result);
- 
-@@ -936,11 +939,6 @@ static VkResult pvr_clear_last_submits_syncs(struct pvr_queue *queue)
-          vk_sync_destroy(&queue->device->vk, queue->next_job_wait_sync[i]);
-          queue->next_job_wait_sync[i] = NULL;
-       }
+-   result = vk_sync_wait_many(&queue->device->vk,
+-                              wait_count,
+-                              waits,
+-                              VK_SYNC_WAIT_COMPLETE,
+-                              UINT64_MAX);
+-
+-   if (result != VK_SUCCESS)
+-      return vk_error(queue, result);
+-
+-   for (uint32_t i = 0; i < PVR_JOB_TYPE_MAX; i++) {
+-      if (queue->next_job_wait_sync[i]) {
+-         vk_sync_destroy(&queue->device->vk, queue->next_job_wait_sync[i]);
+-         queue->next_job_wait_sync[i] = NULL;
+-      }
 -
 -      if (queue->last_job_signal_sync[i]) {
 -         vk_sync_destroy(&queue->device->vk, queue->last_job_signal_sync[i]);
 -         queue->last_job_signal_sync[i] = NULL;
 -      }
+-   }
+-
+-   return VK_SUCCESS;
+-}
+-
+ static VkResult pvr_process_queue_signals(struct pvr_queue *queue,
+                                           struct vk_sync_signal *signals,
+                                           uint32_t signal_count)
+ {
+-   struct vk_sync_wait signal_waits[PVR_JOB_TYPE_MAX];
++   struct vk_sync_wait signal_waits[PVR_JOB_TYPE_MAX * 2];
+    struct pvr_device *device = queue->device;
+    VkResult result;
+ 
+@@ -977,6 +931,18 @@ static VkResult pvr_process_queue_signals(struct pvr_queue *queue,
+          };
+       }
+ 
++      /* Semaphore waits no job has consumed yet still order the signal. */
++      for (uint32_t i = 0; i < PVR_JOB_TYPE_MAX; i++) {
++         if (!queue->next_job_wait_sync[i])
++            continue;
++
++         signal_waits[wait_count++] = (struct vk_sync_wait){
++            .sync = queue->next_job_wait_sync[i],
++            .stage_mask = ~(VkPipelineStageFlags2)0,
++            .wait_value = 0,
++         };
++      }
++
+       result = device->ws->ops->null_job_submit(device->ws,
+                                                 signal_waits,
+                                                 wait_count,
+@@ -995,7 +961,7 @@ static VkResult pvr_process_queue_waits(struct pvr_queue *queue,
+    struct pvr_device *device = queue->device;
+    VkResult result;
+ 
+-   STACK_ARRAY(struct vk_sync_wait, stage_waits, wait_count);
++   STACK_ARRAY(struct vk_sync_wait, stage_waits, wait_count + 1);
+    if (!stage_waits)
+       return vk_error(queue, VK_ERROR_OUT_OF_HOST_MEMORY);
+ 
+@@ -1019,13 +985,27 @@ static VkResult pvr_process_queue_waits(struct pvr_queue *queue,
+       if (!stage_wait_count)
+          continue;
+ 
++      /* A wait left by an earlier submit with no job of this type is kept,
++       * not waited for on the CPU: the new wait includes it.
++       */
++      struct vk_sync *const leftover = queue->next_job_wait_sync[i];
++      if (leftover) {
++         stage_waits[stage_wait_count++] = (struct vk_sync_wait){
++            .sync = leftover,
++            .stage_mask = ~(VkPipelineStageFlags2)0,
++            .wait_value = 0,
++         };
++      }
++
+       result = vk_sync_create(&device->vk,
+                               &device->pdevice->ws->syncobj_type,
+                               0U,
+                               0UL,
+                               &queue->next_job_wait_sync[i]);
+-      if (result != VK_SUCCESS)
++      if (result != VK_SUCCESS) {
++         queue->next_job_wait_sync[i] = leftover;
+          goto err_free_waits;
++      }
+ 
+       next_job_wait_signal_sync = (struct vk_sync_signal){
+          .sync = queue->next_job_wait_sync[i],
+@@ -1037,8 +1017,14 @@ static VkResult pvr_process_queue_waits(struct pvr_queue *queue,
+                                                 stage_waits,
+                                                 stage_wait_count,
+                                                 &next_job_wait_signal_sync);
+-      if (result != VK_SUCCESS)
++      if (result != VK_SUCCESS) {
++         vk_sync_destroy(&device->vk, queue->next_job_wait_sync[i]);
++         queue->next_job_wait_sync[i] = leftover;
+          goto err_free_waits;
++      }
++
++      if (leftover)
++         vk_sync_destroy(&device->vk, leftover);
     }
  
-    return VK_SUCCESS;
+    STACK_ARRAY_FINISH(stage_waits);
+@@ -1058,10 +1044,6 @@ static VkResult pvr_driver_queue_submit(struct vk_queue *queue,
+    struct pvr_device *device = driver_queue->device;
+    VkResult result;
+ 
+-   result = pvr_clear_last_submits_syncs(driver_queue);
+-   if (result != VK_SUCCESS)
+-      return result;
+-
+    if (submit->wait_count) {
+       result = pvr_process_queue_waits(driver_queue,
+                                        submit->waits,
 diff --git a/src/imagination/vulkan/pvr_arch_spm.c b/src/imagination/vulkan/pvr_arch_spm.c
 index 5d1bcd95..8f616bac 100644
 --- a/src/imagination/vulkan/pvr_arch_spm.c
@@ -29344,30 +28916,21 @@ index 00000000..0264f506
 +   pvr_arch_set_xfb_main_program_ppp_state(cmd_buffer);
 +}
 diff --git a/src/imagination/vulkan/pvr_bo.c b/src/imagination/vulkan/pvr_bo.c
-index 629c4f81..445f756c 100644
+index 629c4f81..0c429cf5 100644
 --- a/src/imagination/vulkan/pvr_bo.c
 +++ b/src/imagination/vulkan/pvr_bo.c
-@@ -31,6 +31,9 @@
+@@ -31,6 +31,7 @@
  #include <stdio.h>
  #include <vulkan/vulkan.h>
  
-+/* Counters read by the PVR_ALLOC_TRACE=1 report in pvr_arch_cmd_buffer.c. */
-+uint64_t pvr_alloc_count, pvr_alloc_bytes;
 +
  #if defined(HAVE_VALGRIND)
  #   include <valgrind.h>
  #   include <memcheck.h>
-@@ -356,6 +359,14 @@ VkResult pvr_bo_alloc(struct pvr_device *device,
+@@ -356,6 +357,7 @@ VkResult pvr_bo_alloc(struct pvr_device *device,
  
     pvr_bo->ref_count = 1;
  
-+   /* PVR_ALLOC_TRACE=1 in pvr_arch_cmd_buffer.c reports how many BOs a command
-+    * buffer allocates, because a driver that allocates per command buffer pays
-+    * for it every frame. Counted unconditionally: two increments are cheaper
-+    * than a branch and the report is only read under the env var.
-+    */
-+   pvr_alloc_count++;
-+   pvr_alloc_bytes += size;
 +
     result = device->ws->ops->buffer_create(device->ws,
                                             size,
@@ -29708,10 +29271,10 @@ index deaae4f3..58cc567a 100644
     }
  
 diff --git a/src/imagination/vulkan/pvr_csb.h b/src/imagination/vulkan/pvr_csb.h
-index 07a49dfd..22ec1a21 100644
+index 07a49dfd..3c7dba05 100644
 --- a/src/imagination/vulkan/pvr_csb.h
 +++ b/src/imagination/vulkan/pvr_csb.h
-@@ -70,6 +70,15 @@
+@@ -70,6 +70,14 @@
  
  struct pvr_device;
  
@@ -29722,7 +29285,6 @@ index 07a49dfd..22ec1a21 100644
 +                        struct pvr_bo **const pvr_bo_out);
 +void pvr_csb_bo_put(struct pvr_device *device, struct pvr_bo *pvr_bo);
 +
-+struct pvr_device;
 +
  enum pvr_cmd_stream_type {
     PVR_CMD_STREAM_TYPE_INVALID = 0, /* explicitly treat 0 as invalid */
@@ -29783,7 +29345,7 @@ index 2cd1d7fd..8acc670c 100644
 +
  #endif /* PVR_DESCRIPTOR_SET_H */
 diff --git a/src/imagination/vulkan/pvr_device.c b/src/imagination/vulkan/pvr_device.c
-index 57d843b1..cdb8d446 100644
+index 57d843b1..4e5dd853 100644
 --- a/src/imagination/vulkan/pvr_device.c
 +++ b/src/imagination/vulkan/pvr_device.c
 @@ -30,6 +30,11 @@
@@ -29798,26 +29360,7 @@ index 57d843b1..cdb8d446 100644
  #include <fcntl.h>
  #include <inttypes.h>
  #include <stdbool.h>
-@@ -247,6 +252,18 @@ VkResult pvr_AllocateMemory(VkDevice _device,
-    assert(pAllocateInfo->sType == VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO);
-    assert(pAllocateInfo->allocationSize > 0);
- 
-+   if (getenv("PVR_API_TRACE")) {
-+      static unsigned n;
-+      const char *pnext = "none";
-+      vk_foreach_struct_const (sType, ext, pAllocateInfo->pNext) {
-+         if ((unsigned)sType == VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO)
-+            pnext = "allocate_flags";
-+      }
-+      fprintf(stderr, "[api] alloc %u size=%llu type=%u pNext=%s\n", n++,
-+              (unsigned long long)pAllocateInfo->allocationSize,
-+              pAllocateInfo->memoryTypeIndex, pnext);
-+   }
-+
-    const VkMemoryType *mem_type =
-       &device->pdevice->memory.memoryTypes[pAllocateInfo->memoryTypeIndex];
-    const VkMemoryHeap *mem_heap =
-@@ -337,18 +354,21 @@ VkResult pvr_AllocateMemory(VkDevice _device,
+@@ -337,18 +342,21 @@ VkResult pvr_AllocateMemory(VkDevice _device,
         */
        const uint64_t alignment = device->heaps.general_heap->page_size;
  
@@ -29847,7 +29390,7 @@ index 57d843b1..cdb8d446 100644
                                                &mem->bo);
        if (result != VK_SUCCESS)
           goto err_vk_device_memory_destroy;
-@@ -509,10 +529,65 @@ VkResult pvr_UnmapMemory2(VkDevice _device,
+@@ -509,10 +517,65 @@ VkResult pvr_UnmapMemory2(VkDevice _device,
     return VK_SUCCESS;
  }
  
@@ -29913,7 +29456,7 @@ index 57d843b1..cdb8d446 100644
     return VK_SUCCESS;
  }
  
-@@ -521,6 +596,19 @@ pvr_InvalidateMappedMemoryRanges(VkDevice _device,
+@@ -521,6 +584,19 @@ pvr_InvalidateMappedMemoryRanges(VkDevice _device,
                                   uint32_t memoryRangeCount,
                                   const VkMappedMemoryRange *pMemoryRanges)
  {
@@ -29933,7 +29476,7 @@ index 57d843b1..cdb8d446 100644
     return VK_SUCCESS;
  }
  
-@@ -622,6 +710,12 @@ VkResult pvr_BindBufferMemory2(VkDevice _device,
+@@ -622,6 +698,12 @@ VkResult pvr_BindBufferMemory2(VkDevice _device,
  
           return result;
        }
@@ -29946,23 +29489,18 @@ index 57d843b1..cdb8d446 100644
     }
  
     return VK_SUCCESS;
-@@ -766,6 +860,15 @@ VkResult pvr_CreateBuffer(VkDevice _device,
+@@ -766,6 +848,10 @@ VkResult pvr_CreateBuffer(VkDevice _device,
  
     buffer->alignment = alignment;
  
 +   /* Temporary API trace: to find what an application does differently once
 +    * buffer device addresses are advertised, log the buffers and allocations it
 +    * asks for and diff the two runs. */
-+   if (getenv("PVR_API_TRACE")) {
-+      static unsigned n;
-+      fprintf(stderr, "[api] buffer %u size=%llu usage=0x%08x flags=0x%x\n", n++,
-+              (unsigned long long)pCreateInfo->size, pCreateInfo->usage, pCreateInfo->flags);
-+   }
 +
     *pBuffer = pvr_buffer_to_handle(buffer);
  
     return VK_SUCCESS;
-@@ -777,7 +880,31 @@ pvr_GetBufferDeviceAddress(UNUSED VkDevice device,
+@@ -777,7 +863,31 @@ pvr_GetBufferDeviceAddress(UNUSED VkDevice device,
  {
     VK_FROM_HANDLE(pvr_buffer, buffer, pInfo->buffer);
  
@@ -29995,7 +29533,7 @@ index 57d843b1..cdb8d446 100644
  }
  
  uint64_t
-@@ -788,6 +915,13 @@ pvr_GetBufferOpaqueCaptureAddress(UNUSED VkDevice device,
+@@ -788,6 +898,13 @@ pvr_GetBufferOpaqueCaptureAddress(UNUSED VkDevice device,
     return 0;
  }
  
@@ -30009,7 +29547,7 @@ index 57d843b1..cdb8d446 100644
  uint64_t pvr_GetDeviceMemoryOpaqueCaptureAddress(
     UNUSED VkDevice device,
     UNUSED const VkDeviceMemoryOpaqueCaptureAddressInfo *pInfo)
-@@ -796,6 +930,12 @@ uint64_t pvr_GetDeviceMemoryOpaqueCaptureAddress(
+@@ -796,6 +913,12 @@ uint64_t pvr_GetDeviceMemoryOpaqueCaptureAddress(
     return 0;
  }
  
@@ -30022,49 +29560,6 @@ index 57d843b1..cdb8d446 100644
  void pvr_DestroyBuffer(VkDevice _device,
                         VkBuffer _buffer,
                         const VkAllocationCallbacks *pAllocator)
-@@ -877,6 +1017,21 @@ VkResult pvr_gpu_upload_usc(struct pvr_device *device,
-    map = pvr_bo_suballoc_get_map_addr(suballoc_bo);
-    memcpy(map, code, code_size);
- 
-+   if (getenv("PVR_DUMP_USC_PROGRAMS")) {
-+      FILE *f = fopen(getenv("PVR_DUMP_USC_PROGRAMS"), "a");
-+      uint32_t off = (uint32_t)(suballoc_bo->dev_addr.addr - device->heaps.usc_heap->base_addr.addr);
-+
-+      if (f) {
-+         const uint32_t *dw = code;
-+         uint32_t i;
-+
-+         fprintf(f, "USC off=0x%x bytes=%zu:", off, code_size);
-+         for (i = 0; i < (code_size + 3) / 4; i++) fprintf(f, " %08x", dw[i]);
-+         fprintf(f, "\n");
-+         fclose(f);
-+      }
-+   }
-+
-    *pvr_bo_out = suballoc_bo;
- 
-    return VK_SUCCESS;
-@@ -966,6 +1121,20 @@ VkResult pvr_gpu_upload_pds(struct pvr_device *device,
-       pds_upload_out->code_size = 0;
-    }
- 
-+   if (getenv("PVR_DUMP_PDS_PROGRAMS")) {
-+      FILE *f = fopen(getenv("PVR_DUMP_PDS_PROGRAMS"), "a");
-+      uint32_t i;
-+
-+      if (f) {
-+         fprintf(f, "PDS data_off=0x%x data_dw=%u code_off=0x%x code_dw=%u\n",
-+                 pds_upload_out->data_offset, pds_upload_out->data_size,
-+                 pds_upload_out->code_offset, pds_upload_out->code_size);
-+         if (data) { fprintf(f, " D:"); for (i = 0; i < data_size_dwords; i++) fprintf(f, " %08x", data[i]); fprintf(f, "\n"); }
-+         if (code) { fprintf(f, " C:"); for (i = 0; i < code_size_dwords; i++) fprintf(f, " %08x", code[i]); fprintf(f, "\n"); }
-+         fclose(f);
-+      }
-+   }
-+
-    return VK_SUCCESS;
- }
- 
 diff --git a/src/imagination/vulkan/pvr_device.h b/src/imagination/vulkan/pvr_device.h
 index 7e642923..2a3784e0 100644
 --- a/src/imagination/vulkan/pvr_device.h
@@ -32510,30 +32005,10 @@ index 932ef483..30a257c4 100644
 +
  #endif /* PVR_DRM_JOB_COMMON_H */
 diff --git a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_compute.c b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_compute.c
-index b25c66f2..0c9e7ac6 100644
+index b25c66f2..9aeba50e 100644
 --- a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_compute.c
 +++ b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_compute.c
-@@ -112,6 +112,19 @@ VkResult pvr_drm_winsys_compute_ctx_create(
-                                          static_ctx_state_fw_stream,
-                                          &ctx_args.static_context_state_len);
- 
-+   if (getenv("PVR_DUMP_COMPUTE_CTXSTATE")) {
-+      FILE *f = fopen(getenv("PVR_DUMP_COMPUTE_CTXSTATE"), "wb");
-+
-+      if (f) {
-+         uint32_t len = (uint32_t)ctx_args.static_context_state_len;
-+
-+         fwrite(&len, sizeof(len), 1, f);
-+         fwrite((const void *)(uintptr_t)ctx_args.static_context_state, 1, len, f);
-+         fclose(f);
-+         fprintf(stderr, "PVR_DUMP_COMPUTE_CTXSTATE: %u bytes\n", len);
-+      }
-+   }
-+
-    result = pvr_ioctlf(ws->render_fd,
-                        DRM_IOCTL_PVR_CREATE_CONTEXT,
-                        &ctx_args,
-@@ -170,7 +183,7 @@ VkResult pvr_drm_winsys_compute_submit(
+@@ -170,7 +170,7 @@ VkResult pvr_drm_winsys_compute_submit(
     const struct pvr_winsys_compute_ctx *ctx,
     const struct pvr_winsys_compute_submit_info *submit_info,
     UNUSED const struct pvr_device_info *dev_info,
@@ -32542,7 +32017,7 @@ index b25c66f2..0c9e7ac6 100644
  {
     const struct pvr_drm_winsys *drm_ws = to_pvr_drm_winsys(ctx->ws);
     const struct pvr_drm_winsys_compute_ctx *drm_ctx =
-@@ -192,26 +205,18 @@ VkResult pvr_drm_winsys_compute_submit(
+@@ -192,26 +192,18 @@ VkResult pvr_drm_winsys_compute_submit(
        .jobs = DRM_PVR_OBJ_ARRAY(1, &job_args),
     };
  
@@ -32590,22 +32065,8 @@ index 641b1d17..096526b2 100644
 +   const struct vk_sync_signal *signal_sync);
  
  #endif /* PVR_DRM_JOB_COMPUTE_H */
-diff --git a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_null.c b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_null.c
-index 4c93d183..39fd709e 100644
---- a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_null.c
-+++ b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_null.c
-@@ -45,6 +45,9 @@ VkResult pvr_drm_winsys_null_job_submit(struct pvr_winsys *ws,
- {
-    const struct pvr_drm_winsys *drm_ws = to_pvr_drm_winsys(ws);
-    uint32_t tmp_syncobj;
-+   if (getenv("PVR_SUBMIT_MIX")) { static unsigned long _n, _by[8]; _n++; _by[wait_count < 8 ? wait_count : 7]++;
-+      if (_n % 200 == 0) fprintf(stderr, "[mx] null=%lu waits:0=%lu 1=%lu 2=%lu 3+=%lu\n",
-+                                 _n, _by[0], _by[1], _by[2], _by[3]+_by[4]+_by[5]+_by[6]+_by[7]); }
-    VkResult result;
-    int ret;
- 
 diff --git a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c
-index 321bdbcf..738e85f5 100644
+index 321bdbcf..46e7fd2b 100644
 --- a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c
 +++ b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c
 @@ -34,6 +34,9 @@
@@ -32618,7 +32079,7 @@ index 321bdbcf..738e85f5 100644
  #include "pvr_winsys.h"
  #include "pvr_winsys_helper.h"
  #include "util/macros.h"
-@@ -467,11 +470,13 @@ VkResult pvr_drm_winsys_render_submit(
+@@ -467,8 +470,8 @@ VkResult pvr_drm_winsys_render_submit(
     const struct pvr_winsys_render_ctx *ctx,
     const struct pvr_winsys_render_submit_info *submit_info,
     UNUSED const struct pvr_device_info *dev_info,
@@ -32629,12 +32090,7 @@ index 321bdbcf..738e85f5 100644
  
  {
     const struct pvr_drm_winsys *drm_ws = to_pvr_drm_winsys(ctx->ws);
-+   if (getenv("PVR_SUBMIT_MIX")) { static unsigned long _n; _n++;
-+      if (_n % 100 == 0) fprintf(stderr, "[mx] render_job_submits=%lu\n", _n); }
-    const struct pvr_drm_winsys_render_ctx *drm_ctx =
-       to_pvr_drm_winsys_render_ctx(ctx);
-    const struct pvr_winsys_geometry_state *const geom_state =
-@@ -521,33 +526,24 @@ VkResult pvr_drm_winsys_render_submit(
+@@ -521,33 +524,24 @@ VkResult pvr_drm_winsys_render_submit(
  
     /* Geom syncs */
  
@@ -32679,7 +32135,7 @@ index 321bdbcf..738e85f5 100644
     } else {
        geom_to_pr_syncobj = drm_ctx->geom_to_pr_syncobj;
  
-@@ -592,26 +588,18 @@ VkResult pvr_drm_winsys_render_submit(
+@@ -592,26 +586,18 @@ VkResult pvr_drm_winsys_render_submit(
         * they aren't needed.
         */
  
@@ -32715,73 +32171,18 @@ index 321bdbcf..738e85f5 100644
        }
     }
  
-@@ -621,6 +609,70 @@ VkResult pvr_drm_winsys_render_submit(
+@@ -621,6 +607,15 @@ VkResult pvr_drm_winsys_render_submit(
     if (submit_info->has_fragment_job)
        jobs_args[2].sync_ops.count = num_frag_syncs;
  
 +   /* ponytail: PVR_JOB_TRACE - hardware jobs per submit, to compare clients. */
-+   if (getenv("PVR_JOB_TRACE")) {
-+      static unsigned long subs, jobs, geom, pr, frag;
-+      subs++;
-+      jobs += args.jobs.count;
-+      if (submit_info->geometry.fw_stream_len) geom++;
-+      if (submit_info->fragment_pr.fw_stream_len) pr++;
-+      if (submit_info->fragment.fw_stream_len) frag++;
-+      if (subs % 100 == 0) {
-+         struct timespec _n; static struct timespec _p;
-+         clock_gettime(CLOCK_MONOTONIC, &_n);
-+         double dt = _p.tv_sec ? (_n.tv_sec-_p.tv_sec) + (_n.tv_nsec-_p.tv_nsec)/1e9 : 0.0;
-+         static unsigned long _ls, _lj; static double _lt;
-+         _lt += dt; _p = _n;
-+         if (_lt >= 1.0) {
-+            fprintf(stderr, "[jt] rate: %.0f submits/s, %.0f jobs/s (avg %.2f jobs/submit)\n",
-+                    (subs-_ls)/_lt, (jobs-_lj)/_lt, (double)jobs/subs);
-+            _ls = subs; _lj = jobs; _lt = 0.0;
-+         }
-+      }
-+   }
 +
 +   /* ponytail: PVR_CSB_DUMP - hexdump the STATIC command streams a working driver submits.
 +    * fw_stream is an inline byte array, so this needs no buffer mapping. This is ground truth for the
 +    * gallium driver's missing job assembly, which otherwise has nothing to copy from. */
-+   if (getenv("PVR_CSB_TAIL")) {
-+        /* ponytail: len, the header's own length word, and the last eight dwords - enough to say what
-+         * the four unexplained dwords after the EOT offset (364) actually are. */
-+        const uint8_t *p = submit_info->fragment.fw_stream;
-+        const uint32_t len = submit_info->fragment.fw_stream_len;
-+        uint32_t hdr = 0;
-+        if (len >= 4) memcpy(&hdr, p, 4);
-+        fprintf(stderr, "[tail] len=%u hdr_word=%u eot=364 last8:", len, hdr);
-+        for (uint32_t b = (len > 32 ? len - 32 : 0); b + 4 <= len; b += 4) {
-+           uint32_t w; memcpy(&w, p + b, 4); fprintf(stderr, " %08x", w);
-+        }
-+        fprintf(stderr, "\n");
-+     }
-+
-+     if (getenv("PVR_CSB_DUMP")) {
-+      static unsigned long _d;
-+      const struct { const char *what; const uint8_t *p; uint32_t len; } _st[] = {
-+         { "geometry",    submit_info->geometry.fw_stream, submit_info->geometry.fw_stream_len },
-+         { "fragment_pr", submit_info->fragment_pr.fw_stream, submit_info->fragment_pr.fw_stream_len },
-+         { "fragment",    submit_info->fragment.fw_stream, submit_info->fragment.fw_stream_len },
-+      };
-+      if (_d++ < 40) {
-+         for (unsigned _i = 0; _i < 3; _i++) {
-+            if (!_st[_i].len) continue;
-+            fprintf(stderr, "[csb] %s len=%u:", _st[_i].what, _st[_i].len);
-+            for (uint32_t _b = 0; _b + 4 <= _st[_i].len && _b < 256; _b += 4) {
-+               uint32_t _w; memcpy(&_w, &_st[_i].p[_b], 4);
-+               fprintf(stderr, " %08x", _w);
-+            }
-+            fprintf(stderr, "\n");
-+         }
-+      }
-+   }
 +
 +   /* ponytail: PVR_VK_GEOM_ONLY - submit only the geometry job, so the firmware trace of a
 +    * geometry-only TA kick from the working client can be compared with the native probe's. */
-+   if (getenv("PVR_VK_GEOM_ONLY"))
-+      args.jobs.count = 1;
 +
     /* Returns VK_ERROR_OUT_OF_DEVICE_MEMORY to match pvrsrv. */
     return pvr_ioctlf(drm_ws->base.render_fd,
@@ -33157,54 +32558,11 @@ index c36f44b1..e8aad3e5 100644
      subdir('gallium/targets/dril')
    endif
  endif
-diff --git a/src/vulkan/wsi/wsi_common_drm.c b/src/vulkan/wsi/wsi_common_drm.c
-index dbf65b2d..9579e5ef 100644
---- a/src/vulkan/wsi/wsi_common_drm.c
-+++ b/src/vulkan/wsi/wsi_common_drm.c
-@@ -1096,10 +1096,31 @@ wsi_drm_wait_for_explicit_sync_release(struct wsi_swapchain *chain,
-     * We will forward the GPU signal to the VkSemaphore/VkFence of the acquire.
-     */
-    uint32_t first_signalled;
-+   struct timespec _r0, _r1; int _rt = getenv("WSIREL_TRACE") != NULL;
-+   if (_rt) clock_gettime(CLOCK_MONOTONIC, &_r0);
-    ret = device->sync->timeline_wait(device->sync, handles, points, unacquired_image_count,
-                                      wsi_drm_rel_timeout_to_abs(rel_timeout_ns),
-                                      DRM_SYNCOBJ_WAIT_FLAGS_WAIT_AVAILABLE,
-                                      &first_signalled);
-+   if (_rt) {
-+      static unsigned long _rn; static double _rtot, _rmax;
-+      clock_gettime(CLOCK_MONOTONIC, &_r1);
-+      double _ms = (_r1.tv_sec-_r0.tv_sec)*1000.0 + (_r1.tv_nsec-_r0.tv_nsec)/1e6;
-+      _rn++; _rtot += _ms; if (_ms > _rmax) _rmax = _ms;
-+      /* ponytail: log the point waited on, to tell "compositor signals late" from "wrong point". */
-+      if (getenv("WSIREL_POINTS")) {
-+         fprintf(stderr, "[relpt] ret=%d first=%d n=%u waited=%.2fms points=",
-+                 ret, ret == 0 ? (int)first_signalled : -1,
-+                 unacquired_image_count, _ms);
-+         for (uint32_t _i = 0; _i < unacquired_image_count && _i < 8; _i++)
-+            fprintf(stderr, "img%u:h%u@p%llu ", indices[_i], handles[_i],
-+                    (unsigned long long)points[_i]);
-+         fprintf(stderr, "\n");
-+      }
-+      if (_rn % 50 == 0)
-+         fprintf(stderr, "[rel] explicit-sync release waits=%lu total=%.1fms avg=%.2fms max=%.2fms images=%u\n",
-+                 _rn, _rtot, _rtot/_rn, _rmax, unacquired_image_count);
-+   }
- 
-    /* Return the first image that materialized. */
-    if (ret != 0)
 diff --git a/src/vulkan/wsi/wsi_common_x11.c b/src/vulkan/wsi/wsi_common_x11.c
-index e2e6ef8a..379c4090 100644
+index e2e6ef8a..060e7beb 100644
 --- a/src/vulkan/wsi/wsi_common_x11.c
 +++ b/src/vulkan/wsi/wsi_common_x11.c
-@@ -21,12 +21,14 @@
-  * IN THE SOFTWARE.
-  */
- 
-+#include <time.h>
- #include <X11/Xlib-xcb.h>
- #include <X11/xshmfence.h>
- #define XK_MISCELLANY
+@@ -27,6 +27,7 @@
  #define XK_LATIN1
  #include <X11/keysymdef.h>
  #include <xcb/xcb.h>
@@ -33212,7 +32570,7 @@ index e2e6ef8a..379c4090 100644
  #ifdef XCB_KEYSYMS_AVAILABLE
  #include <xcb/xcb_keysyms.h>
  #endif
-@@ -113,6 +115,18 @@ struct wsi_x11_vk_surface {
+@@ -113,6 +114,18 @@ struct wsi_x11_vk_surface {
        VkIcdSurfaceXcb xcb;
     };
     bool has_alpha;
@@ -33231,63 +32589,48 @@ index e2e6ef8a..379c4090 100644
  };
  #ifdef HAVE_X11_DRM
  /**
-@@ -784,19 +798,62 @@ x11_surface_get_capabilities(VkIcdSurfaceBase *icd_surface,
-    xcb_generic_error_t *err;
+@@ -780,23 +793,45 @@ x11_surface_get_capabilities(VkIcdSurfaceBase *icd_surface,
+    struct wsi_x11_vk_surface *surface = (struct wsi_x11_vk_surface*)icd_surface;
+    struct wsi_x11_connection *wsi_conn =
+       wsi_x11_get_connection(wsi_device, conn);
+-   xcb_get_geometry_cookie_t geom_cookie;
+-   xcb_generic_error_t *err;
++   xcb_generic_error_t *err = NULL;
     xcb_get_geometry_reply_t *geom;
  
-+   struct timespec _c0, _c1; int _ct = 0;
-+   if (getenv("WSICAP_TRACE")) { clock_gettime(CLOCK_MONOTONIC, &_c0); _ct = 1; }
-+
-+   /* Poll the request left in flight last time; never wait for the reply. */
-+   if (surface->geom_pending) {
-+      void *reply = NULL;
-+      if (xcb_poll_for_reply(conn, surface->geom_seq, &reply, &err)) {
-+         geom = reply;
-+         if (geom) {
-+            surface->geom_w = geom->width;
-+            surface->geom_h = geom->height;
-+            surface->geom_valid = true;
-+         }
-+         free(err);
-+         free(geom);
-+         surface->geom_pending = false;
-+      } else {
-+         /* Not ready yet - drop it and use the cache below. */
-+         xcb_discard_reply(conn, surface->geom_seq);
-+         surface->geom_pending = false;
-+      }
-+   }
-+
-+   /* Queue the next probe for the following call. */
-    geom_cookie = xcb_get_geometry(conn, window);
-+   surface->geom_seq = geom_cookie.sequence;
-+   surface->geom_pending = true;
-+
-+   if (!surface->geom_valid) {
-+      /* First call for this surface: establish the cache once, blocking. */
-+      geom = xcb_get_geometry_reply(conn, geom_cookie, &err);
-+      if (!geom)
-+         return VK_ERROR_SURFACE_LOST_KHR;
-+      surface->geom_w = geom->width;
-+      surface->geom_h = geom->height;
-+      surface->geom_valid = true;
-+      free(err);
-+      free(geom);
-+   }
-+
-+   if (_ct) {
-+      static unsigned long _n; static double _tot, _max;
-+      clock_gettime(CLOCK_MONOTONIC, &_c1);
-+      double ms = (_c1.tv_sec-_c0.tv_sec)*1000.0 + (_c1.tv_nsec-_c0.tv_nsec)/1e6;
-+      _n++; _tot += ms; if (ms > _max) _max = ms;
-+      if (_n % 50 == 0)
-+         fprintf(stderr, "[wc] %lu GetSurfaceCapabilities calls, total %.1f ms, avg %.3f ms, max %.2f ms\n",
-+                 _n, _tot, _tot/_n, _max);
+-   geom_cookie = xcb_get_geometry(conn, window);
++   /* Keep one geometry request in flight, picked up by this or a later call. */
++   if (!surface->geom_pending) {
++      surface->geom_seq = xcb_get_geometry(conn, window).sequence;
++      surface->geom_pending = true;
 +   }
  
 -   geom = xcb_get_geometry_reply(conn, geom_cookie, &err);
 -   if (!geom)
--      return VK_ERROR_SURFACE_LOST_KHR;
++   /* Poll it; wait for it only to establish the cache on the first call. */
++   {
++      void *reply = NULL;
++      if (surface->geom_valid) {
++         if (xcb_poll_for_reply(conn, surface->geom_seq, &reply, &err))
++            surface->geom_pending = false;
++      } else {
++         /* First call for this surface: establish the cache once, blocking. */
++         reply = xcb_wait_for_reply(conn, surface->geom_seq, &err);
++         surface->geom_pending = false;
++      }
++      geom = reply;
++      if (geom) {
++         surface->geom_w = geom->width;
++         surface->geom_h = geom->height;
++         surface->geom_valid = true;
++      }
++      free(err);
++      free(geom);
++   }
++
++   if (!surface->geom_valid)
+       return VK_ERROR_SURFACE_LOST_KHR;
++
     {
 -      VkExtent2D extent = { geom->width, geom->height };
 +      VkExtent2D extent = { surface->geom_w, surface->geom_h };
@@ -33300,25 +32643,21 @@ index e2e6ef8a..379c4090 100644
  
     if (surface->has_alpha) {
        caps->surfaceCapabilities.supportedCompositeAlpha = VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR |
-@@ -2213,8 +2270,20 @@ x11_acquire_next_image(struct wsi_swapchain *wsi_chain,
-    assert(*image_index < chain->base.image_count);
- #ifdef HAVE_X11_DRM
-    if (chain->images[*image_index].shm_fence &&
--       !chain->base.image_info.explicit_sync)
-+       !chain->base.image_info.explicit_sync) {
-+      struct timespec _f0, _f1; int _t = 0;
-+      if (getenv("X11ACQ_TRACE")) { clock_gettime(CLOCK_MONOTONIC, &_f0); _t = 1; }
-       xshmfence_await(chain->images[*image_index].shm_fence);
-+      if (_t) {
-+         static unsigned long _n; static double _tot, _max;
-+         clock_gettime(CLOCK_MONOTONIC, &_f1);
-+         double ms = (_f1.tv_sec-_f0.tv_sec)*1000.0 + (_f1.tv_nsec-_f0.tv_nsec)/1e6;
-+         _n++; _tot += ms; if (ms > _max) _max = ms;
-+         if (_n % 50 == 0)
-+            fprintf(stderr, "[xa] %lu present-completion waits, total %.1f ms, avg %.3f ms, max %.2f ms\n",
-+                    _n, _tot, _tot/_n, _max);
-+      }
-+   }
- #endif
+@@ -1167,7 +1202,7 @@ wsi_CreateXcbSurfaceKHR(VkInstance _instance,
+    if (!visual)
+       return VK_ERROR_OUT_OF_HOST_MEMORY;
  
-    return result;
+-   surface = vk_alloc2(&instance->alloc, pAllocator, sizeof(struct wsi_x11_vk_surface), 8,
++   surface = vk_zalloc2(&instance->alloc, pAllocator, sizeof(struct wsi_x11_vk_surface), 8,
+                        VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+    if (surface == NULL)
+       return VK_ERROR_OUT_OF_HOST_MEMORY;
+@@ -1199,7 +1234,7 @@ wsi_CreateXlibSurfaceKHR(VkInstance _instance,
+    if (!visual)
+       return VK_ERROR_OUT_OF_HOST_MEMORY;
+ 
+-   surface = vk_alloc2(&instance->alloc, pAllocator, sizeof(struct wsi_x11_vk_surface), 8,
++   surface = vk_zalloc2(&instance->alloc, pAllocator, sizeof(struct wsi_x11_vk_surface), 8,
+                        VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+    if (surface == NULL)
+       return VK_ERROR_OUT_OF_HOST_MEMORY;
