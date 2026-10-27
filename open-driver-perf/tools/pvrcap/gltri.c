@@ -10,8 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define W 512
-#define H 512
+static int W = 512, H = 512;
 
 static GLuint sh(GLenum t, const char *src)
 {
@@ -26,6 +25,8 @@ static GLuint sh(GLenum t, const char *src)
 
 int main(void)
 {
+   if (getenv("GLTRI_W")) W = atoi(getenv("GLTRI_W"));
+   if (getenv("GLTRI_H")) H = atoi(getenv("GLTRI_H"));
    PFNEGLGETPLATFORMDISPLAYEXTPROC gpd = (void *)eglGetProcAddress("eglGetPlatformDisplayEXT");
    EGLDisplay dpy = gpd(EGL_PLATFORM_SURFACELESS_MESA, EGL_DEFAULT_DISPLAY, NULL);
    EGLint maj, min, n;
@@ -60,38 +61,105 @@ int main(void)
       fprintf(stderr, "after RenderbufferStorage: err 0x%x width %d\n", glGetError(), rw);
       glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, rb);
    }
+   if (getenv("GLTRI_DEPTH")) {
+      GLuint db;
+      glGenRenderbuffers(1, &db); glBindRenderbuffer(GL_RENDERBUFFER, db);
+      glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT16, W, H);
+      glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, db);
+      glEnable(GL_DEPTH_TEST);
+   }
    GLenum st = glCheckFramebufferStatus(GL_FRAMEBUFFER);
    if (st != GL_FRAMEBUFFER_COMPLETE) { fprintf(stderr, "fbo incomplete: status 0x%x, glGetError 0x%x\n", st, glGetError()); return 2; }
 
    GLuint p = glCreateProgram();
    const int vary = getenv("GLTRI_VARYING") != NULL;
+   if (getenv("GLTRI_MAT")) {
+      glAttachShader(p, sh(GL_VERTEX_SHADER,
+         "attribute vec3 pos; attribute vec3 nrm; uniform mat4 mvp; uniform mat4 nm; varying vec3 c;"
+         "void main() { c = (nm * vec4(nrm, 0.0)).xyz * 0.5 + 0.5; gl_Position = mvp * vec4(pos, 1.0); }"));
+      glAttachShader(p, sh(GL_FRAGMENT_SHADER,
+         "precision mediump float; varying vec3 c; void main() { gl_FragColor = vec4(c, 1.0); }"));
+   } else {
    glAttachShader(p, sh(GL_VERTEX_SHADER, vary
       ? "attribute vec2 pos; varying vec2 v; void main() { v = pos * 0.5 + 0.5; gl_Position = vec4(pos, 0.0, 1.0); }"
+      : getenv("GLTRI_VSU") ? "attribute vec2 pos; uniform float s; void main() { gl_Position = vec4(pos * s, 0.0, 1.0); }"
       : "attribute vec2 pos; void main() { gl_Position = vec4(pos, 0.0, 1.0); }"));
    glAttachShader(p, sh(GL_FRAGMENT_SHADER, vary
       ? "precision mediump float; varying vec2 v; void main() { gl_FragColor = vec4(v, 0.0, 1.0); }"
       : getenv("GLTRI_UNIFORM")
       ? "precision mediump float; uniform vec2 rg; void main() { gl_FragColor = vec4(rg, 0.0, 1.0); }"
       : "precision mediump float; void main() { gl_FragColor = vec4(1.0, 0.0, 0.0, 1.0); }"));
+   }
    glBindAttribLocation(p, 0, "pos");
+   glBindAttribLocation(p, 0, "pos");
+   glBindAttribLocation(p, 1, "nrm");
    glLinkProgram(p);
    { GLint lk = 0; glGetProgramiv(p, GL_LINK_STATUS, &lk); if (!lk) { char log[1024]; glGetProgramInfoLog(p, sizeof log, NULL, log); fprintf(stderr, "link failed: %s\n", log); return 2; } }
    glUseProgram(p);
+   if (getenv("GLTRI_MAT")) {
+      static float id[16] = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
+      if (getenv("GLTRI_PERSP")) id[3] = (float)atof(getenv("GLTRI_PERSP")); /* w = 1 + k * x */
+      glUniformMatrix4fv(glGetUniformLocation(p, "mvp"), 1, GL_FALSE, id);
+      glUniformMatrix4fv(glGetUniformLocation(p, "nm"), 1, GL_FALSE, id);
+   }
+   if (getenv("GLTRI_VSU")) glUniform1f(glGetUniformLocation(p, "s"), 1.0f);
    if (getenv("GLTRI_UNIFORM")) glUniform2f(glGetUniformLocation(p, "rg"), 1.0f, 0.0f);
 
+   const int mat = getenv("GLTRI_MAT") != NULL;
    static const float tri[] = { -0.5f, -0.5f, 0.5f, -0.5f, 0.0f, 0.5f };
+   /* pos.xyz, nrm.xyz interleaved, like the glmark2 build scene */
+   static float tri6[] = { -0.5f, -0.5f, 0.0f, 1.0f, 0.0f, 0.0f,
+                                  0.5f, -0.5f, 0.0f, 1.0f, 0.0f, 0.0f,
+                                  0.0f,  0.5f, 0.0f, 1.0f, 0.0f, 0.0f };
+   if (getenv("GLTRI_Z"))
+      sscanf(getenv("GLTRI_Z"), "%f,%f,%f", &tri6[2], &tri6[8], &tri6[14]);
    GLuint vb;
    glGenBuffers(1, &vb); glBindBuffer(GL_ARRAY_BUFFER, vb);
-   glBufferData(GL_ARRAY_BUFFER, sizeof tri, tri, GL_STATIC_DRAW);
-   glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, 0);
+   if (mat) {
+      const long ofs = getenv("GLTRI_NOFS") ? atol(getenv("GLTRI_NOFS")) : 0;
+      if (ofs) {
+         /* positions at 0, normals at ofs (non-interleaved, like glmark2 meshes) */
+         float *b = calloc(1, ofs + 36);
+         for (int i = 0; i < 3; i++) { memcpy(b + 3 * i, tri6 + 6 * i, 12); memcpy((char *)b + ofs + 12 * i, tri6 + 6 * i + 3, 12); }
+         glBufferData(GL_ARRAY_BUFFER, ofs + 36, b, GL_STATIC_DRAW);
+         glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 12, 0);
+         glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 12, (void *)ofs);
+      } else {
+      glBufferData(GL_ARRAY_BUFFER, sizeof tri6, tri6, GL_STATIC_DRAW);
+      glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 24, 0);
+      glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 24, (void *)12);
+      }
+      glEnableVertexAttribArray(1);
+   } else {
+      glBufferData(GL_ARRAY_BUFFER, sizeof tri, tri, GL_STATIC_DRAW);
+      glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, 0);
+   }
    glEnableVertexAttribArray(0);
 
    glViewport(0, 0, W, H);
    glClearColor(0, 1, 0, 1);
-   glClear(GL_COLOR_BUFFER_BIT);
+   glClear(GL_COLOR_BUFFER_BIT | (getenv("GLTRI_DEPTH") ? GL_DEPTH_BUFFER_BIT : 0));
+   if (getenv("GLTRI_MANY")) {
+      /* N small triangles tiled over the left half of the target, then the test triangle on top. */
+      const int n = atoi(getenv("GLTRI_MANY")), side = (int)(n > 1 ? __builtin_sqrtf((float)n) + 1 : 1);
+      float *v = malloc((size_t)n * 6 * sizeof(float));
+      for (int i = 0; i < n; i++) {
+         const float x = -1.0f + (float)(i % side) / side, y = -1.0f + 2.0f * (float)(i / side) / side;
+         const float d = getenv("GLTRI_BIG") ? 1.5f : 1.0f / side;
+         float t[6] = { x, y, x + d, y, x, y + d };
+         memcpy(v + i * 6, t, sizeof t);
+      }
+      GLuint mb;
+      glGenBuffers(1, &mb); glBindBuffer(GL_ARRAY_BUFFER, mb);
+      glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)n * 6 * sizeof(float), v, GL_STATIC_DRAW);
+      glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, 0);
+      glDrawArrays(GL_TRIANGLES, 0, 3 * n);
+      glBindBuffer(GL_ARRAY_BUFFER, vb);
+      glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, 0);
+   }
    glDrawArrays(GL_TRIANGLES, 0, 3);
 
-   static unsigned char px[W * H * 4];
+   unsigned char *px = malloc((size_t)W * H * 4);
    glReadPixels(0, 0, W, H, GL_RGBA, GL_UNSIGNED_BYTE, px);
    printf("glGetError: 0x%x\n", glGetError());
    long red = 0, green = 0, other = 0;
