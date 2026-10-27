@@ -1,0 +1,427 @@
+From 8893063788040944d71ce3f968819ef99cae6e9e Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 03:20:21 +0800
+Subject: [PATCH 313/314] gallium/pvr: blending, depth textures, depth-only and
+ unbound-sampler draws
+
+- Blending: fragment variants are keyed by target format and blend state;
+  pco lowers the blend from data.fs.blend_opts (rt 0 from the gallium
+  blend state, logic ops, colour mask), the blend constants it needs go
+  into the shared block from set_blend_color, and the ISP pass type
+  follows the variant as the reference picks it (discard: punch-through,
+  blending or a masked output: translucent, else opaque).
+- Depth formats sample as textures (U16, X8U24, ST8U24, F32; depth reads
+  (d, 0, 0, 1)).
+- A depth-only framebuffer renders into a scratch colour target of its
+  size, and an unbound texture unit reads a 1x1 black texture, instead of
+  falling back off the 3D path.
+
+gltri GLTRI_BLEND (alpha 0.5 over green) matches zink's pixel exactly.
+glmark2-es2 off-screen runs every draw on the 3D path.
+---
+ src/gallium/drivers/pvr_native/pvr_context.c |   5 +-
+ src/gallium/drivers/pvr_native/pvr_context.h |   1 +
+ src/gallium/drivers/pvr_native/pvr_csb.c     |  19 ++-
+ src/gallium/drivers/pvr_native/pvr_draw.c    | 125 +++++++++++++++++--
+ src/gallium/drivers/pvr_native/pvr_shader.c  |  38 ++++--
+ src/gallium/drivers/pvr_native/pvr_shader.h  |  19 ++-
+ 6 files changed, 181 insertions(+), 26 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_context.c b/src/gallium/drivers/pvr_native/pvr_context.c
+index 83afc334..0697fc06 100644
+--- a/src/gallium/drivers/pvr_native/pvr_context.c
++++ b/src/gallium/drivers/pvr_native/pvr_context.c
+@@ -724,7 +724,10 @@ pvr_create_sampler_view(struct pipe_context *pctx, struct pipe_resource *texture
+ /* State the draw path does not consume yet: accepted so the state tracker can set it. */
+ static void pvr_set_scissor_states(UNUSED struct pipe_context *p, UNUSED unsigned s, UNUSED unsigned n,
+                                    UNUSED const struct pipe_scissor_state *st) {}
+-static void pvr_set_blend_color(UNUSED struct pipe_context *p, UNUSED const struct pipe_blend_color *c) {}
++static void pvr_set_blend_color(struct pipe_context *p, const struct pipe_blend_color *c)
++{
++   pvr_context(p)->blend_color = *c;
++}
+ static void pvr_set_clip_state(UNUSED struct pipe_context *p, UNUSED const struct pipe_clip_state *c) {}
+ static void pvr_set_polygon_stipple(UNUSED struct pipe_context *p, UNUSED const struct pipe_poly_stipple *s) {}
+ static void pvr_texture_barrier(UNUSED struct pipe_context *p, UNUSED unsigned flags) {}
+diff --git a/src/gallium/drivers/pvr_native/pvr_context.h b/src/gallium/drivers/pvr_native/pvr_context.h
+index 3faf2c42..df847132 100644
+--- a/src/gallium/drivers/pvr_native/pvr_context.h
++++ b/src/gallium/drivers/pvr_native/pvr_context.h
+@@ -48,6 +48,7 @@ struct pvr_context {
+     * from these yet, so a copy of the struct is all that is needed - wrapping them in
+     * driver-specific types can wait until the CSB generator wants precomputed fields. */
+    const struct pipe_blend_state *blend;
++   struct pipe_blend_color blend_color;
+    const struct pipe_depth_stencil_alpha_state *dsa;
+    const struct pipe_rasterizer_state *rasterizer;
+ 
+diff --git a/src/gallium/drivers/pvr_native/pvr_csb.c b/src/gallium/drivers/pvr_native/pvr_csb.c
+index 44577e96..955eeb74 100644
+--- a/src/gallium/drivers/pvr_native/pvr_csb.c
++++ b/src/gallium/drivers/pvr_native/pvr_csb.c
+@@ -447,6 +447,19 @@ pvr_format_layout_from_pipe(enum pipe_format format, struct pvr_format_layout *l
+    case PIPE_FORMAT_R8_UNORM:
+       layout_out->components = ROGUE_TEXSTATE_FORMAT_U8;
+       break;
++   /* Depth, as the depth buffers the ZLS stores (untwiddled, rows of whole tiles). */
++   case PIPE_FORMAT_Z16_UNORM:
++      layout_out->components = ROGUE_TEXSTATE_FORMAT_U16;
++      break;
++   case PIPE_FORMAT_Z24X8_UNORM:
++      layout_out->components = ROGUE_TEXSTATE_FORMAT_X8U24;
++      break;
++   case PIPE_FORMAT_Z24_UNORM_S8_UINT:
++      layout_out->components = ROGUE_TEXSTATE_FORMAT_ST8U24;
++      break;
++   case PIPE_FORMAT_Z32_FLOAT:
++      layout_out->components = ROGUE_TEXSTATE_FORMAT_F32;
++      break;
+    case PIPE_FORMAT_R8G8_UNORM:
+       layout_out->components = ROGUE_TEXSTATE_FORMAT_U8U8;
+       break;
+@@ -471,9 +484,9 @@ pvr_format_layout_from_pipe(enum pipe_format format, struct pvr_format_layout *l
+     * layout uses. The rule is right; the component mapping it needs is missing. */
+    if (util_format_has_depth(desc) || util_format_has_stencil(desc)) {
+       layout_out->swizzle[0] = PIPE_SWIZZLE_X;
+-      layout_out->swizzle[1] = PIPE_SWIZZLE_NONE;
+-      layout_out->swizzle[2] = PIPE_SWIZZLE_NONE;
+-      layout_out->swizzle[3] = PIPE_SWIZZLE_NONE;
++      layout_out->swizzle[1] = PIPE_SWIZZLE_0;
++      layout_out->swizzle[2] = PIPE_SWIZZLE_0;
++      layout_out->swizzle[3] = PIPE_SWIZZLE_1;
+    } else {
+       memcpy(layout_out->swizzle, desc->swizzle, sizeof(layout_out->swizzle));
+    }
+diff --git a/src/gallium/drivers/pvr_native/pvr_draw.c b/src/gallium/drivers/pvr_native/pvr_draw.c
+index a25a928e..0c09324c 100644
+--- a/src/gallium/drivers/pvr_native/pvr_draw.c
++++ b/src/gallium/drivers/pvr_native/pvr_draw.c
+@@ -126,6 +126,9 @@ struct pvr_draw_state {
+    struct pvr_draw_bg bg[4];
+    struct pvr_draw_load load[4];
+    unsigned nr_load;
++   /* The colour target of a depth-only framebuffer, and the texture an unbound unit reads. */
++   struct pipe_resource *scratch_rt;
++   struct pipe_resource *black;
+    unsigned nr_bg;
+ };
+ 
+@@ -596,7 +599,35 @@ draw_tex_binding(struct pvr_context *ctx, unsigned stage, unsigned u, uint32_t *
+    struct pvr_csb csb;
+ 
+    memset(out, 0, PVR_TEX_BINDING_DWORDS * 4);
+-   if (view == NULL || smp == NULL || view->texture == NULL ||
++   /* An unbound unit reads an incomplete texture, black with alpha 1 in GL. */
++   static const struct pipe_sampler_state nearest = {
++      .wrap_s = PIPE_TEX_WRAP_CLAMP_TO_EDGE, .wrap_t = PIPE_TEX_WRAP_CLAMP_TO_EDGE,
++      .wrap_r = PIPE_TEX_WRAP_CLAMP_TO_EDGE,
++   };
++   struct pipe_sampler_view black_view;
++   if ((view == NULL || view->texture == NULL) && ctx->draw != NULL) {
++      struct pvr_draw_state *dd = ctx->draw;
++      if (dd->black == NULL) {
++         const struct pipe_resource templ = {
++            .target = PIPE_TEXTURE_2D, .format = PIPE_FORMAT_R8G8B8A8_UNORM, .width0 = 1,
++            .height0 = 1, .depth0 = 1, .array_size = 1, .bind = PIPE_BIND_SAMPLER_VIEW,
++         };
++         dd->black = ctx->base.screen->resource_create(ctx->base.screen, &templ);
++         struct pvr_resource *br = dd->black ? pvr_resource(dd->black) : NULL;
++         if (br == NULL || (br->bo.map == NULL && !pvr_bo_map(draw_screen(ctx)->fd, &br->bo)))
++            return false;
++         *(uint32_t *)br->bo.map = 0xff000000u;
++      }
++      black_view = (struct pipe_sampler_view){
++         .format = PIPE_FORMAT_R8G8B8A8_UNORM, .target = PIPE_TEXTURE_2D, .texture = dd->black,
++         .swizzle_r = PIPE_SWIZZLE_X, .swizzle_g = PIPE_SWIZZLE_Y, .swizzle_b = PIPE_SWIZZLE_Z,
++         .swizzle_a = PIPE_SWIZZLE_W,
++      };
++      view = &black_view;
++   }
++   if (smp == NULL)
++      smp = &nearest;
++   if (view == NULL || view->texture == NULL ||
+        (view->target != PIPE_TEXTURE_2D && view->target != PIPE_TEXTURE_RECT) ||
+        !pvr_format_layout_from_pipe(view->format, &layout))
+       return false;
+@@ -671,6 +702,11 @@ draw_uniform_program(struct pvr_context *ctx, struct pvr_draw_state *d,
+    if (src != NULL && sh->uniform_dwords)
+       memcpy(u + (sh->uniform_dst - sh->shared_dma_start) * 4, src,
+              MIN2(sh->uniform_dwords * 4, avail));
++   if (sh->blend_mask) {
++      uint32_t *bc = (uint32_t *)(u + (sh->blend_dst - sh->shared_dma_start) * 4);
++      u_foreach_bit (c, sh->blend_mask)
++         *bc++ = fui(ctx->blend_color.color[c]);
++   }
+    u_foreach_bit (t, sh->tex_mask) {
+       if (!draw_tex_binding(ctx, stage, t,
+                             (uint32_t *)(u + (sh->tex_dst[t] - sh->shared_dma_start) * 4)))
+@@ -755,7 +791,7 @@ draw_load_program(struct pvr_context *ctx, struct pvr_draw_state *d, uint64_t bg
+       nir_store_var(&b, out, &tex->def, 0xf);
+       BITSET_SET(b.shader->info.textures_used, 0);
+       BITSET_SET(b.shader->info.textures_used_by_txf, 0);
+-      fs = pvr_shader_create_fs(b.shader, scr->pco_ctx, format);
++      fs = pvr_shader_create_fs(b.shader, scr->pco_ctx, format, NULL);
+       if (fs == NULL || !draw_upload_fs(scr, fs) || fs->tex_mask != 1)
+          return false;
+       /* shortcut: four cached formats, round robin; the evicted shader stays allocated. */
+@@ -985,11 +1021,29 @@ pvr_draw_3d(struct pvr_context *ctx, const struct pipe_draw_info *info,
+    struct pvr_screen *scr = draw_screen(ctx);
+    struct pvr_draw_state *d;
+    struct pipe_resource *rt = ctx->fb.nr_cbufs ? ctx->fb.cbufs[0].texture : NULL;
++   /* A depth-only framebuffer renders into a scratch colour target of its size. */
++   if (rt == NULL && ctx->fb.zsbuf.texture != NULL && ctx->draw != NULL) {
++      struct pvr_draw_state *dd = ctx->draw;
++      if (dd->scratch_rt == NULL || dd->scratch_rt->width0 != ctx->fb.width ||
++          dd->scratch_rt->height0 != ctx->fb.height) {
++         const struct pipe_resource templ = {
++            .target = PIPE_TEXTURE_2D, .format = PIPE_FORMAT_R8G8B8A8_UNORM,
++            .width0 = ctx->fb.width, .height0 = ctx->fb.height, .depth0 = 1, .array_size = 1,
++            .bind = PIPE_BIND_RENDER_TARGET,
++         };
++         if (dd->open && dd->rt == dd->scratch_rt)
++            pvr_draw_flush(ctx);
++         pipe_resource_reference(&dd->scratch_rt, NULL);
++         dd->scratch_rt = ctx->base.screen->resource_create(ctx->base.screen, &templ);
++      }
++      rt = dd->scratch_rt;
++   }
++   const enum pipe_format rt_format = rt ? rt->format : PIPE_FORMAT_NONE;
+    struct pvr_shader *vs = ctx->vs, *fs = ctx->fs;
+    enum ROGUE_VDMCTRL_PRIMITIVE_TOPOLOGY topo;
+ 
+    if (getenv("PVR_NATIVE_COMPUTE_FALLBACK") || num_draws != 1 || rt == NULL || vs == NULL ||
+-       fs == NULL || fs->src_nir == NULL || !draw_format_ok(ctx->fb.cbufs[0].format) ||
++       fs == NULL || fs->src_nir == NULL || !draw_format_ok(rt_format) ||
+        !draw_topology(info->mode, &topo) ||
+        info->instance_count != 1 || draws[0].count == 0)
+       return false;
+@@ -1006,15 +1060,58 @@ pvr_draw_3d(struct pvr_context *ctx, const struct pipe_draw_info *info,
+    if (d == NULL || !draw_init(ctx, d))
+       return false;
+ 
+-   /* The fragment shader variant for this target format. */
+-   if (fs->variant == NULL || fs->variant_format != ctx->fb.cbufs[0].format) {
+-      fs->variant = pvr_shader_create_fs(nir_shader_clone(NULL, fs->src_nir), scr->pco_ctx,
+-                                         ctx->fb.cbufs[0].format);
+-      fs->variant_format = ctx->fb.cbufs[0].format;
+-      if (fs->variant == NULL)
++   /* The fragment shader variant for this target format and blend state. */
++   nir_lower_blend_options blend;
++   memset(&blend, 0, sizeof(blend));
++   {
++      const struct pipe_blend_state *bs = ctx->blend;
++      const nir_lower_blend_channel replace = {
++         .func = PIPE_BLEND_ADD,
++         .src_factor = PIPE_BLENDFACTOR_ONE,
++         .dst_factor = PIPE_BLENDFACTOR_ZERO,
++      };
++      blend.rt[0].format = rt_format;
++      blend.rt[0].rgb = replace;
++      blend.rt[0].alpha = replace;
++      blend.rt[0].colormask = 0xf;
++      if (bs != NULL) {
++         blend.rt[0].colormask = bs->rt[0].colormask;
++         if (bs->logicop_enable) {
++            blend.logicop_enable = true;
++            blend.logicop_func = bs->logicop_func;
++         } else if (bs->rt[0].blend_enable) {
++            blend.rt[0].rgb = (nir_lower_blend_channel){
++               .func = bs->rt[0].rgb_func,
++               .src_factor = bs->rt[0].rgb_src_factor,
++               .dst_factor = bs->rt[0].rgb_dst_factor,
++            };
++            blend.rt[0].alpha = (nir_lower_blend_channel){
++               .func = bs->rt[0].alpha_func,
++               .src_factor = bs->rt[0].alpha_src_factor,
++               .dst_factor = bs->rt[0].alpha_dst_factor,
++            };
++         }
++      }
++   }
++   struct pvr_shader *fsv = NULL;
++   for (unsigned i = 0; i < fs->nr_variants; i++) {
++      if (fs->variants[i].format == rt_format &&
++          !memcmp(&fs->variants[i].blend, &blend, sizeof(blend)))
++         fsv = fs->variants[i].sh;
++   }
++   if (fsv == NULL) {
++      fsv = pvr_shader_create_fs(nir_shader_clone(NULL, fs->src_nir), scr->pco_ctx, rt_format,
++                                 &blend);
++      if (fsv == NULL)
+          return false;
++      /* shortcut: round robin past PVR_SHADER_MAX_VARIANTS; the evicted variant stays allocated. */
++      const unsigned slot = fs->nr_variants < PVR_SHADER_MAX_VARIANTS ? fs->nr_variants++
++                                                                     : (rt_format + blend.rt[0].colormask) %
++                                                                          PVR_SHADER_MAX_VARIANTS;
++      fs->variants[slot].format = rt_format;
++      fs->variants[slot].blend = blend;
++      fs->variants[slot].sh = fsv;
+    }
+-   struct pvr_shader *fsv = fs->variant;
+    if (!draw_upload_fs(scr, fsv))
+       return false;
+    if (vs->usc_offset == 0 && (vs->usc_offset = draw_upload_usc(scr, vs->binary, vs->binary_size)) == 0)
+@@ -1061,7 +1158,11 @@ pvr_draw_3d(struct pvr_context *ctx, const struct pipe_draw_info *info,
+    const bool depth = d->zs != NULL && dsa != NULL && dsa->depth_enabled;
+    const struct ROGUE_TA_STATE_ISPA ispa = {
+       .objtype = ROGUE_TA_OBJTYPE_TRIANGLE,
+-      .passtype = ROGUE_TA_PASSTYPE_OPAQUE,
++      /* As the reference picks it: discard is punch-through, a shader that reads the target
++       * (blending) or leaves it unwritten is translucent. */
++      .passtype = fsv->discard                   ? ROGUE_TA_PASSTYPE_PUNCH_THROUGH
++                  : fsv->fbfetch || fsv->masked ? ROGUE_TA_PASSTYPE_TRANSLUCENT
++                                                : ROGUE_TA_PASSTYPE_OPAQUE,
+       .dwritedisable = !depth || !dsa->depth_writemask,
+       .dcmpmode = depth ? (enum ROGUE_TA_CMPMODE)dsa->depth_func : ROGUE_TA_CMPMODE_ALWAYS,
+       .pointlinewidth = 15,
+@@ -1330,6 +1431,8 @@ pvr_draw_destroy(struct pvr_context *ctx)
+       if (ctx->draw->hwrt[i].dset != 0)
+          draw_hwrt_free(draw_screen(ctx), &ctx->draw->hwrt[i]);
+    }
++   pipe_resource_reference(&ctx->draw->scratch_rt, NULL);
++   pipe_resource_reference(&ctx->draw->black, NULL);
+    /* shortcut: the other GPU objects of the draw path are released with the VM at screen
+     * destruction. */
+    free(ctx->draw);
+diff --git a/src/gallium/drivers/pvr_native/pvr_shader.c b/src/gallium/drivers/pvr_native/pvr_shader.c
+index c7cbc881..e126ec45 100644
+--- a/src/gallium/drivers/pvr_native/pvr_shader.c
++++ b/src/gallium/drivers/pvr_native/pvr_shader.c
+@@ -284,16 +284,21 @@ pvr_shader_init_vs_alloc(struct nir_shader *nir, pco_data *data)
+ }
+ 
+ static struct pvr_shader *
+-pvr_shader_create_with(struct nir_shader *nir, pco_ctx *ctx, enum pipe_format color_format)
++pvr_shader_create_with(struct nir_shader *nir, pco_ctx *ctx, enum pipe_format color_format,
++                       const nir_lower_blend_options *blend)
+ {
+    struct pvr_shader *shader = calloc(1, sizeof(*shader));
+    pco_data data = { 0 };
+-
+    if (shader == NULL)
+       return NULL;
+-
+    if (nir->info.stage == MESA_SHADER_FRAGMENT) {
+       data.fs.output_formats[FRAG_RESULT_DATA0] = color_format;
++      /* Blending is lowered into the shader (pco runs nir_lower_blend with these). */
++      if (blend != NULL && color_format != PIPE_FORMAT_NONE) {
++         data.fs.blend_opts = *blend;
++         data.fs.blend_opts.rt[0].format = color_format;
++         data.fs.masked_outputs = blend->rt[0].colormask == 0;
++      }
+       /* No depth replication into a colour output: 0 would mean "replicate into output 0", which
+        * makes pco write the fragment's depth over the colour (the Vulkan driver sets ~0u too). */
+       data.fs.z_replicate = ~0u;
+@@ -337,6 +342,16 @@ pvr_shader_create_with(struct nir_shader *nir, pco_ctx *ctx, enum pipe_format co
+       }
+       shader->shared_dma_start = MIN2(shader->shared_dma_start, set->range.start);
+    }
++   if (nir->info.stage == MESA_SHADER_FRAGMENT) {
++      shader->discard = data.fs.uses.discard;
++      shader->fbfetch = data.fs.uses.fbfetch;
++      shader->masked = data.fs.masked_outputs;
++      if (data.fs.blend_consts.count) {
++         shader->blend_mask = data.fs.blend_consts_needed;
++         shader->blend_dst = data.fs.blend_consts.start;
++         shader->shared_dma_start = MIN2(shader->shared_dma_start, shader->blend_dst);
++      }
++   }
+    shader->shared_dma_dwords = data.common.shareds - shader->shared_dma_start;
+    shader->shareds = data.common.shareds;
+    if (nir->info.stage == MESA_SHADER_VERTEX) {
+@@ -389,13 +404,14 @@ pvr_shader_create_with(struct nir_shader *nir, pco_ctx *ctx, enum pipe_format co
+ struct pvr_shader *
+ pvr_shader_create(struct nir_shader *nir, pco_ctx *ctx)
+ {
+-   return pvr_shader_create_with(nir, ctx, PIPE_FORMAT_NONE);
++   return pvr_shader_create_with(nir, ctx, PIPE_FORMAT_NONE, NULL);
+ }
+ 
+ struct pvr_shader *
+-pvr_shader_create_fs(struct nir_shader *nir, pco_ctx *ctx, enum pipe_format color_format)
++pvr_shader_create_fs(struct nir_shader *nir, pco_ctx *ctx, enum pipe_format color_format,
++                     const nir_lower_blend_options *blend)
+ {
+-   return pvr_shader_create_with(nir, ctx, color_format);
++   return pvr_shader_create_with(nir, ctx, color_format, blend);
+ }
+ 
+ /* The one-attribute vertex DMA both builders are generated from. Shared so the code and its data
+@@ -634,8 +650,8 @@ pvr_shader_destroy(struct pvr_shader *shader)
+    if (shader == NULL)
+       return;
+ 
+-   if (shader->variant)
+-      pvr_shader_destroy(shader->variant);
++   for (unsigned i = 0; i < shader->nr_variants; i++)
++      pvr_shader_destroy(shader->variants[i].sh);
+    ralloc_free(shader->src_nir);
+    ralloc_free(shader->pco);
+    free(shader);
+@@ -698,6 +714,12 @@ pvr_shader_compile_data(pco_ctx *ctx, struct nir_shader *nir, pco_data *data,
+       data->common.push_consts.range = (pco_range){ .start = data->common.shareds, .count = count };
+       data->common.shareds += count;
+    }
++   /* Then the blend constants the lowered blending reads, one dword per needed channel. */
++   if (nir->info.stage == MESA_SHADER_FRAGMENT && data->fs.blend_consts_needed) {
++      data->fs.blend_consts = (pco_range){ .start = data->common.shareds,
++                                           .count = util_bitcount(data->fs.blend_consts_needed) };
++      data->common.shareds += data->fs.blend_consts.count;
++   }
+    /* Then the texture descriptors, as the reference's pvr_setup_descriptors places them. */
+    if (tex_mask) {
+       pco_descriptor_set_data *set = &data->common.desc_sets[0];
+diff --git a/src/gallium/drivers/pvr_native/pvr_shader.h b/src/gallium/drivers/pvr_native/pvr_shader.h
+index f8a1ea32..9fec3797 100644
+--- a/src/gallium/drivers/pvr_native/pvr_shader.h
++++ b/src/gallium/drivers/pvr_native/pvr_shader.h
+@@ -13,6 +13,7 @@
+ #include <stdint.h>
+ 
+ #include "pco/pco.h"
++#include "nir/nir_lower_blend.h"
+ 
+ #include "util/format/u_formats.h"
+ 
+@@ -37,6 +38,7 @@ bool pvr_shader_eot_create(pco_ctx *ctx, struct pvr_shader_eot *eot,
+  * meta (ROGUE_NUM_TEXSTATE_DWORDS and PCO_*_META_COUNT, four each). */
+ #define PVR_TEX_BINDING_DWORDS 16
+ #define PVR_SHADER_MAX_TEX 16
++#define PVR_SHADER_MAX_VARIANTS 6
+ 
+ struct pvr_shader {
+    pco_shader *pco;
+@@ -75,8 +77,18 @@ struct pvr_shader {
+    /* Fragment shader created from pipe state: the NIR to build per-format variants from, and the
+     * last variant (owned here). */
+    struct nir_shader *src_nir;
+-   struct pvr_shader *variant;
+-   enum pipe_format variant_format;
++   struct {
++      enum pipe_format format;
++      nir_lower_blend_options blend;
++      struct pvr_shader *sh;
++   } variants[PVR_SHADER_MAX_VARIANTS];
++   unsigned nr_variants;
++
++   /* Fragment variant: what the ISP pass type follows from (discard, framebuffer fetch from
++    * blending, a masked colour output), and its blend constants in shared registers. */
++   bool discard, fbfetch, masked;
++   uint8_t blend_mask;
++   unsigned blend_dst;
+ 
+    /* Draw-path upload of this shader (pvr_draw.c): USC code offset, FS kick program offset and
+     * sizes, 0 until uploaded. */
+@@ -122,7 +134,8 @@ struct pvr_shader *pvr_shader_create(struct nir_shader *nir, pco_ctx *ctx);
+ /* A fragment shader built for one colour-buffer format: gl_FragColor/DATA0 is packed to that format
+  * in output register 0, which is what the end-of-tile program reads. */
+ struct pvr_shader *pvr_shader_create_fs(struct nir_shader *nir, pco_ctx *ctx,
+-                                        enum pipe_format color_format);
++                                        enum pipe_format color_format,
++                                        const nir_lower_blend_options *blend);
+ 
+ /* Compile any stage and hand back pco's data section as well (the compute path needs it). */
+ bool pvr_shader_compile_data(pco_ctx *ctx, struct nir_shader *nir, pco_data *data,
+-- 
+2.47.3
+

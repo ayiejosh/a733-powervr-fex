@@ -1,0 +1,391 @@
+From 5755f471a659afc282ce741650cf2f4aa1507ecc Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 02:09:36 +0800
+Subject: [PATCH 309/314] gallium/pvr: textures on the native draw path
+
+- GL texture units become bindings of pco descriptor set 0 (a NIR pass
+  packs texture/sampler indices as set 0, binding = unit), each a
+  combined image sampler of 16 dwords as the reference lays them out:
+  image words, image meta, sampler words, sampler meta.
+- The bindings sit in shared registers after the uniforms; the per-draw
+  shared block (uniforms + descriptors) is filled from the bound views and
+  samplers and DMAed by the stage's descriptor program.
+- bind_sampler_states / set_sampler_views record state; sampler views are
+  reference counted and freed (they leaked).
+- Sampler LOD clamp in LOD units, as the reference: clamping to the raw
+  field maximum let GL's default max LOD overflow maxlod into the
+  anisotropy and filter fields, so NEAREST sampled as something else.
+
+gltri GLTRI_SAMPLE (4x4 texture, NEAREST and LINEAR) matches zink's image
+checksum exactly.
+---
+ src/gallium/drivers/pvr_native/pvr_context.c | 59 +++++++++++++++----
+ src/gallium/drivers/pvr_native/pvr_context.h |  7 +++
+ src/gallium/drivers/pvr_native/pvr_csb.c     | 11 ++--
+ src/gallium/drivers/pvr_native/pvr_draw.c    | 62 ++++++++++++++++++--
+ src/gallium/drivers/pvr_native/pvr_shader.c  | 57 ++++++++++++++++++
+ src/gallium/drivers/pvr_native/pvr_shader.h  | 14 +++++
+ 6 files changed, 188 insertions(+), 22 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_context.c b/src/gallium/drivers/pvr_native/pvr_context.c
+index c6a35197..98d44faa 100644
+--- a/src/gallium/drivers/pvr_native/pvr_context.c
++++ b/src/gallium/drivers/pvr_native/pvr_context.c
+@@ -121,15 +121,24 @@ pvr_flush(struct pipe_context *pctx, UNUSED struct pipe_fence_handle **fence,
+  * driver creates none yet, so there is nothing to release or destroy - but a NULL
+  * hook here is a crash on the way out of every GL context, exactly like flush. */
+ static void
+-pvr_sampler_view_destroy(UNUSED struct pipe_context *pctx,
+-                         UNUSED struct pipe_sampler_view *view)
++pvr_sampler_view_destroy(UNUSED struct pipe_context *pctx, struct pipe_sampler_view *view)
+ {
++   pipe_resource_reference(&view->texture, NULL);
++   FREE(view);
+ }
+ 
++/* Drops one reference; the view goes with the last one. */
+ static void
+-pvr_sampler_view_release(UNUSED struct pipe_context *pctx,
+-                         UNUSED struct pipe_sampler_view *view)
++pvr_sampler_view_release(struct pipe_context *pctx, struct pipe_sampler_view *view)
+ {
++   if (pipe_reference(&view->reference, NULL))
++      pvr_sampler_view_destroy(pctx, view);
++}
++
++static inline int
++pvr_stage_index(mesa_shader_stage shader)
++{
++   return shader == MESA_SHADER_VERTEX ? 0 : shader == MESA_SHADER_FRAGMENT ? 1 : -1;
+ }
+ 
+ /* The gallium context contract. cso_unbind_context() calls this entire set on every
+@@ -149,19 +158,39 @@ pvr_sampler_view_release(UNUSED struct pipe_context *pctx,
+ PVR_DEFINE_BIND_NOOP(pvr_bind_state_noop)
+ 
+ static void
+-pvr_bind_sampler_states(UNUSED struct pipe_context *pctx,
+-                        UNUSED mesa_shader_stage shader, UNUSED unsigned start_slot,
+-                        UNUSED unsigned num_samplers, UNUSED void **samplers)
++pvr_bind_sampler_states(struct pipe_context *pctx, mesa_shader_stage shader,
++                        unsigned start_slot, unsigned num_samplers, void **samplers)
+ {
++   struct pvr_context *ctx = pvr_context(pctx);
++   const int s = pvr_stage_index(shader);
++
++   if (s < 0)
++      return;
++   for (unsigned i = 0; i < num_samplers && start_slot + i < PVR_MAX_TEXTURE_UNITS; i++)
++      ctx->samplers[s][start_slot + i] = samplers ? samplers[i] : NULL;
+ }
+ 
+ static void
+-pvr_set_sampler_views(UNUSED struct pipe_context *pctx,
+-                      UNUSED mesa_shader_stage shader, UNUSED unsigned start_slot,
+-                      UNUSED unsigned num_views,
+-                      UNUSED unsigned unbind_num_trailing_slots,
+-                      UNUSED struct pipe_sampler_view **views)
++pvr_set_sampler_views(struct pipe_context *pctx, mesa_shader_stage shader,
++                      unsigned start_slot, unsigned num_views,
++                      unsigned unbind_num_trailing_slots, struct pipe_sampler_view **views)
+ {
++   struct pvr_context *ctx = pvr_context(pctx);
++   const int s = pvr_stage_index(shader);
++
++   if (s < 0)
++      return;
++   for (unsigned i = 0; i < num_views + unbind_num_trailing_slots; i++) {
++      const unsigned slot = start_slot + i;
++      struct pipe_sampler_view *view = i < num_views && views ? views[i] : NULL;
++      if (slot >= PVR_MAX_TEXTURE_UNITS)
++         break;
++      if (view)
++         pipe_reference(NULL, &view->reference);
++      if (ctx->views[s][slot])
++         pvr_sampler_view_release(pctx, ctx->views[s][slot]);
++      ctx->views[s][slot] = view;
++   }
+ }
+ 
+ static void
+@@ -738,6 +767,12 @@ pvr_context_destroy(struct pipe_context *pctx)
+    util_unreference_framebuffer_state(&ctx->fb);
+    if (ctx->base.stream_uploader)
+       u_upload_destroy(ctx->base.stream_uploader);
++   for (unsigned st = 0; st < 2; st++) {
++      for (unsigned u = 0; u < PVR_MAX_TEXTURE_UNITS; u++) {
++         if (ctx->views[st][u])
++            pvr_sampler_view_release(pctx, ctx->views[st][u]);
++      }
++   }
+    pipe_resource_reference(&ctx->cb0[0].buffer, NULL);
+    pipe_resource_reference(&ctx->cb0[1].buffer, NULL);
+    FREE(ctx);
+diff --git a/src/gallium/drivers/pvr_native/pvr_context.h b/src/gallium/drivers/pvr_native/pvr_context.h
+index ad65a007..3faf2c42 100644
+--- a/src/gallium/drivers/pvr_native/pvr_context.h
++++ b/src/gallium/drivers/pvr_native/pvr_context.h
+@@ -21,6 +21,8 @@ struct pvr_vertex_elements {
+    unsigned count;
+    struct pipe_vertex_element elements[PIPE_MAX_ATTRIBS];
+ };
++#define PVR_MAX_TEXTURE_UNITS 16
++
+ struct pvr_context {
+    struct pipe_context base;
+ 
+@@ -52,6 +54,11 @@ struct pvr_context {
+    /* Constant buffer 0 of the vertex and fragment stages: the uniforms (pvr_draw.c). */
+    struct pipe_constant_buffer cb0[2];
+ 
++   /* Bound samplers (state-tracker CSOs) and sampler views (referenced here), per stage
++    * (0 vertex, 1 fragment) and texture unit. */
++   const struct pipe_sampler_state *samplers[2][PVR_MAX_TEXTURE_UNITS];
++   struct pipe_sampler_view *views[2][PVR_MAX_TEXTURE_UNITS];
++
+    /* The compute fallback's GPU resources and compute context, built on the first draw. */
+    struct pvr_compute_state *compute;
+    /* The TA/3D draw path (pvr_draw.c), built on the first draw it can take. */
+diff --git a/src/gallium/drivers/pvr_native/pvr_csb.c b/src/gallium/drivers/pvr_native/pvr_csb.c
+index c6701f3b..b705ee85 100644
+--- a/src/gallium/drivers/pvr_native/pvr_csb.c
++++ b/src/gallium/drivers/pvr_native/pvr_csb.c
+@@ -1262,11 +1262,14 @@ pvr_csb_emit_sampler_desc(struct pvr_csb *csb, const struct pvr_sampler_desc *de
+ 
+    /* Clamped then encoded, in that order, as the reference does - the encoding of an
+     * out-of-range float would wrap rather than saturate. */
+-   word0.minlod = util_unsigned_fixed(CLAMP(desc->min_lod, 0.0f,
+-                                            ROGUE_TEXSTATE_CLAMP_MAX),
++   /* CLAMP_MAX is the field maximum in fixed point, so the clamp in LOD units divides it by the
++    * fraction, as the reference does. Clamping to the raw maximum let GL's default max LOD
++    * (1000) overflow the 10-bit field into the anisotropy and filter bits. */
++   const float lod_clamp_max =
++      (float)ROGUE_TEXSTATE_CLAMP_MAX / (1 << ROGUE_TEXSTATE_CLAMP_FRACTIONAL_BITS);
++   word0.minlod = util_unsigned_fixed(CLAMP(desc->min_lod, 0.0f, lod_clamp_max),
+                                       ROGUE_TEXSTATE_CLAMP_FRACTIONAL_BITS);
+-   word0.maxlod = util_unsigned_fixed(CLAMP(desc->max_lod, 0.0f,
+-                                            ROGUE_TEXSTATE_CLAMP_MAX),
++   word0.maxlod = util_unsigned_fixed(CLAMP(desc->max_lod, 0.0f, lod_clamp_max),
+                                       ROGUE_TEXSTATE_CLAMP_FRACTIONAL_BITS);
+ 
+    dw = pvr_csb_emit(csb, words);
+diff --git a/src/gallium/drivers/pvr_native/pvr_draw.c b/src/gallium/drivers/pvr_native/pvr_draw.c
+index 4c02c5ee..8ae12aaf 100644
+--- a/src/gallium/drivers/pvr_native/pvr_draw.c
++++ b/src/gallium/drivers/pvr_native/pvr_draw.c
+@@ -335,6 +335,49 @@ draw_coeff_program(struct pvr_screen *scr, struct pvr_shader *fs, const struct p
+    return fs->coeff_offset != 0;
+ }
+ 
++/* One combined image sampler for texture unit u of a stage: image words, image meta (zero: 2D,
++ * one layer, no packing), sampler words, sampler meta (compare op NEVER, 0). */
++static bool
++draw_tex_binding(struct pvr_context *ctx, unsigned stage, unsigned u, uint32_t *out)
++{
++   const struct pipe_sampler_view *view = ctx->views[stage][u];
++   const struct pipe_sampler_state *smp = ctx->samplers[stage][u];
++   struct pvr_format_layout layout;
++   struct pvr_csb csb;
++
++   memset(out, 0, PVR_TEX_BINDING_DWORDS * 4);
++   if (view == NULL || smp == NULL || view->texture == NULL ||
++       (view->target != PIPE_TEXTURE_2D && view->target != PIPE_TEXTURE_RECT) ||
++       !pvr_format_layout_from_pipe(view->format, &layout))
++      return false;
++   const struct pvr_resource *res = pvr_resource(view->texture);
++   const unsigned char view_swz[4] = { view->swizzle_r, view->swizzle_g, view->swizzle_b,
++                                       view->swizzle_a };
++   struct pvr_tex_desc tex = {
++      .components = layout.components,
++      .width = res->base.width0,
++      .height = res->base.height0,
++      .stride = res->stride / util_format_get_blocksize(res->base.format),
++      .addr = res->dev_addr,
++   };
++   util_format_compose_swizzles(layout.swizzle, view_swz, tex.swizzle);
++   const struct pvr_sampler_desc sd = {
++      .wrap_s = smp->wrap_s,
++      .wrap_t = smp->wrap_t,
++      .wrap_r = smp->wrap_r,
++      .min_filter = smp->min_img_filter,
++      .mag_filter = smp->mag_img_filter,
++      .mip_filter = smp->min_mip_filter != PIPE_TEX_MIPFILTER_NONE,
++      .min_lod = smp->min_lod,
++      .max_lod = smp->max_lod,
++   };
++   pvr_csb_init(&csb, out, ROGUE_NUM_TEXSTATE_DWORDS * 4, 0);
++   if (!pvr_csb_emit_tex_desc(&csb, &tex) || csb.overflowed)
++      return false;
++   pvr_csb_init(&csb, out + 2 * ROGUE_NUM_TEXSTATE_DWORDS, ROGUE_NUM_TEXSTATE_DWORDS * 4, 0);
++   return pvr_csb_emit_sampler_desc(&csb, &sd) && !csb.overflowed;
++}
++
+ /* A stage's uniform program for this draw: constant buffer 0 copied into the general arena and a
+  * PDS descriptor program that DMAs its first uniform_dwords dwords into the shader's shared
+  * registers (the reference's push-constant buffer, PVR_BUFFER_TYPE_PUSH_CONSTS). Offsets out are
+@@ -355,7 +398,7 @@ draw_uniform_program(struct pvr_context *ctx, struct pvr_draw_state *d,
+ 
+    *data_dwords = 0;
+    *temps = 0;
+-   if (sh->uniform_dwords == 0)
++   if (sh->shared_dma_dwords == 0)
+       return true;
+ 
+    /* The uniform values. */
+@@ -370,20 +413,27 @@ draw_uniform_program(struct pvr_context *ctx, struct pvr_draw_state *d,
+       src = (const uint8_t *)res->bo.map + cb->buffer_offset;
+       avail = cb->buffer_size;
+    }
+-   const unsigned bytes = sh->uniform_dwords * 4;
++   /* The shared block: uniforms, then the texture descriptors. */
++   const unsigned bytes = sh->shared_dma_dwords * 4;
+    uint8_t *u = arena_alloc(&d->gen, bytes, 16, &uaddr);
+    if (u == NULL)
+       return false;
+    memset(u, 0, bytes);
+-   if (src != NULL)
+-      memcpy(u, src, MIN2(bytes, avail));
++   if (src != NULL && sh->uniform_dwords)
++      memcpy(u + (sh->uniform_dst - sh->shared_dma_start) * 4, src,
++             MIN2(sh->uniform_dwords * 4, avail));
++   u_foreach_bit (t, sh->tex_mask) {
++      if (!draw_tex_binding(ctx, stage, t,
++                            (uint32_t *)(u + (sh->tex_dst[t] - sh->shared_dma_start) * 4)))
++         return false;
++   }
+ 
+    /* The descriptor program and its data segment. */
+    din.buffer_count = 1;
+    din.buffers[0] = (struct pvr_pds_buffer){
+       .type = PVR_BUFFER_TYPE_PUSH_CONSTS,
+-      .size_in_dwords = sh->uniform_dwords,
+-      .destination = sh->uniform_dst,
++      .size_in_dwords = sh->shared_dma_dwords,
++      .destination = sh->shared_dma_start,
+    };
+    info.entries_size_in_bytes = 1024;
+    info.entries = calloc(1, info.entries_size_in_bytes);
+diff --git a/src/gallium/drivers/pvr_native/pvr_shader.c b/src/gallium/drivers/pvr_native/pvr_shader.c
+index d9b94e34..c7cbc881 100644
+--- a/src/gallium/drivers/pvr_native/pvr_shader.c
++++ b/src/gallium/drivers/pvr_native/pvr_shader.c
+@@ -116,6 +116,19 @@ pvr_shader_lower_uniform(struct nir_builder *b, nir_intrinsic_instr *intr, UNUSE
+    return true;
+ }
+ 
++/* GL texture and sampler indices are units; pco reads them as packed (set, binding), so unit u
++ * becomes set 0, binding u. */
++static bool
++pvr_shader_pack_tex_index(UNUSED struct nir_builder *b, nir_instr *instr, UNUSED void *data)
++{
++   if (instr->type != nir_instr_type_tex)
++      return false;
++   nir_tex_instr *tex = nir_instr_as_tex(instr);
++   tex->texture_index = pco_pack_desc(0, tex->texture_index);
++   tex->sampler_index = pco_pack_desc(0, tex->sampler_index);
++   return true;
++}
++
+ /* Fragment inputs, as the Vulkan driver's pvr_alloc_fs_varyings: z/w first, then each varying slot
+  * in location order, ROGUE_USC_COEFFICIENT_SET_SIZE coefficient registers per component. */
+ static void
+@@ -310,6 +323,21 @@ pvr_shader_create_with(struct nir_shader *nir, pco_ctx *ctx, enum pipe_format co
+    shader->vtxouts = data.vs.vtxouts;
+    shader->uniform_dwords = data.common.push_consts.range.count;
+    shader->uniform_dst = data.common.push_consts.range.start;
++   shader->tex_mask = 0;
++   shader->shared_dma_start = data.common.shareds;
++   if (shader->uniform_dwords)
++      shader->shared_dma_start = shader->uniform_dst;
++   if (data.common.desc_sets[0].used) {
++      const pco_descriptor_set_data *set = &data.common.desc_sets[0];
++      for (unsigned u = 0; u < set->binding_count; u++) {
++         if (!set->bindings[u].used)
++            continue;
++         shader->tex_mask |= BITFIELD_BIT(u);
++         shader->tex_dst[u] = set->bindings[u].range.start;
++      }
++      shader->shared_dma_start = MIN2(shader->shared_dma_start, set->range.start);
++   }
++   shader->shared_dma_dwords = data.common.shareds - shader->shared_dma_start;
+    shader->shareds = data.common.shareds;
+    if (nir->info.stage == MESA_SHADER_VERTEX) {
+       for (unsigned l = 0; l < ARRAY_SIZE(shader->varyings); l++) {
+@@ -642,6 +670,18 @@ pvr_shader_compile_data(pco_ctx *ctx, struct nir_shader *nir, pco_data *data,
+    }
+    NIR_PASS(_, nir, nir_shader_intrinsics_pass, pvr_shader_lower_uniform,
+             nir_metadata_control_flow, NULL);
++   /* Texture units as bindings of pco descriptor set 0, each a combined image sampler, as the
++    * reference's pvr_init_descriptors declares them. */
++   const uint32_t tex_mask = nir->info.textures_used[0] & BITFIELD_MASK(PVR_SHADER_MAX_TEX);
++   NIR_PASS(_, nir, nir_shader_instructions_pass, pvr_shader_pack_tex_index, nir_metadata_all,
++            NULL);
++   if (tex_mask) {
++      pco_descriptor_set_data *set = &data->common.desc_sets[0];
++      set->binding_count = util_last_bit(tex_mask);
++      set->bindings = rzalloc_array_size(nir, sizeof(*set->bindings), set->binding_count);
++      u_foreach_bit (u, tex_mask)
++         set->bindings[u].is_img_smp = true;
++   }
+    /* GL clip space has z in [-w, w]; the hardware clips to [0, w], as Vulkan does. Without this
+     * the near half of the depth range is clipped away (pvr_draw.c maps the depth viewport to
+     * match). */
+@@ -658,6 +698,23 @@ pvr_shader_compile_data(pco_ctx *ctx, struct nir_shader *nir, pco_data *data,
+       data->common.push_consts.range = (pco_range){ .start = data->common.shareds, .count = count };
+       data->common.shareds += count;
+    }
++   /* Then the texture descriptors, as the reference's pvr_setup_descriptors places them. */
++   if (tex_mask) {
++      pco_descriptor_set_data *set = &data->common.desc_sets[0];
++      data->common.shareds = ALIGN_POT(data->common.shareds, 4);
++      set->used = true;
++      set->range = (pco_range){ .start = data->common.shareds,
++                                .count = set->binding_count * PVR_TEX_BINDING_DWORDS };
++      for (unsigned u = 0; u < set->binding_count; u++) {
++         set->bindings[u].used = (tex_mask >> u) & 1;
++         set->bindings[u].range = (pco_range){
++            .start = data->common.shareds + u * PVR_TEX_BINDING_DWORDS,
++            .count = PVR_TEX_BINDING_DWORDS,
++            .stride = PVR_TEX_BINDING_DWORDS,
++         };
++      }
++      data->common.shareds += set->range.count;
++   }
+ 
+    if (nir->info.stage == MESA_SHADER_VERTEX)
+       pvr_shader_init_vs_alloc(nir, data);
+diff --git a/src/gallium/drivers/pvr_native/pvr_shader.h b/src/gallium/drivers/pvr_native/pvr_shader.h
+index b0cc910b..f8a1ea32 100644
+--- a/src/gallium/drivers/pvr_native/pvr_shader.h
++++ b/src/gallium/drivers/pvr_native/pvr_shader.h
+@@ -33,6 +33,11 @@ bool pvr_shader_eot_create(pco_ctx *ctx, struct pvr_shader_eot *eot,
+                            const uint32_t state_words[2]);
+ 
+ /* One compiled shader: the pco shader and the microcode it encoded. */
++/* A combined image sampler in shared registers: image words, image meta, sampler words, sampler
++ * meta (ROGUE_NUM_TEXSTATE_DWORDS and PCO_*_META_COUNT, four each). */
++#define PVR_TEX_BINDING_DWORDS 16
++#define PVR_SHADER_MAX_TEX 16
++
+ struct pvr_shader {
+    pco_shader *pco;
+    const void *binary;
+@@ -96,6 +101,15 @@ struct pvr_shader {
+    unsigned uniform_dwords;
+    unsigned uniform_dst;
+ 
++   /* Textures: GL unit u is pco descriptor set 0, binding u, a combined image sampler of
++    * PVR_TEX_BINDING_DWORDS dwords (image words, image meta, sampler words, sampler meta) in shared
++    * registers from tex_dst[u]. The uniforms and these descriptors form one contiguous shared block,
++    * [shared_dma_start, shared_dma_start + shared_dma_dwords), filled by one DMA per draw. */
++   uint32_t tex_mask;
++   unsigned tex_dst[PVR_SHADER_MAX_TEX];
++   unsigned shared_dma_start;
++   unsigned shared_dma_dwords;
++
+    /* Draw-path coefficient program of this fragment variant, for the vertex shader it was built
+     * against (pvr_draw.c). */
+    const struct pvr_shader *coeff_vs;
+-- 
+2.47.3
+

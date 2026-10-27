@@ -72,7 +72,7 @@ int main(void)
    if (st != GL_FRAMEBUFFER_COMPLETE) { fprintf(stderr, "fbo incomplete: status 0x%x, glGetError 0x%x\n", st, glGetError()); return 2; }
 
    GLuint p = glCreateProgram();
-   const int vary = getenv("GLTRI_VARYING") != NULL;
+   const int vary = getenv("GLTRI_VARYING") != NULL || getenv("GLTRI_SAMPLE") != NULL;
    if (getenv("GLTRI_MAT")) {
       glAttachShader(p, sh(GL_VERTEX_SHADER,
          "attribute vec3 pos; attribute vec3 nrm; uniform mat4 mvp; uniform mat4 nm; varying vec3 c;"
@@ -82,12 +82,15 @@ int main(void)
    } else {
    glAttachShader(p, sh(GL_VERTEX_SHADER, vary
       ? "attribute vec2 pos; varying vec2 v; void main() { v = pos * 0.5 + 0.5; gl_Position = vec4(pos, 0.0, 1.0); }"
+      : getenv("GLTRI_LOOP") ? "attribute vec2 pos; uniform int n; void main() { float d = 0.25; for (int i = 0; i < n; i++) d = fract(3.0 * d + 0.1); gl_Position = vec4(pos * (1.0 + 0.001 * d), 0.0, 1.0); }"
       : getenv("GLTRI_VSU") ? "attribute vec2 pos; uniform float s; void main() { gl_Position = vec4(pos * s, 0.0, 1.0); }"
       : "attribute vec2 pos; void main() { gl_Position = vec4(pos, 0.0, 1.0); }"));
    glAttachShader(p, sh(GL_FRAGMENT_SHADER, vary
-      ? "precision mediump float; varying vec2 v; void main() { gl_FragColor = vec4(v, 0.0, 1.0); }"
+      ? (getenv("GLTRI_SAMPLE") ? "precision mediump float; varying vec2 v; uniform sampler2D t; void main() { gl_FragColor = texture2D(t, v); }"
+                                : "precision mediump float; varying vec2 v; void main() { gl_FragColor = vec4(v, 0.0, 1.0); }")
       : getenv("GLTRI_UNIFORM")
       ? "precision mediump float; uniform vec2 rg; void main() { gl_FragColor = vec4(rg, 0.0, 1.0); }"
+      : getenv("GLTRI_BLEND") ? "precision mediump float; void main() { gl_FragColor = vec4(1.0, 0.0, 0.0, 0.5); }"
       : "precision mediump float; void main() { gl_FragColor = vec4(1.0, 0.0, 0.0, 1.0); }"));
    }
    glBindAttribLocation(p, 0, "pos");
@@ -102,6 +105,7 @@ int main(void)
       glUniformMatrix4fv(glGetUniformLocation(p, "mvp"), 1, GL_FALSE, id);
       glUniformMatrix4fv(glGetUniformLocation(p, "nm"), 1, GL_FALSE, id);
    }
+   if (getenv("GLTRI_LOOP")) glUniform1i(glGetUniformLocation(p, "n"), atoi(getenv("GLTRI_LOOP")));
    if (getenv("GLTRI_VSU")) glUniform1f(glGetUniformLocation(p, "s"), 1.0f);
    if (getenv("GLTRI_UNIFORM")) glUniform2f(glGetUniformLocation(p, "rg"), 1.0f, 0.0f);
 
@@ -136,8 +140,27 @@ int main(void)
    }
    glEnableVertexAttribArray(0);
 
+   if (getenv("GLTRI_SAMPLE")) {
+      /* 4x4 texels, each a distinct colour */
+      unsigned char t[64];
+      for (int i = 0; i < 16; i++) { t[4*i] = 16 * i; t[4*i+1] = 255 - 16 * i; t[4*i+2] = (i * 37) & 255; t[4*i+3] = 255; }
+      GLuint st;
+      glActiveTexture(GL_TEXTURE0);
+      glGenTextures(1, &st); glBindTexture(GL_TEXTURE_2D, st);
+      glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 4, 4, 0, GL_RGBA, GL_UNSIGNED_BYTE, t);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, getenv("GLTRI_LINEAR") ? GL_LINEAR : GL_NEAREST);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, getenv("GLTRI_LINEAR") ? GL_LINEAR : GL_NEAREST);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+      glBindTexture(GL_TEXTURE_2D, st);
+   }
    glViewport(0, 0, W, H);
    glClearColor(0, 1, 0, 1);
+   if (getenv("GLTRI_CULL")) {
+      glEnable(GL_CULL_FACE);
+      glCullFace(getenv("GLTRI_CULL")[0] == 'f' ? GL_FRONT : GL_BACK);
+      if (getenv("GLTRI_CW")) glFrontFace(GL_CW);
+   }
    glClear(GL_COLOR_BUFFER_BIT | (getenv("GLTRI_DEPTH") ? GL_DEPTH_BUFFER_BIT : 0));
    if (getenv("GLTRI_MANY")) {
       /* N small triangles tiled over the left half of the target, then the test triangle on top. */
@@ -157,7 +180,20 @@ int main(void)
       glBindBuffer(GL_ARRAY_BUFFER, vb);
       glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, 0);
    }
+   if (getenv("GLTRI_BLEND")) {
+      glEnable(GL_BLEND);
+      glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+   }
+   if (!getenv("GLTRI_NODRAW"))
    glDrawArrays(GL_TRIANGLES, 0, 3);
+   if (getenv("GLTRI_ZTEST")) {
+      /* A bigger triangle behind the first (z 0.5, normal +y): hidden where they overlap. */
+      static const float back[] = { -0.9f, -0.9f, 0.5f, 0.0f, 1.0f, 0.0f,
+                                     0.9f, -0.9f, 0.5f, 0.0f, 1.0f, 0.0f,
+                                     0.0f,  0.9f, 0.5f, 0.0f, 1.0f, 0.0f };
+      glBufferData(GL_ARRAY_BUFFER, sizeof back, back, GL_STATIC_DRAW);
+      glDrawArrays(GL_TRIANGLES, 0, 3);
+   }
 
    unsigned char *px = malloc((size_t)W * H * 4);
    glReadPixels(0, 0, W, H, GL_RGBA, GL_UNSIGNED_BYTE, px);
@@ -175,6 +211,19 @@ int main(void)
          putchar(q[0] > 200 && q[1] < 50 ? 'R' : q[1] > 200 && q[0] < 50 ? '.' : '?');
       }
       putchar('\n');
+   }
+   if (getenv("GLTRI_SAMPLE")) {
+      unsigned long sum = 0;
+      for (long i = 0; i < (long)W * H * 4; i++) sum = sum * 31 + px[i];
+      unsigned char *q = px + 4 * (200 * W + 256);
+      printf("sample checksum %016lx pixel (256,200) %02x %02x %02x %02x\n", sum, q[0], q[1], q[2], q[3]);
+      return 0;
+   }
+   if (getenv("GLTRI_ZTEST")) {
+      unsigned char *q = px + 4 * (200 * W + 256), *r = px + 4 * (100 * W + 100);
+      printf("ztest front (256,200) %02x %02x %02x  behind-only (100,100) %02x %02x %02x\n",
+             q[0], q[1], q[2], r[0], r[1], r[2]);
+      return 0;
    }
    if (vary) {
       /* v = pos * 0.5 + 0.5 is the window position over the size: red = x/W, green = y/H. */
