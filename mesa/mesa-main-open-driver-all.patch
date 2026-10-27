@@ -4704,10 +4704,10 @@ index 00000000..ac17d86d
 +#endif /* PVR_CSB_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_draw.c b/src/gallium/drivers/pvr_native/pvr_draw.c
 new file mode 100644
-index 00000000..2ee3f628
+index 00000000..acc4cd1b
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_draw.c
-@@ -0,0 +1,945 @@
+@@ -0,0 +1,946 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -5463,7 +5463,8 @@ index 00000000..2ee3f628
 +   const struct pvr_viewport_words vp = {
 +      .a0 = fui(pv->translate[0]), .m0 = fui(pv->scale[0]),
 +      .a1 = fui(pv->translate[1]), .m1 = fui(pv->scale[1]),
-+      .a2 = fui(pv->translate[2]), .m2 = fui(pv->scale[2]),
++      /* z arrives in [0, 1] (nir_lower_clip_halfz): depth = near + z * (far - near). */
++      .a2 = fui(pv->translate[2] - pv->scale[2]), .m2 = fui(2.0f * pv->scale[2]),
 +   };
 +   const struct ROGUE_TA_STATE_VARYING0 varying0 = {
 +      .f32_linear = vs->f32_smooth, .f32_flat = vs->f32_flat, .f32_npc = vs->f32_npc,
@@ -12402,10 +12403,10 @@ index 00000000..f64f95cb
 +#endif /* PVR_SCREEN_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_shader.c b/src/gallium/drivers/pvr_native/pvr_shader.c
 new file mode 100644
-index 00000000..c205d2d7
+index 00000000..d9b94e34
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_shader.c
-@@ -0,0 +1,915 @@
+@@ -0,0 +1,920 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + */
@@ -13050,6 +13051,11 @@ index 00000000..c205d2d7
 +   }
 +   NIR_PASS(_, nir, nir_shader_intrinsics_pass, pvr_shader_lower_uniform,
 +            nir_metadata_control_flow, NULL);
++   /* GL clip space has z in [-w, w]; the hardware clips to [0, w], as Vulkan does. Without this
++    * the near half of the depth range is clipped away (pvr_draw.c maps the depth viewport to
++    * match). */
++   if (nir->info.stage == MESA_SHADER_VERTEX)
++      NIR_PASS(_, nir, nir_lower_clip_halfz);
 +   pco_preprocess_nir(ctx, nir, data);
 +   pco_lower_nir(ctx, nir, data);
 +   pco_postprocess_nir(ctx, nir, data);
@@ -14259,10 +14265,10 @@ index 00000000..8317cd94
 +#endif /* PVR_STATIC_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_vm.c b/src/gallium/drivers/pvr_native/pvr_vm.c
 new file mode 100644
-index 00000000..0d4d2bd2
+index 00000000..9cc33178
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_vm.c
-@@ -0,0 +1,1074 @@
+@@ -0,0 +1,1076 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -15012,7 +15018,7 @@ index 00000000..0d4d2bd2
 +      .context_handle = context_handle,
 +      .cmd_stream = (uint64_t)(uintptr_t)frag_stream,
 +      .cmd_stream_len = frag_len,
-+      .flags = DRM_PVR_SUBMIT_JOB_FRAG_CMD_PARTIAL_RENDER,
++      .flags = DRM_PVR_SUBMIT_JOB_FRAG_CMD_PARTIAL_RENDER | DRM_PVR_SUBMIT_JOB_FRAG_CMD_DISABLE_PIXELMERGE,
 +      .sync_ops = { .stride = sizeof(pr_ops[0]), .count = ARRAY_SIZE(pr_ops),
 +                    .array = (__u64)(uintptr_t)pr_ops },
 +      .hwrt = { .set_handle = hwrt_set_handle,
@@ -15025,6 +15031,8 @@ index 00000000..0d4d2bd2
 +      .context_handle = context_handle,
 +      .cmd_stream = (uint64_t)(uintptr_t)frag_stream,
 +      .cmd_stream_len = frag_len,
++      /* As the reference, which always disables it ("enable pixel merging when it is safe"). */
++      .flags = DRM_PVR_SUBMIT_JOB_FRAG_CMD_DISABLE_PIXELMERGE,
 +      .sync_ops = { .stride = sizeof(frag_ops[0]), .count = ARRAY_SIZE(frag_ops),
 +                    .array = (__u64)(uintptr_t)frag_ops },
 +      .hwrt = { .set_handle = hwrt_set_handle,
