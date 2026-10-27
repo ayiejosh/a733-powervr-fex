@@ -1,0 +1,87 @@
+------------[ PVR DBG: START (High) ]------------
+OS kernel info: Linux 6.6.98-5-aw2511 #5 SMP Sun Sep 20 04:35:45 UTC 2026 aarch64
+DDK info: Rogue_DDK_Linux_WS rogueddk 24.2@6603887 (release) sunxi_linux
+Time now: 2767421812us
+Services State: OK
+Server Errors: 2
+Connections Device ID:0(128) No active connections
+------[ Driver Info ]------
+Comparison of UM/KM components: MATCHING
+KM Arch: 64 Bit
+Driver Mode: Native
+UM Connected Clients: 64 Bit
+UM info: 24.2 @  6603887 (release) build options: 0x80020810
+KM info: 24.2 @  6603887 (release) build options: 0x00020810
+Window system: nulldrmws
+Power lock status: Free
+------[ Server Thread Summary ]------
+  pvr_defer_free : Running
+    Number of deferred cleanup items: QUEUED: 00000  CONNECTION : 00000 MMU : 00000 OSMEM : 00000 PMR : 00000
+    Number of deferred cleanup items dropped after retry limit reached : 0
+  pvr_device_wdg : Running
+Active Threads (UM/KM): 1 / 2
+Suspended Threads: 0
+------[ RGX Device ID:0 Start ]------
+------[ RGX Info ]------
+Device Node (Info): 00000000097c61b6 (000000007fd308e8)
+    DevmemHistoryRecordStats - None
+RGX BVNC: 36.56.104.183 (rogue)
+RGX Device State: ACTIVE
+RGX Power State: OFF
+RGX Health Status: OK, Reason: NONE
+FW info: 24.2 @  6603887 (release) build options: 0x80020810
+TRP: HW support - No
+WGP: HW support - No
+RGX HWR State 0x00000001: HWR OK;
+RGX FW Power State: RGXFWIF_POW_OFF (APM enabled: 107 ok, 0 denied, 0 non-idle, 0 retry, 0 other, 107 total. Latency: 10 ms)
+RGX DVFS: 0 frequency changes. Current frequency: 1104.001 MHz (sampled at 2767388665942 ns). FW frequency: 1104.000 MHz.
+RGX FW OS 0 - State: active; Freelists: Ok; Priority: 0; Isolation group: 0;  Time Slice*: 0% (0ms); MTS off;
+RGX Kernel CCB WO:0x1C7 RO:0x1C7
+RGX Firmware CCB WO:0x0 RO:0x0
+RGX Kernel CCB commands executed = 3527
+RGX SLR: Forced UFO updates requested = 0
+RGX Errors: WGP:0, TRP:0
+Thread0: FW IRQ count = 3445
+Last sampled IRQ count in LISR = 3445
+FW System config flags = 0x00020000 (Ctx switch options: Medium CSW profile;)
+FW OS config flags = 0x0000000F (Ctx switch: TDM; GEOM; 3D; CDM;)
+ (!) RGX power is down. No registers dumped
+------[ RGX FW Trace Info ]------
+Debug log type: none
+RGX FW thread 0: Trace buffer not yet allocated
+------[ Full CCB Status ]------
+------[ RGX Device ID:0 End ]------
+------[ Device ID: 128 - Phys Heaps ]------
+0x00000000d15ba066 -> PdMs: SYSMEM_FW, Type: UMA, -, Usage Flags: 0x40000000 (FW_SHARED), Refs: 4, Free Size: 1118007296B, Total Size: 6202085376B
+0x00000000a7a293f0 -> PdMs: SYSMEM, Type: UMA, default, Usage Flags: 0x00000004 (GPU_LOCAL), Refs: 7, Free Size: 1118007296B, Total Size: 6202085376B
+PMR Zombie Count: 0, PMR Zombie Count In Cleanup: 0
+PMR Live Count: 21
+------[ System Summary Device ID:0 ]------
+Device System Power State: OFF
+MaxHWTOut: 500000us, WtTryCt: 10000, WDGTOut(on,off): (10000ms,3600000ms)
+------[ AppHint Settings ]------
+  Build Vars
+    EnableTrustedDeviceAceConfig: N
+    CleanupThreadPriority: 0x00000005
+    WatchdogThreadPriority: 0x00000000
+    HWPerfClientBufferSize: 0x000c0000
+    DevmemHistoryBufSizeLog2: 0x0000000b
+    DevmemHistoryMaxEntries: 0x00002710
+  Module Params
+    none
+  Debug Info Params
+    none
+  Debug Info Params Device ID: 0
+    none
+------[ Active Sync Checkpoints ]------
+(SyncCP Counts: InUse:0 Max:267)
+------[ Native Fence Sync: timelines ]------
+foreign_sync: @0 ctx=399 refs=1
+rogue-tq3d: @0 ctx=729 refs=0
+rogue-tq3d: @0 ctx=730 refs=0
+rogue-cdm: @0 ctx=731 refs=0
+rogue-cdm: @0 ctx=732 refs=0
+rogue-ta3d: @0 ctx=733 refs=0
+VV-vkrender_fif-34423: @2 ctx=737 refs=0
+QV-vkrender_fif-34423: @2 ctx=739 refs=0
+------------[ PVR DBG: END ]------------

@@ -36,3 +36,16 @@ One-page state; details in HANDOFF.md, TA-KICK-DISASSEMBLY.md, RESULTS.md, PERF-
 Vendor `pvrsrvkm` + desktop, 0 kernel faults, open firmware original
 (`sha256 1db1c399c17401d1f79d46c880db81c724d748c784d4639433b076aba2f9c0d2`). Watch + verify:
 `tools/firmware/check-open-firmware.sh`, `tools/verify/verify.sh` (both read-only).
+
+## 2026-10-27 (afternoon): TF port shipped as PR #12; open stack now needs a reboot
+
+- `VK_EXT_transform_feedback` port onto the perf branch is validated and published as
+  **PR #12** (`mesa-tf-port-2026-10-27`, patches 0270-0293, 293-patch series; Vulkan PASS, zink ES 3.1,
+  glmark2 608 vs 543-594 before). PR is mergeable/clean, awaiting review/merge.
+- The board was restored to vendor + desktop after the validation runs. The **open `powervr` stack cannot be
+  brought back without a clean reboot**: after the repeated unbind/rebind/rmmod experiments its probe now
+  reads BVNC `0.0.0.0` (firmware heuristics fail, module never binds), and the vendor-probe recovery cycle
+  (built into `switch-safe.sh`) is not enough any more. Vendor stack is unaffected - board is healthy on
+  vendor + desktop. A reboot restores the open stack for further experiments.
+- Remaining work: (1) IMG-side observability ask for the DM2/TA stall (draft ready, needs the human to send);
+  (2) after a reboot, optionally re-run the extra TF validation (`glmark2 --validate`, `vkcube`) for PR #12.

@@ -21,6 +21,7 @@ stop_clients() {
 case "$target" in
 open)
    stop_clients
+   sudo rmmod powervr 2>/dev/null   # a stale unbound module would make insmod fail with "File exists"
    if lsmod | grep -q '^pvrsrvkm '; then
       sudo rmmod pvrsrvkm || { echo "ABORT: rmmod pvrsrvkm failed"; exit 1; }
       sleep 1
@@ -28,7 +29,31 @@ open)
    lsmod | grep -q '^pvrsrvkm ' && { echo "ABORT: pvrsrvkm still loaded"; exit 1; }
    sudo insmod /lib/modules/$(uname -r)/extra/powervr/powervr.ko || { echo "ABORT: powervr insmod failed"; exit 1; }
    sleep 1
-   [ "$(drv)" = powervr ] || { echo "ABORT: not bound to powervr ($(drv))"; exit 1; }
+   if [ "$(drv)" != powervr ]; then
+      # Repeated unbind/rebind/rmmod cycles can leave the GPU clock/power state such that the open probe
+      # reads BVNC 0.0.0.0 (firmware heuristic path fails). Vendor probe re-initialises the clocks; try it.
+      echo "powervr did not bind; recovering via a vendor probe cycle"
+      sudo dmesg | tail -20 | grep -q "rogue_0.0.0.0" && echo "  (saw rogue_0.0.0.0 probe attempt)"
+      sudo rmmod powervr 2>/dev/null
+      sudo sh -c 'echo auto > /sys/bus/platform/devices/1800000.gpu/power/control' 2>/dev/null
+      sudo modprobe pvrsrvkm 2>/dev/null
+      sleep 3
+      if [ "$(drv)" = pvrsrvkm ]; then
+         sudo rmmod pvrsrvkm
+         sleep 1
+         sudo insmod /lib/modules/$(uname -r)/extra/powervr/powervr.ko 2>/dev/null
+         sleep 2
+      fi
+   fi
+   if [ "$(drv)" != powervr ]; then
+      # Do not leave the board without a driver/desktop: restore the vendor stack and fail loudly.
+      sudo rmmod powervr 2>/dev/null
+      sudo modprobe pvrsrvkm 2>/dev/null
+      sleep 2
+      sudo systemctl start display-manager 2>/dev/null
+      echo "ABORT: open driver will not bind after a vendor probe cycle (left board on vendor+desktop); a clean reboot is needed for the open stack"
+      exit 1
+   fi
    ;;
 vendor)
    stop_clients

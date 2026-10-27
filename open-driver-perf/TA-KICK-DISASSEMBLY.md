@@ -625,3 +625,211 @@ Two findings from web search (user request), both important:
 Consequence for the IMG request: drop the firmware-image ask (resolved: it is public in IMG's own
 linux-firmware fork). What remains IMG-only is firmware-side observability/documentation for why MTS never
 dispatches DM2 for this client (or confirmation of an erratum). Board restored to vendor+desktop.
+
+## Round-29 (2026-10-27): full MTS-window sampling — the vk-only registers are consequences, not controls
+
+Extended the sampler to the whole MTS window `0xb00–0xd00` (141 registers, µs rate) and compared a native
+geometry kick against 40 Vulkan geometry kicks (`vkrender 512 40`, PASS):
+- Vulkan-only activity: `0x130` EVENT_STATUS (0x20/0x10/0x118 transitions = real completions),
+  `0x0b98` (0→1→0), `0x0bb0` (0x10/0x110/0x118 flags), `0x0c50` (0→0x40000000→0), `0x0c68` (1→0 pulse —
+  the kick-handshake poll bit), `0x0cc8` (incrementing 0x04000001/0x08000002/... dispatch counter).
+- The native kick reaches none of these; it only writes the same context registers it always did.
+- Reading: everything Vulkan-only is downstream of a **dispatched** DM2 (event status, handshake
+  completion, counters) — there is no control register among them that could be poked to force dispatch.
+  This closes the "MTS register poke" lever before the reboot-risky sweep. Combined with BO-cache-flags and
+  the DM-overlap workaround checks (both already correct/present), the remaining path is IMG-side
+  observability; see PRIOR-ART.md for the full source ledger and dead-end list.
+
+## Round-30 (2026-10-27, after reboot): firmware-build bisect is impossible - the kernel enforces the exact BVNC
+
+Post-reboot the open stack is back (vendor -> open switch works normally again; the BVNC 0.0.0.0 state was
+indeed per-boot). Baseline native kick re-confirmed: `Kick TA ... First kick:1, Last kick:1` then
+`GPU has locked up`, no `TA finished`.
+
+Tried to distinguish "36.56 firmware build bug" from "client/hardware" by booting the other official Rogue
+builds from IMG's `powervr` branch (36.52.104.182, 36.50.54.182, 36.29.52.182, 36.28.21.182, 36.53.104.796):
+**every one is refused by the kernel** before boot:
+`FW built for incorrect GPU ID 36.52.104.182 (expected 36.56.104.183)` ->
+`probe of 1800000.gpu failed with error -22`. Only a build whose header BVNC equals the hardware is accepted.
+
+And the only published build with this BVNC is the one we already run: IMG's `rogue_36.56.104.183_v1.fw`
+(sha `1db1c399…`), which differs from the 36.52 BXM build by just the identity bytes. So there is **no
+alternative firmware code variant** to A/B against - the firmware-build bisect lever is dead.
+
+Remaining local possibilities, honestly ranked: (a) blind host MTS-register poke sweep during the 29 ms
+pending window (we already found no control-register target in the full MTS-window diff -> very low odds,
+can wedge the GPU), (b) vendor-vs-open 36.56 firmware static diff (different codegen, function-matching
+project, days, medium-low odds), (c) cross-board test (needs another A733 board). The IMG-side observability
+request remains the only definitive path. Board restored to vendor + desktop, original firmware, verify OK.
+
+## Round-31 (2026-10-27): the two remaining local levers tried - both negative
+
+### (a) Host MTS poke replay during the pending window
+Tool `mtsforce` (spawns the native probe, polls 0xd20 for the kick pending edge, then writes the MTS
+registers that a working Vulkan kick touches, and samples EVENT_STATUS/0xba0/0xd20 for 1 s). Three sequences:
+1. replay of the Vulkan-only transient sequence (0xbb0=0x10/0x110/0x118, 0xc50=0x40000000, 0xc68=1,
+   0xb98=1, then clear, 0xba0=1);
+2. `0xba0=1, 0xb00=2`; 3. `0xc68=1, 0xb00=0x12`.
+Observations: the pending edge is easily caught (`0xd20=1`), and 0xc68=1 **is** already set by the firmware at
+that point (the earlier µs sampler just missed the narrow pulse). None of the pokes produced EVENT_STATUS,
+0xba0 or a completion; every run still ends in `GPU has locked up`. The MTS block ignores host writes to
+these registers. **Lever (a) is closed.**
+
+### (b) Vendor (closed 36.56) vs open (published 36.56) firmware static comparison
+Vendor image is a full ELF (`.text` vaddr c0000000, file 0x1520, size 0x19ea0); the open image is the same
+build family (`.text` vaddr c0000000, file 0x13b8, size 0x16df4). Located the kick/log site in both by the
+unique `lui $a0,0x700b` log-argument instruction that precedes the Kick-TA log macro:
+- open: vaddr ~c0012138 (the known kick handler, c0011a00-c0012220);
+- vendor: vaddr ~c00144f4 (relocation delta +0x23bc).
+Disassembling both regions shows the **identical instruction structure**: the same log macro call, the same
+`lui $v0,0xcf80` + two `sw16` pairs, the same `addiu $k1,$zero,1; sw $k1,($k0)`, `sw $k1,4($k0)`,
+`sw $k1,0x10($k0)`, `sw $k0,0x880($gp)` sequence. The bytes are only ~5 % identical at the same relative
+offset because the two builds are compiled differently (register allocation/address immediates), but the
+opcode/mnemonic sequence is the same - so the closed vendor firmware, which does drive native GL through
+pvrsrvkm, performs the *same* MTS programming writes as the open firmware at the kick. There is no missing
+firmware-side write to port. A full function-level binary diff would be a days-long matching project with low
+remaining odds. **Lever (b), as a search for a missing MTS write, is closed.**
+
+With (a) and (b) negative, no local lever remains for the native DM2/TA dispatch; the IMG-side
+observability/erratum answer is the only definitive path. Board restored to vendor + desktop, original
+firmware, verify OK.
+
+## Round-32 (2026-10-27): privileges are not the variable
+
+The native stall was A/B'd on the open stack with the official firmware for **user vs root**:
+- `renderD128` is `root:render` with the normal user in `render`; dmesg has no `EACCES`/`EPERM`; there is no
+  root-only ioctl in the pvr UAPI path used by either client.
+- native probe as user: `Kick TA ... GPU has locked up`; as **root**: identical stall, same trace;
+- open Vulkan as user: PASS; as **root**: PASS.
+So access/permissions/root do not change either client's outcome: the kernel side is the same for both, and the
+difference is in the submitted client stream that MTS refuses. (This also re-verified the TF-port rebuild after
+incl. the missed dummy-RT ordering fix: Vulkan PASS as user and root, zink GLES 3.1, glmark2 578.)
+
+## Round-33 (2026-10-27): exhaustive firmware init-config flag sweep - all 32 bits negative
+
+New hypothesis from the vendor DDK source (`ddk242`, `rgxsrvinit.c`): the vendor driver sets firmware
+init config flags that the open driver leaves at 0 - notably `INICFG_DM_PIPELINE_ROADBLOCKS_EN` (BIT 10,
+enabled for pipelined-DM GPUs that are not Eryx), `INICFG_FBCDC_V3_1_EN` (BIT 6, when FBCDC v3.1 is
+supported), plus the apphint-gated ones. The open kernel already exposes `config_flags_extra` (OR'd into
+`rogue_fwif_sysdata.config_flags`) from earlier work, so no rebuild was needed.
+
+Tested every individual bit 0-31, plus BIT6, BIT10 and BIT6|BIT10 together, reloading the open module with
+each value and running the native probe with the trace mask set:
+- every run: `Kick TA` present, **`TA finished` never**, `GPU has locked up` - identical to the baseline.
+(An initial sweep was invalid because the trace mask resets on module reload; re-ran with the mask set after
+each load.) Firmware init-config flags are not the variable. Board restored to vendor + desktop.
+
+## Round-34 (2026-10-27): firmware per-OS config flags (context switch enable) - also negative
+
+Second config axis found in the vendor DDK: the vendor driver sets `fwif_osdata->fw_os_config_flags` to
+`RGXFWIF_INICFG_OS_CTXSWITCH_DM_ALL` (= 0xF: TDM/GEOM/3D/CDM context switch enabled, from
+`PVRSRV_APPHINT_ENABLEFWCONTEXTSWITCH`), plus a cross-DM apphint; the open kernel never touches that field
+(kzalloc -> 0), i.e. firmware OS context-switch behaviour differs by default.
+
+Added a module knob `os_config_flags` (open kernel `fw_osdata_init`) and swept 0, 1, 2, 4, 8, 0xF, 0xFF:
+every run `Kick TA` present, `TA finished` never, `GPU has locked up` - identical to baseline. (Knob kept,
+default 0, documented as a test knob; kernel tree committed.) Firmware per-OS config flags are not the variable
+either. Board restored to vendor + desktop.
+
+## Round-35 (2026-10-27): decoded MTS register map applied to both kicks
+
+Using the vendor DDK's CR definitions (`hwdefs/rogue/km/rgx_cr_defs_km.h`), the MTS registers are now decoded
+rather than just sampled: `MTS_SCHEDULE` (0xB00: DM bits 0-3, task counted bit4, context bit5, priority
+bits6-7, host bit8; thread-1 view at 0x10B00), `BGCTX/INTCTX_THREAD0/1_DM_ASSOC` (0xB30/0xB38/0xB40/0xB48),
+`MTS_DM0..5_INTERRUPT_ENABLE` (0xB58/60/68/70/78/80), `MTS_INTCTX` (0xB98), `MTS_BGCTX` (0xBA0:
+noncounted-schedule bits0-7, thread-active bits8-9, DM pointer bits10-15), `BGCTX_COUNTED_SCHEDULE` (0xBA8),
+`MTS_GPU_INT_STATUS` (0xBB0), `MTS_SCHEDULE_ENABLE` (0xBC8).
+
+Decoded snapshots during a working (Vulkan frames) run and the failing native kick:
+- idle/baseline: assocT0=0x0001 (thread0 associated with DM0 only), SCHEDULE_ENABLE=0xff, DM2InterruptEnable=0xa0;
+- during **Vulkan frames** and during the **native pending window**: only background activity - `MTS_BGCTX`
+  cycles 0→1 (non-counted schedule, DM0 = firmware GP), occasional `INTCTX` 0→1, `GPU_INT_STATUS` 0x10;
+  `MTS_SCHEDULE` (0xB00) is never written for either client, and DM2 never appears in the DM association
+  fields;
+- native teardown (timeout): assocT0 1→0, SCHEDULE_ENABLE ff→00, DM2IntEn a0→00 (the firmware takes the
+  context down).
+Also re-disassembled the kick doorbell: the firmware writes `thread<<19 + 0xCE0 = 1` (an undocumented
+firmware-side kick register, not `MTS_SCHEDULE`) and clears `thread<<19 + 0xD20 = 0`, identically for both
+clients (matches the earlier capture). So the client kick is a single request to that register and MTS's
+decision to run DM2 happens wholly in hardware; nothing in the host-visible MTS register set records the
+refusal. Board restored to vendor + desktop.
+
+## Round-36 (2026-10-27, post-reboot): incident - vendor GLES wrapper under the live desktop hangs the board
+
+While trying to obtain a "working MTS reference" by sampling decoded MTS registers during a vendor-GL kick,
+the board hard-hung: the run used `~/gpu-open-stack/gl-wrapper-env.sh` (IMG Mesa frontend -> vendor GLES 24.2)
+**with the X/KWin desktop alive on the vendor driver**. The journal ends mid-run at 18:01:25 with no Oops or
+panic (hard GPU/kernel hang, watchdog reset). This matches the long-standing rule in `~/AGENTS.md`: never run
+vendor GL/GLES against the live PowerVR display stack - off-screen **Vulkan** is the safe GPU path, or stop
+the desktop first and run headless.
+
+Consequence: the planned vendor-reference MTS sampling was not obtained; the safe variant (vendor Vulkan
+off-screen) was not attempted after the reboot to avoid repeating the hazard for marginal value. The MTS
+decode experiment from round 35 (open stack, no desktop) remains valid. Board is healthy on vendor + desktop;
+original firmware; verify OK. AGENTS.md updated with the incident.
+
+## Round-37 (2026-10-27, post-reboot): second vendor-stack incident - sustained vendor Vulkan under the desktop also hangs
+
+Trying the "safe" vendor reference path (off-screen vendor Vulkan, 200 frames, while sampling decoded MTS
+registers) hard-hung the board again: boot `-1` (18:01:34-18:15:05) ends mid-run with only audit entries -
+no Oops, no panic, watchdog reset. A bounded 2-frame vendor-Vulkan render had just PASSed, so the trigger is
+**sustained vendor-stack 3D work with the live X/KWin desktop**, not the register reads. AGENTS.md updated:
+no sustained GPU rendering on the vendor driver while the compositor is live (bounded single-shot tests only,
+or stop the desktop first). The planned vendor-reference MTS sampling is abandoned - it is not worth further
+board hangs for a reference that cannot expose the hardware-internal MTS decision anyway. Board is healthy on
+vendor + desktop, original firmware, verify OK.
+
+## Round-38 (2026-10-27): fundamentals - the client-kick request is a level, visible to the host, and MTS ignores it
+
+Fundamentals from the DDK + IMG material:
+- IMG's own description (Pipelined Data Masters blog, Aug 2024): a firmware processor does high-level
+  scheduling/priority; the fixed-function Data Masters (geometry, 3D, compute, 2D) do the low-level job
+  running; D-series added pipelining so firmware sets up the next job while the previous runs. On B-series
+  (this GPU) the DMs are single-tasking, which is why the firmware sets up DM2/3 between jobs.
+- The host driver only ever touches the documented MTS side: `MTS_SCHEDULE` (DM_GP kick + read-back),
+  `MTS_GARTEN_WRAPPER_CONFIG`, and the INTCTX/BGCTX DM-association clears at start/stop. The open kernel and
+  the vendor kernel do exactly the same writes (`pvr_fw.c` / `pvr_fw_startstop.c` vs `rgxfwutils.c` /
+  `rgxstartstop.c`). The client-kick interface (`thread<<19 + 0xCE0` request, `+0xD20` pending clear) is
+  **firmware-private**: it is not in any host CR definition.
+
+PoC: from the host, during the native kick's pending window, read and re-write the kick request register:
+- at the pending edge `0xCE0 == 1` and `0xD20 == 1` - the request is asserted as a **level visible to the
+  host**, not a pulse;
+- re-writing `0xCE0 = 1` 100 times over the window changes nothing: EVENT_STATUS stays 0, MTS_BGCTX 0,
+  no TA state; the firmware's timeout clears 0xD20 ~30 ms later, then HWR;
+- so the request is visible and stable, and the refusal happens **downstream of the request**, inside MTS.
+No host-writable register or documented sequence can advance it. Board restored to vendor + desktop.
+
+## Round-39 (2026-10-27): levers (3) firmware-MTS-bypass and (4) vendor debug/HW-counter route
+
+### Lever 3 - can we bypass MTS / kick DM2 ourselves? No.
+- The documented register block has **no DM start/kick/trigger register** for client DMs (searched the whole
+  vendor DDK CR map: no `KICK`/`START`/`DM_START` registers; the only "kick" the host can issue is
+  `MTS_SCHEDULE` with DM_GP, i.e. waking the firmware).
+- PoC: during the native pending window we wrote every plausible `MTS_SCHEDULE` value for DM2
+  (0x2/0x12/0x22/0x32/0x42/0x52/0x102/0x112 and DM4 controls 0x4/0x14) to `0xB00`, with read-back:
+  - the register always reads back 0 (MTS consumes/ignores host schedule writes for client DMs);
+  - the writes that did latch appear in `MTS_BGCTX` bits 0-7 (non-counted background schedule, 0x4/0x14) and
+    stay latched forever; no DM ever starts (EVENT_STATUS stays 0, TA never runs, firmware still times out).
+- High-rate `MTS_BGCTX` sampling shows the working Vulkan kick never sets DM2 bits there either (only the
+  DM0 firmware-GP bit 0 toggles, then EVENT_STATUS raises 0x10/0x18/0x118). So `MTS_BGCTX`/`MTS_SCHEDULE`
+  are the **firmware-GP scheduling channel**, not client-DM dispatch; client DMs go through the
+  firmware-private `0xCE0` request into MTS's internal scheduler. A host/firmware "bypass" would have to
+  reproduce MTS's undocumented context-load/start sequence - not implementable without IMG internals.
+- The only local alternative that avoids DM2 entirely is the existing compute (CDM) fallback renderer,
+  which already works but is not a TA/3D path.
+
+### Lever 4 - vendor debug/HW-counter route: static reference only
+- The vendor driver exposes rich debugfs (`/sys/kernel/debug/pvr/`): `gpu00/debug_dump` (firmware state,
+  config flags, APM/DVFS, CCB counters, HWR state), `firmware_mappings`, `driver_stats`, apphints
+  (`EnableLogGroup`, `FirmwareLogType`, `HWPerfFWFilter`, ...). Captured idle and post-Vulkan-working-kick
+  dumps (saved in `captures/vendor-stack/`).
+- Useful cross-checks: the vendor driver's defaults match what we tested and ruled out - FW system config
+  flags `0x00020000` (Medium context-switch profile) and FW OS config flags `0x0000000F` (TDM/GEOM/3D/CDM
+  context switch enable), APM latency 10 ms, GPU at 1104 MHz, "MTS off" in the OS state line while idle.
+- No PVRTune/PVRScope userspace is installed and the `EnableLogGroup` apphint write is rejected
+  (I/O error), so the only obtainable data is the static debug dump; it shows no MTS accept/refuse state and
+  cannot reveal the hardware decision. Capturing a kick exactly during dispatch would need a synchronous
+  trigger (none exposed) - and even then the causality is in MTS hardware.
+- Conclusion for (4): the vendor-side debug route confirms the configuration is not the difference but gives
+  no lever. Board restored to vendor + desktop; original firmware.
