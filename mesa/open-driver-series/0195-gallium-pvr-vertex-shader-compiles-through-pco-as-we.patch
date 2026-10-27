@@ -1,0 +1,67 @@
+From 90f10f92fe000770f7abd25b19e404a9722d5464 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sat, 24 Oct 2026 02:48:59 +0800
+Subject: [PATCH 195/269] gallium/pvr: vertex shader compiles through pco as
+ well
+
+A vertex shader is a different pipeline stage, not a different NIR spelling: pco lowers it with
+vertex-specific passes and the PDS program that kicks it is built differently, so "the fragment shader
+compiles" said nothing about it. It does now:
+
+  shader: pco encoded 224 bytes of USC for a fragment shader
+  shader: pco encoded  56 bytes of USC for a VERTEX shader
+  shader: 224 bytes of USC uploaded at device address 0x9ffffff000
+
+56 bytes for a position-only vertex shader is a plausible size, not a constant - it is roughly a quarter
+of the fragment shader above it, which is what a shader that computes one vec4 and stores it should
+weigh.
+
+So the driver can produce, encode and upload code for both stages a draw needs. The gap to a drawn
+pixel is now exactly: the PDS programs that kick those two USC binaries, the descriptor state they
+reference, and the control-stream wiring that points at them.
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c | 28 ++++++++++++++++++++++
+ 1 file changed, 28 insertions(+)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index c50a52d3..2a36507f 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -1115,6 +1115,34 @@ shader_compile_check(struct pipe_screen *pscreen)
+ 
+    printf("shader:        pco encoded %u bytes of USC for a fragment shader\n", size);
+ 
++   /* A vertex shader is a different pipeline stage, not just a different NIR: pco lowers it with
++    * vertex-specific passes and the PDS program that kicks it is built differently. Confirm the
++    * driver can produce one before wiring a draw that needs it. */
++   {
++      pco_shader *vshader = NULL;
++      const void *vbin = NULL;
++      unsigned vsize = 0;
++      nir_builder vb = nir_builder_init_simple_shader(MESA_SHADER_VERTEX, pco_nir_options(),
++                                                      "vs_probe");
++      nir_def *pos = nir_vec4(&vb, nir_imm_float(&vb, 0.0f), nir_imm_float(&vb, 0.5f),
++                              nir_imm_float(&vb, 0.0f), nir_imm_float(&vb, 1.0f));
++      {
++         nir_variable *outv = nir_variable_create(vb.shader, nir_var_shader_out,
++                                                  glsl_vec4_type(), "gl_Position");
++         outv->data.location = VARYING_SLOT_POS;
++         nir_store_var(&vb, outv, pos, 0xf);
++      }
++      vb.shader->info.internal = false;
++
++      if (pvr_shader_compile(screen->pco_ctx, vb.shader, &vshader, &vbin, &vsize)) {
++         printf("shader:        pco encoded %u bytes of USC for a VERTEX shader\n", vsize);
++      } else {
++         printf("shader:        FAIL: pco produced no vertex code\n");
++         ok = false;
++      }
++      ralloc_free(vb.shader);
++   }
++
+    /* Upload the encoded USC to a GPU buffer. Compiling is not the same as being able to run it: the
+     * GPU reads the program from a device address, so the binary has to live in a BO that is mapped
+     * into the VM and whose address the PDS/VDM state can name. */
+-- 
+2.47.3
+

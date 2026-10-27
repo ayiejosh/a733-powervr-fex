@@ -1,0 +1,63 @@
+From 9c8c5790c92000dc14c9fd166423cfade85e63c1 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sat, 24 Oct 2026 05:23:28 +0800
+Subject: [PATCH 203/269] gallium/pvr: both shader programs bound in one
+ accepted control stream
+
+The control stream now sets up BOTH stages the way the hardware expects - the vertex program with a VDM
+PDS state update and the fragment program with a DDM one - and the kernel accepts the submission:
+
+  FS launcher 36 B at 0x9ffffcf000 (DDM target)
+  20000000 fffd0006 fffd0000   VS PDS state update (VDM)
+  30000000 fffcf006 fffcf000   FS PDS state update (DDM)
+  40000000                     VDM state
+  7c0a0000 fffd1000 00000003 00000001   index list: address, count 3, instances 1
+  c0000000                     STREAM_TERMINATE
+  RENDER SUBMIT ACCEPTED (geom 40 B + frag 384 B) - target unchanged
+
+The VDM and DDM blocks are visibly different (20000000 vs 30000000), which is the discriminator working
+rather than a copied constant.
+
+The target is unchanged because the launchers are still placeholders: they carry temps = 0 and point at
+USC offset 0, while the uploaded vertex shader sits at offset 0x1000. Closing that is now a matter of
+passing the real offset into the launcher and the real temps into it - the structure around them is
+complete and accepted.
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c | 20 ++++++++++++++++++++
+ 1 file changed, 20 insertions(+)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index 0e2f0070..9bf82703 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -761,7 +761,27 @@ real_job_done:
+ 
+                      memcpy(ibo.map, idx, sizeof(idx));
+                      pvr_csb_init(&ctl_csb, rctl.map, rctl.size, PVR_CSB_LINK_DWORDS);
++                     /* A second launcher for the fragment stage, and the PDS state update that
++                      * targets the DDM. Both programs are now bound in the one control stream the TA
++                      * reads. */
++                     struct pvr_bo fbo = { 0 };
++                     uint64_t faddr = 0;
++                     uint8_t flauncher[256];
++                     const uint32_t fllen = pvr_shader_pds_launcher(&zeros, 0, flauncher,
++                                                                    sizeof(flauncher));
++                     if (fllen > 0 && pvr_bo_create(pvm_fd_for_probe, 4096, 1, &fbo) &&
++                         (faddr = pvr_vm_alloc(&vm, fbo.size, vm.general.page_size)) != 0 &&
++                         pvr_vm_map(&vm, faddr, fbo.handle, fbo.size) &&
++                         pvr_bo_map(pvm_fd_for_probe, &fbo)) {
++                        memcpy(fbo.map, flauncher, fllen);
++                        printf("hwrt:          FS launcher %u B at 0x%" PRIx64 " (DDM target)\n",
++                               fllen, faddr);
++                     } else {
++                        faddr = 0;
++                     }
++
+                      if (!pvr_csb_emit_pds_state_update(&ctl_csb, laddr, 0, 0, false) ||
++                         !pvr_csb_emit_pds_state_update(&ctl_csb, faddr, 0, 0, true) ||
+                          !pvr_csb_emit_vdm_state(&ctl_csb, false, 0, false, 0, &vdm_words) ||
+                          !pvr_csb_emit_index_list(&ctl_csb, iaddr, 3, 1,
+                                                   ROGUE_VDMCTRL_INDEX_SIZE_B16) ||
+-- 
+2.47.3
+

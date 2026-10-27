@@ -1,0 +1,53 @@
+From 22bccac7f49c3d560175b2309cba1019b3d2c1af Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Mon, 26 Oct 2026 01:58:21 +0800
+Subject: [PATCH 255/269] gallium/pvr: the replayed compute shader executes and
+ its stores land (values/addresses still odd)
+
+The captured compute job's shader demonstrably runs in the native replay: with a shader that stores a
+0xCAFEBABE marker at px[4096] (Vulkan reference PASSes with marker=0xcafebabe), the replay writes
+0xCAFEBABE at target[0] and a repeating 1..7 pattern (word index mod 8) across the target - 505 nonzero
+dwords. So the CDM/descriptor/USC path works end to end; the remaining anomaly is the store address/value
+mapping (the marker lands at px[0] instead of px[4096], and the ID-probe stores do not carry their
+0x1111/0x2222/0x3333/0x4444 tags). Vulkan ID probe result: local0=0x11110000, wgx1=0x22220001,
+wgy1=0x33330001, gid1=0x44440001, marker at px[4096] - i.e. the captured job really does use real ids.
+Next: work out the descriptor/base-address interpretation in the replay (all buffers reconstructed at the
+captured device addresses, so compare the shader's address arithmetic and the pco descriptor encoding).
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c | 20 ++++++++++++++++++++
+ 1 file changed, 20 insertions(+)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index 5cafb996..ded7a610 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -4457,6 +4457,26 @@ cdm_draw_check(int fd, struct pipe_screen *pscreen)
+          }
+       }
+       ok = inside > 1000 && outside > 1000;
++      {
++         const uint32_t *p = target_bo.map;
++
++         printf("cdm:           target[0..7] = %08x %08x %08x %08x %08x %08x %08x %08x\n",
++                p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7]);
++         printf("cdm:           ids: local00=%08x wgx1=%08x wgy1=%08x gid1=%08x marker=%08x\n",
++                p[0], p[1024 + 1], p[2048 + 1], p[3072 + 1], p[4096]);
++         {
++            unsigned i, shown = 0;
++
++            printf("cdm:           first nonzero target words:");
++            for (i = 0; i < target_size / 4 && shown < 32; i++) {
++               if (p[i]) {
++                  printf(" [%u]=%08x", i, p[i]);
++                  shown++;
++               }
++            }
++            printf("\n");
++         }
++      }
+       if (ok) {
+          const uint32_t *p = px;
+          printf("cdm:           center=0x%08x corner=0x%08x\n", p[200 * 512 + 256], p[10 * 512 + 10]);
+-- 
+2.47.3
+

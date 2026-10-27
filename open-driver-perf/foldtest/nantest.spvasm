@@ -1,0 +1,130 @@
+               OpCapability Shader
+          %1 = OpExtInstImport "GLSL.std.450"
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint GLCompute %main "main" %gid
+               OpExecutionMode %main LocalSize 1 1 1
+               OpDecorate %gid BuiltIn GlobalInvocationId
+               OpDecorate %farr ArrayStride 4
+               OpMemberDecorate %SB 0 Offset 0
+               OpDecorate %SB Block
+               OpDecorate %v4arr ArrayStride 16
+               OpMemberDecorate %SB4 0 Offset 0
+               OpDecorate %SB4 Block
+               OpDecorate %outb2 DescriptorSet 0
+               OpDecorate %outb2 Binding 2
+               OpDecorate %inb DescriptorSet 0
+               OpDecorate %inb Binding 0
+               OpDecorate %outb DescriptorSet 0
+               OpDecorate %outb Binding 1
+       %void = OpTypeVoid
+         %fn = OpTypeFunction %void
+      %float = OpTypeFloat 32
+       %uint = OpTypeInt 32 0
+      %uvec3 = OpTypeVector %uint 3
+%_ptr_in_uvec3 = OpTypePointer Input %uvec3
+        %gid = OpVariable %_ptr_in_uvec3 Input
+       %farr = OpTypeRuntimeArray %float
+         %SB = OpTypeStruct %farr
+%_ptr_sb_SB = OpTypePointer StorageBuffer %SB
+%_ptr_sb_float = OpTypePointer StorageBuffer %float
+     %v4float = OpTypeVector %float 4
+       %v4arr = OpTypeRuntimeArray %v4float
+        %SB4 = OpTypeStruct %v4arr
+%_ptr_sb_SB4 = OpTypePointer StorageBuffer %SB4
+%_ptr_sb_v4 = OpTypePointer StorageBuffer %v4float
+      %outb2 = OpVariable %_ptr_sb_SB4 StorageBuffer
+        %inb = OpVariable %_ptr_sb_SB StorageBuffer
+       %outb = OpVariable %_ptr_sb_SB StorageBuffer
+       %c0 = OpConstant %float 0
+       %c1 = OpConstant %float 1
+       %cm1 = OpConstant %float -1
+       %cm35 = OpConstant %float -3.5
+      %u0 = OpConstant %uint 0
+      %u1 = OpConstant %uint 1
+      %u2 = OpConstant %uint 2
+      %u3 = OpConstant %uint 3
+      %u4 = OpConstant %uint 4
+      %u5 = OpConstant %uint 5
+      %u6 = OpConstant %uint 6
+      %u7 = OpConstant %uint 7
+      %u8 = OpConstant %uint 8
+      %u9 = OpConstant %uint 9
+      %u10 = OpConstant %uint 10
+      %u11 = OpConstant %uint 11
+      %u12 = OpConstant %uint 12
+      %u13 = OpConstant %uint 13
+      %u14 = OpConstant %uint 14
+      %u15 = OpConstant %uint 15
+      %u16 = OpConstant %uint 16
+   %cnanu = OpConstant %uint 2143289344
+       %main = OpFunction %void None %fn
+        %lbl = OpLabel
+       %gidv = OpLoad %uvec3 %gid
+          %i = OpCompositeExtract %uint %gidv 0
+        %pin = OpAccessChain %_ptr_sb_float %inb %u0 %i
+          %x = OpLoad %float %pin
+         %i1 = OpIAdd %uint %i %u1
+          %j = OpUMod %uint %i1 %u10
+       %piny = OpAccessChain %_ptr_sb_float %inb %u0 %j
+          %y = OpLoad %float %piny
+       %base = OpIMul %uint %i %u16
+      %cnan = OpBitcast %float %cnanu
+         %r0 = OpExtInst %float %1 NMax %x %c0
+         %r1 = OpExtInst %float %1 NMax %c0 %x
+         %r2 = OpExtInst %float %1 NMin %x %c1
+         %r3 = OpExtInst %float %1 NMin %c1 %x
+         %r4 = OpExtInst %float %1 NMax %x %cm35
+         %r5 = OpExtInst %float %1 NMax %cm35 %x
+         %r6 = OpExtInst %float %1 NMax %x %y
+         %r7 = OpExtInst %float %1 NMin %x %y
+         %t8 = OpExtInst %float %1 NMin %x %c1
+         %r8 = OpExtInst %float %1 NMax %t8 %c0
+         %t9 = OpExtInst %float %1 NMax %x %cm1
+         %r9 = OpExtInst %float %1 NMin %t9 %c0
+        %r10 = OpExtInst %float %1 NClamp %x %c0 %c1
+        %r11 = OpExtInst %float %1 NMax %x %cnan
+        %r12 = OpExtInst %float %1 NMin %cnan %x
+         %b0 = OpIAdd %uint %base %u0
+         %o0 = OpAccessChain %_ptr_sb_float %outb %u0 %b0
+               OpStore %o0 %r0
+         %b1 = OpIAdd %uint %base %u1
+         %o1 = OpAccessChain %_ptr_sb_float %outb %u0 %b1
+               OpStore %o1 %r1
+         %b2 = OpIAdd %uint %base %u2
+         %o2 = OpAccessChain %_ptr_sb_float %outb %u0 %b2
+               OpStore %o2 %r2
+         %b3 = OpIAdd %uint %base %u3
+         %o3 = OpAccessChain %_ptr_sb_float %outb %u0 %b3
+               OpStore %o3 %r3
+         %b4 = OpIAdd %uint %base %u4
+         %o4 = OpAccessChain %_ptr_sb_float %outb %u0 %b4
+               OpStore %o4 %r4
+         %b5 = OpIAdd %uint %base %u5
+         %o5 = OpAccessChain %_ptr_sb_float %outb %u0 %b5
+               OpStore %o5 %r5
+         %b6 = OpIAdd %uint %base %u6
+         %o6 = OpAccessChain %_ptr_sb_float %outb %u0 %b6
+               OpStore %o6 %r6
+         %b7 = OpIAdd %uint %base %u7
+         %o7 = OpAccessChain %_ptr_sb_float %outb %u0 %b7
+               OpStore %o7 %r7
+         %b8 = OpIAdd %uint %base %u8
+         %o8 = OpAccessChain %_ptr_sb_float %outb %u0 %b8
+               OpStore %o8 %r8
+         %b9 = OpIAdd %uint %base %u9
+         %o9 = OpAccessChain %_ptr_sb_float %outb %u0 %b9
+               OpStore %o9 %r9
+         %b10 = OpIAdd %uint %base %u10
+         %o10 = OpAccessChain %_ptr_sb_float %outb %u0 %b10
+               OpStore %o10 %r10
+         %b11 = OpIAdd %uint %base %u11
+         %o11 = OpAccessChain %_ptr_sb_float %outb %u0 %b11
+               OpStore %o11 %r11
+         %b12 = OpIAdd %uint %base %u12
+         %o12 = OpAccessChain %_ptr_sb_float %outb %u0 %b12
+               OpStore %o12 %r12
+       %vecc = OpCompositeConstruct %v4float %c0 %c1 %cm35 %c0
+       %pv4 = OpAccessChain %_ptr_sb_v4 %outb2 %u0 %i
+               OpStore %pv4 %vecc
+               OpReturn
+               OpFunctionEnd

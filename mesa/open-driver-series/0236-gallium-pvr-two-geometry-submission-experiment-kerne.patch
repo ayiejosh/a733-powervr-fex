@@ -1,0 +1,53 @@
+From ce57b7944fdc6a3a213d93fb96ea42a947a07204 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sun, 25 Oct 2026 04:53:28 +0800
+Subject: [PATCH 236/269] gallium/pvr: two-geometry-submission experiment;
+ kernel module gets the upstream paired-job fixes
+
+Round-23 experiment: queueing two geometry jobs back to back (PVR_PROBE_QUEUE_TWO_GEOM) still hangs
+(one "Kick TA" with First/Last kick:0, then DM2 timeout), so the firmware is not merely dropping a
+context's first TA kick.
+
+Separately: the custom powervr kernel module predates the upstream March-2026 drm/imagination job
+submission fixes (it still had pvr_queue_get_paired_frag_job_dep(queue, job)). Backported the two
+stable fixes to it:
+- "Count paired job fence as dependency in prepare_job()" (9cd74f935306): a fence between paired jobs
+  is not UFO-backed until both are submitted, so it must be counted manually when checking CCCB space;
+- "Fit paired fragment job in the correct CCCB" (4baf9e70cb75): the paired fragment job's done fence
+  and CCCB-space check must use the fragment queue, not the geometry queue.
+The patched module builds, the open Vulkan driver still reports PASS, and the native probe's TA stall
+is unchanged. Patch kept as open-driver-perf/captures/pvr_queue-r23-backport.diff; the module can be
+rebuilt from the kernel-src/powervr worktree.
+
+Verification: probe ALL PASS under the shim.
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c | 13 ++++++++++++-
+ 1 file changed, 12 insertions(+), 1 deletion(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index acb12f83..af8f9db7 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -1301,7 +1301,18 @@ real_job_done:
+                          PRIx64 "\n", (unsigned)g_fs_pds_base_offset, rbctaddr);
+                }
+ 
+-               if (getenv("PVR_PROBE_GEOM_ONLY")) {
++               if (getenv("PVR_PROBE_QUEUE_TWO_GEOM")) {
++                  /* Queue two geometry jobs back to back before the first one times out: if the
++                   * firmware drops a context's first TA kick, the second one may start. */
++                  const bool s1 = pvr_job_submit(vm, gpu_ctx.handle, DRM_PVR_JOB_TYPE_GEOMETRY,
++                                                 gstream, glen, dset_handle, 0);
++                  const bool s2 = pvr_job_submit(vm, gpu_ctx.handle, DRM_PVR_JOB_TYPE_GEOMETRY,
++                                                 gstream, glen, dset_handle, 0);
++
++                  printf("hwrt:          queued two geometry jobs: submit1=%d submit2=%d\n",
++                         s1, s2);
++                  usleep(500000);
++               } else if (getenv("PVR_PROBE_GEOM_ONLY")) {
+                   const bool gdone = pvr_job_submit_geom_sync(vm, gpu_ctx.handle, gstream, glen,
+                                                               dset_handle, 0, 2000);
+ 
+-- 
+2.47.3
+

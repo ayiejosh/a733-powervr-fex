@@ -1,0 +1,70 @@
+From 4bb296cc245bfabd5390a3f1cb561944347a6ce4 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 17:59:18 +0800
+Subject: [PATCH 139/269] gallium/pvr: set flat-shade control rather than
+ leaving it zero
+
+  csb: VDM state: length follows its own flags (1/2/2/3 dwords for the four flag
+       combinations), fields verified in place
+  --- ALL PASS        (real open kernel)
+
+flatshade_control now carries ROGUE_VDMCTRL_FLATSHADE_CONTROL_VERTEX_0, the reference's
+fallback - its else branch, taken whenever the provoking vertex is not explicitly the last
+one and the topology is not a triangle fan. Those are GL's defaults, so a driver that has
+not been told otherwise should say so.
+
+The reason this is worth more than its one line: **zero is a real value in these packet
+fields, not "unset".** Leaving flatshade_control at zero would have meant something specific
+about flat shading rather than nothing at all. The same is true of most fields in these
+descriptors - they are bitfields with a defined meaning at every value - so "leave it zero"
+is never a neutral act and the round-26 note that these fields were "wrong but visible" was
+only half right: they were wrong AND assertive.
+
+cam_size and uvs_scratch_size_select are still left alone, and now for a sharper reason:
+they depend on vertex-buffer and draw state the driver does not have, and a zero there would
+be indistinguishable from a deliberate choice. They need the state, not a default.
+
+The check asserts the value, so it fails if the fallback is dropped again.
+---
+ src/gallium/drivers/pvr/pvr_csb.c   | 12 ++++++++++++
+ src/gallium/drivers/pvr/pvr_probe.c |  1 +
+ 2 files changed, 13 insertions(+)
+
+diff --git a/src/gallium/drivers/pvr/pvr_csb.c b/src/gallium/drivers/pvr/pvr_csb.c
+index 5e1be70a..bcbcf747 100644
+--- a/src/gallium/drivers/pvr/pvr_csb.c
++++ b/src/gallium/drivers/pvr/pvr_csb.c
+@@ -151,6 +151,18 @@ pvr_csb_emit_vdm_state(struct pvr_csb *csb, bool cut_index_enable,
+       .cut_index_enable = cut_index_enable,
+       .cut_index_present = cut_index_enable,
+       .vs_data_addr_present = have_vs_data_addr,
++
++      /* Which vertex provides flat-shaded values. VERTEX_0 is the reference's fallback -
++       * its else branch, taken whenever the provoking vertex is not explicitly the last
++       * one and the topology is not a triangle fan. Setting it explicitly is better than
++       * leaving it zero: zero is a real value here rather than "unset", so a zero would
++       * mean something specific about flat shading rather than nothing at all. These are
++       * GL's defaults, so a driver that has not been told otherwise should say so.
++       *
++       * cam_size and uvs_scratch_size_select remain unset: both depend on vertex-buffer
++       * and draw state the driver does not have, and their zero values would be
++       * indistinguishable from a deliberate choice. */
++      .flatshade_control = ROGUE_VDMCTRL_FLATSHADE_CONTROL_VERTEX_0,
+    };
+    struct ROGUE_VDMCTRL_VDM_STATE1 state1 = { .cut_index = cut_index };
+    struct ROGUE_VDMCTRL_VDM_STATE2 state2 = {
+diff --git a/src/gallium/drivers/pvr/pvr_probe.c b/src/gallium/drivers/pvr/pvr_probe.c
+index 3ae8240a..d8b494f0 100644
+--- a/src/gallium/drivers/pvr/pvr_probe.c
++++ b/src/gallium/drivers/pvr/pvr_probe.c
+@@ -1159,6 +1159,7 @@ csb_check(int fd, struct pipe_screen *pscreen)
+           * or the hardware reads a sequence the driver did not write. */
+          if (s0.cut_index_present != cases[c].cut_index_enable ||
+              s0.vs_data_addr_present != cases[c].have_vs_data_addr ||
++             s0.flatshade_control != ROGUE_VDMCTRL_FLATSHADE_CONTROL_VERTEX_0 ||
+              s0.block_type != ROGUE_VDMCTRL_BLOCK_TYPE_VDM_STATE_UPDATE) {
+             printf("csb:           FAIL: VDM state case %u has flags cut %u vs %u, "
+                    "emitted cut %u vs %u\n", c, cases[c].cut_index_enable,
+-- 
+2.47.3
+

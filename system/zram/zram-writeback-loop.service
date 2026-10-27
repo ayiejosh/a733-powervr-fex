@@ -1,0 +1,14 @@
+[Unit]
+Description=Attach the zram writeback backing file as a loop device
+DefaultDependencies=no
+After=local-fs.target
+Before=zramswap.service
+ConditionPathExists=/home/radxa/zram-writeback.img
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'losetup -j /home/radxa/zram-writeback.img | grep -q . || losetup --find --show /home/radxa/zram-writeback.img'
+
+[Install]
+WantedBy=multi-user.target

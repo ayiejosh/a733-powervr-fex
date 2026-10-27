@@ -1,0 +1,43 @@
+[64870931] : Host Sync Partition marker: 1
+[65140423] : GPU units deinit
+[65140460] : GPU deinit
+[176] : State of firmware's private data at boot time: 1 (0 = uninitialised, 1 = initialised); Fw State Flags = 0x00000001
+[196] : OSid 0 fw state transition request: from 2 to 0 (0-offline 1-ready 2-active 3-offloading). Status 1 (1-ok 0-fail)
+[232] : Core clock set to 1104000000 Hz
+[271] : GPU init
+[300] : Host Sync Partition marker: 2
+[42159] : cCCB Woff update = 568, DM = 3, FWCtx = 0xc005f098
+[42352] : GPU Units init (# mask: 0x1)
+[42593] : Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x80035000)
+[42612] :   Phantom 0: USCTiles=6
+[42636] : Kick 3D: FWCtx 0xc005f098 @ 0, RTD 0xc0063000, Partial render:0, CSW resume:0. (PID:4614, prio:1, frame:0, ext:0x00000001, int:0x00000001)
+[42741] : GPU-0 has locked up (see HWR logs for more info)
+[42992] : GPU Units init (# mask: 0x1)
+[43192] : UFO Updates for FWCtx 0xc005f098 @ 520
+[43211] : UFO Update: [0xc0031000] = 0x00000001
+[43785] : cCCB Woff update = 200, DM = 2, FWCtx = 0xc005f000
+[44115] : Kick TA: FWCtx 0xc005f000 @ 0, RTD 0xc0063000, First kick:1, Last kick:1, CSW resume:0. (PID:4614, prio:1, frame:0, ext:0x00000001, int:0x00000001)
+[169559] : GPU has locked up (see HWR logs for more info)
+[169827] : GPU Units init (# mask: 0x1)
+[169985] : UFO Updates for FWCtx 0xc005f000 @ 152
+[170007] : UFO Update: [0xc002e000] = 0x00000001
+[171107] : cCCB Woff update = 400, DM = 2, FWCtx = 0xc005f000
+[171179] : cCCB Woff update = 1184, DM = 3, FWCtx = 0xc005f098
+[171209] : UFO Checks for FWCtx 0xc005f098 @ 568
+[171224] : UFO PR-Check: [0xc002e000] is 0x00000001 requires >= 0x00000002
+[171730] : Kick TA: FWCtx 0xc005f000 @ 200, RTD 0xc0063000, First kick:1, Last kick:1, CSW resume:0. (PID:4614, prio:1, frame:0, ext:0x00000001, int:0x00000001)
+[171871] : cCCB Woff update = 1800, DM = 3, FWCtx = 0xc005f098
+[297317] : GPU has locked up (see HWR logs for more info)
+[297595] : GPU Units init (# mask: 0x1)
+[297750] : UFO Updates for FWCtx 0xc005f000 @ 352
+[297770] : UFO Update: [0xc002e000] = 0x00000002
+[298147] : UFO Checks for FWCtx 0xc005f098 @ 568
+[298174] : UFO PR-Check: [0xc002e000] is 0x00000002 requires >= 0x00000002
+[298207] : UFO Checks for FWCtx 0xc005f098 @ 1184
+[298222] : UFO PR-Check: [0xc0031000] is 0x00000001 requires >= 0x00000002
+[298578] : UFO Updates for FWCtx 0xc005f098 @ 1136
+[298599] : UFO Update: [0xc0031000] = 0x00000002
+[298628] : UFO Checks for FWCtx 0xc005f098 @ 1184
+[298642] : UFO PR-Check: [0xc0031000] is 0x00000002 requires >= 0x00000002
+[298796] : UFO Updates for FWCtx 0xc005f098 @ 1752
+[298813] : UFO Update: [0xc0031000] = 0x00000003

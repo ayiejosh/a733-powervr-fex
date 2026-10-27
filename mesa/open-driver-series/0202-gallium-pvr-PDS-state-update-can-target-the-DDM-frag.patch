@@ -1,0 +1,86 @@
+From 11d84a70a178795f635eea81e3d36463b2037446 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sat, 24 Oct 2026 05:16:57 +0800
+Subject: [PATCH 202/269] gallium/pvr: PDS state update can target the DDM
+ (fragment programs)
+
+The captured fragment static stream is zeros in every pds_bgnd word - only the PBE words and the EOT
+offset are non-zero - so the fragment program is NOT bound in the fragment job's stream. It is bound in
+the geometry job's control stream, as a second PDS state update with dm_target = DDM instead of VDM:
+the TA orchestrates the whole pass, so the geometry control stream sets up both stages.
+
+pvr_csb_emit_pds_state_update() takes a for_fragment flag and selects the DM target accordingly. Also
+corrected a related assumption: usc_target has only ALL and ANY, so it is not the fragment
+discriminator - dm_target is.
+
+That turns blocker #2 from "unknown mechanism" into "a known block with a known field value", derived
+from the working driver's own bytes rather than guessed.
+---
+ src/gallium/drivers/pvr_native/pvr_csb.c   | 7 +++++--
+ src/gallium/drivers/pvr_native/pvr_csb.h   | 2 +-
+ src/gallium/drivers/pvr_native/pvr_probe.c | 4 ++--
+ 3 files changed, 8 insertions(+), 5 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_csb.c b/src/gallium/drivers/pvr_native/pvr_csb.c
+index b6ad827e..a323008c 100644
+--- a/src/gallium/drivers/pvr_native/pvr_csb.c
++++ b/src/gallium/drivers/pvr_native/pvr_csb.c
+@@ -108,7 +108,7 @@ pvr_csb_emit_stream_terminate(struct pvr_csb *csb)
+ 
+ bool
+ pvr_csb_emit_pds_state_update(struct pvr_csb *csb, uint64_t program_addr,
+-                              uint32_t data_dwords, uint32_t temps)
++                              uint32_t data_dwords, uint32_t temps, bool for_fragment)
+ {
+    const uint32_t words = ROGUE_VDMCTRL_PDS_STATE0_length +
+                           ROGUE_VDMCTRL_PDS_STATE1_length +
+@@ -117,7 +117,10 @@ pvr_csb_emit_pds_state_update(struct pvr_csb *csb, uint64_t program_addr,
+    const uint32_t unit = ROGUE_VDMCTRL_PDS_STATE0_PDS_DATA_SIZE_UNIT_SIZE;
+    struct ROGUE_VDMCTRL_PDS_STATE0 state0 = {
+       .block_type = ROGUE_VDMCTRL_BLOCK_TYPE_PDS_STATE_UPDATE,
+-      .dm_target = ROGUE_VDMCTRL_DM_TARGET_VDM,
++      /* The geometry job's control stream sets up BOTH stages: the vertex program targets the VDM
++       * and the fragment program targets the DDM. The captured fragment static stream is zeros in
++       * every pds_bgnd word, which is what rules out binding the fragment program there. */
++      .dm_target = for_fragment ? ROGUE_VDMCTRL_DM_TARGET_DDM : ROGUE_VDMCTRL_DM_TARGET_VDM,
+       .usc_target = ROGUE_VDMCTRL_USC_TARGET_ALL,
+       .usc_common_size = 0,
+       .usc_unified_size = 0,
+diff --git a/src/gallium/drivers/pvr_native/pvr_csb.h b/src/gallium/drivers/pvr_native/pvr_csb.h
+index 2a14dc95..cc7195a1 100644
+--- a/src/gallium/drivers/pvr_native/pvr_csb.h
++++ b/src/gallium/drivers/pvr_native/pvr_csb.h
+@@ -92,7 +92,7 @@ uint32_t pvr_csb_switch_buffer(struct pvr_csb *csb, void *map, uint32_t size_byt
+  * bytes: the field is a count of units, and passing bytes would silently under-report on
+  * any program whose data segment is not one unit. */
+ bool pvr_csb_emit_pds_state_update(struct pvr_csb *csb, uint64_t program_addr,
+-                                   uint32_t data_dwords, uint32_t temps);
++                                   uint32_t data_dwords, uint32_t temps, bool for_fragment);
+ 
+ /* Point the hardware at a state block: the two VDMCTRL_PPP_STATE packets that carry an
+  * address and the block's length in words.
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index a72b7965..0e2f0070 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -761,7 +761,7 @@ real_job_done:
+ 
+                      memcpy(ibo.map, idx, sizeof(idx));
+                      pvr_csb_init(&ctl_csb, rctl.map, rctl.size, PVR_CSB_LINK_DWORDS);
+-                     if (!pvr_csb_emit_pds_state_update(&ctl_csb, laddr, 0, 0) ||
++                     if (!pvr_csb_emit_pds_state_update(&ctl_csb, laddr, 0, 0, false) ||
+                          !pvr_csb_emit_vdm_state(&ctl_csb, false, 0, false, 0, &vdm_words) ||
+                          !pvr_csb_emit_index_list(&ctl_csb, iaddr, 3, 1,
+                                                   ROGUE_VDMCTRL_INDEX_SIZE_B16) ||
+@@ -2889,7 +2889,7 @@ csb_check(int fd, struct pipe_screen *pscreen)
+ 
+       pvr_csb_reset(&csb);
+ 
+-      if (!pvr_csb_emit_pds_state_update(&csb, prog_addr, data_dwords, temps) ||
++      if (!pvr_csb_emit_pds_state_update(&csb, prog_addr, data_dwords, temps, false) ||
+           pvr_csb_size(&csb) != words * 4) {
+          printf("csb:           FAIL: the PDS state update did not emit %u dwords\n",
+                 words);
+-- 
+2.47.3
+

@@ -1,0 +1,236 @@
+From e55c647021a3fdf10b8f3de3ac790fd2e3f35640 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 20:50:14 +0800
+Subject: [PATCH 151/269] gallium/pvr: the TA clip region, and the two
+ conversions that fail silently
+
+  csb: TA clip region: aligned units (align 16), far edge as round-up-minus-one, mode OUTSIDE
+  --- ALL PASS        (real open kernel)
+
+The clip region is how the header's pres_viewport bit and view_port_count are cashed in - there
+is no separate viewport packet, the viewport IS the clip rectangle. Two conversions in it are
+silent when wrong, so both are asserted by VALUE rather than by round-trip:
+
+  - coordinates are DIVIDED by a device-derived alignment, so the region is not in pixels. A
+    version that passed pixels through would clip a fraction of the intended area and present as a
+    rasterisation fault, not a state fault.
+  - right and bottom are ROUND-UP-MINUS-ONE of the far edge. One unit short on each side clips a
+    row and column of pixels that should have been drawn.
+
+The alignment is 16 on devices with 16x16 tiles and 32 otherwise - this device reports 16 - and it
+is computed in the screen where the device info lives, the same arrangement as the region-header
+size in round 19: the CSB writer takes the number, not the device.
+
+The check uses the benchmark's own 800x600 at the origin, plus an off-origin rectangle whose unit
+is not its pixel, so a missing division cannot pass.
+---
+ src/gallium/drivers/pvr/pvr_csb.c    | 40 +++++++++++++++++
+ src/gallium/drivers/pvr/pvr_csb.h    | 26 +++++++++++
+ src/gallium/drivers/pvr/pvr_probe.c  | 67 +++++++++++++++++++++++++++-
+ src/gallium/drivers/pvr/pvr_screen.c |  2 +
+ src/gallium/drivers/pvr/pvr_screen.h |  3 ++
+ 5 files changed, 137 insertions(+), 1 deletion(-)
+
+diff --git a/src/gallium/drivers/pvr/pvr_csb.c b/src/gallium/drivers/pvr/pvr_csb.c
+index d4c9a71c..55c27c97 100644
+--- a/src/gallium/drivers/pvr/pvr_csb.c
++++ b/src/gallium/drivers/pvr/pvr_csb.c
+@@ -7,6 +7,7 @@
+ #include "util/format/u_format.h"
+ #include "util/log.h"
+ #include "util/u_math.h"
++#include "util/u_math.h"
+ 
+ void
+ pvr_csb_init(struct pvr_csb *csb, void *map, uint32_t size_bytes,
+@@ -296,6 +297,45 @@ pvr_filter_from_pipe(enum pipe_tex_filter filter, enum ROGUE_TEXSTATE_FILTER *ou
+    }
+ }
+ 
++void
++pvr_region_clip_from_rect(uint32_t x, uint32_t y, uint32_t width, uint32_t height,
++                          uint32_t align, struct pvr_region_clip *out)
++{
++   assert(align > 0);
++
++   out->left = x / align;
++   out->top = y / align;
++
++   /* Round-up-minus-one: the hardware clips to the INCLUSIVE unit containing the far edge, and
++    * the reference guards the zero case rather than letting a subtraction wrap. */
++   out->right = (x + width) != 0 ? DIV_ROUND_UP(x + width, align) - 1 : 0;
++   out->bottom = (y + height) != 0 ? DIV_ROUND_UP(y + height, align) - 1 : 0;
++}
++
++bool
++pvr_csb_emit_ta_region_clip(struct pvr_csb *csb, const struct pvr_region_clip *clip)
++{
++   const uint32_t words = ROGUE_TA_REGION_CLIP0_length + ROGUE_TA_REGION_CLIP1_length;
++   struct ROGUE_TA_REGION_CLIP0 word0 = {
++      .mode = ROGUE_TA_REGION_CLIP_MODE_OUTSIDE,
++      .left = clip->left,
++      .right = clip->right,
++   };
++   struct ROGUE_TA_REGION_CLIP1 word1 = {
++      .top = clip->top,
++      .bottom = clip->bottom,
++   };
++   uint32_t *dw = pvr_csb_emit(csb, words);
++
++   if (dw == NULL)
++      return false;
++
++   ROGUE_TA_REGION_CLIP0_pack(dw, &word0);
++   ROGUE_TA_REGION_CLIP1_pack(dw + ROGUE_TA_REGION_CLIP0_length, &word1);
++
++   return true;
++}
++
+ bool
+ pvr_csb_emit_ta_ispctl(struct pvr_csb *csb,
+                        const struct pipe_rasterizer_state *rast,
+diff --git a/src/gallium/drivers/pvr/pvr_csb.h b/src/gallium/drivers/pvr/pvr_csb.h
+index e2e0c1b4..a9d88b2b 100644
+--- a/src/gallium/drivers/pvr/pvr_csb.h
++++ b/src/gallium/drivers/pvr/pvr_csb.h
+@@ -288,6 +288,32 @@ bool pvr_csb_emit_ta_ispctl(struct pvr_csb *csb,
+                             bool have_fragment_shader,
+                             const struct pvr_ta_ispctl *in);
+ 
++/* The TA clip region - how the header's pres_viewport bit and view_port_count are cashed in.
++ *
++ * There is no separate viewport packet: the viewport IS the clip rectangle, expressed in units of
++ * a device-derived alignment. Two things about the conversion are easy to get wrong and silent:
++ *
++ *   - coordinates are DIVIDED by the alignment, so the region is not in pixels;
++ *   - right and bottom are ROUND-UP-MINUS-ONE of the far edge, not the far edge itself. A region
++ *     one unit short on each side clips a row or column of pixels that should have been drawn,
++ *     which looks like a rasterisation bug rather than a state bug.
++ *
++ * The alignment is 16 on devices with 16x16 tiles and 32 otherwise, so it is computed in the
++ * screen where the device info lives - the CSB writer takes the number, not the device. */
++struct pvr_region_clip {
++   uint32_t left;
++   uint32_t right;
++   uint32_t top;
++   uint32_t bottom;
++};
++
++void pvr_region_clip_from_rect(uint32_t x, uint32_t y, uint32_t width,
++                               uint32_t height, uint32_t align,
++                               struct pvr_region_clip *out);
++
++bool pvr_csb_emit_ta_region_clip(struct pvr_csb *csb,
++                                 const struct pvr_region_clip *clip);
++
+ /* Dwords a stream link occupies - what the guard must be at minimum. */
+ #define PVR_CSB_LINK_DWORDS (ROGUE_VDMCTRL_STREAM_LINK0_length + \
+                              ROGUE_VDMCTRL_STREAM_LINK1_length)
+diff --git a/src/gallium/drivers/pvr/pvr_probe.c b/src/gallium/drivers/pvr/pvr_probe.c
+index fcb45699..bd354aa2 100644
+--- a/src/gallium/drivers/pvr/pvr_probe.c
++++ b/src/gallium/drivers/pvr/pvr_probe.c
+@@ -1611,7 +1611,72 @@ csb_check(int fd, struct pipe_screen *pscreen)
+             goto out;
+          }
+ 
+-         printf("csb:           TA ISPCTL: dbenable from polygon offset (depth BIAS, not depth "
++         /* The clip region. The check asserts the two conversions that are silent when wrong:
++       * the DIVISION by the alignment, and right/bottom being ROUND-UP-MINUS-ONE. A version that
++       * passed the far edge straight through would clip a unit off every draw and look like a
++       * rasterisation fault. */
++      {
++         const uint32_t align = pvr_screen(pscreen)->region_clip_align;
++         struct pvr_region_clip clip = { 0 };
++         struct ROGUE_TA_REGION_CLIP0 w0 = { 0 };
++         struct ROGUE_TA_REGION_CLIP1 w1 = { 0 };
++
++         if (align != 16 && align != 32) {
++            printf("csb:           FAIL: clip alignment %u is neither 16 nor 32\n", align);
++            goto out;
++         }
++
++         /* 800x600 at the origin, the benchmark's own size. */
++         pvr_region_clip_from_rect(0, 0, 800, 600, align, &clip);
++
++         if (clip.left != 0 || clip.top != 0) {
++            printf("csb:           FAIL: a region at the origin is not at unit 0\n");
++            goto out;
++         }
++
++         /* Far edge must be round-up-minus-one, not the edge itself nor a truncation. */
++         if (clip.right != DIV_ROUND_UP(800, align) - 1 ||
++             clip.bottom != DIV_ROUND_UP(600, align) - 1) {
++            printf("csb:           FAIL: far edge is %u,%u; expected round-up-minus-one "
++                   "%u,%u\n", clip.right, clip.bottom, DIV_ROUND_UP(800, align) - 1,
++                   DIV_ROUND_UP(600, align) - 1);
++            goto out;
++         }
++
++         /* An off-origin rectangle must be DIVIDED, so its unit is not its pixel. */
++         pvr_region_clip_from_rect(align * 3, align * 2, align, align, align, &clip);
++
++         if (clip.left != 3 || clip.top != 2 || clip.right != 3 || clip.bottom != 2) {
++            printf("csb:           FAIL: a rectangle at unit (3,2) of one unit became "
++                   "%u,%u..%u,%u - coordinates are not being divided\n",
++                   clip.left, clip.top, clip.right, clip.bottom);
++            goto out;
++         }
++
++         pvr_csb_reset(&csb);
++
++         if (!pvr_csb_emit_ta_region_clip(&csb, &clip) ||
++             pvr_csb_size(&csb) != (ROGUE_TA_REGION_CLIP0_length +
++                                    ROGUE_TA_REGION_CLIP1_length) * 4) {
++            printf("csb:           FAIL: the clip region did not emit\n");
++            goto out;
++         }
++
++         ROGUE_TA_REGION_CLIP0_unpack(bo.map, &w0);
++         ROGUE_TA_REGION_CLIP1_unpack((uint32_t *)bo.map + ROGUE_TA_REGION_CLIP0_length, &w1);
++
++         if (w0.mode != ROGUE_TA_REGION_CLIP_MODE_OUTSIDE || w0.left != 3 ||
++             w0.right != 3 || w1.top != 2 || w1.bottom != 2) {
++            printf("csb:           FAIL: the clip region did not round-trip (mode %u)\n",
++                   w0.mode);
++            goto out;
++         }
++
++         printf("csb:           TA clip region: aligned units (align %u), far edge as "
++                "round-up-minus-one, mode OUTSIDE\n", align);
++      }
++
++      printf("csb:           TA ISPCTL: dbenable from polygon offset (depth BIAS, not depth "
+                 "test), scenable/tagwritedisable from discard and FS presence\n");
+       }
+ 
+diff --git a/src/gallium/drivers/pvr/pvr_screen.c b/src/gallium/drivers/pvr/pvr_screen.c
+index c125dc2b..071f1d89 100644
+--- a/src/gallium/drivers/pvr/pvr_screen.c
++++ b/src/gallium/drivers/pvr/pvr_screen.c
+@@ -249,6 +249,8 @@ pvr_screen_create(int fd, const struct pipe_screen_config *config,
+       mesa_logi("pvr: could not create the pco compiler context");
+ 
+    screen->region_header_dwords = rogue_get_region_header_size(&screen->dev_info);
++   screen->region_clip_align =
++      16u + 16u * !PVR_HAS_FEATURE(&screen->dev_info, tile_size_16x16);
+ 
+    /* GPU address space. Failure here is not fatal to enumeration - it only means no
+     * resource can be created, which is worth being able to see when probing a node
+diff --git a/src/gallium/drivers/pvr/pvr_screen.h b/src/gallium/drivers/pvr/pvr_screen.h
+index 3ea90764..f64f95cb 100644
+--- a/src/gallium/drivers/pvr/pvr_screen.h
++++ b/src/gallium/drivers/pvr/pvr_screen.h
+@@ -36,6 +36,9 @@ struct pvr_screen {
+     * be included in the same file (the latter makes __pvr_address_type pvr_dev_addr_t,
+     * which the generated packets then fail to compile against). */
+    uint32_t region_header_dwords;
++
++   /* TA clip-region alignment: 16 with 16x16 tiles, 32 otherwise. */
++   uint32_t region_clip_align;
+    unsigned int num_phantoms;
+ 
+    /* GPU address space. vm_valid is false when the heaps or VM context could not be
+-- 
+2.47.3
+

@@ -1,0 +1,794 @@
+From 485d4c513ab33b760250fc708d99a2b32a5979ac Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sat, 24 Oct 2026 23:47:03 +0800
+Subject: [PATCH 219/269] gallium/pvr: port the render context's switch
+ programs and context state
+
+The firmware never completes this driver's jobs, even a render whose control stream is only
+STREAM_TERMINATE. Captured what the working driver sends (temporary env-gated dumps in the Vulkan
+tree, reverted after use) and found a whole missing subsystem: the static context state a render
+context is created with carries the VDM/GEOM context-state buffers and the PDS store/resume task
+programs the firmware switches state with. This driver sent a stream of zeros - a context switch
+that saves nothing and restores from address 0.
+
+Now built, following the reference's construction:
+
+- pvr_vm heap bump allocator: programs named by heap-relative offsets (PDS code/data, USC code,
+  context-state buffers) are placed at chosen addresses in their heap; one bump pointer per heap.
+- context-switch support in pvr_static.c: the precompiled USC SR store/load binaries, their PDS
+  launching programs (DOUTW to the USC shared-register buffer + DOUTU), the PT persistent-temp
+  store/resume PDS programs, and the two 192-byte static-state groups that name them. Two program
+  sets, as the reference builds.
+- pvr_gpu_context_create() builds the switch state before CREATE_CONTEXT and passes the populated
+  static state; the probe checks the buffers, task words and program sizes.
+
+Also aligned HWRT values to the reference capture for 512x512: tpc 2048 bytes (no 4 KiB clamp),
+no RTC, no macrotile array, ISP-merge registers zero, region-header stride from the device formula.
+
+Reference captures for future comparison (context state, fw streams, HWRT values) are archived in
+open-driver-perf/captures/real-runs/. Verification: probe still exits 0 ALL PASS under the noop
+shim; on the real driver jobs are still accepted and the firmware still does not complete them, so
+this was necessary but not sufficient - next is firmware-side evidence (fw trace) or submitting
+the reference's exact streams verbatim to separate data from plumbing.
+---
+ src/gallium/drivers/pvr_native/pvr_csb.h    |   1 +
+ src/gallium/drivers/pvr_native/pvr_hwrt.c   |   4 +-
+ src/gallium/drivers/pvr_native/pvr_probe.c  |  94 +++---
+ src/gallium/drivers/pvr_native/pvr_static.c | 330 +++++++++++++++++++-
+ src/gallium/drivers/pvr_native/pvr_static.h |  65 +++-
+ src/gallium/drivers/pvr_native/pvr_vm.c     |  57 +++-
+ src/gallium/drivers/pvr_native/pvr_vm.h     |  19 +-
+ 7 files changed, 504 insertions(+), 66 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_csb.h b/src/gallium/drivers/pvr_native/pvr_csb.h
+index 694919d9..0fd29859 100644
+--- a/src/gallium/drivers/pvr_native/pvr_csb.h
++++ b/src/gallium/drivers/pvr_native/pvr_csb.h
+@@ -30,6 +30,7 @@
+ 
+ #include "csbgen/rogue/cr.h"
+ #include "csbgen/rogue/kmd_stream.h"
++#include "csbgen/rogue/lls.h"
+ 
+ #include "common/pvr_limits.h"
+ #include "csbgen/rogue/ipf.h"
+diff --git a/src/gallium/drivers/pvr_native/pvr_hwrt.c b/src/gallium/drivers/pvr_native/pvr_hwrt.c
+index 59d3527b..391d47b5 100644
+--- a/src/gallium/drivers/pvr_native/pvr_hwrt.c
++++ b/src/gallium/drivers/pvr_native/pvr_hwrt.c
+@@ -70,9 +70,9 @@ pvr_hwrt_sizes(const struct pvr_device_info *dev_info, uint32_t width, uint32_t
+    tpc = max_mt * max_mt * ROGUE_TAIL_POINTER_SIZE;
+    if (simple && spf_ver == 2)
+       tpc /= 4;
++   /* No minimum clamp: the reference's 512x512 tail-pointer cache is 2048 bytes on this device,
++    * and inflating it changes a size the kernel and firmware both derive from the device. */
+    tpc = ALIGN_POT(tpc, ROGUE_TE_TPC_CACHE_LINE_SIZE);
+-   if (tpc < 4096)
+-      tpc = 4096;
+    out->tpc_size = tpc;
+    out->tpc_stride = (layers > 1) ? (uint32_t)(tpc / ROGUE_BIF_PM_PHYSICAL_PAGE_SIZE) : 0;
+    out->simple_parameter_format = simple;
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index f867be91..205a979e 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -397,36 +397,6 @@ vm_roundtrip(int fd, const struct pvr_device_info *dev_info)
+          }
+       }
+ 
+-      /* The static context state stream. The length is what the kernel validates, and
+-       * the first word has to carry it - a wrong length here is a context that fails to
+-       * create with nothing said about why. */
+-      {
+-         uint8_t stream[192];
+-         const uint32_t len = pvr_static_context_state(stream, sizeof(stream));
+-
+-         if (len != sizeof(stream) || ((const uint64_t *)stream)[0] != len) {
+-            printf("vm:            FAIL: static context state is %u bytes (expected "
+-                   "%zu, header %" PRIu64 ")\n", len, sizeof(stream),
+-                   ((const uint64_t *)stream)[0]);
+-            pvr_static_memory_fini(&vm, &sm);
+-            goto out;
+-         }
+-
+-         /* Everything after the length is zero, matching the reference: nothing in the
+-          * powervr backend populates it. */
+-         for (unsigned b = sizeof(uint64_t); b < len; b++) {
+-            if (stream[b] != 0) {
+-               printf("vm:            FAIL: static context state byte %u is non-zero\n",
+-                      b);
+-               pvr_static_memory_fini(&vm, &sm);
+-               goto out;
+-            }
+-         }
+-
+-         printf("vm:            static context state: %u bytes, header carries the "
+-                "length\n", len);
+-      }
+-
+       printf("vm:            firmware programs: VDM sync verified at the kernel's USC "
+              "vdm_sync offset, PDS launcher and pixel-event programs generated "
+              "(%u bytes counted)\n", sm.program_bytes);
+@@ -440,7 +410,7 @@ vm_roundtrip(int fd, const struct pvr_device_info *dev_info)
+    {
+       struct pvr_gpu_context gpu_ctx;
+ 
+-      if (!pvr_gpu_context_create(&vm, &gpu_ctx)) {
++      if (!pvr_gpu_context_create(&vm, dev_info, &gpu_ctx)) {
+          printf("vm:            FAIL: CREATE_CONTEXT did not succeed\n");
+          goto out;
+       }
+@@ -466,6 +436,53 @@ vm_roundtrip(int fd, const struct pvr_device_info *dev_info)
+          goto out;
+       }
+ 
++      /* Context-switch support: the static context state must name the context-state buffers and
++       * carry real store/resume task programs. A context created without them is accepted by the
++       * kernel and its jobs never run; the state stream is where that is visible. */
++      {
++         uint8_t stream[192];
++         uint64_t *words = (uint64_t *)stream;
++         const uint32_t len =
++            pvr_static_context_state(stream, sizeof(stream), &gpu_ctx.cswitch);
++         struct ROGUE_CR_VDM_CONTEXT_STATE_BASE vdm_read = { 0 };
++         struct ROGUE_CR_TA_CONTEXT_STATE_BASE geom_read = { 0 };
++         bool ok_ctx = len == sizeof(stream) && words[0] == len;
++
++         if (ok_ctx) {
++            ROGUE_CR_VDM_CONTEXT_STATE_BASE_unpack(&words[1], &vdm_read);
++            ROGUE_CR_TA_CONTEXT_STATE_BASE_unpack(&words[3], &geom_read);
++            ok_ctx = vdm_read.addr == gpu_ctx.cswitch.vdm_state_addr &&
++                     geom_read.addr == gpu_ctx.cswitch.geom_state_addr;
++         }
++
++         /* The store/resume task words are the PDS programs; a group whose tasks are all zero is a
++          * context switch that saves nothing. Compare against the programs that were built rather
++          * than merely requiring non-zero. */
++         for (unsigned i = 0; ok_ctx && i < 2; i++) {
++            const struct pvr_ctx_switch_programs *p = &gpu_ctx.cswitch.programs[i];
++            struct ROGUE_CR_VDM_CONTEXT_STORE_TASK0 store0 = { 0 };
++            struct ROGUE_CR_VDM_CONTEXT_RESUME_TASK0 resume0 = { 0 };
++
++            ROGUE_CR_VDM_CONTEXT_STORE_TASK0_unpack(&words[4 + i * 10], &store0);
++            ROGUE_CR_VDM_CONTEXT_RESUME_TASK0_unpack(&words[9 + i * 10], &resume0);
++            ok_ctx = store0.pds_state0 != 0 && store0.pds_state1 != 0 &&
++                     resume0.pds_state0 != 0 && resume0.pds_state1 != 0 &&
++                     p->sr_store.data_dwords != 0 && p->sr_load.code_dwords != 0 &&
++                     p->pt_store.data_dwords != 0 && p->pt_resume.code_dwords != 0;
++         }
++
++         if (!ok_ctx) {
++            printf("vm:            FAIL: context-switch state is incomplete (len %u, VDM 0x%"
++                   PRIx64 ", GEOM 0x%" PRIx64 ")\n", len,
++                   (uint64_t)vdm_read.addr, (uint64_t)geom_read.addr);
++            pvr_gpu_context_destroy(&vm, &gpu_ctx);
++            goto out;
++         }
++
++         printf("vm:            context switch: VDM/GEOM state buffers named, SR store/load and "
++                "PT store/resume PDS programs built, %u-byte static state\n", len);
++      }
++
+       printf("vm:            sizes: drm_pvr_job=%zu obj_array=%zu hwrt_ref=%zu\n",
+              sizeof(struct drm_pvr_job), sizeof(struct drm_pvr_obj_array),
+              sizeof(struct drm_pvr_hwrt_data_ref));
+@@ -536,7 +553,10 @@ vm_roundtrip(int fd, const struct pvr_device_info *dev_info)
+          uint64_t mli2addr = 0, mta2addr = 0, rgn2addr = 0, rtcaddr = 0;
+          uint32_t flhandle[2] = {0};
+          bool okb = true;
+-         const uint64_t sz[11] = { 4096, 4096, 4096, 1536, 4096, 4096, 256, 4096, 4096, 256, 256 };
++         /* Sizes from the device formulas and a capture of the reference's dataset for 512x512:
++          * tpc 2048 (probe rounds to a page), vheap 384 entries x 4 B, one region-header stride
++          * (1536 B) per render-target data set, no RTC and no macrotile array for one layer. */
++         const uint64_t sz[11] = { 4096, 4096, 4096, 1536, 4096, 4096, 4096, 4096, 4096, 4096, 256 };
+          struct pvr_bo *bos[11] = { &flbo[0], &flbo[1], &tpcbo, &vhbo, &mlibo, &mtabo, &rgnbo, &mli2, &mta2, &rgn2, &rtcbo };
+          uint64_t *ads[11] = { &fladdr[0], &fladdr[1], &tpcaddr, &vhaddr, &mliaddr, &mtaaddr, &rgnaddr, &mli2addr, &mta2addr, &rgn2addr, &rtcaddr };
+ 
+@@ -566,14 +586,18 @@ vm_roundtrip(int fd, const struct pvr_device_info *dev_info)
+             if (okb) {
+                struct pvr_hwrt_dataset_desc d = {
+                   .tpc_dev_addr = tpcaddr, .tpc_size = 4096, .tpc_stride = 0,
+-                  .vheap_table_dev_addr = vhaddr, .rtc_dev_addr = rtcaddr,
++                  /* (sz computed above; 4 KiB page covers the 2048-byte tail-pointer cache) */
++                  /* Value for value what the reference's create_info carries for 512x512 on this
++                   * device: no RTC (one layer), no macrotile array, and ISP-merge registers left at
++                   * zero because the merge enhancement is absent. */
++                  .vheap_table_dev_addr = vhaddr, .rtc_dev_addr = 0,
+                   .pm_mlist_dev_addr = { mliaddr, mli2addr },
+-                  .macrotile_array_dev_addr = { mtaaddr, mta2addr },
++                  .macrotile_array_dev_addr = { 0, 0 },
+                   .region_header_dev_addr = { rgnaddr, rgn2addr },
+                   .free_list_handles = { flhandle[0], flhandle[1] },
+                   .width = 512, .height = 512, .samples = 1, .layers = 1,
+                   .isp_merge_lower_x = 0, .isp_merge_lower_y = 0,
+-                  .isp_merge_scale_x = 0x3f800000u, .isp_merge_scale_y = 0x3f800000u,
++                  .isp_merge_scale_x = 0, .isp_merge_scale_y = 0,
+                   .isp_merge_upper_x = 0, .isp_merge_upper_y = 0,
+                   .region_header_size = 256,
+                };
+diff --git a/src/gallium/drivers/pvr_native/pvr_static.c b/src/gallium/drivers/pvr_native/pvr_static.c
+index d6f6dca7..5d43aa5b 100644
+--- a/src/gallium/drivers/pvr_native/pvr_static.c
++++ b/src/gallium/drivers/pvr_native/pvr_static.c
+@@ -135,34 +135,334 @@ pvr_fill_pixel_event(struct pvr_vm *vm, const struct pvr_device_info *dev_info,
+    return true;
+ }
+ 
++/* Upload a generated PDS program into the PDS heap as [data][code], returning heap-relative
++ * offsets. The hardware names the data segment and, where the route allows it, expects the code to
++ * follow it. */
++static bool
++pvr_static_pds_upload(struct pvr_vm *vm, const uint32_t *data, uint32_t data_dwords,
++                      const uint32_t *code, uint32_t code_dwords,
++                      struct pvr_pds_program *out)
++{
++   const struct pvr_heap *heap = &vm->heaps[DRM_PVR_HEAP_PDS_CODE_DATA];
++   struct pvr_bo bo = { 0 };
++   uint64_t addr = pvr_vm_heap_alloc(vm, DRM_PVR_HEAP_PDS_CODE_DATA,
++                                     ((uint64_t)data_dwords + code_dwords) * 4, 16, &bo);
++
++   if (addr == 0 || !pvr_bo_map(vm->fd, &bo))
++      return false;
++
++   memcpy(bo.map, data, data_dwords * 4);
++   memcpy((uint8_t *)bo.map + data_dwords * 4, code, code_dwords * 4);
++
++   *out = (struct pvr_pds_program){
++      .data_offset = addr - heap->base,
++      .code_offset = addr - heap->base + (uint64_t)data_dwords * 4,
++      .data_dwords = data_dwords,
++      .code_dwords = code_dwords,
++   };
++   return true;
++}
++
++/* Upload one of the USC state save/restore binaries into the USC heap. They are precompiled (the
++ * pco USC library carries them), and their DOUTU execution address is a USC-heap offset. */
++static bool
++pvr_static_usc_upload(struct pvr_vm *vm, unsigned program,
++                      uint32_t *offset_out, unsigned *temps_out)
++{
++   const pco_precomp_data *precomp = (const pco_precomp_data *)pco_usclib_common[program];
++   const struct pvr_heap *heap = &vm->heaps[DRM_PVR_HEAP_USC_CODE];
++   const uint32_t size = precomp->size_dwords * 4;
++   struct pvr_bo bo = { 0 };
++   uint64_t addr;
++
++   if (precomp == NULL || size == 0)
++      return false;
++
++   addr = pvr_vm_heap_alloc(vm, DRM_PVR_HEAP_USC_CODE, size, 16, &bo);
++   if (addr == 0 || !pvr_bo_map(vm->fd, &bo))
++      return false;
++
++   memcpy(bo.map, precomp->binary, size);
++   *offset_out = addr - heap->base;
++   *temps_out = precomp->temps;
++   return true;
++}
++
++/* The SR store/load programs: a DOUTW that writes the USC shared registers to the SR buffer, then a
++ * DOUTU that runs the precompiled USC store/load binary. `store` selects the USC target. */
++static bool
++pvr_static_sr_program(struct pvr_vm *vm, const struct pvr_device_info *dev_info, bool store,
++                      const struct pvr_ctx_switch *cs, struct pvr_pds_program *out)
++{
++   struct pvr_pds_shared_storing_program program = { 0 };
++   uint32_t staging[256];
++   uint32_t data_dwords, code_dwords, code_at;
++   uint32_t usc_offset = store ? cs->usc_store_offset : cs->usc_load_offset;
++   unsigned temps = store ? cs->usc_store_temps : cs->usc_load_temps;
++
++   memset(staging, 0, sizeof(staging));
++
++   program.doutw_control = (struct pvr_pds_doutw_control){
++      .dest_store = PDS_UNIFIED_STORE,
++      .num_const64 = 2,
++      .doutw_data = {
++         cs->sr_buffer_addr,
++         cs->sr_buffer_addr + ROGUE_LLS_SHARED_REGS_RESERVE_SIZE,
++      },
++      .last_instruction = false,
++   };
++   pvr_pds_setup_doutu(&program.usc_task.usc_task_control, usc_offset, temps,
++                       PVR_ROGUE_PDSINST_DOUT_FIELDS_DOUTU_SAMPLE_RATE_INSTANCE, false);
++
++   pvr_pds_generate_shared_storing_program(&program, staging, PDS_GENERATE_DATA_SEGMENT,
++                                           dev_info);
++   data_dwords = program.data_size;
++   code_at = ALIGN_POT(data_dwords,
++                       ROGUE_VDMCTRL_PDS_STATE0_PDS_DATA_SIZE_UNIT_SIZE / 4);
++   pvr_pds_generate_shared_storing_program(&program, staging + code_at,
++                                           PDS_GENERATE_CODE_SEGMENT, dev_info);
++   code_dwords = program.code_size;
++
++   return pvr_static_pds_upload(vm, staging, data_dwords, staging + code_at, code_dwords, out);
++}
++
++/* The PT store program: writes N persistent temps to the PT buffer and terminates stream out.
++ * The resume program initialises stream out from the same buffer. Both are PDS programs the
++ * context-switch state names directly. */
++static bool
++pvr_static_pt_programs(struct pvr_vm *vm, const struct pvr_device_info *dev_info,
++                       const struct pvr_ctx_switch *cs, struct pvr_pds_program *store_out,
++                       struct pvr_pds_program *resume_out)
++{
++   const uint32_t pt_dwords = ROGUE_LLS_PDS_PERSISTENT_TEMPS_BUFFER_SIZE / 4;
++   uint32_t staging[256];
++   uint32_t *code;
++   uint32_t data_dwords, code_dwords, code_at;
++
++   /* Store. */
++   {
++      struct pvr_pds_stream_out_terminate_program program = {
++         .pds_persistent_temp_size_to_store = pt_dwords,
++         .dev_address_for_storing_persistent_temp = cs->pt_buffer_addr,
++      };
++
++      memset(staging, 0, sizeof(staging));
++      pvr_pds_generate_stream_out_terminate_program(&program, NULL, PDS_GENERATE_SIZES,
++                                                    dev_info);
++      data_dwords = program.stream_out_terminate_pds_data_size;
++      code_dwords = program.stream_out_terminate_pds_code_size;
++      pvr_pds_generate_stream_out_terminate_program(&program, staging,
++                                                    PDS_GENERATE_DATA_SEGMENT, dev_info);
++      pvr_pds_generate_stream_out_terminate_program(
++         &program, staging + data_dwords, PDS_GENERATE_CODE_SEGMENT, dev_info);
++
++      if (!pvr_static_pds_upload(vm, staging, data_dwords, staging + data_dwords,
++                                 code_dwords, store_out))
++         return false;
++   }
++
++   /* Resume. */
++   {
++      struct pvr_pds_stream_out_init_program program = { .num_buffers = 1 };
++
++      program.pds_buffer_data_size[0] = pt_dwords;
++      program.dev_address_for_buffer_data[0] = cs->pt_buffer_addr;
++
++      memset(staging, 0, sizeof(staging));
++      pvr_pds_generate_stream_out_init_program(&program, NULL, false, PDS_GENERATE_SIZES,
++                                               dev_info);
++      data_dwords = program.stream_out_init_pds_data_size;
++      code_dwords = program.stream_out_init_pds_code_size;
++
++      code_at = data_dwords;
++      pvr_pds_generate_stream_out_init_program(&program, staging, false,
++                                               PDS_GENERATE_DATA_SEGMENT, dev_info);
++      code = pvr_pds_generate_stream_out_init_program(&program, staging + code_at, false,
++                                                      PDS_GENERATE_CODE_SEGMENT, dev_info);
++      (void)code;
++
++      if (!pvr_static_pds_upload(vm, staging, data_dwords, staging + code_at,
++                                 code_dwords, resume_out))
++         return false;
++   }
++
++   return true;
++}
++
++/* One 256-byte staging buffer is enough for every PDS task program here: the reference asserts the
++ * same limit (ROGUE_PDS_TASK_PROGRAM_SIZE) for exactly these. */
++
++bool
++pvr_static_ctx_switch_init(struct pvr_vm *vm, const struct pvr_device_info *dev_info,
++                           struct pvr_ctx_switch *cs)
++{
++   const struct pvr_heap *pds = &vm->heaps[DRM_PVR_HEAP_PDS_CODE_DATA];
++   const uint64_t sr_size =
++      ROGUE_LLS_USC_SHARED_REGS_BUFFER_SIZE + ROGUE_LLS_SHARED_REGS_RESERVE_SIZE;
++   struct pvr_bo sr_bo = { 0 }, pt_bo = { 0 };
++
++   memset(cs, 0, sizeof(*cs));
++
++   cs->vdm_state_addr = pvr_vm_alloc(vm, ROGUE_LLS_VDM_CONTEXT_RESUME_BUFFER_SIZE,
++                                     ROGUE_LLS_VDM_CONTEXT_RESUME_BUFFER_ALIGNMENT);
++   if (cs->vdm_state_addr == 0 ||
++       !pvr_bo_create(vm->fd, ROGUE_LLS_VDM_CONTEXT_RESUME_BUFFER_SIZE,
++                      ROGUE_LLS_VDM_CONTEXT_RESUME_BUFFER_ALIGNMENT, &cs->vdm_state_bo) ||
++       !pvr_vm_map(vm, cs->vdm_state_addr, cs->vdm_state_bo.handle, cs->vdm_state_bo.size))
++      return false;
++
++   cs->geom_state_addr = pvr_vm_alloc(vm, ROGUE_LLS_TA_STATE_BUFFER_SIZE,
++                                      ROGUE_LLS_TA_STATE_BUFFER_ALIGNMENT);
++   if (cs->geom_state_addr == 0 ||
++       !pvr_bo_create(vm->fd, ROGUE_LLS_TA_STATE_BUFFER_SIZE,
++                      ROGUE_LLS_TA_STATE_BUFFER_ALIGNMENT, &cs->geom_state_bo) ||
++       !pvr_vm_map(vm, cs->geom_state_addr, cs->geom_state_bo.handle, cs->geom_state_bo.size))
++      return false;
++
++   /* The USC shared-register save buffer (DOUTW target) and the persistent-temps buffer. */
++   cs->sr_buffer_addr = pvr_vm_heap_alloc(vm, DRM_PVR_HEAP_PDS_CODE_DATA, sr_size, 16, &sr_bo);
++   if (cs->sr_buffer_addr == 0)
++      return false;
++   cs->pt_buffer_addr = pvr_vm_heap_alloc(vm, DRM_PVR_HEAP_PDS_CODE_DATA,
++                                          ROGUE_LLS_PDS_PERSISTENT_TEMPS_BUFFER_SIZE,
++                                          ROGUE_LLS_PDS_PERSISTENT_TEMPS_BUFFER_ALIGNMENT,
++                                          &pt_bo);
++   if (cs->pt_buffer_addr == 0)
++      return false;
++
++   /* The state save/restore binaries. The 64-byte USC store/load workspace is expressed in
++    * VDMCTRL_PDS_STATE0 units (16 bytes), as the reference does. */
++   cs->usc_unified_size =
++      DIV_ROUND_UP(64, ROGUE_VDMCTRL_PDS_STATE0_USC_UNIFIED_SIZE_UNIT_SIZE);
++
++   if (!pvr_static_usc_upload(vm, CS_STORE_SR_1024_COMMON, &cs->usc_store_offset,
++                              &cs->usc_store_temps) ||
++       !pvr_static_usc_upload(vm, CS_LOAD_SR_256_COMMON, &cs->usc_load_offset,
++                              &cs->usc_load_temps))
++      return false;
++
++   for (unsigned i = 0; i < ARRAY_SIZE(cs->programs); i++) {
++      struct pvr_ctx_switch_programs *p = &cs->programs[i];
++
++      if (!pvr_static_sr_program(vm, dev_info, true, cs, &p->sr_store) ||
++          !pvr_static_sr_program(vm, dev_info, false, cs, &p->sr_load) ||
++          !pvr_static_pt_programs(vm, dev_info, cs, &p->pt_store, &p->pt_resume))
++         return false;
++   }
++
++   (void)pds;
++   return true;
++}
++
++static void
++pvr_static_pds_state_words(const struct pvr_pds_program *program,
++                           enum ROGUE_VDMCTRL_USC_TARGET usc_target,
++                           unsigned usc_unified_size, uint32_t *state0_out,
++                           uint32_t *state1_out)
++{
++   struct ROGUE_VDMCTRL_PDS_STATE0 state0 = {
++      ROGUE_VDMCTRL_PDS_STATE0_header,
++      .dm_target = ROGUE_VDMCTRL_DM_TARGET_VDM,
++      .usc_target = usc_target,
++      .usc_common_size = 0,
++      .usc_unified_size = usc_unified_size,
++      .pds_temp_size = 0,
++      .pds_data_size = DIV_ROUND_UP(program->data_dwords * 4,
++                                    ROGUE_VDMCTRL_PDS_STATE0_PDS_DATA_SIZE_UNIT_SIZE),
++   };
++   struct ROGUE_VDMCTRL_PDS_STATE1 state1 = {
++      .pds_data_addr = program->data_offset,
++      .sd_type = ROGUE_VDMCTRL_SD_TYPE_PDS,
++      .sd_next_type = ROGUE_VDMCTRL_SD_TYPE_PDS,
++   };
++
++   ROGUE_VDMCTRL_PDS_STATE0_pack(state0_out, &state0);
++   ROGUE_VDMCTRL_PDS_STATE1_pack(state1_out, &state1);
++}
++
+ uint32_t
+-pvr_static_context_state(uint8_t *stream, uint32_t stream_size)
++pvr_static_context_state(uint8_t *stream, uint32_t stream_size,
++                         const struct pvr_ctx_switch *cs)
+ {
+    /* Layout, in 64-bit words:
+     *   0            length in bytes (written last, once it is known)
+-    *   1            VDM context state base address
++    *   1            VDM context state base address (CR_VDM_CONTEXT_STATE_BASE)
+     *   2            unused, zeroed
+-    *   3            GEOM context state base address
+-    *   4..          2 entries of {store task0, task1, task2, 0, 0,
+-    *                              resume task0, task1, task2, 0, 0}
+-    * Tasks 3 and 4 of each group are unused and zeroed, which is why each group occupies
+-    * five words rather than three. */
+-   const uint32_t nr_geom_groups = 2;
+-   const uint32_t words = 4 + nr_geom_groups * 10;
++    *   3            GEOM context state base address (CR_TA_CONTEXT_STATE_BASE)
++    *   4..          two groups of ten words, per context-state entry:
++    *                store task0, task1, task2, 0, 0, resume task0, task1, task2, 0, 0
++    * The task words are the PDS programs the firmware runs to save and restore context state; a
++    * group with zero tasks is a context switch that saves nothing and restores from address zero. */
++   const uint32_t nr_groups = 2;
++   const uint32_t words = 4 + nr_groups * 10;
+    const uint32_t length = words * sizeof(uint64_t);
++   uint64_t *q = (uint64_t *)stream;
+ 
+    if (length > stream_size) {
+-      mesa_loge("pvr: static context state needs %u bytes, have %u", length,
+-                stream_size);
++      mesa_loge("pvr: static context state needs %u bytes, have %u", length, stream_size);
+       return 0;
+    }
+ 
+    memset(stream, 0, length);
+ 
+-   /* The addresses and task words stay zero because the reference does not populate them
+-    * either; see the note in the header. Set here in one place so that a device which
+-    * does need them has an obvious spot to write. */
+-   ((uint64_t *)stream)[0] = length;
++   {
++      struct ROGUE_CR_VDM_CONTEXT_STATE_BASE vdm = { .addr = cs->vdm_state_addr };
++      struct ROGUE_CR_TA_CONTEXT_STATE_BASE geom = { .addr = cs->geom_state_addr };
++
++      ROGUE_CR_VDM_CONTEXT_STATE_BASE_pack(&q[1], &vdm);
++      ROGUE_CR_TA_CONTEXT_STATE_BASE_pack(&q[3], &geom);
++   }
++
++   for (unsigned i = 0; i < nr_groups; i++) {
++      const struct pvr_ctx_switch_programs *p = &cs->programs[i];
++      struct ROGUE_CR_VDM_CONTEXT_STORE_TASK0 store0 = { 0 };
++      struct ROGUE_CR_VDM_CONTEXT_STORE_TASK1 store1 = { 0 };
++      struct ROGUE_CR_VDM_CONTEXT_STORE_TASK2 store2 = { 0 };
++      struct ROGUE_CR_VDM_CONTEXT_RESUME_TASK0 resume0 = { 0 };
++      struct ROGUE_CR_VDM_CONTEXT_RESUME_TASK1 resume1 = { 0 };
++      struct ROGUE_CR_VDM_CONTEXT_RESUME_TASK2 resume2 = { 0 };
++      struct ROGUE_TA_STATE_STREAM_OUT1 store_so1 = {
++         .sync = true,
++         .pds_data_size = DIV_ROUND_UP(p->pt_store.data_dwords * 4,
++                                       ROGUE_TA_STATE_STREAM_OUT1_PDS_DATA_SIZE_UNIT_SIZE),
++         .pds_temp_size = 0,
++      };
++      struct ROGUE_TA_STATE_STREAM_OUT2 store_so2 = { .pds_data_addr = p->pt_store.data_offset };
++      struct ROGUE_TA_STATE_STREAM_OUT1 resume_so1 = {
++         .sync = true,
++         .pds_data_size = DIV_ROUND_UP(p->pt_resume.data_dwords * 4,
++                                       ROGUE_TA_STATE_STREAM_OUT1_PDS_DATA_SIZE_UNIT_SIZE),
++         .pds_temp_size = 0,
++      };
++      struct ROGUE_TA_STATE_STREAM_OUT2 resume_so2 = { .pds_data_addr = p->pt_resume.data_offset };
++
++      pvr_static_pds_state_words(&p->sr_store, ROGUE_VDMCTRL_USC_TARGET_ANY,
++                                 cs->usc_unified_size, &store0.pds_state0,
++                                 &store0.pds_state1);
++      ROGUE_VDMCTRL_PDS_STATE2_pack(&store1.pds_state2,
++                                    &(struct ROGUE_VDMCTRL_PDS_STATE2){
++                                       .pds_code_addr = p->sr_store.code_offset });
++      ROGUE_TA_STATE_STREAM_OUT1_pack(&store2.stream_out1, &store_so1);
++      ROGUE_TA_STATE_STREAM_OUT2_pack(&store2.stream_out2, &store_so2);
++
++      pvr_static_pds_state_words(&p->sr_load, ROGUE_VDMCTRL_USC_TARGET_ALL,
++                                 cs->usc_unified_size, &resume0.pds_state0,
++                                 &resume0.pds_state1);
++      ROGUE_VDMCTRL_PDS_STATE2_pack(&resume1.pds_state2,
++                                    &(struct ROGUE_VDMCTRL_PDS_STATE2){
++                                       .pds_code_addr = p->sr_load.code_offset });
++      ROGUE_TA_STATE_STREAM_OUT1_pack(&resume2.stream_out1, &resume_so1);
++      ROGUE_TA_STATE_STREAM_OUT2_pack(&resume2.stream_out2, &resume_so2);
++
++      ROGUE_CR_VDM_CONTEXT_STORE_TASK0_pack(&q[4 + i * 10], &store0);
++      ROGUE_CR_VDM_CONTEXT_STORE_TASK1_pack(&q[5 + i * 10], &store1);
++      ROGUE_CR_VDM_CONTEXT_STORE_TASK2_pack(&q[6 + i * 10], &store2);
++      ROGUE_CR_VDM_CONTEXT_RESUME_TASK0_pack(&q[9 + i * 10], &resume0);
++      ROGUE_CR_VDM_CONTEXT_RESUME_TASK1_pack(&q[10 + i * 10], &resume1);
++      ROGUE_CR_VDM_CONTEXT_RESUME_TASK2_pack(&q[11 + i * 10], &resume2);
++   }
++
++   q[0] = length;
+ 
+    return length;
+ }
+diff --git a/src/gallium/drivers/pvr_native/pvr_static.h b/src/gallium/drivers/pvr_native/pvr_static.h
+index fd9012cf..8317cd94 100644
+--- a/src/gallium/drivers/pvr_native/pvr_static.h
++++ b/src/gallium/drivers/pvr_native/pvr_static.h
+@@ -34,19 +34,66 @@ struct pvr_static_memory {
+    unsigned program_bytes; /* total written, for the log and the check */
+ };
+ 
++/* One firmware PDS program placed in the PDS heap, with the offsets the hardware state takes. */
++struct pvr_pds_program {
++   uint64_t data_offset;
++   uint64_t code_offset;
++   uint32_t data_dwords;
++   uint32_t code_dwords;
++};
++
++/* The four PDS programs and the two buffers a render context switches state with: USC shared
++ * registers are saved/restored by SR store/load programs, persistent temps by PT store/resume
++ * programs. The reference builds two identical sets (one per context-state group) and the static
++ * context state carries both; this driver follows that shape. */
++struct pvr_ctx_switch_programs {
++   struct pvr_pds_program sr_store;
++   struct pvr_pds_program sr_load;
++   struct pvr_pds_program pt_store;
++   struct pvr_pds_program pt_resume;
++};
++
++struct pvr_ctx_switch {
++   /* Context-state buffers, general heap (the firmware reads/writes them directly). */
++   struct pvr_bo vdm_state_bo;
++   uint64_t vdm_state_addr;
++   struct pvr_bo geom_state_bo;
++   uint64_t geom_state_addr;
++
++   /* State buffers in the PDS heap, addressed absolutely by the DOUTW/stream-out programs. */
++   uint64_t sr_buffer_addr;
++   uint64_t pt_buffer_addr;
++
++   /* USC code: heap-relative offsets and each program's temp count. */
++   uint32_t usc_store_offset;
++   unsigned usc_store_temps;
++   uint32_t usc_load_offset;
++   unsigned usc_load_temps;
++   unsigned usc_unified_size; /* in ROGUE_VDMCTRL_PDS_STATE0 units */
++
++   struct pvr_ctx_switch_programs programs[2];
++};
++
++/* Allocate the context-switch buffers/programs. Without them the static context state has no valid
++ * context to switch to, and every job for the context is accepted by the kernel and never run. */
++bool pvr_static_ctx_switch_init(struct pvr_vm *vm, const struct pvr_device_info *dev_info,
++                                struct pvr_ctx_switch *cs);
++
+ /* The static context state stream handed to DRM_IOCTL_PVR_CREATE_CONTEXT.
+  *
+- * Its shape is fixed by the hardware: a length header, then the VDM and GEOM context
+- * state base addresses and two entries of store/resume task words. What is worth
+- * recording is the CONTENT: nothing in the powervr kernel backend ever assigns those
+- * addresses or task words - only the pvrsrvkm backend fills them, and even there the
+- * task words are read from a structure nothing writes. So the working Vulkan driver on
+- * this hardware sends a stream that is all zeros apart from its length, and the length
+- * is what the kernel actually validates. Reproducing that is the honest thing to do
+- * rather than inventing addresses the reference does not use.
++ * The hardware's context switch reads the VDM and GEOM context-state buffer addresses from here, and
++ * the store/resume task programs. The addresses are the ones the driver allocated for this context;
++ * a stream of zeros claims both buffers live at address 0, which is not a context the firmware can
++ * switch to - the jobs are accepted by the kernel and never run, with no error anywhere.
++ *
++ * Layout, in 64-bit words: length, VDM state base, unused, GEOM state base, then two
++ * {store task0..2, 0, 0, resume task0..2, 0, 0} groups. The task words are the PDS load/store
++ * programs' state; this driver allocates the buffers but does not yet populate the task programs
++ * (see the handoff) - zeros there mean "no state to store/resume", which is honest, not an address.
+  *
+  * Returns the stream length in bytes, or 0 on failure. */
+-uint32_t pvr_static_context_state(uint8_t *stream, uint32_t stream_size);
++uint32_t pvr_static_context_state(uint8_t *stream, uint32_t stream_size,
++                                  const struct pvr_ctx_switch *cs);
+ 
+ bool pvr_static_memory_init(struct pvr_vm *vm,
+                             const struct pvr_device_info *dev_info,
+diff --git a/src/gallium/drivers/pvr_native/pvr_vm.c b/src/gallium/drivers/pvr_native/pvr_vm.c
+index 26ba17b4..e0849e27 100644
+--- a/src/gallium/drivers/pvr_native/pvr_vm.c
++++ b/src/gallium/drivers/pvr_native/pvr_vm.c
+@@ -21,6 +21,7 @@
+ #include "util/os_misc.h"
+ 
+ #include "pvr_static.h"
++#include "pvr_csb.h"
+ 
+ /* Object-array queries are two calls: the first, with a null array, reports how many
+  * entries there are; the second fills a buffer of that size. The kernel silently
+@@ -268,7 +269,8 @@ out:
+ #define PVR_VDM_CALLSTACK_SIZE (sizeof(uint64_t) * 1)
+ 
+ bool
+-pvr_gpu_context_create(struct pvr_vm *vm, struct pvr_gpu_context *ctx)
++pvr_gpu_context_create(struct pvr_vm *vm, const struct pvr_device_info *dev_info,
++                       struct pvr_gpu_context *ctx)
+ {
+    uint8_t static_state[192];
+    uint32_t static_state_len;
+@@ -276,7 +278,14 @@ pvr_gpu_context_create(struct pvr_vm *vm, struct pvr_gpu_context *ctx)
+ 
+    memset(ctx, 0, sizeof(*ctx));
+ 
+-   static_state_len = pvr_static_context_state(static_state, sizeof(static_state));
++   /* Context-switch support first: the static context state handed to CREATE_CONTEXT names these
++    * programs and buffers. A context created without them has no valid state to switch to; jobs are
++    * accepted and never run, with no error reported anywhere. */
++   if (!pvr_static_ctx_switch_init(vm, dev_info, &ctx->cswitch))
++      return false;
++
++   static_state_len = pvr_static_context_state(static_state, sizeof(static_state),
++                                              &ctx->cswitch);
+    if (static_state_len == 0)
+       return false;
+ 
+@@ -311,8 +320,10 @@ pvr_gpu_context_create(struct pvr_vm *vm, struct pvr_gpu_context *ctx)
+ 
+    ctx->handle = args.handle;
+ 
+-   mesa_logi("pvr: GPU context %u (render), callstack 0x%" PRIx64 ", static state %u "
+-             "bytes", ctx->handle, ctx->callstack_addr, static_state_len);
++   mesa_logi("pvr: GPU context %u (render), callstack 0x%" PRIx64 ", VDM state 0x%" PRIx64
++             ", GEOM state 0x%" PRIx64 ", static state %u bytes", ctx->handle,
++             ctx->callstack_addr, ctx->cswitch.vdm_state_addr,
++             ctx->cswitch.geom_state_addr, static_state_len);
+ 
+    return true;
+ 
+@@ -655,6 +666,44 @@ pvr_vm_static_area(const struct pvr_vm *vm, uint16_t usage, uint16_t heap_id)
+    return NULL;
+ }
+ 
++uint64_t
++pvr_vm_heap_alloc(struct pvr_vm *vm, uint16_t heap_id, uint64_t size,
++                  uint64_t align, struct pvr_bo *bo_out)
++{
++   struct pvr_heap *heap;
++   uint64_t at;
++
++   if (heap_id >= DRM_PVR_HEAP_COUNT)
++      return 0;
++
++   heap = &vm->heaps[heap_id];
++   if (heap->size == 0 || size == 0)
++      return 0;
++
++   /* VM_MAP is page-granular, so every object starts on a page. The first object starts at the
++    * first page of the usable area: the firmware's carveout may not end on a page boundary. */
++   if (vm->heap_next[heap_id] == 0)
++      vm->heap_next[heap_id] = ALIGN_POT(heap->usable_base, (uint64_t)heap->page_size);
++
++   at = ALIGN_POT(vm->heap_next[heap_id], MAX2(align, (uint64_t)heap->page_size));
++   if (at + size > heap->base + heap->size) {
++      mesa_loge("pvr: heap %u is full (wanted 0x%" PRIx64 " at 0x%" PRIx64 ", ends 0x%"
++                PRIx64 ")", heap_id, size, at, heap->base + heap->size);
++      return 0;
++   }
++
++   if (!pvr_bo_create(vm->fd, size, MAX2(align, (uint64_t)heap->page_size), bo_out))
++      return 0;
++
++   if (!pvr_vm_map(vm, at, bo_out->handle, bo_out->size)) {
++      pvr_bo_destroy(vm->fd, bo_out);
++      return 0;
++   }
++
++   vm->heap_next[heap_id] = at + bo_out->size;
++   return at;
++}
++
+ bool
+ pvr_vm_alloc_carveout(struct pvr_vm *vm, uint16_t heap_id, struct pvr_bo *bo_out,
+                       uint64_t *base_out)
+diff --git a/src/gallium/drivers/pvr_native/pvr_vm.h b/src/gallium/drivers/pvr_native/pvr_vm.h
+index 30aba8fb..b69e53b6 100644
+--- a/src/gallium/drivers/pvr_native/pvr_vm.h
++++ b/src/gallium/drivers/pvr_native/pvr_vm.h
+@@ -16,6 +16,7 @@
+ #include "util/vma.h"
+ 
+ #include "pvr_bo.h"
++#include "pvr_static.h"
+ 
+ #include "drm-uapi/pvr_drm.h"
+ 
+@@ -42,6 +43,11 @@ struct pvr_vm {
+    struct pvr_heap general; /* alias for heaps[DRM_PVR_HEAP_GENERAL] */
+    struct util_vma_heap vma;
+ 
++   /* Bump allocation inside each non-general heap's usable area. Programs the firmware names by
++    * heap-relative offset (PDS programs, USC code, context-switch state buffers) live at chosen
++    * addresses in their heap, so a shared bump pointer per heap is what keeps them from overlapping. */
++   uint64_t heap_next[DRM_PVR_HEAP_COUNT];
++
+    /* The UAPI has four areas (EOT, FENCE, VDM_SYNC, YUV_CSC) but does not export a
+   * count, so the array is sized with room to spare and nr_areas is what is trusted. */
+    struct drm_pvr_static_data_area areas[8];
+@@ -83,6 +89,13 @@ pvr_vm_static_area(const struct pvr_vm *vm, uint16_t usage, uint16_t heap_id);
+ bool pvr_vm_alloc_carveout(struct pvr_vm *vm, uint16_t heap_id,
+                            struct pvr_bo *bo_out, uint64_t *base_out);
+ 
++/* Allocate and map a buffer at the next free address in a heap's usable area, returning its device
++ * address. For heaps whose contents are named by heap-relative offsets; the general heap has a real
++ * allocator (pvr_vm_alloc) instead. `align` is raised to the heap's page size because VM_MAP is
++ * page-granular. Returns 0 on failure. */
++uint64_t pvr_vm_heap_alloc(struct pvr_vm *vm, uint16_t heap_id, uint64_t size,
++                           uint64_t align, struct pvr_bo *bo_out);
++
+ /* A kernel GPU context: the handle every job is submitted against. Creating it needs the
+  * static context state and a VDM callstack, which is eight bytes (one level) allocated
+  * from the ordinary general heap rather than the firmware carveout. */
+@@ -90,9 +103,13 @@ struct pvr_gpu_context {
+    uint32_t handle;
+    struct pvr_bo callstack_bo;
+    uint64_t callstack_addr;
++   /* Context-switch programs and state buffers. They must outlive the context: the firmware reads
++    * the programs and the static context state names them. */
++   struct pvr_ctx_switch cswitch;
+ };
+ 
+-bool pvr_gpu_context_create(struct pvr_vm *vm, struct pvr_gpu_context *ctx);
++bool pvr_gpu_context_create(struct pvr_vm *vm, const struct pvr_device_info *dev_info,
++                            struct pvr_gpu_context *ctx);
+ void pvr_gpu_context_destroy(struct pvr_vm *vm, struct pvr_gpu_context *ctx);
+ 
+ /* Submit one job. `cmd_stream` is the DEVICE address of the control stream the GPU will
+-- 
+2.47.3
+

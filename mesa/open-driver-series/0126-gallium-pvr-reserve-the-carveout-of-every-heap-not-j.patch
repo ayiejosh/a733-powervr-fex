@@ -1,0 +1,264 @@
+From aa539348ac956d4c745742d53630a9e8489e0382 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 15:53:53 +0800
+Subject: [PATCH 126/269] gallium/pvr: reserve the carveout of every heap, not
+ just the general one
+
+The firmware's static memory is not all in the general heap: the PDS and USC carveouts
+are where the VDM sync and pixel-event programs live. The carveout mechanism was
+general-heap only, so it has been generalised to take a heap id, with each heap's usable
+range computed from its own static-data areas. Verified on the real kernel:
+
+  vm: heap 0 carveout: 1152 bytes reserved, 2 static area(s) inside
+  vm: heap 1 carveout:  256 bytes reserved, 2 static area(s) inside
+  vm: heap 2 carveout:  128 bytes reserved, 1 static area(s) inside
+  vm: PASS
+  --- ALL PASS
+
+Those sizes match the kernel's own table - general holds the fence area and the YUV CSC
+coefficients, PDS holds the EOT and VDM sync programs, USC holds the VDM sync program -
+and each area is asserted to land inside the carveout that was actually reserved, and
+not to reach past where ordinary allocations may begin.
+
+Also records an architectural finding that decides how the rest of this can be built:
+src/imagination/vulkan/pds/pvr_pds.c is 5379 lines with ZERO Vulkan references, and
+libpowervr_pds is a standalone static library whose include list carries no Vulkan
+headers. So the PDS program generators - which the static context state needs for the
+sync and pixel-event programs - can be LINKED by this driver directly. Linking it is
+additive on the gallium side and modifies no Vulkan source, which keeps the "reuse the
+existing pieces, do not rewrite them" constraint intact while unblocking the path to
+CREATE_CONTEXT.
+---
+ src/gallium/drivers/pvr/pvr_probe.c | 82 ++++++++++++++++++-----------
+ src/gallium/drivers/pvr/pvr_vm.c    | 45 ++++++++++++++--
+ src/gallium/drivers/pvr/pvr_vm.h    | 11 ++--
+ 3 files changed, 99 insertions(+), 39 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr/pvr_probe.c b/src/gallium/drivers/pvr/pvr_probe.c
+index c2a21204..25ebacdb 100644
+--- a/src/gallium/drivers/pvr/pvr_probe.c
++++ b/src/gallium/drivers/pvr/pvr_probe.c
+@@ -197,57 +197,77 @@ vm_roundtrip(int fd)
+              (uint64_t)yuv->offset, area_total);
+    }
+ 
+-   /* The firmware carveout, and the areas inside it. Mapped as ONE buffer: the areas
+-    * are packed within a single page, so per-area mappings would overlap and the kernel
+-    * rejects that - which is exactly how the first version of this failed on the real
+-    * driver while passing against the shim. */
+-   {
+-      struct pvr_bo carveout_bo = { 0 };
+-      uint64_t carveout_base = 0;
++   /* The firmware carveouts, one per heap that has one. The general heap's holds the
++    * fence area and YUV CSC coefficients; the PDS and USC heaps' hold the sync and
++    * pixel-event programs, which is why the carveout mechanism cannot be general-heap
++    * only. Each is a single mapping: the areas are packed within a page and VM_MAP is
++    * page-granular, so per-area mappings overlap and the kernel rejects them. */
++   for (uint16_t heap_id = 0; heap_id < DRM_PVR_HEAP_COUNT; heap_id++) {
+       static const uint16_t usages[] = {
++         DRM_PVR_STATIC_DATA_AREA_EOT,
+          DRM_PVR_STATIC_DATA_AREA_FENCE,
++         DRM_PVR_STATIC_DATA_AREA_VDM_SYNC,
+          DRM_PVR_STATIC_DATA_AREA_YUV_CSC,
+       };
++      const struct pvr_heap *heap = &vm.heaps[heap_id];
++      struct pvr_bo carveout_bo = { 0 };
++      uint64_t carveout_base = 0;
++      unsigned nr_areas = 0;
+ 
+-      if (!pvr_vm_alloc_carveout(&vm, &carveout_bo, &carveout_base)) {
+-         printf("vm:            FAIL: could not reserve the firmware carveout\n");
++      if (heap->size == 0 || heap->size == heap->usable_size)
++         continue;
++
++      if (!pvr_vm_alloc_carveout(&vm, heap_id, &carveout_bo, &carveout_base)) {
++         printf("vm:            FAIL: could not reserve the carveout of heap %u\n",
++                heap_id);
+          goto out;
+       }
+ 
+-      if (carveout_base != vm.general.base) {
+-         printf("vm:            FAIL: carveout mapped at 0x%" PRIx64 ", heap base is "
+-                "0x%" PRIx64 "\n", carveout_base, vm.general.base);
+-         goto out_carveout;
++      if (carveout_base != heap->base) {
++         printf("vm:            FAIL: heap %u carveout at 0x%" PRIx64 ", base is "
++                "0x%" PRIx64 "\n", heap_id, carveout_base, heap->base);
++         pvr_vm_unmap(&vm, carveout_base, carveout_bo.size);
++         pvr_bo_destroy(fd, &carveout_bo);
++         goto out;
+       }
+ 
+       for (unsigned u = 0; u < ARRAY_SIZE(usages); u++) {
+          const struct drm_pvr_static_data_area *area =
+-            pvr_vm_static_area(&vm, usages[u], DRM_PVR_HEAP_GENERAL);
+-         const uint64_t area_addr = carveout_base + area->offset;
+-
+-         /* The area has to be inside the carveout the firmware will read from, and it
+-          * must not run past the point where ordinary allocations begin - a structure
+-          * that overlaps the general heap is one an ordinary buffer would overwrite. */
+-         if (area == NULL || area_addr < carveout_base ||
+-             area_addr + area->size > vm.general.usable_base) {
+-            printf("vm:            FAIL: area %u at 0x%" PRIx64 " is outside the "
+-                   "carveout\n", usages[u], area_addr);
+-            goto out_carveout;
++            pvr_vm_static_area(&vm, usages[u], heap_id);
++         uint64_t area_addr;
++
++         if (area == NULL)
++            continue;
++
++         area_addr = carveout_base + area->offset;
++
++         /* A structure the firmware will read must be inside the carveout the driver
++          * reserved, and must not reach past where ordinary allocations may begin. */
++         if (area_addr < carveout_base ||
++             area_addr + area->size > heap->usable_base) {
++            printf("vm:            FAIL: heap %u area %u at 0x%" PRIx64
++                   " is outside its carveout\n", heap_id, usages[u], area_addr);
++            pvr_vm_unmap(&vm, carveout_base, carveout_bo.size);
++            pvr_bo_destroy(fd, &carveout_bo);
++            goto out;
+          }
+ 
+-         printf("vm:            static area %u: %u bytes at carveout+0x%" PRIx64
+-                "\n", usages[u], area->size, (uint64_t)area->offset);
++         nr_areas++;
+       }
+ 
+-      /* And the ordinary allocator must never hand out a carveout address, or an
+-       * ordinary buffer would land on top of firmware state. */
+-      if (addr_a < vm.general.usable_base) {
++      printf("vm:            heap %u carveout: %" PRIu64 " bytes reserved, %u static "
++             "area(s) inside\n", heap_id, heap->size - heap->usable_size, nr_areas);
++
++      /* The ordinary allocator must never hand out a carveout address, or an ordinary
++       * buffer would land on top of firmware state. */
++      if (heap_id == DRM_PVR_HEAP_GENERAL && addr_a < vm.general.usable_base) {
+          printf("vm:            FAIL: the ordinary allocator returned a carveout "
+                 "address 0x%" PRIx64 "\n", addr_a);
+-         goto out_carveout;
++         pvr_vm_unmap(&vm, carveout_base, carveout_bo.size);
++         pvr_bo_destroy(fd, &carveout_bo);
++         goto out;
+       }
+ 
+-out_carveout:
+       pvr_vm_unmap(&vm, carveout_base, carveout_bo.size);
+       pvr_bo_destroy(fd, &carveout_bo);
+    }
+diff --git a/src/gallium/drivers/pvr/pvr_vm.c b/src/gallium/drivers/pvr/pvr_vm.c
+index d66bd778..2c8c2554 100644
+--- a/src/gallium/drivers/pvr/pvr_vm.c
++++ b/src/gallium/drivers/pvr/pvr_vm.c
+@@ -145,6 +145,14 @@ pvr_vm_init(int fd, struct pvr_vm *vm)
+       goto out;
+    }
+ 
++   for (uint32_t i = 0; i < heap_count; i++) {
++      vm->heaps[i].base = heaps[i].base;
++      vm->heaps[i].size = heaps[i].size;
++      vm->heaps[i].page_size = 1u << heaps[i].page_size_log2;
++      vm->heaps[i].usable_base = heaps[i].base;
++      vm->heaps[i].usable_size = heaps[i].size;
++   }
++
+    vm->general.base = general->base;
+    vm->general.size = general->size;
+    vm->general.page_size = 1u << general->page_size_log2;
+@@ -168,6 +176,23 @@ pvr_vm_init(int fd, struct pvr_vm *vm)
+ 
+    vm->general.usable_base = general->base + carveout;
+    vm->general.usable_size = general->size - carveout;
++   vm->heaps[DRM_PVR_HEAP_GENERAL] = vm->general;
++
++   /* Every other heap with a carveout gets the same treatment, because the PDS and USC
++    * carveouts are where the sync and pixel-event programs live. */
++   for (uint32_t i = 0; i < heap_count; i++) {
++      uint64_t heap_carveout;
++
++      if (i == DRM_PVR_HEAP_GENERAL || vm->heaps[i].size == 0)
++         continue;
++
++      heap_carveout = areas ? pvr_static_data_total(areas, area_count, i) : 0;
++      if (heap_carveout >= vm->heaps[i].size)
++         continue;
++
++      vm->heaps[i].usable_base = vm->heaps[i].base + heap_carveout;
++      vm->heaps[i].usable_size = vm->heaps[i].size - heap_carveout;
++   }
+ 
+    if (vm->general.page_size != host_page_size) {
+       /* Not fatal, but VM_MAP aligns to the host page, so the two must not be
+@@ -231,24 +256,34 @@ pvr_vm_static_area(const struct pvr_vm *vm, uint16_t usage, uint16_t heap_id)
+ }
+ 
+ bool
+-pvr_vm_alloc_carveout(struct pvr_vm *vm, struct pvr_bo *bo_out, uint64_t *base_out)
++pvr_vm_alloc_carveout(struct pvr_vm *vm, uint16_t heap_id, struct pvr_bo *bo_out,
++                      uint64_t *base_out)
+ {
+-   const uint64_t carveout_size = vm->general.size - vm->general.usable_size;
++   const struct pvr_heap *heap;
++   uint64_t carveout_size;
++
++   if (heap_id >= DRM_PVR_HEAP_COUNT || vm->heaps[heap_id].size == 0) {
++      mesa_loge("pvr: heap %u is absent", heap_id);
++      return false;
++   }
++
++   heap = &vm->heaps[heap_id];
++   carveout_size = heap->size - heap->usable_size;
+ 
+    if (carveout_size == 0) {
+-      mesa_logi("pvr: no firmware carveout on this device");
++      mesa_logi("pvr: heap %u has no firmware carveout", heap_id);
+       return false;
+    }
+ 
+    if (!pvr_bo_create(vm->fd, carveout_size, 1, bo_out))
+       return false;
+ 
+-   if (!pvr_vm_map(vm, vm->general.base, bo_out->handle, bo_out->size)) {
++   if (!pvr_vm_map(vm, heap->base, bo_out->handle, bo_out->size)) {
+       pvr_bo_destroy(vm->fd, bo_out);
+       return false;
+    }
+ 
+-   *base_out = vm->general.base;
++   *base_out = heap->base;
+ 
+    return true;
+ }
+diff --git a/src/gallium/drivers/pvr/pvr_vm.h b/src/gallium/drivers/pvr/pvr_vm.h
+index 656cc3d9..38b01083 100644
+--- a/src/gallium/drivers/pvr/pvr_vm.h
++++ b/src/gallium/drivers/pvr/pvr_vm.h
+@@ -34,7 +34,12 @@ struct pvr_heap {
+ struct pvr_vm {
+    int fd;
+    uint32_t context_handle; /* from DRM_IOCTL_PVR_CREATE_VM_CONTEXT */
+-   struct pvr_heap general; /* DRM_PVR_HEAP_GENERAL - the only heap v1 uses */
++   /* All heaps, because the firmware's static memory is not all in the general heap:
++    * the PDS and USC carveouts hold the sync and pixel-event programs. Only the general
++    * heap has a free-space allocator (ordinary buffers), but every heap's carveout has
++    * to be reserved before firmware structures can be placed in it. */
++   struct pvr_heap heaps[DRM_PVR_HEAP_COUNT];
++   struct pvr_heap general; /* alias for heaps[DRM_PVR_HEAP_GENERAL] */
+    struct util_vma_heap vma;
+ 
+    /* The UAPI has four areas (EOT, FENCE, VDM_SYNC, YUV_CSC) but does not export a
+@@ -60,8 +65,8 @@ pvr_vm_static_area(const struct pvr_vm *vm, uint16_t usage, uint16_t heap_id);
+  *
+  * pvr_vm_alloc() never returns an address inside the carveout, which is what keeps
+  * ordinary buffers from overwriting firmware state. */
+-bool pvr_vm_alloc_carveout(struct pvr_vm *vm, struct pvr_bo *bo_out,
+-                           uint64_t *base_out);
++bool pvr_vm_alloc_carveout(struct pvr_vm *vm, uint16_t heap_id,
++                           struct pvr_bo *bo_out, uint64_t *base_out);
+ 
+ bool pvr_vm_init(int fd, struct pvr_vm *vm);
+ void pvr_vm_finish(struct pvr_vm *vm);
+-- 
+2.47.3
+

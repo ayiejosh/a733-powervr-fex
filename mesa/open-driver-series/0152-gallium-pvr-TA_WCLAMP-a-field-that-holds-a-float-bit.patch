@@ -1,0 +1,121 @@
+From 7b547423f9002ca34caee640a524a68054741e73 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 20:55:26 +0800
+Subject: [PATCH 152/269] gallium/pvr: TA_WCLAMP, a field that holds a float
+ bit pattern
+
+  csb: TA wclamp: 0x29e12e13, the float bit pattern of the reference's 1.0e-13f (not an integer)
+  --- ALL PASS        (real open kernel)
+
+TA_WCLAMP has one field, typed uint32_t, and the reference sets it to fui(1.0e-13f) - the BIT
+PATTERN of a small float, used as a minimum-w epsilon rather than the small integer the type
+suggests. The value is COPIED from the reference and marked as such, not derived: inventing 0 or
+a depth for that slot would put a plausible number where something else belongs, which is the
+failure this programme has now recorded four times.
+
+The check asserts the bit pattern AND decodes it back to a float, so a version that emitted the
+integer 0 - or the float's numeric value as an integer - fails. A check comparing the emitted dword
+against a locally computed fui() of the same constant would pass with either mistake.
+---
+ src/gallium/drivers/pvr/pvr_csb.c   | 14 ++++++++++++
+ src/gallium/drivers/pvr/pvr_csb.h   | 12 ++++++++++
+ src/gallium/drivers/pvr/pvr_probe.c | 35 ++++++++++++++++++++++++++++-
+ 3 files changed, 60 insertions(+), 1 deletion(-)
+
+diff --git a/src/gallium/drivers/pvr/pvr_csb.c b/src/gallium/drivers/pvr/pvr_csb.c
+index 55c27c97..6c055688 100644
+--- a/src/gallium/drivers/pvr/pvr_csb.c
++++ b/src/gallium/drivers/pvr/pvr_csb.c
+@@ -297,6 +297,20 @@ pvr_filter_from_pipe(enum pipe_tex_filter filter, enum ROGUE_TEXSTATE_FILTER *ou
+    }
+ }
+ 
++bool
++pvr_csb_emit_ta_wclamp(struct pvr_csb *csb, float min_w)
++{
++   struct ROGUE_TA_WCLAMP wclamp = { .val = fui(min_w) };
++   uint32_t *dw = pvr_csb_emit(csb, ROGUE_TA_WCLAMP_length);
++
++   if (dw == NULL)
++      return false;
++
++   ROGUE_TA_WCLAMP_pack(dw, &wclamp);
++
++   return true;
++}
++
+ void
+ pvr_region_clip_from_rect(uint32_t x, uint32_t y, uint32_t width, uint32_t height,
+                           uint32_t align, struct pvr_region_clip *out)
+diff --git a/src/gallium/drivers/pvr/pvr_csb.h b/src/gallium/drivers/pvr/pvr_csb.h
+index a9d88b2b..9b918c61 100644
+--- a/src/gallium/drivers/pvr/pvr_csb.h
++++ b/src/gallium/drivers/pvr/pvr_csb.h
+@@ -314,6 +314,18 @@ void pvr_region_clip_from_rect(uint32_t x, uint32_t y, uint32_t width,
+ bool pvr_csb_emit_ta_region_clip(struct pvr_csb *csb,
+                                  const struct pvr_region_clip *clip);
+ 
++/* TA_WCLAMP's minimum w.
++ *
++ * COPIED from the reference, not derived: pvr_arch_cmd_buffer.c emits
++ *   wclamp.val = fui(1.0e-13f);
++ * and the field's type gives no clue that it holds a FLOAT BIT PATTERN rather than the small
++ * integer it looks like. A value invented here - 0, or a depth - would be a plausible number in
++ * the same slot doing something else entirely, which is the failure this programme keeps
++ * recording. The reference's value is the only evidence available for what belongs there. */
++#define PVR_TA_WCLAMP_MIN_W 1.0e-13f
++
++bool pvr_csb_emit_ta_wclamp(struct pvr_csb *csb, float min_w);
++
+ /* Dwords a stream link occupies - what the guard must be at minimum. */
+ #define PVR_CSB_LINK_DWORDS (ROGUE_VDMCTRL_STREAM_LINK0_length + \
+                              ROGUE_VDMCTRL_STREAM_LINK1_length)
+diff --git a/src/gallium/drivers/pvr/pvr_probe.c b/src/gallium/drivers/pvr/pvr_probe.c
+index bd354aa2..b60acd85 100644
+--- a/src/gallium/drivers/pvr/pvr_probe.c
++++ b/src/gallium/drivers/pvr/pvr_probe.c
+@@ -1672,7 +1672,40 @@ csb_check(int fd, struct pipe_screen *pscreen)
+             goto out;
+          }
+ 
+-         printf("csb:           TA clip region: aligned units (align %u), far edge as "
++         /* WCLAMP. The field looks like a small integer and holds a float BIT PATTERN, so the check
++       * asserts the bit pattern and then decodes it back to a float - a version that emitted the
++       * integer 0, or the float's value as an integer, would satisfy any check that only compared
++       * the packed dword against itself. */
++      {
++         struct ROGUE_TA_WCLAMP w = { 0 };
++
++         pvr_csb_reset(&csb);
++
++         if (!pvr_csb_emit_ta_wclamp(&csb, PVR_TA_WCLAMP_MIN_W) ||
++             pvr_csb_size(&csb) != ROGUE_TA_WCLAMP_length * 4) {
++            printf("csb:           FAIL: the wclamp did not emit\n");
++            goto out;
++         }
++
++         ROGUE_TA_WCLAMP_unpack(bo.map, &w);
++
++         if (w.val != fui(PVR_TA_WCLAMP_MIN_W)) {
++            printf("csb:           FAIL: wclamp holds 0x%08x, not the float bit pattern "
++                   "0x%08x\n", w.val, fui(PVR_TA_WCLAMP_MIN_W));
++            goto out;
++         }
++
++         if (uif(w.val) != PVR_TA_WCLAMP_MIN_W) {
++            printf("csb:           FAIL: wclamp does not decode back to the reference's "
++                   "value\n");
++            goto out;
++         }
++
++         printf("csb:           TA wclamp: 0x%08x, the float bit pattern of the reference's "
++                "1.0e-13f (not an integer)\n", w.val);
++      }
++
++      printf("csb:           TA clip region: aligned units (align %u), far edge as "
+                 "round-up-minus-one, mode OUTSIDE\n", align);
+       }
+ 
+-- 
+2.47.3
+

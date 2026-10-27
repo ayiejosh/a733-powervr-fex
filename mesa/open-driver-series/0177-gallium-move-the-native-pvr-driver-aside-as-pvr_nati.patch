@@ -1,0 +1,130 @@
+From 65b9765fbd46c4f7c31641e518647762bdfd4bc8 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sun, 18 Oct 2026 12:09:04 +0800
+Subject: [PATCH 177/269] gallium: move the native pvr driver aside as
+ pvr_native
+
+The Imagination PVR Gallium frontend (mesa-pvr-vf2, the wrapper that dispatches GL to the vendor's
+GLES through EGL) claims the 'pvr' gallium driver name and drivers/pvr. This driver is incomplete - no
+draw path - so the wrapper takes the slot and this work moves to drivers/pvr_native, in-tree and
+committed so it can be revived by re-adding one meson entry.
+---
+ src/gallium/drivers/{pvr => pvr_native}/meson.build    | 0
+ src/gallium/drivers/{pvr => pvr_native}/pvr_bo.c       | 0
+ src/gallium/drivers/{pvr => pvr_native}/pvr_bo.h       | 0
+ src/gallium/drivers/{pvr => pvr_native}/pvr_context.c  | 0
+ src/gallium/drivers/{pvr => pvr_native}/pvr_context.h  | 0
+ src/gallium/drivers/{pvr => pvr_native}/pvr_csb.c      | 0
+ src/gallium/drivers/{pvr => pvr_native}/pvr_csb.h      | 0
+ src/gallium/drivers/{pvr => pvr_native}/pvr_probe.c    | 0
+ src/gallium/drivers/{pvr => pvr_native}/pvr_public.h   | 0
+ src/gallium/drivers/{pvr => pvr_native}/pvr_resource.c | 0
+ src/gallium/drivers/{pvr => pvr_native}/pvr_resource.h | 0
+ src/gallium/drivers/{pvr => pvr_native}/pvr_screen.c   | 0
+ src/gallium/drivers/{pvr => pvr_native}/pvr_screen.h   | 0
+ src/gallium/drivers/{pvr => pvr_native}/pvr_shader.c   | 0
+ src/gallium/drivers/{pvr => pvr_native}/pvr_shader.h   | 0
+ src/gallium/drivers/{pvr => pvr_native}/pvr_static.c   | 0
+ src/gallium/drivers/{pvr => pvr_native}/pvr_static.h   | 0
+ src/gallium/drivers/{pvr => pvr_native}/pvr_vm.c       | 0
+ src/gallium/drivers/{pvr => pvr_native}/pvr_vm.h       | 0
+ 19 files changed, 0 insertions(+), 0 deletions(-)
+ rename src/gallium/drivers/{pvr => pvr_native}/meson.build (100%)
+ rename src/gallium/drivers/{pvr => pvr_native}/pvr_bo.c (100%)
+ rename src/gallium/drivers/{pvr => pvr_native}/pvr_bo.h (100%)
+ rename src/gallium/drivers/{pvr => pvr_native}/pvr_context.c (100%)
+ rename src/gallium/drivers/{pvr => pvr_native}/pvr_context.h (100%)
+ rename src/gallium/drivers/{pvr => pvr_native}/pvr_csb.c (100%)
+ rename src/gallium/drivers/{pvr => pvr_native}/pvr_csb.h (100%)
+ rename src/gallium/drivers/{pvr => pvr_native}/pvr_probe.c (100%)
+ rename src/gallium/drivers/{pvr => pvr_native}/pvr_public.h (100%)
+ rename src/gallium/drivers/{pvr => pvr_native}/pvr_resource.c (100%)
+ rename src/gallium/drivers/{pvr => pvr_native}/pvr_resource.h (100%)
+ rename src/gallium/drivers/{pvr => pvr_native}/pvr_screen.c (100%)
+ rename src/gallium/drivers/{pvr => pvr_native}/pvr_screen.h (100%)
+ rename src/gallium/drivers/{pvr => pvr_native}/pvr_shader.c (100%)
+ rename src/gallium/drivers/{pvr => pvr_native}/pvr_shader.h (100%)
+ rename src/gallium/drivers/{pvr => pvr_native}/pvr_static.c (100%)
+ rename src/gallium/drivers/{pvr => pvr_native}/pvr_static.h (100%)
+ rename src/gallium/drivers/{pvr => pvr_native}/pvr_vm.c (100%)
+ rename src/gallium/drivers/{pvr => pvr_native}/pvr_vm.h (100%)
+
+diff --git a/src/gallium/drivers/pvr/meson.build b/src/gallium/drivers/pvr_native/meson.build
+similarity index 100%
+rename from src/gallium/drivers/pvr/meson.build
+rename to src/gallium/drivers/pvr_native/meson.build
+diff --git a/src/gallium/drivers/pvr/pvr_bo.c b/src/gallium/drivers/pvr_native/pvr_bo.c
+similarity index 100%
+rename from src/gallium/drivers/pvr/pvr_bo.c
+rename to src/gallium/drivers/pvr_native/pvr_bo.c
+diff --git a/src/gallium/drivers/pvr/pvr_bo.h b/src/gallium/drivers/pvr_native/pvr_bo.h
+similarity index 100%
+rename from src/gallium/drivers/pvr/pvr_bo.h
+rename to src/gallium/drivers/pvr_native/pvr_bo.h
+diff --git a/src/gallium/drivers/pvr/pvr_context.c b/src/gallium/drivers/pvr_native/pvr_context.c
+similarity index 100%
+rename from src/gallium/drivers/pvr/pvr_context.c
+rename to src/gallium/drivers/pvr_native/pvr_context.c
+diff --git a/src/gallium/drivers/pvr/pvr_context.h b/src/gallium/drivers/pvr_native/pvr_context.h
+similarity index 100%
+rename from src/gallium/drivers/pvr/pvr_context.h
+rename to src/gallium/drivers/pvr_native/pvr_context.h
+diff --git a/src/gallium/drivers/pvr/pvr_csb.c b/src/gallium/drivers/pvr_native/pvr_csb.c
+similarity index 100%
+rename from src/gallium/drivers/pvr/pvr_csb.c
+rename to src/gallium/drivers/pvr_native/pvr_csb.c
+diff --git a/src/gallium/drivers/pvr/pvr_csb.h b/src/gallium/drivers/pvr_native/pvr_csb.h
+similarity index 100%
+rename from src/gallium/drivers/pvr/pvr_csb.h
+rename to src/gallium/drivers/pvr_native/pvr_csb.h
+diff --git a/src/gallium/drivers/pvr/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+similarity index 100%
+rename from src/gallium/drivers/pvr/pvr_probe.c
+rename to src/gallium/drivers/pvr_native/pvr_probe.c
+diff --git a/src/gallium/drivers/pvr/pvr_public.h b/src/gallium/drivers/pvr_native/pvr_public.h
+similarity index 100%
+rename from src/gallium/drivers/pvr/pvr_public.h
+rename to src/gallium/drivers/pvr_native/pvr_public.h
+diff --git a/src/gallium/drivers/pvr/pvr_resource.c b/src/gallium/drivers/pvr_native/pvr_resource.c
+similarity index 100%
+rename from src/gallium/drivers/pvr/pvr_resource.c
+rename to src/gallium/drivers/pvr_native/pvr_resource.c
+diff --git a/src/gallium/drivers/pvr/pvr_resource.h b/src/gallium/drivers/pvr_native/pvr_resource.h
+similarity index 100%
+rename from src/gallium/drivers/pvr/pvr_resource.h
+rename to src/gallium/drivers/pvr_native/pvr_resource.h
+diff --git a/src/gallium/drivers/pvr/pvr_screen.c b/src/gallium/drivers/pvr_native/pvr_screen.c
+similarity index 100%
+rename from src/gallium/drivers/pvr/pvr_screen.c
+rename to src/gallium/drivers/pvr_native/pvr_screen.c
+diff --git a/src/gallium/drivers/pvr/pvr_screen.h b/src/gallium/drivers/pvr_native/pvr_screen.h
+similarity index 100%
+rename from src/gallium/drivers/pvr/pvr_screen.h
+rename to src/gallium/drivers/pvr_native/pvr_screen.h
+diff --git a/src/gallium/drivers/pvr/pvr_shader.c b/src/gallium/drivers/pvr_native/pvr_shader.c
+similarity index 100%
+rename from src/gallium/drivers/pvr/pvr_shader.c
+rename to src/gallium/drivers/pvr_native/pvr_shader.c
+diff --git a/src/gallium/drivers/pvr/pvr_shader.h b/src/gallium/drivers/pvr_native/pvr_shader.h
+similarity index 100%
+rename from src/gallium/drivers/pvr/pvr_shader.h
+rename to src/gallium/drivers/pvr_native/pvr_shader.h
+diff --git a/src/gallium/drivers/pvr/pvr_static.c b/src/gallium/drivers/pvr_native/pvr_static.c
+similarity index 100%
+rename from src/gallium/drivers/pvr/pvr_static.c
+rename to src/gallium/drivers/pvr_native/pvr_static.c
+diff --git a/src/gallium/drivers/pvr/pvr_static.h b/src/gallium/drivers/pvr_native/pvr_static.h
+similarity index 100%
+rename from src/gallium/drivers/pvr/pvr_static.h
+rename to src/gallium/drivers/pvr_native/pvr_static.h
+diff --git a/src/gallium/drivers/pvr/pvr_vm.c b/src/gallium/drivers/pvr_native/pvr_vm.c
+similarity index 100%
+rename from src/gallium/drivers/pvr/pvr_vm.c
+rename to src/gallium/drivers/pvr_native/pvr_vm.c
+diff --git a/src/gallium/drivers/pvr/pvr_vm.h b/src/gallium/drivers/pvr_native/pvr_vm.h
+similarity index 100%
+rename from src/gallium/drivers/pvr/pvr_vm.h
+rename to src/gallium/drivers/pvr_native/pvr_vm.h
+-- 
+2.47.3
+

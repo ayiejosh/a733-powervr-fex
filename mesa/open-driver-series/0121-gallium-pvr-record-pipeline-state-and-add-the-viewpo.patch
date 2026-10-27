@@ -1,0 +1,295 @@
+From 64250fa561bb852ce8fdb9d87f0c6214854a15df Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 14:57:05 +0800
+Subject: [PATCH 121/269] gallium/pvr: record pipeline state, and add the
+ viewport hook
+
+Blend, depth/stencil/alpha and rasterizer state were bound into nothing: the bind
+hooks were no-ops and there were no create hooks, so the CSO cache had nothing to
+hand over. They now have create/bind/delete, and set_viewport_states exists at all:
+
+  pipeline: blend/dsa/rasterizer recorded, viewport scale 32,32 translate 32,32
+  pipeline: PASS (create/bind/delete + viewport, stored by value)
+
+set_viewport_states being absent is the more serious of the two: a GL application
+calls glViewport on essentially every frame, so it was a crash waiting for the first
+real application rather than a missing feature.
+
+The create_* hooks allocate a copy of the pipe state struct. That is required, not
+tidiness - the state the caller passes in may be a temporary, so storing the pointer
+would leave the driver reading whatever the stack slot held next. The runnable check
+tests exactly that: it mutates the caller's copies after binding and requires the
+recorded state not to follow them.
+
+No driver-specific state types yet. A copy of the pipe struct is all that is needed
+while nothing derives from it; the CSB generator wanting precomputed hardware fields
+is the point at which wrapping them earns its keep.
+
+Not done and not claimed: none of this state affects anything yet, because there is
+still no CSB generation and no job submission. Recording it is a prerequisite for the
+draw path, not the draw path.
+---
+ src/gallium/drivers/pvr/pvr_context.c | 95 ++++++++++++++++++++++++++-
+ src/gallium/drivers/pvr/pvr_context.h | 12 ++++
+ src/gallium/drivers/pvr/pvr_probe.c   | 91 ++++++++++++++++++++++++-
+ 3 files changed, 194 insertions(+), 4 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr/pvr_context.c b/src/gallium/drivers/pvr/pvr_context.c
+index 3f3e7042..ca0385d2 100644
+--- a/src/gallium/drivers/pvr/pvr_context.c
++++ b/src/gallium/drivers/pvr/pvr_context.c
+@@ -9,6 +9,8 @@
+ #include "util/u_inlines.h"
+ #include "util/u_memory.h"
+ 
++#include "string.h"
++
+ #include "pvr_resource.h"
+ #include "pvr_screen.h"
+ #include "pvr_shader.h"
+@@ -233,6 +235,86 @@ pvr_set_stream_output_targets(UNUSED struct pipe_context *pctx,
+ {
+ }
+ 
++/* One shared allocation for all three create_* hooks: each just needs a copy of the
++ * pipe state struct that outlives the caller's temporary. */
++static void *
++pvr_state_copy(const void *state, size_t size)
++{
++   void *copy = malloc(size);
++
++   if (copy != NULL)
++      memcpy(copy, state, size);
++
++   return copy;
++}
++
++static void *
++pvr_create_blend_state(UNUSED struct pipe_context *pctx,
++                       const struct pipe_blend_state *state)
++{
++   return pvr_state_copy(state, sizeof(*state));
++}
++
++static void *
++pvr_create_depth_stencil_alpha_state(
++   UNUSED struct pipe_context *pctx,
++   const struct pipe_depth_stencil_alpha_state *state)
++{
++   return pvr_state_copy(state, sizeof(*state));
++}
++
++static void *
++pvr_create_rasterizer_state(UNUSED struct pipe_context *pctx,
++                            const struct pipe_rasterizer_state *state)
++{
++   return pvr_state_copy(state, sizeof(*state));
++}
++
++static void
++pvr_bind_blend_state(struct pipe_context *pctx, void *state)
++{
++   pvr_context(pctx)->blend = state;
++}
++
++static void
++pvr_bind_depth_stencil_alpha_state(struct pipe_context *pctx, void *state)
++{
++   pvr_context(pctx)->dsa = state;
++}
++
++static void
++pvr_bind_rasterizer_state(struct pipe_context *pctx, void *state)
++{
++   pvr_context(pctx)->rasterizer = state;
++}
++
++static void
++pvr_delete_state(UNUSED struct pipe_context *pctx, void *state)
++{
++   free(state);
++}
++
++static void
++pvr_set_viewport_states(struct pipe_context *pctx, unsigned start_slot,
++                        unsigned num_viewports,
++                        const struct pipe_viewport_state *viewports)
++{
++   struct pvr_context *ctx = pvr_context(pctx);
++
++   /* A GL app calls glViewport on essentially every frame, so this hook being absent
++    * was a crash waiting for the first real application rather than a missing
++    * feature. */
++   if (start_slot >= PIPE_MAX_VIEWPORTS)
++      return;
++
++   num_viewports = MIN2(num_viewports, PIPE_MAX_VIEWPORTS - start_slot);
++
++   memcpy(&ctx->viewports[start_slot], viewports,
++          num_viewports * sizeof(*viewports));
++
++   ctx->nr_viewports = MAX2(ctx->nr_viewports, start_slot + num_viewports);
++}
++
+ static struct pvr_shader *
+ pvr_shader_from_state(struct pipe_context *pctx, const struct pipe_shader_state *state)
+ {
+@@ -314,9 +396,16 @@ pvr_context_create(struct pipe_screen *pscreen, UNUSED void *priv,
+    ctx->base.texture_unmap = pvr_transfer_unmap;
+    ctx->base.transfer_flush_region = pvr_transfer_flush_region;
+ 
+-   ctx->base.bind_blend_state = pvr_bind_state_noop;
+-   ctx->base.bind_depth_stencil_alpha_state = pvr_bind_state_noop;
+-   ctx->base.bind_rasterizer_state = pvr_bind_state_noop;
++   ctx->base.create_blend_state = pvr_create_blend_state;
++   ctx->base.bind_blend_state = pvr_bind_blend_state;
++   ctx->base.delete_blend_state = pvr_delete_state;
++   ctx->base.create_depth_stencil_alpha_state = pvr_create_depth_stencil_alpha_state;
++   ctx->base.bind_depth_stencil_alpha_state = pvr_bind_depth_stencil_alpha_state;
++   ctx->base.delete_depth_stencil_alpha_state = pvr_delete_state;
++   ctx->base.create_rasterizer_state = pvr_create_rasterizer_state;
++   ctx->base.bind_rasterizer_state = pvr_bind_rasterizer_state;
++   ctx->base.delete_rasterizer_state = pvr_delete_state;
++   ctx->base.set_viewport_states = pvr_set_viewport_states;
+    ctx->base.bind_vs_state = pvr_bind_vs_state;
+    ctx->base.bind_fs_state = pvr_bind_fs_state;
+    ctx->base.create_vs_state = pvr_create_vs_state;
+diff --git a/src/gallium/drivers/pvr/pvr_context.h b/src/gallium/drivers/pvr/pvr_context.h
+index 820730e9..eb61dd9a 100644
+--- a/src/gallium/drivers/pvr/pvr_context.h
++++ b/src/gallium/drivers/pvr/pvr_context.h
+@@ -31,6 +31,18 @@ struct pvr_context {
+     * a pvr_resource, so pvr_resource(fb.cbufs[i].texture)->dev_addr is the address the
+     * draw path wants. Storing a second copy would be a second thing to keep in sync. */
+    struct pipe_framebuffer_state fb;
++
++   /* Pipeline state, recorded rather than discarded. The create_* hooks allocate a
++    * copy of the pipe state struct, because the state the caller passes in may be a
++    * temporary and the object handed back to bind_* must outlive it. Nothing derives
++    * from these yet, so a copy of the struct is all that is needed - wrapping them in
++    * driver-specific types can wait until the CSB generator wants precomputed fields. */
++   const struct pipe_blend_state *blend;
++   const struct pipe_depth_stencil_alpha_state *dsa;
++   const struct pipe_rasterizer_state *rasterizer;
++
++   unsigned nr_viewports;
++   struct pipe_viewport_state viewports[PIPE_MAX_VIEWPORTS];
+ };
+ 
+ struct pipe_context *pvr_context_create(struct pipe_screen *pscreen, void *priv,
+diff --git a/src/gallium/drivers/pvr/pvr_probe.c b/src/gallium/drivers/pvr/pvr_probe.c
+index 4bd173a7..bdc3e3a7 100644
+--- a/src/gallium/drivers/pvr/pvr_probe.c
++++ b/src/gallium/drivers/pvr/pvr_probe.c
+@@ -574,6 +574,94 @@ framebuffer_check(struct pipe_screen *pscreen)
+    return ok;
+ }
+ 
++/* Pipeline state: created, bound, and recorded. The check that matters is that the
++ * driver stores a COPY - the state the caller passes in is a temporary, and a driver
++ * that kept the pointer would read whatever was on that stack slot next. */
++static bool
++pipeline_state_check(struct pipe_screen *pscreen)
++{
++   struct pipe_context *pctx = pscreen->context_create(pscreen, NULL, 0);
++   struct pvr_context *ctx = pvr_context(pctx);
++   struct pipe_blend_state blend = {
++      .rt = { { .blend_enable = true } },
++   };
++   struct pipe_depth_stencil_alpha_state dsa = {
++      .depth_enabled = true,
++      .depth_func = PIPE_FUNC_LESS,
++      .depth_writemask = true,
++   };
++   struct pipe_rasterizer_state rast = {
++      .cull_face = PIPE_FACE_BACK,
++      .line_width = 1.0f,
++   };
++   const struct pipe_viewport_state vp = {
++      .scale = { 32.0f, 32.0f, 0.5f },
++      .translate = { 32.0f, 32.0f, 0.5f },
++   };
++   void *blend_s, *dsa_s, *rast_s;
++   bool ok;
++
++   if (pctx == NULL) {
++      printf("pipeline:      FAIL: no context\n");
++      return false;
++   }
++
++   blend_s = pctx->create_blend_state(pctx, &blend);
++   dsa_s = pctx->create_depth_stencil_alpha_state(pctx, &dsa);
++   rast_s = pctx->create_rasterizer_state(pctx, &rast);
++
++   if (blend_s == NULL || dsa_s == NULL || rast_s == NULL) {
++      printf("pipeline:      FAIL: a create_*_state hook returned NULL\n");
++      pctx->destroy(pctx);
++      return false;
++   }
++
++   pctx->bind_blend_state(pctx, blend_s);
++   pctx->bind_depth_stencil_alpha_state(pctx, dsa_s);
++   pctx->bind_rasterizer_state(pctx, rast_s);
++   pctx->set_viewport_states(pctx, 0, 1, &vp);
++
++   ok = ctx->blend == blend_s && ctx->dsa == dsa_s && ctx->rasterizer == rast_s &&
++        ctx->nr_viewports == 1 && ctx->viewports[0].scale[0] == 32.0f &&
++        ctx->viewports[0].translate[1] == 32.0f;
++
++   if (!ok) {
++      printf("pipeline:      FAIL: state was not recorded\n");
++      goto out;
++   }
++
++   /* Mutate the caller's copies. If the driver had stored pointers rather than copies,
++    * the recorded state would change with them. */
++   blend.rt[0].blend_enable = false;
++   dsa.depth_func = PIPE_FUNC_ALWAYS;
++   rast.cull_face = PIPE_FACE_NONE;
++
++   if (((const struct pipe_blend_state *)ctx->blend)->rt[0].blend_enable != true ||
++       ((const struct pipe_depth_stencil_alpha_state *)ctx->dsa)->depth_func !=
++          PIPE_FUNC_LESS ||
++       ((const struct pipe_rasterizer_state *)ctx->rasterizer)->cull_face !=
++          PIPE_FACE_BACK) {
++      printf("pipeline:      FAIL: the recorded state followed the caller's temporary\n");
++      ok = false;
++      goto out;
++   }
++
++   printf("pipeline:      blend/dsa/rasterizer recorded, viewport scale %.0f,%.0f "
++          "translate %.0f,%.0f\n", ctx->viewports[0].scale[0],
++          ctx->viewports[0].scale[1], ctx->viewports[0].translate[0],
++          ctx->viewports[0].translate[1]);
++
++out:
++   pctx->delete_blend_state(pctx, blend_s);
++   pctx->delete_depth_stencil_alpha_state(pctx, dsa_s);
++   pctx->delete_rasterizer_state(pctx, rast_s);
++   pctx->destroy(pctx);
++
++   printf("pipeline:      %s (create/bind/delete + viewport, stored by value)\n",
++          ok ? "PASS" : "FAIL");
++   return ok;
++}
++
+ int
+ main(int argc, char **argv)
+ {
+@@ -608,11 +696,12 @@ main(int argc, char **argv)
+    const bool shader_pass = shader_compile_check(screen);
+    const bool state_pass = shader_state_check(screen);
+    const bool fb_pass = framebuffer_check(screen);
++   const bool pipe_pass = pipeline_state_check(screen);
+ 
+    screen->destroy(screen);
+ 
+    const bool all = enum_pass && bo_pass && vm_pass && res_pass && ctx_pass &&
+-                    shader_pass && state_pass && fb_pass;
++                    shader_pass && state_pass && fb_pass && pipe_pass;
+    printf("--- %s\n", all ? "ALL PASS" : "FAILURES ABOVE");
+    return all ? 0 : 1;
+ }
+-- 
+2.47.3
+

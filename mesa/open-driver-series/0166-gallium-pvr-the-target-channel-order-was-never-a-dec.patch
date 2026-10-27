@@ -1,0 +1,142 @@
+From 2d0f6dc2197b7504ac14bba07ce85a44796fc991 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sat, 17 Oct 2026 10:48:26 +0800
+Subject: [PATCH 166/269] gallium/pvr: the target channel order was never a
+ decision
+
+  --- ALL PASS        (real open kernel)
+
+Round 61 listed "the per-format channel order for a target's swizzle" as an unmade decision. It is not
+one. The reference fills it from pvr_get_format_swizzle(), which is literally:
+
+   const struct util_format_description *vf = vk_format_description(vk_format);
+   return vf->swizzle;
+
+- the SAME description swizzle round 32's texture-side helper returns. So this joins two pieces that
+already existed: pvr_format_layout_from_pipe() for the swizzle and pvr_pbe_swizzle_from_pipe() for the
+translation. Three lines of glue, no table, no per-format chain, no decision.
+
+Formats whose swizzle contains PIPE_SWIZZLE_NONE are refused: that is the depth/stencil single-channel
+rule, NONE is not a selector the PBE takes, and this driver has no depth-target support for it to
+matter to. Refused rather than mapped to a zero, which would write a channel the format does not have.
+
+The check asserts what round 33 asserted on the texture side: RGBA8 and BGRA8 targets must differ, or
+one would be written with the other's channel order - and each target's four channels must map to four
+distinct hardware values.
+---
+ src/gallium/drivers/pvr/pvr_csb.c   | 20 ++++++++++++++++
+ src/gallium/drivers/pvr/pvr_csb.h   | 18 ++++++++++++++
+ src/gallium/drivers/pvr/pvr_probe.c | 37 +++++++++++++++++++++++++++++
+ 3 files changed, 75 insertions(+)
+
+diff --git a/src/gallium/drivers/pvr/pvr_csb.c b/src/gallium/drivers/pvr/pvr_csb.c
+index e3670864..36ab1bbf 100644
+--- a/src/gallium/drivers/pvr/pvr_csb.c
++++ b/src/gallium/drivers/pvr/pvr_csb.c
+@@ -383,6 +383,26 @@ pvr_pbe_linestride(uint32_t stride_bytes)
+    return (stride_bytes - 1) / ROGUE_PBESTATE_REG_WORD0_LINESTRIDE_UNIT_SIZE;
+ }
+ 
++bool
++pvr_pbe_swizzles_from_pipe_format(enum pipe_format format,
++                                  enum ROGUE_PBESTATE_SWIZ out[4])
++{
++   struct pvr_format_layout layout;
++
++   if (!pvr_format_layout_from_pipe(format, &layout))
++      return false;
++
++   for (unsigned i = 0; i < 4; i++) {
++      if (!pvr_pbe_swizzle_from_pipe(layout.swizzle[i], &out[i])) {
++         mesa_loge("pvr: PBE swizzle for %s channel %u is not a selector the PBE takes",
++                   util_format_name(format), i);
++         return false;
++      }
++   }
++
++   return true;
++}
++
+ enum ROGUE_PBESTATE_SOURCE_FORMAT
+ pvr_pbe_source_format_from_pipe(enum pipe_format format, bool with_packed_usc_channel)
+ {
+diff --git a/src/gallium/drivers/pvr/pvr_csb.h b/src/gallium/drivers/pvr/pvr_csb.h
+index 22049111..8e6fdf50 100644
+--- a/src/gallium/drivers/pvr/pvr_csb.h
++++ b/src/gallium/drivers/pvr/pvr_csb.h
+@@ -522,6 +522,24 @@ bool pvr_pbe_swizzle_from_pipe(uint8_t pipe_swizzle, enum ROGUE_PBESTATE_SWIZ *o
+ enum ROGUE_PBESTATE_SOURCE_FORMAT
+ pvr_pbe_source_format_from_pipe(enum pipe_format format, bool with_packed_usc_channel);
+ 
++/* The four PBE channel swizzles for a target format.
++ *
++ * Round 61 listed "the per-format channel order" as an unmade decision. It is NOT one: the reference
++ * fills it from pvr_get_format_swizzle(), which is literally
++ *
++ *    return vk_format_description(vk_format)->swizzle;
++ *
++ * - the same description swizzle round 32's texture-side helper returns. So this joins two pieces
++ * that already exist: pvr_format_layout_from_pipe() for the swizzle, and pvr_pbe_swizzle_from_pipe()
++ * for the translation. No table, no per-format chain, no decision.
++ *
++ * Formats whose swizzle contains PIPE_SWIZZLE_NONE are refused: that is the depth/stencil rule
++ * ("read one channel, no others"), NONE is not a selector the PBE can be given, and this driver has
++ * no depth-target support for it to matter to yet. Refused rather than mapped to a zero, which would
++ * write a channel the format does not have. */
++bool pvr_pbe_swizzles_from_pipe_format(enum pipe_format format,
++                                       enum ROGUE_PBESTATE_SWIZ out[4]);
++
+ void pvr_pbe_clip_from_area(uint32_t off_x, uint32_t off_y, uint32_t width, uint32_t height,
+                             uint32_t surface_width, uint32_t surface_height,
+                             struct pvr_pbe_clip *out);
+diff --git a/src/gallium/drivers/pvr/pvr_probe.c b/src/gallium/drivers/pvr/pvr_probe.c
+index d7228211..473919ff 100644
+--- a/src/gallium/drivers/pvr/pvr_probe.c
++++ b/src/gallium/drivers/pvr/pvr_probe.c
+@@ -1920,6 +1920,43 @@ csb_check(int fd, struct pipe_screen *pscreen)
+                   goto out;
+                }
+ 
++               /* The target swizzles, joined from the round-32 layout and the round-61 translation.
++                * RGBA8 and BGRA8 must differ - that is the same distinction the texture side makes,
++                * and if they agreed one of them would be written with the other's channel order. */
++               {
++                  enum ROGUE_PBESTATE_SWIZ a[4], b[4];
++
++                  if (!pvr_pbe_swizzles_from_pipe_format(PIPE_FORMAT_R8G8B8A8_UNORM, a) ||
++                      !pvr_pbe_swizzles_from_pipe_format(PIPE_FORMAT_B8G8R8A8_UNORM, b)) {
++                     printf("csb:           FAIL: a colour target format produced no PBE "
++                            "swizzles\n");
++                     goto out;
++                  }
++
++                  if (memcmp(a, b, sizeof(a)) == 0) {
++                     printf("csb:           FAIL: RGBA8 and BGRA8 targets share a swizzle - one "
++                            "would be written with the other's channel order\n");
++                     goto out;
++                  }
++
++                  for (unsigned i = 0; i < 4; i++) {
++                     for (unsigned j = 0; j < i; j++) {
++                        if (a[j] == a[i]) {
++                           printf("csb:           FAIL: an RGBA target's channels %u and %u "
++                                  "collapsed to one hardware swizzle\n", j, i);
++                           goto out;
++                        }
++                     }
++                  }
++
++                  /* Depth's single-channel rule produces NONE, which the PBE cannot be given. */
++                  if (pvr_pbe_swizzles_from_pipe_format(PIPE_FORMAT_Z24_UNORM_S8_UINT, a)) {
++                     printf("csb:           FAIL: a depth format produced PBE swizzles despite the "
++                            "NONE channel\n");
++                     goto out;
++                  }
++               }
++
+                /* Both answers for the SAME format, because the parameter is the whole point: an
+                 * 8-bit target is F16-packed without usc_f16sop_u8 and 8-per-channel with it. A
+                 * check that only exercised one value would pin whichever the test device happens
+-- 
+2.47.3
+

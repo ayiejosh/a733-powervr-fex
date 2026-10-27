@@ -1,0 +1,131 @@
+From ca679a7085aed8020c19310adf0eebd8347ef327 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sat, 24 Oct 2026 07:35:49 +0800
+Subject: [PATCH 206/269] gallium/pvr: build the vertex attribute program
+ (milestone 1 of the design)
+
+This is the piece that turns "the TA has a draw" into "the TA can read vertices": the PDS program that
+fetches attributes into the USC registers, plus the const-map entries describing them.
+
+  shader: vertex attribute program: 12 bytes (1 attribute: 3 floats, stride 12)
+
+One pvr_pds_vertex_dma (offset 0, stride 12, three dwords, destination register 0) fed to
+pvr_pds_generate_vertex_primary_program(), which the driver can already call because pvr_shader.c
+includes pvr_pds.h. The probe could not include it - pvr_pds.h pulls in hwdef, and the probe also
+includes the generated csbgen headers through pvr_csb.h, which is the documented conflict - so the
+builder lives in pvr_shader.c behind a small API instead.
+
+Two-pass sizing, as the generator expects: first with a NULL destination to learn code_size_in_dwords,
+then with the real buffer. The const-map entries buffer is allocated and freed per call; a vertex
+program with no uniform reads needs few, but the buffer must exist because the generator writes into it.
+
+12 bytes is a small program because the fetch itself is trivial - one attribute, no stride walk, no
+format conversion - which is exactly what a triangle needs.
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c  | 12 ++++++
+ src/gallium/drivers/pvr_native/pvr_shader.c | 44 +++++++++++++++++++++
+ src/gallium/drivers/pvr_native/pvr_shader.h | 10 +++++
+ 3 files changed, 66 insertions(+)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index 66e34d42..72ca61fe 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -1217,6 +1217,18 @@ shader_compile_check(struct pipe_screen *pscreen)
+       }
+       vb.shader->info.internal = false;
+ 
++      {
++         struct pvr_screen *scr = pvr_screen(pscreen);
++         uint8_t vprog[1024];
++         const uint32_t vlen = pvr_shader_vertex_program(&scr->dev_info, vprog, sizeof(vprog),
++                                                         12, 12, 0);
++         if (vlen > 0)
++            printf("shader:        vertex attribute program: %u bytes (1 attribute: 3 floats, "
++                   "stride 12)\n", vlen);
++         else
++            printf("shader:        FAIL: no vertex attribute program\n");
++      }
++
+       struct pvr_shader *vobj = pvr_shader_create(vb.shader, screen->pco_ctx);
+ 
+       if (vobj != NULL) {
+diff --git a/src/gallium/drivers/pvr_native/pvr_shader.c b/src/gallium/drivers/pvr_native/pvr_shader.c
+index 7766e8e3..9093d470 100644
+--- a/src/gallium/drivers/pvr_native/pvr_shader.c
++++ b/src/gallium/drivers/pvr_native/pvr_shader.c
+@@ -38,6 +38,50 @@ pvr_shader_create(struct nir_shader *nir, pco_ctx *ctx)
+    return shader;
+ }
+ 
++uint32_t
++pvr_shader_vertex_program(const struct pvr_device_info *dev_info,
++                          void *dst, uint32_t dst_size,
++                          uint32_t stride, uint32_t attrib_bytes,
++                          uint8_t destination)
++{
++   struct pvr_pds_vertex_dma dma = {
++      .offset = 0,
++      .stride = stride,
++      .size_in_dwords = attrib_bytes / 4,
++      .attrib_size_in_bytes = attrib_bytes,
++      .destination = destination,
++      .binding_index = 0,
++      .divisor = 0,
++   };
++   struct pvr_pds_vertex_primary_program_input input = {
++      .dma_list = &dma,
++      .dma_count = 1,
++   };
++   struct pvr_pds_info info = { 0 };
++   uint32_t size_bytes = 0;
++
++   /* The const map is where the program's immediate/descriptor references are recorded. A vertex
++    * program with no uniform reads needs few or none, but the generator writes into this buffer, so it
++    * has to exist and be sized. */
++   info.entries_size_in_bytes = 512;
++   info.entries = calloc(1, info.entries_size_in_bytes);
++   if (info.entries == NULL)
++      return 0;
++
++   /* First pass with no destination: the generator reports the size it would write. */
++   pvr_pds_generate_vertex_primary_program(&input, NULL, &info, false, dev_info);
++   size_bytes = info.code_size_in_dwords * sizeof(uint32_t);
++
++   if (size_bytes > 0 && size_bytes <= dst_size && dst != NULL) {
++      pvr_pds_generate_vertex_primary_program(&input, dst, &info, false, dev_info);
++   } else {
++      size_bytes = 0;
++   }
++
++   free(info.entries);
++   return size_bytes;
++}
++
+ uint32_t
+ pvr_shader_pds_launcher(const struct pvr_shader *shader, uint32_t usc_offset,
+                         void *dst, uint32_t dst_size)
+diff --git a/src/gallium/drivers/pvr_native/pvr_shader.h b/src/gallium/drivers/pvr_native/pvr_shader.h
+index 4b6c09d7..ac85a361 100644
+--- a/src/gallium/drivers/pvr_native/pvr_shader.h
++++ b/src/gallium/drivers/pvr_native/pvr_shader.h
+@@ -41,6 +41,16 @@ void pvr_shader_destroy(struct pvr_shader *shader);
+ uint32_t pvr_shader_pds_launcher(const struct pvr_shader *shader, uint32_t usc_offset,
+                                  void *dst, uint32_t dst_size);
+ 
++/* Builds the PDS program that fetches vertex attributes into the USC registers, and the const-map
++ * entries that describe them. This is the piece that turns "the TA has a draw" into "the TA can read
++ * vertices". One attribute is all a triangle needs: a position as three floats at offset 0.
++ *
++ * dst receives the program; returns its size in bytes, or 0. */
++uint32_t pvr_shader_vertex_program(const struct pvr_device_info *dev_info,
++                                   void *dst, uint32_t dst_size,
++                                   uint32_t stride, uint32_t attrib_bytes,
++                                   uint8_t destination);
++
+ /* Runs the full pco pipeline over a NIR shader and returns the encoded binary.
+  *
+  * The sequence is the one the Vulkan driver uses (pvr_usc.c build_shader): preprocess,
+-- 
+2.47.3
+

@@ -9,6 +9,7 @@ outward-facing act and needs an explicit go-ahead.
 | [`linux-firmware/0001-powervr-add-firmware-for-BXM-4-64-revision-36.56.104.183.patch`](linux-firmware/) | `linux-firmware@kernel.org` | ready to send |
 | [`drm-imagination/0001-drm-imagination-add-BXM-4-64-revision-36.56.104.183-as-experimental.patch`](drm-imagination/) | `dri-devel@lists.freedesktop.org` (IMG maintainers), CC `linux-sunxi` | ready to send |
 | [`drm-imagination/0002-drm-imagination-promote-BXM-4-64-revision-36.56.104.183-to-supported.patch`](drm-imagination/) | same | **do not send yet** — its commit message carries a placeholder for a Vulkan CTS result that has not been produced |
+| [`mesa/`](mesa/) - the pco optimiser series, 2 commits | `mesa/mesa` (merge request) | **do not send yet** - freedesktop's GitLab refuses project creation for this account (anti-spam limit), so no fork and no MR exists |
 
 ## Why these two
 

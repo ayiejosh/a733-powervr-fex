@@ -1,0 +1,154 @@
+From 0edc1e4edd6856918f866d8cf3e8a56c8911db88 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sun, 25 Oct 2026 01:09:47 +0800
+Subject: [PATCH 225/269] gallium/pvr: keep the static firmware programs mapped
+ - the fault was the probe freeing them
+
+The round-8 fault address was exactly the PDS heap base, and the kernel's static data areas say
+why: the VDM sync program lives at PDS heap offset 0 (PDS carveout, 128 bytes), and the pixel-event
+program at offset 0x80. The probe placed both (through pvr_static_memory_init), verified the
+placement, then called pvr_static_memory_fini() - unmapping and freeing the carveouts - before it
+submitted the draw. So the firmware executed the VDM sync program from unmapped memory on every
+first TA kick: BIF0 page fault at 0xda00000000 = PDS base + 0, then GPU lockup.
+
+The static memory now stays mapped for the process (a real driver would place it at screen creation
+and never free it; this is what the probe stands in for).
+
+The firmware trace with that fixed no longer faults: the TA kick is accepted and DM2 now TIMES OUT
+with zero USC slots used - the VDM sync/context-resume PDS path still does not launch the USC part,
+which is the next problem (VDM sync program at PDS+0 and its USC VS_NOP binary at USC+0 are written
+with the same generators the reference uses; the difference to find is in what the firmware is told
+to run, e.g. the geometry command's vdm_context_resume_task0_size and the static context state's
+resume tasks).
+
+Diagnostics added: PVR_DUMP_HEAPS (heap map), PVR_PROBE_PATCH_PDS (label one context-switch program
+offset), PVR_PROBE_GEOM_ONLY (submit the draw's geometry stream alone), and the per-heap static-area
+log now prints each area's offset and size - which is what identified PDS+0 as the VDM sync program.
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c  | 23 +++++++++++----
+ src/gallium/drivers/pvr_native/pvr_static.c | 31 +++++++++++++++++++++
+ src/gallium/drivers/pvr_native/pvr_vm.c     |  4 +++
+ 3 files changed, 52 insertions(+), 6 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index 9c2323fc..c29b3300 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -361,7 +361,13 @@ vm_roundtrip(int fd, struct pipe_screen *pscreen)
+     * check available is therefore to compare the carveout contents against the source
+     * binary, which tests the placement rather than merely the write. */
+    {
+-      struct pvr_static_memory sm;
++      /* The static firmware programs must live for as long as jobs do: the firmware runs the VDM
++       * sync program (PDS heap offset 0) and the pixel-event program from these carveouts on every
++       * job. Freeing them after the placement checks - which this did - leaves the firmware
++       * executing from unmapped memory: the BIF0 fault address is exactly the PDS heap base. Keep
++       * them mapped for the rest of the process (a real driver would place them at screen creation
++       * and never free them, which is what this stands in for). */
++      static struct pvr_static_memory sm;
+       const unsigned usc_slot = 2; /* GENERAL, PDS, USC as pvr_static_heaps orders them */
+       const pco_precomp_data *precomp =
+          (const pco_precomp_data *)pco_usclib_common[VS_NOP_COMMON];
+@@ -373,7 +379,6 @@ vm_roundtrip(int fd, struct pipe_screen *pscreen)
+ 
+       if (sm.program_bytes == 0) {
+          printf("vm:            FAIL: no firmware program bytes were written\n");
+-         pvr_static_memory_fini(vm, &sm);
+          goto out;
+       }
+ 
+@@ -419,7 +424,6 @@ vm_roundtrip(int fd, struct pipe_screen *pscreen)
+       printf("vm:            firmware programs: VDM sync verified at the kernel's USC "
+              "vdm_sync offset, PDS launcher and pixel-event programs generated "
+              "(%u bytes counted)\n", sm.program_bytes);
+-      pvr_static_memory_fini(vm, &sm);
+    }
+ 
+    /* A kernel GPU context - the handle every job is submitted against. This is the first
+@@ -1130,9 +1134,16 @@ real_job_done:
+                   printf("\n");
+                }
+ 
+-               /* The real thing runs FIRST, while the GPU is known-good. Diagnostics that submit
+-                * speculative shapes go after it. */
+-               if (pvr_job_submit_render(vm, gpu_ctx.handle, gstream, glen, fstream, f2,
++               /* Round-9 bisect: the same geometry stream alone. If this completes, the geometry
++                * phase is sound and the fault seen with the combined kick comes from the fragment
++                * side (its PDS background-program words are still zero). */
++               if (getenv("PVR_PROBE_GEOM_ONLY")) {
++                  const bool gdone = pvr_job_submit_geom_sync(vm, gpu_ctx.handle, gstream, glen,
++                                                              dset_handle, 0, 2000);
++
++                  printf("hwrt:          geometry-only (draw stream) %s\n",
++                         gdone ? "COMPLETED" : "did not complete in 2 s");
++               } else if (pvr_job_submit_render(vm, gpu_ctx.handle, gstream, glen, fstream, f2,
+                                          dset_handle, 0)) {
+                   uint32_t changed = 0;
+                   unsigned waited_us = 0;
+diff --git a/src/gallium/drivers/pvr_native/pvr_static.c b/src/gallium/drivers/pvr_native/pvr_static.c
+index 723838c0..965b1851 100644
+--- a/src/gallium/drivers/pvr_native/pvr_static.c
++++ b/src/gallium/drivers/pvr_native/pvr_static.c
+@@ -4,6 +4,7 @@
+ #include "pvr_static.h"
+ 
+ #include <inttypes.h>
++#include <stdlib.h>
+ #include <string.h>
+ 
+ #include "drm-uapi/pvr_drm.h"
+@@ -363,6 +364,36 @@ pvr_static_ctx_switch_init(struct pvr_vm *vm, const struct pvr_device_info *dev_
+          return false;
+    }
+ 
++   /* Round-9 diagnostic: replace one of the context-switch task programs' data/code offsets with
++    * a deliberately unmapped PDS-heap offset. The firmware's BIF0 fault status then names the
++    * address it actually dereferenced, which identifies which of these pointers the TA follows. */
++   {
++      const char *what = getenv("PVR_PROBE_PATCH_PDS");
++      const uint64_t label = 0x500000;
++
++      if (what != NULL) {
++         for (unsigned i = 0; i < ARRAY_SIZE(cs->programs); i++) {
++            struct pvr_ctx_switch_programs *p = &cs->programs[i];
++
++            if (strcmp(what, "sr_store_data") == 0)
++               p->sr_store.data_offset = label;
++            else if (strcmp(what, "sr_store_code") == 0)
++               p->sr_store.code_offset = label;
++            else if (strcmp(what, "sr_load_data") == 0)
++               p->sr_load.data_offset = label;
++            else if (strcmp(what, "sr_load_code") == 0)
++               p->sr_load.code_offset = label;
++            else if (strcmp(what, "pt_store_data") == 0)
++               p->pt_store.data_offset = label;
++            else if (strcmp(what, "pt_resume_data") == 0)
++               p->pt_resume.data_offset = label;
++            else if (strcmp(what, "pt_resume_code") == 0)
++               p->pt_resume.code_offset = label;
++         }
++         mesa_logi("pvr: PATCH_PDS %s -> PDS+0x%" PRIx64, what, label);
++      }
++   }
++
+    (void)pds;
+    return true;
+ }
+diff --git a/src/gallium/drivers/pvr_native/pvr_vm.c b/src/gallium/drivers/pvr_native/pvr_vm.c
+index e0849e27..c87f708f 100644
+--- a/src/gallium/drivers/pvr_native/pvr_vm.c
++++ b/src/gallium/drivers/pvr_native/pvr_vm.c
+@@ -192,6 +192,10 @@ pvr_vm_init(int fd, struct pvr_vm *vm)
+       if (area->location_heap_id >= DRM_PVR_HEAP_COUNT)
+          continue;
+ 
++      mesa_logi("pvr: static area heap %u usage %u offset 0x%" PRIx64 " size %" PRIu64,
++                area->location_heap_id, area->area_usage, (uint64_t)area->offset,
++                (uint64_t)area->size);
++
+       switch (area->area_usage) {
+       case DRM_PVR_STATIC_DATA_AREA_EOT:
+          vm->offsets[area->location_heap_id].eot = area->offset;
+-- 
+2.47.3
+

@@ -1,0 +1,150 @@
+From 11bb1217dd797c4f456e43b9a40b84d8886fd2cd Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 16:27:27 +0800
+Subject: [PATCH 129/269] gallium/pvr: the static context state stream, and why
+ it is all zeros
+
+DRM_IOCTL_PVR_CREATE_CONTEXT takes a static context state stream. Its shape is fixed by
+the hardware - a length header, the VDM and GEOM context state base addresses, then two
+groups of store/resume task words - and 192 bytes falls out of that: 4 words plus
+2 groups of 10.
+
+What is worth recording is the CONTENT. Nothing in the powervr kernel backend ever assigns
+those base addresses or task words: only the pvrsrvkm backend fills the geom task words,
+and the two base addresses are assigned nowhere in the tree. So the working Vulkan driver
+on this hardware sends a stream that is all zeros apart from its length, and the length is
+what the kernel actually validates.
+
+Reproducing that is the honest thing to do rather than inventing addresses the reference
+does not use. The fields are left in one place with a comment, so a device that does need
+them has an obvious spot to write.
+
+Verified on the real kernel:
+
+  vm: static context state: 192 bytes, header carries the length
+  --- ALL PASS
+
+The check verifies the length, that the header carries it, and that every byte after the
+header is zero - so if the reference's behaviour is not what is assumed, this fails rather
+than quietly sending something the kernel accepts but the firmware misreads.
+
+Next on this path: the VDM callstack address, which is the last argument CREATE_CONTEXT
+needs.
+---
+ src/gallium/drivers/pvr/pvr_probe.c  | 30 ++++++++++++++++++++++++++
+ src/gallium/drivers/pvr/pvr_static.c | 32 ++++++++++++++++++++++++++++
+ src/gallium/drivers/pvr/pvr_static.h | 14 ++++++++++++
+ 3 files changed, 76 insertions(+)
+
+diff --git a/src/gallium/drivers/pvr/pvr_probe.c b/src/gallium/drivers/pvr/pvr_probe.c
+index 8d59b1e5..fcc80638 100644
+--- a/src/gallium/drivers/pvr/pvr_probe.c
++++ b/src/gallium/drivers/pvr/pvr_probe.c
+@@ -369,6 +369,36 @@ vm_roundtrip(int fd, const struct pvr_device_info *dev_info)
+          }
+       }
+ 
++      /* The static context state stream. The length is what the kernel validates, and
++       * the first word has to carry it - a wrong length here is a context that fails to
++       * create with nothing said about why. */
++      {
++         uint8_t stream[192];
++         const uint32_t len = pvr_static_context_state(stream, sizeof(stream));
++
++         if (len != sizeof(stream) || ((const uint64_t *)stream)[0] != len) {
++            printf("vm:            FAIL: static context state is %u bytes (expected "
++                   "%zu, header %" PRIu64 ")\n", len, sizeof(stream),
++                   ((const uint64_t *)stream)[0]);
++            pvr_static_memory_fini(&vm, &sm);
++            goto out;
++         }
++
++         /* Everything after the length is zero, matching the reference: nothing in the
++          * powervr backend populates it. */
++         for (unsigned b = sizeof(uint64_t); b < len; b++) {
++            if (stream[b] != 0) {
++               printf("vm:            FAIL: static context state byte %u is non-zero\n",
++                      b);
++               pvr_static_memory_fini(&vm, &sm);
++               goto out;
++            }
++         }
++
++         printf("vm:            static context state: %u bytes, header carries the "
++                "length\n", len);
++      }
++
+       printf("vm:            firmware programs: VDM sync verified at the kernel's USC "
+              "vdm_sync offset, PDS launcher and pixel-event programs generated "
+              "(%u bytes counted)\n", sm.program_bytes);
+diff --git a/src/gallium/drivers/pvr/pvr_static.c b/src/gallium/drivers/pvr/pvr_static.c
+index 9fc25fc8..d6f6dca7 100644
+--- a/src/gallium/drivers/pvr/pvr_static.c
++++ b/src/gallium/drivers/pvr/pvr_static.c
+@@ -135,6 +135,38 @@ pvr_fill_pixel_event(struct pvr_vm *vm, const struct pvr_device_info *dev_info,
+    return true;
+ }
+ 
++uint32_t
++pvr_static_context_state(uint8_t *stream, uint32_t stream_size)
++{
++   /* Layout, in 64-bit words:
++    *   0            length in bytes (written last, once it is known)
++    *   1            VDM context state base address
++    *   2            unused, zeroed
++    *   3            GEOM context state base address
++    *   4..          2 entries of {store task0, task1, task2, 0, 0,
++    *                              resume task0, task1, task2, 0, 0}
++    * Tasks 3 and 4 of each group are unused and zeroed, which is why each group occupies
++    * five words rather than three. */
++   const uint32_t nr_geom_groups = 2;
++   const uint32_t words = 4 + nr_geom_groups * 10;
++   const uint32_t length = words * sizeof(uint64_t);
++
++   if (length > stream_size) {
++      mesa_loge("pvr: static context state needs %u bytes, have %u", length,
++                stream_size);
++      return 0;
++   }
++
++   memset(stream, 0, length);
++
++   /* The addresses and task words stay zero because the reference does not populate them
++    * either; see the note in the header. Set here in one place so that a device which
++    * does need them has an obvious spot to write. */
++   ((uint64_t *)stream)[0] = length;
++
++   return length;
++}
++
+ bool
+ pvr_static_memory_init(struct pvr_vm *vm, const struct pvr_device_info *dev_info,
+                        struct pvr_static_memory *sm)
+diff --git a/src/gallium/drivers/pvr/pvr_static.h b/src/gallium/drivers/pvr/pvr_static.h
+index b4bd8f9e..fd9012cf 100644
+--- a/src/gallium/drivers/pvr/pvr_static.h
++++ b/src/gallium/drivers/pvr/pvr_static.h
+@@ -34,6 +34,20 @@ struct pvr_static_memory {
+    unsigned program_bytes; /* total written, for the log and the check */
+ };
+ 
++/* The static context state stream handed to DRM_IOCTL_PVR_CREATE_CONTEXT.
++ *
++ * Its shape is fixed by the hardware: a length header, then the VDM and GEOM context
++ * state base addresses and two entries of store/resume task words. What is worth
++ * recording is the CONTENT: nothing in the powervr kernel backend ever assigns those
++ * addresses or task words - only the pvrsrvkm backend fills them, and even there the
++ * task words are read from a structure nothing writes. So the working Vulkan driver on
++ * this hardware sends a stream that is all zeros apart from its length, and the length
++ * is what the kernel actually validates. Reproducing that is the honest thing to do
++ * rather than inventing addresses the reference does not use.
++ *
++ * Returns the stream length in bytes, or 0 on failure. */
++uint32_t pvr_static_context_state(uint8_t *stream, uint32_t stream_size);
++
+ bool pvr_static_memory_init(struct pvr_vm *vm,
+                             const struct pvr_device_info *dev_info,
+                             struct pvr_static_memory *sm);
+-- 
+2.47.3
+

@@ -1,0 +1,1632 @@
+[1418538285] : Host Sync Partition marker: 4
+[1418538303] : KCCB Slot 108: Return value 1
+[1418538343] : Bg Task complete DM Bitfield: 1
+[1418538352] : Kick MTS Irq task DM=0
+[1418538369] : Irq Task (EVENT_STATUS=0x00000000)
+[1418538420] : Check Pow state: Int: 0x6, Ext: 0x3, Pow flags: 0x0, Fence Counters: Check: 16 - Update: 16
+[1418538435] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1418538463] : Irq Task complete.
+[1418802006] : Bg Task OSid = 0
+[1418802027] : KCCB Slot 109: Cmd=0x2abc006b, OSid=0
+[1418802043] : OS requested forced IDLE, pow flags: 0x0
+[1418802060] : Bg Task complete DM Bitfield: 1
+[1418802066] : Kick MTS Irq task DM=0
+[1418802078] : Irq Task (EVENT_STATUS=0x00000000)
+[1418802099] : Check Pow state: Int: 0x6, Ext: 0x3, Pow flags: 0x40000, Fence Counters: Check: 16 - Update: 17
+[1418802108] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1418802126] : Irq Task complete.
+[1418802140] : Bg Task OSid = 0
+[1418802149] : Bg Task complete DM Bitfield: 1
+[1418802157] : Kick MTS Irq task DM=0
+[1418802164] : Irq Task (EVENT_STATUS=0x00000000)
+[1418802181] : Check Pow state: Int: 0x6, Ext: 0x3, Pow flags: 0x40000, Fence Counters: Check: 17 - Update: 17
+[1418802190] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1418802213] : Irq Task complete.
+[1418802456] : Bg Task OSid = 0
+[1418802475] : KCCB Slot 110: Cmd=0x2abc006b, OSid=0
+[1418802487] : OS requested pow off (forced = 1), pow flags: 0x80000
+[1418802508] : Bg Task complete DM Bitfield: 1
+[1418802515] : Kick MTS Irq task DM=0
+[1418802523] : Irq Task (EVENT_STATUS=0x00000000)
+[1418802546] : Check Pow state: Int: 0x6, Ext: 0x2, Pow flags: 0xa0000, Fence Counters: Check: 17 - Update: 18
+[1418802557] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1418802574] : Irq Task complete.
+[1418802587] : Bg Task OSid = 0
+[1418802598] : Bg Task complete DM Bitfield: 1
+[1418802604] : Kick MTS Irq task DM=0
+[1418802612] : Irq Task (EVENT_STATUS=0x00000000)
+[1418802634] : Check Pow state: Int: 0x6, Ext: 0x2, Pow flags: 0xa0000, Fence Counters: Check: 18 - Update: 18
+[1418802643] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1418802653] : GPU ready to be powered down. Pow state int: 0x6, ext: 0x2, flags: 0xa0000
+[1418802668] : Irq Task complete.
+[1418802680] : GPU units deinit
+[1418802709] : GPU deinit
+[1418802716] : GPIO disabled
+[163] : State of firmware's private data at boot time: 1 (0 = uninitialised, 1 = initialised); Fw State Flags = 0x00000001
+[187] : OSid 0 fw state transition request: from 2 to 0 (0-offline 1-ready 2-active 3-offloading). Status 1 (1-ok 0-fail)
+[220] : Core clock set to 1104000000 Hz
+[230] : Active PM latency set to 10ms. Core clock: 1104000000 Hz
+[261] : GPU init
+[267] : GPIO enabled
+[289] : Host Sync Partition marker: 5
+[320] : Bg Task OSid = 0
+[353] : KCCB Slot 111: Cmd=0x2abc0066, OSid=0
+[412] : KCCB Slot 111: Return value 1
+[448] : Bg Task complete DM Bitfield: 1
+[457] : Kick MTS Irq task DM=0
+[476] : Irq Task (EVENT_STATUS=0x00000000)
+[525] : Check Pow state: Int: 0x1, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 18 - Update: 18
+[539] : Idle timer start. Pow state int: 0x1, ext: 0x1, flags: 0x0
+[565] : Irq Task complete.
+[583] : Bg Task OSid = 0
+[624] : Bg Task complete DM Bitfield: 1
+[632] : Kick MTS Irq task DM=0
+[642] : Irq Task (EVENT_STATUS=0x00000000)
+[663] : Check Pow state: Int: 0x1, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 18 - Update: 18
+[683] : Irq Task complete.
+[1489] : Bg Task OSid = 0
+[1510] : KCCB Slot 112: Cmd=0x2abc0065, OSid=0
+[1538] : cCCB Woff update = 200, DM = 2, FWCtx = 0xc0085000
+[1581] : Kick MTS Irq task DM=0
+[1599] : Irq Task (EVENT_STATUS=0x00000000)
+[1668] : Ready-to-run debug OSid = 0, DM = 2, item = 0xc0085000
+[1686] : Client command header DM = 2, client CCB = 0xc0070000, cmd = 0xc0070000
+[1701] : PM running primary config (Core 0)
+[1771] : GPU Units init (# mask: 0x1)
+[1792] : Cancel power off request int: 0x2, ext: 0x1, pow flags: 0x0
+[1809] : Cancel idle timer. Pow state int: 0x2, ext: 0x1, flags: 0x0
+[1829] : Activate MemCtx=0xc002c000 DM=2 secure=0
+[1840] : Setup register set=-1 DM=2, PC address=0x000000014856e000, OSid=0, NewPCRegRequired=1
+[1849] : Alloc PC set 2 as register range [3 - 3]
+[1874] : Grab reg set 2 refcount now 1
+[1937] : Load  Freelist 0xc0086000 type: 0 (0:local,1:global) for PMDM0: FL Total Pages 32 (max=32,grow size=0), FL-addr = 0x00000080003b9000, stacktop = 0x000000000000001f, Alloc Page Count = 0, Alloc MMU Page Count = 0
+[1966] : Load  Freelist 0xc002d000 type: 1 (0:local,1:global) for PMDM0: FL Total Pages 448 (max=65536,grow size=256), FL-addr = 0x0000008000048900, stacktop = 0x00000000000001bf, Alloc Page Count = 0, Alloc MMU Page Count = 0
+[1980] : CONTEXT_PB_BASE set to 0x3, FL different between TA/3D: local: 1, global: 1
+[2009] : TA RTData 0xc0088000 loaded on HW context 0
+[2020] : TA Buffers: FWCtx 0xc0085000, RTData 0xc0088000, VHeap 0x00000080003ba000, TPC 0x00000080003bb000 (MemCtx 0xc002c000)
+[2067] : TE Region headers base 0x00000080003be000 (RGNHDR Init: 1)
+[2095] : Is TA: 1, finished: 0 on HW 0 (HWRTData = 0xc0088000, MemCtx = 0xc002c000). FL different between TA/3D: global:1, local:2
+[2110] : UFL-TA-Base: 0x0000008000048900 (SP = 447, 4PB = 0, 4PT = 0), FL-TA-Base: 0x00000080003b9000 (SP = 31, 4PB = 0, 4PT = 0)
+[2123] : ALIST0 SP = 0, MLIST0 SP = 0 (VCE 0x0000000000000000, TE 0x0000000000000000, ALIST 0x0000000000000000)
+[2139] : Kick TA: FWCtx 0xc0085000 @ 0, RTD 0xc0088000, First kick:1, Last kick:1, CSW resume:0. (PID:199676, prio:1, frame:0, ext:0x00000001, int:0x00000001)
+[2205] : Check Pow state: Int: 0x2, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 18 - Update: 18
+[2243] : Irq Task complete.
+[2259] : Irq Task (EVENT_STATUS=0x00000020)
+[2278] : PM running primary config (Core 0)
+[2290] : TA finished
+[2311] : Is TA: 1, finished: 1 on HW 0 (HWRTData = 0xc0088000, MemCtx = 0xc002c000). FL different between TA/3D: global:1, local:2
+[2328] : UFL-TA-Base: 0x0000008000048900 (SP = 447, 4PB = 0, 4PT = 0), FL-TA-Base: 0x00000080003b9000 (SP = 31, 4PB = 0, 4PT = 0)
+[2341] : ALIST0 SP = 0, MLIST0 SP = 0 (VCE 0x0000000000000000, TE 0x0000000000000000, ALIST 0x0000000000000000)
+[2354] : TA RTData 0xc0088000 finished on HW context 0
+[2368] : Perform TPC flush.
+[2420] : UFO Updates for FWCtx 0xc0085000 @ 152
+[2433] : UFO Update: [0xc0079000] = 0x00000001
+[2478] : Deactivate MemCtx=0xc002c000
+[2489] : Ungrab reg set 2 refcount now 0
+[2539] : Check Pow state: Int: 0x2, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 18 - Update: 19
+[2559] : Initiate powoff query for RD-DMs.
+[2594] : Irq Task complete.
+[2615] : Bg Task complete DM Bitfield: 1
+[2623] : Kick MTS Irq task DM=0
+[2634] : Irq Task (EVENT_STATUS=0x00000000)
+[2653] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 18 - Update: 20
+[2660] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[2678] : Irq Task complete.
+[2694] : Bg Task OSid = 0
+[2721] : Bg Task complete DM Bitfield: 1
+[2729] : Kick MTS Irq task DM=0
+[2737] : Irq Task (EVENT_STATUS=0x00000000)
+[2758] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 20 - Update: 20
+[2765] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[2778] : Idle timer start. Pow state int: 0x6, ext: 0x1, flags: 0x0
+[2800] : Irq Task complete.
+[17498] : Bg Task OSid = 0
+[17520] : KCCB Slot 113: Cmd=0x2abc006a, OSid=0
+[17585] : FwCommonContext [0xc0031000] cleaned
+[17599] : KCCB Slot 113: Return value 1
+[17633] : Bg Task complete DM Bitfield: 1
+[17640] : Kick MTS Irq task DM=0
+[17658] : Irq Task (EVENT_STATUS=0x00000000)
+[17704] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 20 - Update: 20
+[17711] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[17733] : Irq Task complete.
+[17749] : Bg Task OSid = 0
+[17770] : KCCB Slot 114: Cmd=0x2abc0066, OSid=0
+[17824] : KCCB Slot 114: Return value 1
+[17857] : Bg Task complete DM Bitfield: 1
+[17863] : Kick MTS Irq task DM=0
+[17880] : Irq Task (EVENT_STATUS=0x00000000)
+[17922] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 20 - Update: 20
+[17929] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[17950] : Irq Task complete.
+[17967] : Bg Task OSid = 0
+[17988] : KCCB Slot 115: Cmd=0x2abc0066, OSid=0
+[18043] : KCCB Slot 115: Return value 1
+[18081] : Bg Task complete DM Bitfield: 1
+[18087] : Kick MTS Irq task DM=0
+[18105] : Irq Task (EVENT_STATUS=0x00000000)
+[18150] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 20 - Update: 20
+[18157] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[18184] : Irq Task complete.
+[18203] : Bg Task OSid = 0
+[18221] : KCCB Slot 116: Cmd=0x2abc0066, OSid=0
+[18269] : KCCB Slot 116: Return value 1
+[18304] : Bg Task complete DM Bitfield: 1
+[18311] : Kick MTS Irq task DM=0
+[18330] : Irq Task (EVENT_STATUS=0x00000000)
+[18374] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 20 - Update: 20
+[18381] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[18402] : Irq Task complete.
+[18417] : Bg Task OSid = 0
+[18434] : KCCB Slot 117: Cmd=0x2abc0066, OSid=0
+[18487] : KCCB Slot 117: Return value 1
+[18522] : Bg Task complete DM Bitfield: 1
+[18530] : Kick MTS Irq task DM=0
+[18547] : Irq Task (EVENT_STATUS=0x00000000)
+[18592] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 20 - Update: 20
+[18600] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[18620] : Irq Task complete.
+[18635] : Bg Task OSid = 0
+[18655] : KCCB Slot 118: Cmd=0x2abc0066, OSid=0
+[18705] : KCCB Slot 118: Return value 1
+[18740] : Bg Task complete DM Bitfield: 1
+[18748] : Kick MTS Irq task DM=0
+[18766] : Irq Task (EVENT_STATUS=0x00000000)
+[18811] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 20 - Update: 20
+[18818] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[18843] : Irq Task complete.
+[18899] : Bg Task OSid = 0
+[18918] : KCCB Slot 119: Cmd=0x2abc006a, OSid=0
+[18978] : FwCommonContext [0xc0062000] cleaned
+[18993] : KCCB Slot 119: Return value 1
+[19026] : Bg Task complete DM Bitfield: 1
+[19033] : Kick MTS Irq task DM=0
+[19047] : Irq Task (EVENT_STATUS=0x00000000)
+[19091] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 20 - Update: 20
+[19100] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[19124] : Irq Task complete.
+[19142] : Bg Task OSid = 0
+[19162] : KCCB Slot 120: Cmd=0x2abc0066, OSid=0
+[19210] : KCCB Slot 120: Return value 1
+[19245] : Bg Task complete DM Bitfield: 1
+[19251] : Kick MTS Irq task DM=0
+[19269] : Irq Task (EVENT_STATUS=0x00000000)
+[19315] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 20 - Update: 20
+[19322] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[19343] : Irq Task complete.
+[19360] : Bg Task OSid = 0
+[19380] : KCCB Slot 121: Cmd=0x2abc0066, OSid=0
+[19428] : KCCB Slot 121: Return value 1
+[19463] : Bg Task complete DM Bitfield: 1
+[19471] : Kick MTS Irq task DM=0
+[19487] : Irq Task (EVENT_STATUS=0x00000000)
+[19533] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 20 - Update: 20
+[19540] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[19564] : Irq Task complete.
+[19580] : Bg Task OSid = 0
+[19599] : KCCB Slot 122: Cmd=0x2abc0066, OSid=0
+[19646] : KCCB Slot 122: Return value 1
+[19681] : Bg Task complete DM Bitfield: 1
+[19687] : Kick MTS Irq task DM=0
+[19702] : Irq Task (EVENT_STATUS=0x00000000)
+[19745] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 20 - Update: 20
+[19752] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[19773] : Irq Task complete.
+[19789] : Bg Task OSid = 0
+[19809] : KCCB Slot 123: Cmd=0x2abc0066, OSid=0
+[19858] : KCCB Slot 123: Return value 1
+[19892] : Bg Task complete DM Bitfield: 1
+[19899] : Kick MTS Irq task DM=0
+[19915] : Irq Task (EVENT_STATUS=0x00000000)
+[19959] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 20 - Update: 20
+[19970] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[19991] : Irq Task complete.
+[20008] : Bg Task OSid = 0
+[20029] : KCCB Slot 124: Cmd=0x2abc0066, OSid=0
+[20082] : KCCB Slot 124: Return value 1
+[20117] : Bg Task complete DM Bitfield: 1
+[20124] : Kick MTS Irq task DM=0
+[20141] : Irq Task (EVENT_STATUS=0x00000000)
+[20185] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 20 - Update: 20
+[20194] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[20220] : Irq Task complete.
+[20237] : Bg Task OSid = 0
+[20258] : KCCB Slot 125: Cmd=0x2abc006a, OSid=0
+[20321] : FwCommonContext [0xc006e000] cleaned
+[20336] : KCCB Slot 125: Return value 1
+[20369] : Bg Task complete DM Bitfield: 1
+[20376] : Kick MTS Irq task DM=0
+[20390] : Irq Task (EVENT_STATUS=0x00000000)
+[20434] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 20 - Update: 20
+[20442] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[20463] : Irq Task complete.
+[20478] : Bg Task OSid = 0
+[20501] : KCCB Slot 126: Cmd=0x2abc0066, OSid=0
+[20552] : KCCB Slot 126: Return value 1
+[20588] : Bg Task complete DM Bitfield: 1
+[20595] : Kick MTS Irq task DM=0
+[20613] : Irq Task (EVENT_STATUS=0x00000000)
+[20653] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 20 - Update: 20
+[20660] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[20686] : Irq Task complete.
+[20704] : Bg Task OSid = 0
+[20720] : KCCB Slot 127: Cmd=0x2abc0066, OSid=0
+[20771] : KCCB Slot 127: Return value 1
+[20806] : Bg Task complete DM Bitfield: 1
+[20813] : Kick MTS Irq task DM=0
+[20831] : Irq Task (EVENT_STATUS=0x00000000)
+[20876] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 20 - Update: 20
+[20885] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[20906] : Irq Task complete.
+[20922] : Bg Task OSid = 0
+[20943] : KCCB Slot 0: Cmd=0x2abc0066, OSid=0
+[20993] : KCCB Slot 0: Return value 1
+[21025] : Bg Task complete DM Bitfield: 1
+[21032] : Kick MTS Irq task DM=0
+[21049] : Irq Task (EVENT_STATUS=0x00000000)
+[21094] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 20 - Update: 20
+[21101] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[21121] : Irq Task complete.
+[21137] : Bg Task OSid = 0
+[21156] : KCCB Slot 1: Cmd=0x2abc0066, OSid=0
+[21207] : KCCB Slot 1: Return value 1
+[21242] : Bg Task complete DM Bitfield: 1
+[21249] : Kick MTS Irq task DM=0
+[21266] : Irq Task (EVENT_STATUS=0x00000000)
+[21309] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 20 - Update: 20
+[21317] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[21340] : Irq Task complete.
+[21355] : Bg Task OSid = 0
+[21374] : KCCB Slot 2: Cmd=0x2abc0066, OSid=0
+[21426] : KCCB Slot 2: Return value 1
+[21461] : Bg Task complete DM Bitfield: 1
+[21468] : Kick MTS Irq task DM=0
+[21485] : Irq Task (EVENT_STATUS=0x00000000)
+[21532] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 20 - Update: 20
+[21545] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[21568] : Irq Task complete.
+[21586] : Bg Task OSid = 0
+[21602] : KCCB Slot 3: Cmd=0x2abc0066, OSid=0
+[21653] : KCCB Slot 3: Return value 1
+[21688] : Bg Task complete DM Bitfield: 1
+[21696] : Kick MTS Irq task DM=0
+[21715] : Irq Task (EVENT_STATUS=0x00000000)
+[21759] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 20 - Update: 20
+[21769] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[21792] : Irq Task complete.
+[21808] : Bg Task OSid = 0
+[21826] : KCCB Slot 4: Cmd=0x2abc0066, OSid=0
+[21878] : KCCB Slot 4: Return value 1
+[21912] : Bg Task complete DM Bitfield: 1
+[21920] : Kick MTS Irq task DM=0
+[21937] : Irq Task (EVENT_STATUS=0x00000000)
+[21981] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 20 - Update: 20
+[21995] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[22018] : Irq Task complete.
+[22033] : Bg Task OSid = 0
+[22051] : KCCB Slot 5: Cmd=0x2abc0066, OSid=0
+[22106] : KCCB Slot 5: Return value 1
+[22138] : Bg Task complete DM Bitfield: 1
+[22147] : Kick MTS Irq task DM=0
+[22164] : Irq Task (EVENT_STATUS=0x00000000)
+[22211] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 20 - Update: 20
+[22219] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[22242] : Irq Task complete.
+[22257] : Bg Task OSid = 0
+[22277] : KCCB Slot 6: Cmd=0x2abc0066, OSid=0
+[22326] : KCCB Slot 6: Return value 1
+[22362] : Bg Task complete DM Bitfield: 1
+[22369] : Kick MTS Irq task DM=0
+[22386] : Irq Task (EVENT_STATUS=0x00000000)
+[22427] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 20 - Update: 20
+[22435] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[22455] : Irq Task complete.
+[22471] : Bg Task OSid = 0
+[22486] : KCCB Slot 7: Cmd=0x2abc0066, OSid=0
+[22534] : KCCB Slot 7: Return value 1
+[22569] : Bg Task complete DM Bitfield: 1
+[22576] : Kick MTS Irq task DM=0
+[22593] : Irq Task (EVENT_STATUS=0x00000000)
+[22638] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 20 - Update: 20
+[22645] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[22671] : Irq Task complete.
+[22687] : Bg Task OSid = 0
+[22706] : KCCB Slot 8: Cmd=0x2abc0066, OSid=0
+[22761] : KCCB Slot 8: Return value 1
+[22794] : Bg Task complete DM Bitfield: 1
+[22802] : Kick MTS Irq task DM=0
+[22819] : Irq Task (EVENT_STATUS=0x00000000)
+[22866] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 20 - Update: 20
+[22877] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[22902] : Irq Task complete.
+[22916] : Bg Task OSid = 0
+[22934] : KCCB Slot 9: Cmd=0x2abc0066, OSid=0
+[22986] : KCCB Slot 9: Return value 1
+[23022] : Bg Task complete DM Bitfield: 1
+[23031] : Kick MTS Irq task DM=0
+[23048] : Irq Task (EVENT_STATUS=0x00000000)
+[23091] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 20 - Update: 20
+[23099] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[23119] : Irq Task complete.
+[23135] : Bg Task OSid = 0
+[23149] : KCCB Slot 10: Cmd=0x2abc0066, OSid=0
+[23199] : KCCB Slot 10: Return value 1
+[23236] : Bg Task complete DM Bitfield: 1
+[23243] : Kick MTS Irq task DM=0
+[23261] : Irq Task (EVENT_STATUS=0x00000000)
+[23304] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 20 - Update: 20
+[23311] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[23332] : Irq Task complete.
+[23349] : Bg Task OSid = 0
+[23368] : KCCB Slot 11: Cmd=0x2abc0066, OSid=0
+[23416] : KCCB Slot 11: Return value 1
+[23448] : Bg Task complete DM Bitfield: 1
+[23456] : Kick MTS Irq task DM=0
+[23474] : Irq Task (EVENT_STATUS=0x00000000)
+[23517] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 20 - Update: 20
+[23525] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[23548] : Irq Task complete.
+[23565] : Bg Task OSid = 0
+[23586] : KCCB Slot 12: Cmd=0x2abc0066, OSid=0
+[23635] : KCCB Slot 12: Return value 1
+[23672] : Bg Task complete DM Bitfield: 1
+[23679] : Kick MTS Irq task DM=0
+[23696] : Irq Task (EVENT_STATUS=0x00000000)
+[23741] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 20 - Update: 20
+[23751] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[23775] : Irq Task complete.
+[23790] : Bg Task OSid = 0
+[23809] : KCCB Slot 13: Cmd=0x2abc0066, OSid=0
+[23859] : KCCB Slot 13: Return value 1
+[23895] : Bg Task complete DM Bitfield: 1
+[23903] : Kick MTS Irq task DM=0
+[23920] : Irq Task (EVENT_STATUS=0x00000000)
+[23965] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 20 - Update: 20
+[23973] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[23997] : Irq Task complete.
+[24011] : Bg Task OSid = 0
+[24030] : KCCB Slot 14: Cmd=0x2abc0066, OSid=0
+[24079] : KCCB Slot 14: Return value 1
+[24114] : Bg Task complete DM Bitfield: 1
+[24121] : Kick MTS Irq task DM=0
+[24138] : Irq Task (EVENT_STATUS=0x00000000)
+[24183] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 20 - Update: 20
+[24191] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[24211] : Irq Task complete.
+[24226] : Bg Task OSid = 0
+[24240] : KCCB Slot 15: Cmd=0x2abc0066, OSid=0
+[24291] : KCCB Slot 15: Return value 1
+[24327] : Bg Task complete DM Bitfield: 1
+[24335] : Kick MTS Irq task DM=0
+[24351] : Irq Task (EVENT_STATUS=0x00000000)
+[24395] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 20 - Update: 20
+[24402] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[24425] : Irq Task complete.
+[24522] : Bg Task OSid = 0
+[24543] : KCCB Slot 16: Cmd=0x2abc0066, OSid=0
+[24593] : KCCB Slot 16: Return value 1
+[24629] : Bg Task complete DM Bitfield: 1
+[24636] : Kick MTS Irq task DM=0
+[24653] : Irq Task (EVENT_STATUS=0x00000000)
+[24698] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 20 - Update: 20
+[24705] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[24733] : Irq Task complete.
+[25435] : Bg Task OSid = 0
+[25454] : KCCB Slot 17: Cmd=0x2abc0066, OSid=0
+[25506] : KCCB Slot 17: Return value 1
+[25541] : Bg Task complete DM Bitfield: 1
+[25548] : Kick MTS Irq task DM=0
+[25566] : Irq Task (EVENT_STATUS=0x00000000)
+[25611] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 20 - Update: 20
+[25619] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[25642] : Irq Task complete.
+[26228] : Bg Task OSid = 0
+[26247] : KCCB Slot 18: Cmd=0x2abc0066, OSid=0
+[26295] : KCCB Slot 18: Return value 1
+[26330] : Bg Task complete DM Bitfield: 1
+[26337] : Kick MTS Irq task DM=0
+[26353] : Irq Task (EVENT_STATUS=0x00000000)
+[26398] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 20 - Update: 20
+[26412] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[26434] : Irq Task complete.
+[27018] : Bg Task OSid = 0
+[27037] : KCCB Slot 19: Cmd=0x2abc0066, OSid=0
+[27083] : KCCB Slot 19: Return value 1
+[27119] : Bg Task complete DM Bitfield: 1
+[27126] : Kick MTS Irq task DM=0
+[27142] : Irq Task (EVENT_STATUS=0x00000000)
+[27186] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 20 - Update: 20
+[27196] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[27216] : Irq Task complete.
+[27231] : Bg Task OSid = 0
+[27246] : KCCB Slot 20: Cmd=0x2abc0066, OSid=0
+[27296] : KCCB Slot 20: Return value 1
+[27330] : Bg Task complete DM Bitfield: 1
+[27337] : Kick MTS Irq task DM=0
+[27356] : Irq Task (EVENT_STATUS=0x00000000)
+[27397] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 20 - Update: 20
+[27405] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[27427] : Irq Task complete.
+[27444] : Bg Task OSid = 0
+[27464] : KCCB Slot 21: Cmd=0x2abc0066, OSid=0
+[27514] : KCCB Slot 21: Return value 1
+[27550] : Bg Task complete DM Bitfield: 1
+[27558] : Kick MTS Irq task DM=0
+[27576] : Irq Task (EVENT_STATUS=0x00000000)
+[27618] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 20 - Update: 20
+[27630] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[27657] : Irq Task complete.
+[27671] : Bg Task OSid = 0
+[27691] : KCCB Slot 22: Cmd=0x2abc0066, OSid=0
+[27738] : KCCB Slot 22: Return value 1
+[27774] : Bg Task complete DM Bitfield: 1
+[27781] : Kick MTS Irq task DM=0
+[27798] : Irq Task (EVENT_STATUS=0x00000000)
+[27843] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 20 - Update: 20
+[27850] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[27871] : Irq Task complete.
+[27886] : Bg Task OSid = 0
+[27900] : KCCB Slot 23: Cmd=0x2abc0066, OSid=0
+[27951] : KCCB Slot 23: Return value 1
+[27987] : Bg Task complete DM Bitfield: 1
+[27994] : Kick MTS Irq task DM=0
+[28011] : Irq Task (EVENT_STATUS=0x00000000)
+[28056] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 20 - Update: 20
+[28065] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[28086] : Irq Task complete.
+[28100] : Bg Task OSid = 0
+[28122] : KCCB Slot 24: Cmd=0x2abc0066, OSid=0
+[28174] : KCCB Slot 24: Return value 1
+[28210] : Bg Task complete DM Bitfield: 1
+[28218] : Kick MTS Irq task DM=0
+[28235] : Irq Task (EVENT_STATUS=0x00000000)
+[28281] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 20 - Update: 20
+[28288] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[28309] : Irq Task complete.
+[28326] : Bg Task OSid = 0
+[28346] : KCCB Slot 25: Cmd=0x2abc0066, OSid=0
+[28393] : KCCB Slot 25: Return value 1
+[28429] : Bg Task complete DM Bitfield: 1
+[28436] : Kick MTS Irq task DM=0
+[28453] : Irq Task (EVENT_STATUS=0x00000000)
+[28498] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 20 - Update: 20
+[28507] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[28529] : Irq Task complete.
+[28549] : Bg Task OSid = 0
+[28568] : KCCB Slot 26: Cmd=0x2abc0066, OSid=0
+[28621] : KCCB Slot 26: Return value 1
+[28656] : Bg Task complete DM Bitfield: 1
+[28663] : Kick MTS Irq task DM=0
+[28679] : Irq Task (EVENT_STATUS=0x00000000)
+[28725] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 20 - Update: 20
+[28736] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[28762] : Irq Task complete.
+[28780] : Bg Task OSid = 0
+[28799] : KCCB Slot 27: Cmd=0x2abc0066, OSid=0
+[28847] : KCCB Slot 27: Return value 1
+[28882] : Bg Task complete DM Bitfield: 1
+[28888] : Kick MTS Irq task DM=0
+[28905] : Irq Task (EVENT_STATUS=0x00000000)
+[28947] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 20 - Update: 20
+[28958] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[28979] : Irq Task complete.
+[28994] : Bg Task OSid = 0
+[29008] : KCCB Slot 28: Cmd=0x2abc0066, OSid=0
+[29059] : KCCB Slot 28: Return value 1
+[29095] : Bg Task complete DM Bitfield: 1
+[29102] : Kick MTS Irq task DM=0
+[29120] : Irq Task (EVENT_STATUS=0x00000000)
+[29162] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 20 - Update: 20
+[29172] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[29196] : Irq Task complete.
+[29210] : Bg Task OSid = 0
+[29225] : KCCB Slot 29: Cmd=0x2abc0066, OSid=0
+[29278] : KCCB Slot 29: Return value 1
+[29313] : Bg Task complete DM Bitfield: 1
+[29321] : Kick MTS Irq task DM=0
+[29339] : Irq Task (EVENT_STATUS=0x00000000)
+[29382] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 20 - Update: 20
+[29394] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[29417] : Irq Task complete.
+[29434] : Bg Task OSid = 0
+[29453] : KCCB Slot 30: Cmd=0x2abc0066, OSid=0
+[29502] : KCCB Slot 30: Return value 1
+[29537] : Bg Task complete DM Bitfield: 1
+[29544] : Kick MTS Irq task DM=0
+[29560] : Irq Task (EVENT_STATUS=0x00000000)
+[29603] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 20 - Update: 20
+[29614] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[29638] : Irq Task complete.
+[29653] : Bg Task OSid = 0
+[29672] : KCCB Slot 31: Cmd=0x2abc0066, OSid=0
+[29720] : KCCB Slot 31: Return value 1
+[29755] : Bg Task complete DM Bitfield: 1
+[29762] : Kick MTS Irq task DM=0
+[29778] : Irq Task (EVENT_STATUS=0x00000000)
+[29820] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 20 - Update: 20
+[29828] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[29849] : Irq Task complete.
+[29863] : Bg Task OSid = 0
+[29882] : KCCB Slot 32: Cmd=0x2abc0066, OSid=0
+[29932] : KCCB Slot 32: Return value 1
+[29968] : Bg Task complete DM Bitfield: 1
+[29975] : Kick MTS Irq task DM=0
+[29993] : Irq Task (EVENT_STATUS=0x00000000)
+[30038] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 20 - Update: 20
+[30049] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[30075] : Irq Task complete.
+[30089] : Bg Task OSid = 0
+[30108] : KCCB Slot 33: Cmd=0x2abc0066, OSid=0
+[30161] : KCCB Slot 33: Return value 1
+[30196] : Bg Task complete DM Bitfield: 1
+[30204] : Kick MTS Irq task DM=0
+[30220] : Irq Task (EVENT_STATUS=0x00000000)
+[30262] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 20 - Update: 20
+[30270] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[30293] : Irq Task complete.
+[30308] : Bg Task OSid = 0
+[30327] : KCCB Slot 34: Cmd=0x2abc0066, OSid=0
+[30375] : KCCB Slot 34: Return value 1
+[30410] : Bg Task complete DM Bitfield: 1
+[30417] : Kick MTS Irq task DM=0
+[30434] : Irq Task (EVENT_STATUS=0x00000000)
+[30480] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 20 - Update: 20
+[30488] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[30511] : Irq Task complete.
+[30560] : Bg Task OSid = 0
+[30580] : KCCB Slot 35: Cmd=0x2abc006a, OSid=0
+[30596] : Received cleanup request for HWRTData [0xc0089000]
+[30648] : KCCB Slot 35: Return value 1
+[30685] : Bg Task complete DM Bitfield: 1
+[30694] : Kick MTS Irq task DM=0
+[30710] : Irq Task (EVENT_STATUS=0x00000000)
+[30753] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 20 - Update: 20
+[30763] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[30787] : Irq Task complete.
+[30804] : Bg Task OSid = 0
+[30822] : KCCB Slot 36: Cmd=0x2abc0066, OSid=0
+[30872] : KCCB Slot 36: Return value 1
+[30908] : Bg Task complete DM Bitfield: 1
+[30915] : Kick MTS Irq task DM=0
+[30933] : Irq Task (EVENT_STATUS=0x00000000)
+[30977] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 20 - Update: 20
+[30988] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[31011] : Irq Task complete.
+[31026] : Bg Task OSid = 0
+[31039] : KCCB Slot 37: Cmd=0x2abc006a, OSid=0
+[31057] : Received cleanup request for HWRTData [0xc0088000]
+[31071] : HWRTData [0xc0088000] HW Context 0 cleaned, executed commands = 1
+[31121] : KCCB Slot 37: Return value 1
+[31162] : Bg Task complete DM Bitfield: 1
+[31169] : Kick MTS Irq task DM=0
+[31185] : Irq Task (EVENT_STATUS=0x00000000)
+[31229] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 20 - Update: 20
+[31237] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[31259] : Irq Task complete.
+[31274] : Bg Task OSid = 0
+[31293] : KCCB Slot 38: Cmd=0x2abc0066, OSid=0
+[31348] : KCCB Slot 38: Return value 1
+[31384] : Bg Task complete DM Bitfield: 1
+[31390] : Kick MTS Irq task DM=0
+[31405] : Irq Task (EVENT_STATUS=0x00000000)
+[31453] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 20 - Update: 20
+[31461] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[31483] : Irq Task complete.
+[31500] : Bg Task OSid = 0
+[31520] : KCCB Slot 39: Cmd=0x2abc0066, OSid=0
+[31572] : KCCB Slot 39: Return value 1
+[31607] : Bg Task complete DM Bitfield: 1
+[31616] : Kick MTS Irq task DM=0
+[31634] : Irq Task (EVENT_STATUS=0x00000000)
+[31683] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 20 - Update: 20
+[31690] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[31714] : Irq Task complete.
+[31729] : Bg Task OSid = 0
+[31748] : KCCB Slot 40: Cmd=0x2abc006a, OSid=0
+[31773] : PM running primary config (Core 0)
+[31788] : Store Freelist 0xc0086000 type: 0 (0:local,1:global) for PMDM0: FL Total Pages 32 (max=32,grow size=0), FL-addr = 0x00000080003b9000, stacktop = 0x000000000000001f, Alloc Page Count = 0, Alloc MMU Page Count = 0
+[31803] : PM running primary config (Core 0)
+[31813] : Store Freelist 0xc002d000 type: 1 (0:local,1:global) for PMDM0: FL Total Pages 448 (max=65536,grow size=256), FL-addr = 0x0000008000048900, stacktop = 0x00000000000001bf, Alloc Page Count = 0, Alloc MMU Page Count = 0
+[31857] : Freelist [0xc0086000] cleaned
+[31872] : KCCB Slot 40: Return value 1
+[31896] : KCCB Slot 41: Cmd=0x2abc006a, OSid=0
+[31954] : FwCommonContext [0xc0085098] cleaned
+[31966] : KCCB Slot 41: Return value 1
+[31994] : Bg Task complete DM Bitfield: 1
+[32001] : Kick MTS Irq task DM=0
+[32017] : Irq Task (EVENT_STATUS=0x00000000)
+[32059] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 20 - Update: 20
+[32072] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[32099] : Irq Task complete.
+[32113] : Bg Task OSid = 0
+[32135] : KCCB Slot 42: Cmd=0x2abc0066, OSid=0
+[32187] : KCCB Slot 42: Return value 1
+[32214] : KCCB Slot 43: Cmd=0x2abc0066, OSid=0
+[32258] : KCCB Slot 43: Return value 1
+[32281] : KCCB Slot 44: Cmd=0x2abc006a, OSid=0
+[32338] : Freelist [0xc002d000] cleaned
+[32353] : KCCB Slot 44: Return value 1
+[32381] : Bg Task complete DM Bitfield: 1
+[32389] : Kick MTS Irq task DM=0
+[32404] : Irq Task (EVENT_STATUS=0x00000000)
+[32454] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 20 - Update: 20
+[32461] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[32484] : Irq Task complete.
+[32500] : Bg Task OSid = 0
+[32523] : KCCB Slot 45: Cmd=0x2abc0066, OSid=0
+[32573] : KCCB Slot 45: Return value 1
+[32609] : Bg Task complete DM Bitfield: 1
+[32617] : Kick MTS Irq task DM=0
+[32634] : Irq Task (EVENT_STATUS=0x00000000)
+[32679] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 20 - Update: 20
+[32686] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[32707] : Irq Task complete.
+[32884] : Bg Task OSid = 0
+[32907] : KCCB Slot 46: Cmd=0x2abc0066, OSid=0
+[32961] : KCCB Slot 46: Return value 1
+[32996] : Bg Task complete DM Bitfield: 1
+[33003] : Kick MTS Irq task DM=0
+[33020] : Irq Task (EVENT_STATUS=0x00000000)
+[33064] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 20 - Update: 20
+[33072] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[33100] : Irq Task complete.
+[33119] : Bg Task OSid = 0
+[33140] : KCCB Slot 47: Cmd=0x2abc0066, OSid=0
+[33189] : KCCB Slot 47: Return value 1
+[33226] : Bg Task complete DM Bitfield: 1
+[33233] : Kick MTS Irq task DM=0
+[33250] : Irq Task (EVENT_STATUS=0x00000000)
+[33297] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 20 - Update: 20
+[33304] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[33330] : Irq Task complete.
+[33407] : Bg Task OSid = 0
+[33428] : KCCB Slot 48: Cmd=0x2abc006a, OSid=0
+[33486] : FwCommonContext [0xc0085000] cleaned
+[33501] : KCCB Slot 48: Return value 1
+[33526] : KCCB Slot 49: Cmd=0x2abc0066, OSid=0
+[33572] : KCCB Slot 49: Return value 1
+[33604] : Bg Task complete DM Bitfield: 1
+[33611] : Kick MTS Irq task DM=0
+[33628] : Irq Task (EVENT_STATUS=0x00000000)
+[33671] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 20 - Update: 20
+[33685] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[33708] : Irq Task complete.
+[33726] : Bg Task OSid = 0
+[33747] : KCCB Slot 50: Cmd=0x2abc0066, OSid=0
+[33799] : KCCB Slot 50: Return value 1
+[33825] : KCCB Slot 51: Cmd=0x2abc0066, OSid=0
+[33866] : KCCB Slot 51: Return value 1
+[33897] : Bg Task complete DM Bitfield: 1
+[33904] : Kick MTS Irq task DM=0
+[33923] : Irq Task (EVENT_STATUS=0x00000000)
+[33970] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 20 - Update: 20
+[33982] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[34007] : Irq Task complete.
+[34026] : Bg Task OSid = 0
+[34046] : KCCB Slot 52: Cmd=0x2abc0066, OSid=0
+[34101] : KCCB Slot 52: Return value 1
+[34137] : Bg Task complete DM Bitfield: 1
+[34144] : Kick MTS Irq task DM=0
+[34161] : Irq Task (EVENT_STATUS=0x00000000)
+[34213] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 20 - Update: 20
+[34222] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[34252] : Irq Task complete.
+[34270] : Bg Task OSid = 0
+[34291] : KCCB Slot 53: Cmd=0x2abc0066, OSid=0
+[34346] : KCCB Slot 53: Return value 1
+[34379] : Bg Task complete DM Bitfield: 1
+[34388] : Kick MTS Irq task DM=0
+[34404] : Irq Task (EVENT_STATUS=0x00000000)
+[34451] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 20 - Update: 20
+[34459] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[34479] : Irq Task complete.
+[34506] : Bg Task OSid = 0
+[34526] : KCCB Slot 54: Cmd=0x2abc0066, OSid=0
+[34581] : KCCB Slot 54: Return value 1
+[34614] : Bg Task complete DM Bitfield: 1
+[34622] : Kick MTS Irq task DM=0
+[34639] : Irq Task (EVENT_STATUS=0x00000000)
+[34682] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 20 - Update: 20
+[34694] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[34714] : Irq Task complete.
+[34731] : Bg Task OSid = 0
+[34748] : KCCB Slot 55: Cmd=0x2abc0066, OSid=0
+[34800] : KCCB Slot 55: Return value 1
+[34831] : Bg Task complete DM Bitfield: 1
+[34838] : Kick MTS Irq task DM=0
+[34854] : Irq Task (EVENT_STATUS=0x00000000)
+[34895] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 20 - Update: 20
+[34907] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[34931] : Irq Task complete.
+[34946] : Bg Task OSid = 0
+[34965] : KCCB Slot 56: Cmd=0x2abc0066, OSid=0
+[35018] : KCCB Slot 56: Return value 1
+[35050] : Bg Task complete DM Bitfield: 1
+[35059] : Kick MTS Irq task DM=0
+[35076] : Irq Task (EVENT_STATUS=0x00000000)
+[35119] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 20 - Update: 20
+[35128] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[35149] : Irq Task complete.
+[43676] : Bg Task OSid = 0
+[43712] : Bg Task complete DM Bitfield: 1
+[43722] : Kick MTS Irq task DM=0
+[43729] : Irq Task (EVENT_STATUS=0x00000000)
+[43750] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 20 - Update: 20
+[43759] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[43779] : Irq Task complete.
+[45915] : Bg Task OSid = 0
+[45942] : GPU idle (might be powered down). Pow state int: 0x6, ext: 0x1, flags: 0x0
+[45972] : Bg Task complete DM Bitfield: 1
+[45982] : Kick MTS Irq task DM=0
+[45993] : Irq Task (EVENT_STATUS=0x00000000)
+[46019] : Check Pow state: Int: 0x6, Ext: 0x3, Pow flags: 0x0, Fence Counters: Check: 20 - Update: 20
+[46028] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[46049] : Irq Task complete.
+[33600348] : Bg Task OSid = 0
+[33600377] : Bg Task complete DM Bitfield: 1
+[33600386] : Kick MTS Irq task DM=0
+[33600394] : Irq Task (EVENT_STATUS=0x00000000)
+[33600418] : Check Pow state: Int: 0x6, Ext: 0x3, Pow flags: 0x0, Fence Counters: Check: 20 - Update: 20
+[33600426] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[33600448] : Irq Task complete.
+[36408695] : Bg Task OSid = 0
+[36408709] : KCCB Slot 57: Cmd=0x2abc00ce, OSid=0
+[208] : Core clock set to 1104000000 Hz
+[226] : Active PM latency set to 10ms. Core clock: 1104000000 Hz
+[259] : GPU init
+[265] : GPIO enabled
+[290] : Host Sync Partition marker: 6
+[339] : Bg Task OSid = 0
+[365] : KCCB Slot 60: Cmd=0x2abc00ce, OSid=0
+[409] : Host Sync Partition marker: 6
+[421] : KCCB Slot 60: Return value 1
+[451] : Bg Task complete DM Bitfield: 1
+[460] : Kick MTS Irq task DM=0
+[475] : Irq Task (EVENT_STATUS=0x00000000)
+[527] : Check Pow state: Int: 0x1, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 22 - Update: 22
+[541] : Idle timer start. Pow state int: 0x1, ext: 0x1, flags: 0x0
+[565] : Irq Task complete.
+[583] : Bg Task OSid = 0
+[620] : Bg Task complete DM Bitfield: 1
+[629] : Kick MTS Irq task DM=0
+[637] : Irq Task (EVENT_STATUS=0x00000000)
+[662] : Check Pow state: Int: 0x1, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 22 - Update: 22
+[683] : Irq Task complete.
+[43678] : Bg Task OSid = 0
+[43709] : GPU idle (might be powered down). Pow state int: 0x1, ext: 0x1, flags: 0x0
+[43728] : Bg Task complete DM Bitfield: 1
+[43737] : Kick MTS Irq task DM=0
+[43747] : Irq Task (EVENT_STATUS=0x00000000)
+[43770] : Check Pow state: Int: 0x1, Ext: 0x3, Pow flags: 0x0, Fence Counters: Check: 22 - Update: 22
+[43795] : Irq Task complete.
+[1057106] : Bg Task OSid = 0
+[1057136] : KCCB Slot 61: Cmd=0x2abc0066, OSid=0
+[1057198] : KCCB Slot 61: Return value 1
+[1057240] : Bg Task complete DM Bitfield: 1
+[1057248] : Kick MTS Irq task DM=0
+[1057265] : Irq Task (EVENT_STATUS=0x00000000)
+[1057316] : Check Pow state: Int: 0x1, Ext: 0x3, Pow flags: 0x0, Fence Counters: Check: 22 - Update: 22
+[1057345] : Irq Task complete.
+[1058364] : Bg Task OSid = 0
+[1058386] : KCCB Slot 62: Cmd=0x2abc0065, OSid=0
+[1058416] : cCCB Woff update = 200, DM = 2, FWCtx = 0xc0085000
+[1058465] : Kick MTS Irq task DM=0
+[1058482] : Irq Task (EVENT_STATUS=0x00000000)
+[1058552] : Ready-to-run debug OSid = 0, DM = 2, item = 0xc0085000
+[1058570] : Client command header DM = 2, client CCB = 0xc0070000, cmd = 0xc0070000
+[1058585] : PM running primary config (Core 0)
+[1058659] : GPU Units init (# mask: 0x1)
+[1058683] : Cancel power off request int: 0x2, ext: 0x3, pow flags: 0x0
+[1058708] : Activate MemCtx=0xc002c000 DM=2 secure=0
+[1058723] : Setup register set=-1 DM=2, PC address=0x0000000110488000, OSid=0, NewPCRegRequired=1
+[1058733] : Alloc PC set 3 as register range [4 - 4]
+[1058757] : Grab reg set 3 refcount now 1
+[1058827] : Load  Freelist 0xc0086000 type: 0 (0:local,1:global) for PMDM0: FL Total Pages 32 (max=32,grow size=0), FL-addr = 0x00000080003b9000, stacktop = 0x000000000000001f, Alloc Page Count = 0, Alloc MMU Page Count = 0
+[1058854] : Load  Freelist 0xc002d000 type: 1 (0:local,1:global) for PMDM0: FL Total Pages 448 (max=65536,grow size=256), FL-addr = 0x0000008000048900, stacktop = 0x00000000000001bf, Alloc Page Count = 0, Alloc MMU Page Count = 0
+[1058869] : CONTEXT_PB_BASE set to 0x3, FL different between TA/3D: local: 1, global: 1
+[1058901] : TA RTData 0xc0088000 loaded on HW context 0
+[1058910] : TA Buffers: FWCtx 0xc0085000, RTData 0xc0088000, VHeap 0x00000080003ba000, TPC 0x00000080003bb000 (MemCtx 0xc002c000)
+[1058961] : TE Region headers base 0x00000080003be000 (RGNHDR Init: 1)
+[1058990] : Is TA: 1, finished: 0 on HW 0 (HWRTData = 0xc0088000, MemCtx = 0xc002c000). FL different between TA/3D: global:1, local:2
+[1059006] : UFL-TA-Base: 0x0000008000048900 (SP = 447, 4PB = 0, 4PT = 0), FL-TA-Base: 0x00000080003b9000 (SP = 31, 4PB = 0, 4PT = 0)
+[1059021] : ALIST0 SP = 0, MLIST0 SP = 0 (VCE 0x0000000000000000, TE 0x0000000000000000, ALIST 0x0000000000000000)
+[1059044] : Kick TA: FWCtx 0xc0085000 @ 0, RTD 0xc0088000, First kick:1, Last kick:1, CSW resume:0. (PID:199947, prio:1, frame:0, ext:0x00000001, int:0x00000001)
+[1059111] : Check Pow state: Int: 0x2, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 22 - Update: 22
+[1059155] : Irq Task complete.
+[1059174] : Irq Task (EVENT_STATUS=0x00000020)
+[1059202] : PM running primary config (Core 0)
+[1059217] : TA finished
+[1059241] : Is TA: 1, finished: 1 on HW 0 (HWRTData = 0xc0088000, MemCtx = 0xc002c000). FL different between TA/3D: global:1, local:2
+[1059259] : UFL-TA-Base: 0x0000008000048900 (SP = 447, 4PB = 0, 4PT = 0), FL-TA-Base: 0x00000080003b9000 (SP = 31, 4PB = 0, 4PT = 0)
+[1059272] : ALIST0 SP = 0, MLIST0 SP = 0 (VCE 0x0000000000000000, TE 0x0000000000000000, ALIST 0x0000000000000000)
+[1059286] : TA RTData 0xc0088000 finished on HW context 0
+[1059303] : Perform TPC flush.
+[1059357] : UFO Updates for FWCtx 0xc0085000 @ 152
+[1059373] : UFO Update: [0xc0079000] = 0x00000001
+[1059417] : Deactivate MemCtx=0xc002c000
+[1059431] : Ungrab reg set 3 refcount now 0
+[1059491] : Check Pow state: Int: 0x2, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 22 - Update: 23
+[1059509] : Initiate powoff query for RD-DMs.
+[1059545] : Irq Task complete.
+[1059566] : Bg Task complete DM Bitfield: 1
+[1059575] : Kick MTS Irq task DM=0
+[1059587] : Irq Task (EVENT_STATUS=0x00000000)
+[1059607] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 22 - Update: 24
+[1059616] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1059632] : Irq Task complete.
+[1059648] : Bg Task OSid = 0
+[1059689] : KCCB Slot 63: Cmd=0x2abc0066, OSid=0
+[1059747] : KCCB Slot 63: Return value 1
+[1059780] : Bg Task complete DM Bitfield: 1
+[1059789] : Kick MTS Irq task DM=0
+[1059807] : Irq Task (EVENT_STATUS=0x00000000)
+[1059856] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 24 - Update: 24
+[1059864] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1059879] : Idle timer start. Pow state int: 0x6, ext: 0x1, flags: 0x0
+[1059906] : Irq Task complete.
+[1059925] : Bg Task OSid = 0
+[1059966] : Bg Task complete DM Bitfield: 1
+[1059975] : Kick MTS Irq task DM=0
+[1059983] : Irq Task (EVENT_STATUS=0x00000000)
+[1060010] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 24 - Update: 24
+[1060018] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1060039] : Irq Task complete.
+[1060051] : Bg Task OSid = 0
+[1060062] : Bg Task complete DM Bitfield: 1
+[1060069] : Kick MTS Irq task DM=0
+[1060078] : Irq Task (EVENT_STATUS=0x00000000)
+[1060095] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 24 - Update: 24
+[1060104] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1060122] : Irq Task complete.
+[1060436] : Bg Task OSid = 0
+[1060461] : KCCB Slot 64: Cmd=0x2abc0066, OSid=0
+[1060512] : KCCB Slot 64: Return value 1
+[1060547] : Bg Task complete DM Bitfield: 1
+[1060555] : Kick MTS Irq task DM=0
+[1060572] : Irq Task (EVENT_STATUS=0x00000000)
+[1060617] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 24 - Update: 24
+[1060630] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1060654] : Irq Task complete.
+[1068181] : Bg Task OSid = 0
+[1068196] : KCCB Slot 65: Cmd=0x2abc0065, OSid=0
+[1068221] : cCCB Woff update = 280, DM = 3, FWCtx = 0xc0031000
+[1068266] : Kick MTS Irq task DM=0
+[1068284] : Irq Task (EVENT_STATUS=0x00000000)
+[1068333] : Ready-to-run debug OSid = 0, DM = 3, item = 0xc0031000
+[1068351] : Client command header DM = 3, client CCB = 0xc004f000, cmd = 0xc004f000
+[1068385] : Activate MemCtx=0xc002c000 DM=3 secure=0
+[1068404] : Setup register set=3 DM=3, PC address=0x0000000110488000, OSid=0, NewPCRegRequired=0
+[1068419] : Grab reg set 3 refcount now 1
+[1068440] : Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x00025000)
+[1068447] :   Phantom 0: USCTiles=6
+[1068474] : Kick 3D TQ: FWCtx 0xc0031000 @ 0, CSW resume:0. (PID:199947, prio:1, frame:0, ext:0x00000002, int:0x00000002)
+[1068534] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 24 - Update: 24
+[1068557] : Any RD-DM pending? 0, Any RD-DM Active? 1
+[1068573] : Cancel power off request int: 0x2, ext: 0x1, pow flags: 0x0
+[1068597] : Cancel idle timer. Pow state int: 0x2, ext: 0x1, flags: 0x0
+[1068659] : Irq Task complete.
+[1068696] : KCCB Slot 66: Cmd=0x2abc0065, OSid=0
+[1068746] : cCCB Woff update = 400, DM = 2, FWCtx = 0xc0085000
+[1068834] : Kick MTS Irq task DM=0
+[1068864] : Irq Task (EVENT_STATUS=0x00000000)
+[1068978] : Ready-to-run debug OSid = 0, DM = 2, item = 0xc0085000
+[1069001] : Client command header DM = 2, client CCB = 0xc0070000, cmd = 0xc00700c8
+[1069023] : PM running primary config (Core 0)
+[1069061] : Activate MemCtx=0xc002c000 DM=2 secure=0
+[1069083] : Setup register set=3 DM=2, PC address=0x0000000110488000, OSid=0, NewPCRegRequired=0
+[1069109] : Grab reg set 3 refcount now 2
+[1069170] : CONTEXT_PB_BASE set to 0x3, FL different between TA/3D: local: 1, global: 1
+[1069200] : TA RTData 0xc0089000 loaded on HW context 0
+[1069212] : TA Buffers: FWCtx 0xc0085000, RTData 0xc0089000, VHeap 0x00000080003ba000, TPC 0x00000080003bb000 (MemCtx 0xc002c000)
+[1069260] : TE Region headers base 0x00000080003be600 (RGNHDR Init: 1)
+[1069286] : Is TA: 1, finished: 0 on HW 0 (HWRTData = 0xc0089000, MemCtx = 0xc002c000). FL different between TA/3D: global:1, local:2
+[1069302] : UFL-TA-Base: 0x0000008000048900 (SP = 447, 4PB = 0, 4PT = 0), FL-TA-Base: 0x00000080003b9000 (SP = 31, 4PB = 0, 4PT = 0)
+[1069315] : ALIST0 SP = 0, MLIST0 SP = 0 (VCE 0x0000000000000000, TE 0x0000000000000000, ALIST 0x0000000000000000)
+[1069335] : Kick TA: FWCtx 0xc0085000 @ 200, RTD 0xc0089000, First kick:1, Last kick:1, CSW resume:0. (PID:199947, prio:1, frame:0, ext:0x00000003, int:0x00000003)
+[1069400] : Check Pow state: Int: 0x2, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 24 - Update: 24
+[1069427] : Irq Task complete.
+[1069442] : Irq Task (EVENT_STATUS=0x00000038)
+[1069463] : PM running primary config (Core 0)
+[1069476] : TA finished
+[1069497] : Is TA: 1, finished: 1 on HW 0 (HWRTData = 0xc0089000, MemCtx = 0xc002c000). FL different between TA/3D: global:1, local:2
+[1069513] : UFL-TA-Base: 0x0000008000048900 (SP = 447, 4PB = 0, 4PT = 0), FL-TA-Base: 0x00000080003b9000 (SP = 31, 4PB = 0, 4PT = 0)
+[1069525] : ALIST0 SP = 0, MLIST0 SP = 0 (VCE 0x0000000000000000, TE 0x0000000000000000, ALIST 0x0000000000000000)
+[1069535] : TA RTData 0xc0089000 finished on HW context 0
+[1069549] : Perform TPC flush.
+[1069599] : UFO Updates for FWCtx 0xc0085000 @ 352
+[1069614] : UFO Update: [0xc0079000] = 0x00000002
+[1069656] : Deactivate MemCtx=0xc002c000
+[1069669] : Ungrab reg set 3 refcount now 1
+[1069707] : 3D Transfer finished
+[1069754] : UFO Updates for FWCtx 0xc0031000 @ 232
+[1069769] : UFO Update: [0xc0030000] = 0x00000001
+[1069802] : Deactivate MemCtx=0xc002c000
+[1069810] : Ungrab reg set 3 refcount now 0
+[1069858] : Check Pow state: Int: 0x2, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 24 - Update: 26
+[1069875] : Initiate powoff query for RD-DMs.
+[1069909] : Irq Task complete.
+[1069924] : Irq Task (EVENT_STATUS=0x00000010)
+[1069946] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 24 - Update: 27
+[1069954] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1069971] : Irq Task complete.
+[1069988] : Bg Task complete DM Bitfield: 1
+[1069994] : Kick MTS Irq task DM=0
+[1070002] : Irq Task (EVENT_STATUS=0x00000010)
+[1070017] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 24 - Update: 27
+[1070025] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1070040] : Irq Task complete.
+[1070056] : Bg Task OSid = 0
+[1070088] : Bg Task complete DM Bitfield: 1
+[1070094] : Kick MTS Irq task DM=0
+[1070102] : Irq Task (EVENT_STATUS=0x00000010)
+[1070125] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 27 - Update: 27
+[1070134] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1070148] : Idle timer start. Pow state int: 0x6, ext: 0x1, flags: 0x0
+[1070169] : Irq Task complete.
+[1078416] : Bg Task OSid = 0
+[1078435] : KCCB Slot 67: Cmd=0x2abc0065, OSid=0
+[1078456] : cCCB Woff update = 560, DM = 3, FWCtx = 0xc0031000
+[1078500] : Kick MTS Irq task DM=0
+[1078520] : Irq Task (EVENT_STATUS=0x00000010)
+[1078567] : Ready-to-run debug OSid = 0, DM = 3, item = 0xc0031000
+[1078580] : Client command header DM = 3, client CCB = 0xc004f000, cmd = 0xc004f118
+[1078607] : Activate MemCtx=0xc002c000 DM=3 secure=0
+[1078623] : Setup register set=3 DM=3, PC address=0x0000000110488000, OSid=0, NewPCRegRequired=0
+[1078637] : Grab reg set 3 refcount now 1
+[1078662] : Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x00025000)
+[1078669] :   Phantom 0: USCTiles=6
+[1078700] : Kick 3D TQ: FWCtx 0xc0031000 @ 280, CSW resume:0. (PID:199947, prio:1, frame:0, ext:0x00000004, int:0x00000004)
+[1078766] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 27 - Update: 27
+[1078796] : Any RD-DM pending? 0, Any RD-DM Active? 1
+[1078809] : Cancel power off request int: 0x2, ext: 0x1, pow flags: 0x0
+[1078832] : Cancel idle timer. Pow state int: 0x2, ext: 0x1, flags: 0x0
+[1078885] : Irq Task complete.
+[1078916] : Bg Task complete DM Bitfield: 1
+[1078930] : Kick MTS Irq task DM=0
+[1078948] : Irq Task (EVENT_STATUS=0x00000010)
+[1078988] : Check Pow state: Int: 0x2, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 27 - Update: 27
+[1079018] : Irq Task complete.
+[1079042] : Bg Task OSid = 0
+[1079119] : Bg Task complete DM Bitfield: 0
+[1079361] : Irq Task (EVENT_STATUS=0x00000018)
+[1079394] : 3D Transfer finished
+[1079445] : UFO Updates for FWCtx 0xc0031000 @ 512
+[1079460] : UFO Update: [0xc0030000] = 0x00000002
+[1079500] : Deactivate MemCtx=0xc002c000
+[1079512] : Ungrab reg set 3 refcount now 0
+[1079568] : Check Pow state: Int: 0x2, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 27 - Update: 28
+[1079586] : Initiate powoff query for RD-DMs.
+[1079623] : Irq Task complete.
+[1079644] : Bg Task OSid = 0
+[1079678] : Bg Task complete DM Bitfield: 1
+[1079688] : Kick MTS Irq task DM=0
+[1079700] : Irq Task (EVENT_STATUS=0x00000010)
+[1079726] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 29 - Update: 29
+[1079733] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1079747] : Idle timer start. Pow state int: 0x6, ext: 0x1, flags: 0x0
+[1079768] : Irq Task complete.
+[1079787] : Bg Task OSid = 0
+[1079800] : Bg Task complete DM Bitfield: 1
+[1079806] : Kick MTS Irq task DM=0
+[1079814] : Irq Task (EVENT_STATUS=0x00000010)
+[1079835] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 29 - Update: 29
+[1079842] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1079860] : Irq Task complete.
+[1103018] : Bg Task OSid = 0
+[1103049] : Bg Task complete DM Bitfield: 1
+[1103058] : Kick MTS Irq task DM=0
+[1103071] : Irq Task (EVENT_STATUS=0x00000010)
+[1103093] : Check Pow state: Int: 0x6, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 29 - Update: 29
+[1103100] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1103121] : Irq Task complete.
+[1122884] : Bg Task OSid = 0
+[1122910] : GPU idle (might be powered down). Pow state int: 0x6, ext: 0x1, flags: 0x0
+[1122938] : Bg Task complete DM Bitfield: 1
+[1122948] : Kick MTS Irq task DM=0
+[1122957] : Irq Task (EVENT_STATUS=0x00000010)
+[1122984] : Check Pow state: Int: 0x6, Ext: 0x3, Pow flags: 0x0, Fence Counters: Check: 29 - Update: 29
+[1122992] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1123012] : Irq Task complete.
+[1195159] : Bg Task OSid = 0
+[1195185] : KCCB Slot 68: Cmd=0x2abc006a, OSid=0
+[1195249] : FwCommonContext [0xc0062000] cleaned
+[1195270] : KCCB Slot 68: Return value 1
+[1195298] : KCCB Slot 69: Cmd=0x2abc006a, OSid=0
+[1195367] : FwCommonContext [0xc0031000] cleaned
+[1195383] : KCCB Slot 69: Return value 1
+[1195417] : Bg Task complete DM Bitfield: 1
+[1195425] : Kick MTS Irq task DM=0
+[1195443] : Irq Task (EVENT_STATUS=0x00000010)
+[1195500] : Check Pow state: Int: 0x6, Ext: 0x3, Pow flags: 0x0, Fence Counters: Check: 29 - Update: 29
+[1195509] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1195540] : Irq Task complete.
+[1195564] : Bg Task OSid = 0
+[1195588] : KCCB Slot 70: Cmd=0x2abc0066, OSid=0
+[1195648] : KCCB Slot 70: Return value 1
+[1195677] : KCCB Slot 71: Cmd=0x2abc0066, OSid=0
+[1195722] : KCCB Slot 71: Return value 1
+[1195758] : Bg Task complete DM Bitfield: 1
+[1195765] : Kick MTS Irq task DM=0
+[1195786] : Irq Task (EVENT_STATUS=0x00000010)
+[1195836] : Check Pow state: Int: 0x6, Ext: 0x3, Pow flags: 0x0, Fence Counters: Check: 29 - Update: 29
+[1195850] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1195881] : Irq Task complete.
+[1195903] : Bg Task OSid = 0
+[1195927] : KCCB Slot 72: Cmd=0x2abc0066, OSid=0
+[1195985] : KCCB Slot 72: Return value 1
+[1196017] : KCCB Slot 73: Cmd=0x2abc0066, OSid=0
+[1196065] : KCCB Slot 73: Return value 1
+[1196099] : Bg Task complete DM Bitfield: 1
+[1196111] : Kick MTS Irq task DM=0
+[1196130] : Irq Task (EVENT_STATUS=0x00000010)
+[1196181] : Check Pow state: Int: 0x6, Ext: 0x3, Pow flags: 0x0, Fence Counters: Check: 29 - Update: 29
+[1196201] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1196231] : Irq Task complete.
+[1196247] : Bg Task OSid = 0
+[1196265] : KCCB Slot 74: Cmd=0x2abc0066, OSid=0
+[1196321] : KCCB Slot 74: Return value 1
+[1196349] : KCCB Slot 75: Cmd=0x2abc0066, OSid=0
+[1196397] : KCCB Slot 75: Return value 1
+[1196429] : Bg Task complete DM Bitfield: 1
+[1196435] : Kick MTS Irq task DM=0
+[1196452] : Irq Task (EVENT_STATUS=0x00000010)
+[1196500] : Check Pow state: Int: 0x6, Ext: 0x3, Pow flags: 0x0, Fence Counters: Check: 29 - Update: 29
+[1196514] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1196538] : Irq Task complete.
+[1196558] : Bg Task OSid = 0
+[1196579] : KCCB Slot 76: Cmd=0x2abc0066, OSid=0
+[1196629] : KCCB Slot 76: Return value 1
+[1196655] : KCCB Slot 77: Cmd=0x2abc0066, OSid=0
+[1196699] : KCCB Slot 77: Return value 1
+[1196723] : KCCB Slot 78: Cmd=0x2abc0066, OSid=0
+[1196762] : KCCB Slot 78: Return value 1
+[1196798] : Bg Task complete DM Bitfield: 1
+[1196806] : Kick MTS Irq task DM=0
+[1196827] : Irq Task (EVENT_STATUS=0x00000010)
+[1196873] : Check Pow state: Int: 0x6, Ext: 0x3, Pow flags: 0x0, Fence Counters: Check: 29 - Update: 29
+[1196884] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1196907] : Irq Task complete.
+[1196924] : Bg Task OSid = 0
+[1196943] : KCCB Slot 79: Cmd=0x2abc0066, OSid=0
+[1196993] : KCCB Slot 79: Return value 1
+[1197020] : KCCB Slot 80: Cmd=0x2abc006a, OSid=0
+[1197076] : FwCommonContext [0xc006e000] cleaned
+[1197092] : KCCB Slot 80: Return value 1
+[1197121] : Bg Task complete DM Bitfield: 1
+[1197128] : Kick MTS Irq task DM=0
+[1197142] : Irq Task (EVENT_STATUS=0x00000010)
+[1197189] : Check Pow state: Int: 0x6, Ext: 0x3, Pow flags: 0x0, Fence Counters: Check: 29 - Update: 29
+[1197202] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1197226] : Irq Task complete.
+[1197243] : Bg Task OSid = 0
+[1197266] : KCCB Slot 81: Cmd=0x2abc0066, OSid=0
+[1197317] : KCCB Slot 81: Return value 1
+[1197352] : Bg Task complete DM Bitfield: 1
+[1197359] : Kick MTS Irq task DM=0
+[1197375] : Irq Task (EVENT_STATUS=0x00000010)
+[1197421] : Check Pow state: Int: 0x6, Ext: 0x3, Pow flags: 0x0, Fence Counters: Check: 29 - Update: 29
+[1197428] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1197453] : Irq Task complete.
+[1197468] : Bg Task OSid = 0
+[1197488] : KCCB Slot 82: Cmd=0x2abc0066, OSid=0
+[1197539] : KCCB Slot 82: Return value 1
+[1197573] : Bg Task complete DM Bitfield: 1
+[1197581] : Kick MTS Irq task DM=0
+[1197599] : Irq Task (EVENT_STATUS=0x00000010)
+[1197641] : Check Pow state: Int: 0x6, Ext: 0x3, Pow flags: 0x0, Fence Counters: Check: 29 - Update: 29
+[1197649] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1197675] : Irq Task complete.
+[1197695] : Bg Task OSid = 0
+[1197719] : KCCB Slot 83: Cmd=0x2abc0066, OSid=0
+[1197770] : KCCB Slot 83: Return value 1
+[1197805] : Bg Task complete DM Bitfield: 1
+[1197813] : Kick MTS Irq task DM=0
+[1197830] : Irq Task (EVENT_STATUS=0x00000010)
+[1197874] : Check Pow state: Int: 0x6, Ext: 0x3, Pow flags: 0x0, Fence Counters: Check: 29 - Update: 29
+[1197881] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1197907] : Irq Task complete.
+[1197922] : Bg Task OSid = 0
+[1197939] : KCCB Slot 84: Cmd=0x2abc0066, OSid=0
+[1197989] : KCCB Slot 84: Return value 1
+[1198024] : Bg Task complete DM Bitfield: 1
+[1198031] : Kick MTS Irq task DM=0
+[1198048] : Irq Task (EVENT_STATUS=0x00000010)
+[1198092] : Check Pow state: Int: 0x6, Ext: 0x3, Pow flags: 0x0, Fence Counters: Check: 29 - Update: 29
+[1198100] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1198125] : Irq Task complete.
+[1198140] : Bg Task OSid = 0
+[1198159] : KCCB Slot 85: Cmd=0x2abc0066, OSid=0
+[1198213] : KCCB Slot 85: Return value 1
+[1198247] : Bg Task complete DM Bitfield: 1
+[1198253] : Kick MTS Irq task DM=0
+[1198270] : Irq Task (EVENT_STATUS=0x00000010)
+[1198313] : Check Pow state: Int: 0x6, Ext: 0x3, Pow flags: 0x0, Fence Counters: Check: 29 - Update: 29
+[1198321] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1198348] : Irq Task complete.
+[1198366] : Bg Task OSid = 0
+[1198388] : KCCB Slot 86: Cmd=0x2abc0066, OSid=0
+[1198441] : KCCB Slot 86: Return value 1
+[1198477] : Bg Task complete DM Bitfield: 1
+[1198484] : Kick MTS Irq task DM=0
+[1198503] : Irq Task (EVENT_STATUS=0x00000010)
+[1198547] : Check Pow state: Int: 0x6, Ext: 0x3, Pow flags: 0x0, Fence Counters: Check: 29 - Update: 29
+[1198556] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1198578] : Irq Task complete.
+[1198595] : Bg Task OSid = 0
+[1198616] : KCCB Slot 87: Cmd=0x2abc0066, OSid=0
+[1198670] : KCCB Slot 87: Return value 1
+[1198707] : Bg Task complete DM Bitfield: 1
+[1198714] : Kick MTS Irq task DM=0
+[1198732] : Irq Task (EVENT_STATUS=0x00000010)
+[1198782] : Check Pow state: Int: 0x6, Ext: 0x3, Pow flags: 0x0, Fence Counters: Check: 29 - Update: 29
+[1198790] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1198816] : Irq Task complete.
+[1198833] : Bg Task OSid = 0
+[1198853] : KCCB Slot 88: Cmd=0x2abc0066, OSid=0
+[1198904] : KCCB Slot 88: Return value 1
+[1198937] : Bg Task complete DM Bitfield: 1
+[1198947] : Kick MTS Irq task DM=0
+[1198962] : Irq Task (EVENT_STATUS=0x00000010)
+[1199012] : Check Pow state: Int: 0x6, Ext: 0x3, Pow flags: 0x0, Fence Counters: Check: 29 - Update: 29
+[1199019] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1199045] : Irq Task complete.
+[1199063] : Bg Task OSid = 0
+[1199082] : KCCB Slot 89: Cmd=0x2abc0066, OSid=0
+[1199130] : KCCB Slot 89: Return value 1
+[1199165] : Bg Task complete DM Bitfield: 1
+[1199172] : Kick MTS Irq task DM=0
+[1199190] : Irq Task (EVENT_STATUS=0x00000010)
+[1199233] : Check Pow state: Int: 0x6, Ext: 0x3, Pow flags: 0x0, Fence Counters: Check: 29 - Update: 29
+[1199247] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1199273] : Irq Task complete.
+[1199288] : Bg Task OSid = 0
+[1199305] : KCCB Slot 90: Cmd=0x2abc0066, OSid=0
+[1199357] : KCCB Slot 90: Return value 1
+[1199390] : Bg Task complete DM Bitfield: 1
+[1199399] : Kick MTS Irq task DM=0
+[1199415] : Irq Task (EVENT_STATUS=0x00000010)
+[1199459] : Check Pow state: Int: 0x6, Ext: 0x3, Pow flags: 0x0, Fence Counters: Check: 29 - Update: 29
+[1199468] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1199490] : Irq Task complete.
+[1199507] : Bg Task OSid = 0
+[1199526] : KCCB Slot 91: Cmd=0x2abc0066, OSid=0
+[1199577] : KCCB Slot 91: Return value 1
+[1199614] : Bg Task complete DM Bitfield: 1
+[1199621] : Kick MTS Irq task DM=0
+[1199639] : Irq Task (EVENT_STATUS=0x00000010)
+[1199685] : Check Pow state: Int: 0x6, Ext: 0x3, Pow flags: 0x0, Fence Counters: Check: 29 - Update: 29
+[1199700] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1199723] : Irq Task complete.
+[1199739] : Bg Task OSid = 0
+[1199758] : KCCB Slot 92: Cmd=0x2abc0066, OSid=0
+[1199812] : KCCB Slot 92: Return value 1
+[1199848] : Bg Task complete DM Bitfield: 1
+[1199855] : Kick MTS Irq task DM=0
+[1199873] : Irq Task (EVENT_STATUS=0x00000010)
+[1199922] : Check Pow state: Int: 0x6, Ext: 0x3, Pow flags: 0x0, Fence Counters: Check: 29 - Update: 29
+[1199929] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1199954] : Irq Task complete.
+[1199970] : Bg Task OSid = 0
+[1199990] : KCCB Slot 93: Cmd=0x2abc0066, OSid=0
+[1200037] : KCCB Slot 93: Return value 1
+[1200073] : Bg Task complete DM Bitfield: 1
+[1200080] : Kick MTS Irq task DM=0
+[1200097] : Irq Task (EVENT_STATUS=0x00000010)
+[1200141] : Check Pow state: Int: 0x6, Ext: 0x3, Pow flags: 0x0, Fence Counters: Check: 29 - Update: 29
+[1200149] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1200171] : Irq Task complete.
+[1200188] : Bg Task OSid = 0
+[1200207] : KCCB Slot 94: Cmd=0x2abc0066, OSid=0
+[1200260] : KCCB Slot 94: Return value 1
+[1200295] : Bg Task complete DM Bitfield: 1
+[1200302] : Kick MTS Irq task DM=0
+[1200319] : Irq Task (EVENT_STATUS=0x00000010)
+[1200360] : Check Pow state: Int: 0x6, Ext: 0x3, Pow flags: 0x0, Fence Counters: Check: 29 - Update: 29
+[1200367] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1200392] : Irq Task complete.
+[1200407] : Bg Task OSid = 0
+[1200425] : KCCB Slot 95: Cmd=0x2abc0066, OSid=0
+[1200473] : KCCB Slot 95: Return value 1
+[1200508] : Bg Task complete DM Bitfield: 1
+[1200516] : Kick MTS Irq task DM=0
+[1200534] : Irq Task (EVENT_STATUS=0x00000010)
+[1200578] : Check Pow state: Int: 0x6, Ext: 0x3, Pow flags: 0x0, Fence Counters: Check: 29 - Update: 29
+[1200586] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1200609] : Irq Task complete.
+[1200625] : Bg Task OSid = 0
+[1200643] : KCCB Slot 96: Cmd=0x2abc0066, OSid=0
+[1200696] : KCCB Slot 96: Return value 1
+[1200727] : Bg Task complete DM Bitfield: 1
+[1200734] : Kick MTS Irq task DM=0
+[1200752] : Irq Task (EVENT_STATUS=0x00000010)
+[1200797] : Check Pow state: Int: 0x6, Ext: 0x3, Pow flags: 0x0, Fence Counters: Check: 29 - Update: 29
+[1200808] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1200834] : Irq Task complete.
+[1200853] : Bg Task OSid = 0
+[1200873] : KCCB Slot 97: Cmd=0x2abc0066, OSid=0
+[1200926] : KCCB Slot 97: Return value 1
+[1200962] : Bg Task complete DM Bitfield: 1
+[1200969] : Kick MTS Irq task DM=0
+[1200987] : Irq Task (EVENT_STATUS=0x00000010)
+[1201033] : Check Pow state: Int: 0x6, Ext: 0x3, Pow flags: 0x0, Fence Counters: Check: 29 - Update: 29
+[1201045] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1201068] : Irq Task complete.
+[1201085] : Bg Task OSid = 0
+[1201108] : KCCB Slot 98: Cmd=0x2abc0066, OSid=0
+[1201161] : KCCB Slot 98: Return value 1
+[1201197] : Bg Task complete DM Bitfield: 1
+[1201204] : Kick MTS Irq task DM=0
+[1201222] : Irq Task (EVENT_STATUS=0x00000010)
+[1201268] : Check Pow state: Int: 0x6, Ext: 0x3, Pow flags: 0x0, Fence Counters: Check: 29 - Update: 29
+[1201275] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1201298] : Irq Task complete.
+[1201313] : Bg Task OSid = 0
+[1201327] : Bg Task complete DM Bitfield: 1
+[1201334] : Kick MTS Irq task DM=0
+[1201344] : Irq Task (EVENT_STATUS=0x00000010)
+[1201362] : Check Pow state: Int: 0x6, Ext: 0x3, Pow flags: 0x0, Fence Counters: Check: 29 - Update: 29
+[1201369] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1201389] : Irq Task complete.
+[1201424] : Bg Task OSid = 0
+[1201446] : KCCB Slot 99: Cmd=0x2abc0066, OSid=0
+[1201497] : KCCB Slot 99: Return value 1
+[1201533] : Bg Task complete DM Bitfield: 1
+[1201541] : Kick MTS Irq task DM=0
+[1201558] : Irq Task (EVENT_STATUS=0x00000010)
+[1201603] : Check Pow state: Int: 0x6, Ext: 0x3, Pow flags: 0x0, Fence Counters: Check: 29 - Update: 29
+[1201618] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1201641] : Irq Task complete.
+[1202410] : Bg Task OSid = 0
+[1202431] : KCCB Slot 100: Cmd=0x2abc0066, OSid=0
+[1202482] : KCCB Slot 100: Return value 1
+[1202520] : Bg Task complete DM Bitfield: 1
+[1202528] : Kick MTS Irq task DM=0
+[1202545] : Irq Task (EVENT_STATUS=0x00000010)
+[1202593] : Check Pow state: Int: 0x6, Ext: 0x3, Pow flags: 0x0, Fence Counters: Check: 29 - Update: 29
+[1202600] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1202625] : Irq Task complete.
+[1203363] : Bg Task OSid = 0
+[1203383] : KCCB Slot 101: Cmd=0x2abc0066, OSid=0
+[1203438] : KCCB Slot 101: Return value 1
+[1203477] : Bg Task complete DM Bitfield: 1
+[1203484] : Kick MTS Irq task DM=0
+[1203504] : Irq Task (EVENT_STATUS=0x00000010)
+[1203552] : Check Pow state: Int: 0x6, Ext: 0x3, Pow flags: 0x0, Fence Counters: Check: 29 - Update: 29
+[1203565] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1203589] : Irq Task complete.
+[1204218] : Bg Task OSid = 0
+[1204237] : KCCB Slot 102: Cmd=0x2abc0066, OSid=0
+[1204286] : KCCB Slot 102: Return value 1
+[1204325] : Bg Task complete DM Bitfield: 1
+[1204334] : Kick MTS Irq task DM=0
+[1204352] : Irq Task (EVENT_STATUS=0x00000010)
+[1204400] : Check Pow state: Int: 0x6, Ext: 0x3, Pow flags: 0x0, Fence Counters: Check: 29 - Update: 29
+[1204407] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1204434] : Irq Task complete.
+[1204450] : Bg Task OSid = 0
+[1204471] : KCCB Slot 103: Cmd=0x2abc0066, OSid=0
+[1204525] : KCCB Slot 103: Return value 1
+[1204561] : Bg Task complete DM Bitfield: 1
+[1204570] : Kick MTS Irq task DM=0
+[1204587] : Irq Task (EVENT_STATUS=0x00000010)
+[1204636] : Check Pow state: Int: 0x6, Ext: 0x3, Pow flags: 0x0, Fence Counters: Check: 29 - Update: 29
+[1204648] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1204674] : Irq Task complete.
+[1204692] : Bg Task OSid = 0
+[1204713] : KCCB Slot 104: Cmd=0x2abc0066, OSid=0
+[1204767] : KCCB Slot 104: Return value 1
+[1204807] : Bg Task complete DM Bitfield: 1
+[1204815] : Kick MTS Irq task DM=0
+[1204832] : Irq Task (EVENT_STATUS=0x00000010)
+[1204878] : Check Pow state: Int: 0x6, Ext: 0x3, Pow flags: 0x0, Fence Counters: Check: 29 - Update: 29
+[1204886] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1204911] : Irq Task complete.
+[1204929] : Bg Task OSid = 0
+[1204948] : KCCB Slot 105: Cmd=0x2abc0066, OSid=0
+[1205006] : KCCB Slot 105: Return value 1
+[1205042] : Bg Task complete DM Bitfield: 1
+[1205050] : Kick MTS Irq task DM=0
+[1205071] : Irq Task (EVENT_STATUS=0x00000010)
+[1205117] : Check Pow state: Int: 0x6, Ext: 0x3, Pow flags: 0x0, Fence Counters: Check: 29 - Update: 29
+[1205126] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1205157] : Irq Task complete.
+[1205175] : Bg Task OSid = 0
+[1205194] : KCCB Slot 106: Cmd=0x2abc0066, OSid=0
+[1205251] : KCCB Slot 106: Return value 1
+[1205290] : Bg Task complete DM Bitfield: 1
+[1205298] : Kick MTS Irq task DM=0
+[1205316] : Irq Task (EVENT_STATUS=0x00000010)
+[1205365] : Check Pow state: Int: 0x6, Ext: 0x3, Pow flags: 0x0, Fence Counters: Check: 29 - Update: 29
+[1205372] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1205395] : Irq Task complete.
+[1205411] : Bg Task OSid = 0
+[1205433] : KCCB Slot 107: Cmd=0x2abc0066, OSid=0
+[1205487] : KCCB Slot 107: Return value 1
+[1205528] : Bg Task complete DM Bitfield: 1
+[1205537] : Kick MTS Irq task DM=0
+[1205554] : Irq Task (EVENT_STATUS=0x00000010)
+[1205605] : Check Pow state: Int: 0x6, Ext: 0x3, Pow flags: 0x0, Fence Counters: Check: 29 - Update: 29
+[1205614] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1205639] : Irq Task complete.
+[1205658] : Bg Task OSid = 0
+[1205679] : KCCB Slot 108: Cmd=0x2abc0066, OSid=0
+[1205738] : KCCB Slot 108: Return value 1
+[1205773] : Bg Task complete DM Bitfield: 1
+[1205782] : Kick MTS Irq task DM=0
+[1205800] : Irq Task (EVENT_STATUS=0x00000010)
+[1205851] : Check Pow state: Int: 0x6, Ext: 0x3, Pow flags: 0x0, Fence Counters: Check: 29 - Update: 29
+[1205860] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1205885] : Irq Task complete.
+[1205902] : Bg Task OSid = 0
+[1205924] : KCCB Slot 109: Cmd=0x2abc0066, OSid=0
+[1205980] : KCCB Slot 109: Return value 1
+[1206016] : Bg Task complete DM Bitfield: 1
+[1206023] : Kick MTS Irq task DM=0
+[1206040] : Irq Task (EVENT_STATUS=0x00000010)
+[1206088] : Check Pow state: Int: 0x6, Ext: 0x3, Pow flags: 0x0, Fence Counters: Check: 29 - Update: 29
+[1206098] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1206126] : Irq Task complete.
+[1206155] : Bg Task OSid = 0
+[1206181] : KCCB Slot 110: Cmd=0x2abc0066, OSid=0
+[1206239] : KCCB Slot 110: Return value 1
+[1206280] : Bg Task complete DM Bitfield: 1
+[1206287] : Kick MTS Irq task DM=0
+[1206305] : Irq Task (EVENT_STATUS=0x00000010)
+[1206356] : Check Pow state: Int: 0x6, Ext: 0x3, Pow flags: 0x0, Fence Counters: Check: 29 - Update: 29
+[1206366] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1206389] : Irq Task complete.
+[1206406] : Bg Task OSid = 0
+[1206435] : KCCB Slot 111: Cmd=0x2abc0066, OSid=0
+[1206488] : KCCB Slot 111: Return value 1
+[1206526] : Bg Task complete DM Bitfield: 1
+[1206534] : Kick MTS Irq task DM=0
+[1206551] : Irq Task (EVENT_STATUS=0x00000010)
+[1206601] : Check Pow state: Int: 0x6, Ext: 0x3, Pow flags: 0x0, Fence Counters: Check: 29 - Update: 29
+[1206609] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1206637] : Irq Task complete.
+[1206653] : Bg Task OSid = 0
+[1206674] : KCCB Slot 112: Cmd=0x2abc0066, OSid=0
+[1206735] : KCCB Slot 112: Return value 1
+[1206773] : Bg Task complete DM Bitfield: 1
+[1206780] : Kick MTS Irq task DM=0
+[1206800] : Irq Task (EVENT_STATUS=0x00000010)
+[1206843] : Check Pow state: Int: 0x6, Ext: 0x3, Pow flags: 0x0, Fence Counters: Check: 29 - Update: 29
+[1206856] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1206881] : Irq Task complete.
+[1206898] : Bg Task OSid = 0
+[1206920] : KCCB Slot 113: Cmd=0x2abc0066, OSid=0
+[1206975] : KCCB Slot 113: Return value 1
+[1207013] : Bg Task complete DM Bitfield: 1
+[1207023] : Kick MTS Irq task DM=0
+[1207042] : Irq Task (EVENT_STATUS=0x00000010)
+[1207094] : Check Pow state: Int: 0x6, Ext: 0x3, Pow flags: 0x0, Fence Counters: Check: 29 - Update: 29
+[1207102] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1207124] : Irq Task complete.
+[1207141] : Bg Task OSid = 0
+[1207165] : KCCB Slot 114: Cmd=0x2abc0066, OSid=0
+[1207225] : KCCB Slot 114: Return value 1
+[1207265] : Bg Task complete DM Bitfield: 1
+[1207275] : Kick MTS Irq task DM=0
+[1207297] : Irq Task (EVENT_STATUS=0x00000010)
+[1207346] : Check Pow state: Int: 0x6, Ext: 0x3, Pow flags: 0x0, Fence Counters: Check: 29 - Update: 29
+[1207354] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1207381] : Irq Task complete.
+[1207400] : Bg Task OSid = 0
+[1207416] : KCCB Slot 115: Cmd=0x2abc0066, OSid=0
+[1207474] : KCCB Slot 115: Return value 1
+[1207510] : Bg Task complete DM Bitfield: 1
+[1207517] : Kick MTS Irq task DM=0
+[1207536] : Irq Task (EVENT_STATUS=0x00000010)
+[1207581] : Check Pow state: Int: 0x6, Ext: 0x3, Pow flags: 0x0, Fence Counters: Check: 29 - Update: 29
+[1207588] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1207611] : Irq Task complete.
+[1207626] : Bg Task OSid = 0
+[1207648] : KCCB Slot 116: Cmd=0x2abc0066, OSid=0
+[1207704] : KCCB Slot 116: Return value 1
+[1207743] : Bg Task complete DM Bitfield: 1
+[1207750] : Kick MTS Irq task DM=0
+[1207767] : Irq Task (EVENT_STATUS=0x00000010)
+[1207815] : Check Pow state: Int: 0x6, Ext: 0x3, Pow flags: 0x0, Fence Counters: Check: 29 - Update: 29
+[1207827] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1207852] : Irq Task complete.
+[1207869] : Bg Task OSid = 0
+[1207889] : KCCB Slot 117: Cmd=0x2abc0066, OSid=0
+[1207939] : KCCB Slot 117: Return value 1
+[1207975] : Bg Task complete DM Bitfield: 1
+[1207981] : Kick MTS Irq task DM=0
+[1207999] : Irq Task (EVENT_STATUS=0x00000010)
+[1208043] : Check Pow state: Int: 0x6, Ext: 0x3, Pow flags: 0x0, Fence Counters: Check: 29 - Update: 29
+[1208050] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1208072] : Irq Task complete.
+[1208089] : Bg Task OSid = 0
+[1208110] : KCCB Slot 118: Cmd=0x2abc0066, OSid=0
+[1208162] : KCCB Slot 118: Return value 1
+[1208198] : Bg Task complete DM Bitfield: 1
+[1208206] : Kick MTS Irq task DM=0
+[1208227] : Irq Task (EVENT_STATUS=0x00000010)
+[1208269] : Check Pow state: Int: 0x6, Ext: 0x3, Pow flags: 0x0, Fence Counters: Check: 29 - Update: 29
+[1208283] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1208308] : Irq Task complete.
+[1208324] : Bg Task OSid = 0
+[1208347] : KCCB Slot 119: Cmd=0x2abc0066, OSid=0
+[1208399] : KCCB Slot 119: Return value 1
+[1208434] : Bg Task complete DM Bitfield: 1
+[1208442] : Kick MTS Irq task DM=0
+[1208459] : Irq Task (EVENT_STATUS=0x00000010)
+[1208508] : Check Pow state: Int: 0x6, Ext: 0x3, Pow flags: 0x0, Fence Counters: Check: 29 - Update: 29
+[1208519] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1208543] : Irq Task complete.
+[1208592] : Bg Task OSid = 0
+[1208614] : KCCB Slot 120: Cmd=0x2abc006a, OSid=0
+[1208630] : Received cleanup request for HWRTData [0xc0089000]
+[1208644] : HWRTData [0xc0089000] HW Context 0 cleaned, executed commands = 1
+[1208692] : KCCB Slot 120: Return value 1
+[1208726] : Bg Task complete DM Bitfield: 1
+[1208736] : Kick MTS Irq task DM=0
+[1208751] : Irq Task (EVENT_STATUS=0x00000010)
+[1208795] : Check Pow state: Int: 0x6, Ext: 0x3, Pow flags: 0x0, Fence Counters: Check: 29 - Update: 29
+[1208807] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1208835] : Irq Task complete.
+[1208852] : Bg Task OSid = 0
+[1208873] : KCCB Slot 121: Cmd=0x2abc0066, OSid=0
+[1208928] : KCCB Slot 121: Return value 1
+[1208965] : Bg Task complete DM Bitfield: 1
+[1208972] : Kick MTS Irq task DM=0
+[1208990] : Irq Task (EVENT_STATUS=0x00000010)
+[1209036] : Check Pow state: Int: 0x6, Ext: 0x3, Pow flags: 0x0, Fence Counters: Check: 29 - Update: 29
+[1209046] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1209086] : Irq Task complete.
+[1209106] : Bg Task OSid = 0
+[1209129] : KCCB Slot 122: Cmd=0x2abc006a, OSid=0
+[1209151] : Received cleanup request for HWRTData [0xc0088000]
+[1209205] : KCCB Slot 122: Return value 1
+[1209251] : Bg Task complete DM Bitfield: 1
+[1209259] : Kick MTS Irq task DM=0
+[1209277] : Irq Task (EVENT_STATUS=0x00000010)
+[1209327] : Check Pow state: Int: 0x6, Ext: 0x3, Pow flags: 0x0, Fence Counters: Check: 29 - Update: 29
+[1209335] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1209361] : Irq Task complete.
+[1209379] : Bg Task OSid = 0
+[1209406] : KCCB Slot 123: Cmd=0x2abc0066, OSid=0
+[1209457] : KCCB Slot 123: Return value 1
+[1209498] : Bg Task complete DM Bitfield: 1
+[1209510] : Kick MTS Irq task DM=0
+[1209529] : Irq Task (EVENT_STATUS=0x00000010)
+[1209579] : Check Pow state: Int: 0x6, Ext: 0x3, Pow flags: 0x0, Fence Counters: Check: 29 - Update: 29
+[1209590] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1209615] : Irq Task complete.
+[1209632] : Bg Task OSid = 0
+[1209657] : KCCB Slot 124: Cmd=0x2abc0066, OSid=0
+[1209709] : KCCB Slot 124: Return value 1
+[1209748] : Bg Task complete DM Bitfield: 1
+[1209758] : Kick MTS Irq task DM=0
+[1209775] : Irq Task (EVENT_STATUS=0x00000010)
+[1209824] : Check Pow state: Int: 0x6, Ext: 0x3, Pow flags: 0x0, Fence Counters: Check: 29 - Update: 29
+[1209832] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1209857] : Irq Task complete.
+[1209872] : Bg Task OSid = 0
+[1209892] : KCCB Slot 125: Cmd=0x2abc006a, OSid=0
+[1209950] : FwCommonContext [0xc0085098] cleaned
+[1209967] : KCCB Slot 125: Return value 1
+[1209993] : KCCB Slot 126: Cmd=0x2abc006a, OSid=0
+[1210017] : PM running primary config (Core 0)
+[1210040] : Store Freelist 0xc0086000 type: 0 (0:local,1:global) for PMDM0: FL Total Pages 32 (max=32,grow size=0), FL-addr = 0x00000080003b9000, stacktop = 0x000000000000001f, Alloc Page Count = 0, Alloc MMU Page Count = 0
+[1210051] : PM running primary config (Core 0)
+[1210066] : Store Freelist 0xc002d000 type: 1 (0:local,1:global) for PMDM0: FL Total Pages 448 (max=65536,grow size=256), FL-addr = 0x0000008000048900, stacktop = 0x00000000000001bf, Alloc Page Count = 0, Alloc MMU Page Count = 0
+[1210116] : Freelist [0xc0086000] cleaned
+[1210130] : KCCB Slot 126: Return value 1
+[1210155] : KCCB Slot 127: Cmd=0x2abc0066, OSid=0
+[1210204] : KCCB Slot 127: Return value 1
+[1210238] : Bg Task complete DM Bitfield: 1
+[1210246] : Kick MTS Irq task DM=0
+[1210266] : Irq Task (EVENT_STATUS=0x00000010)
+[1210314] : Check Pow state: Int: 0x6, Ext: 0x3, Pow flags: 0x0, Fence Counters: Check: 29 - Update: 29
+[1210328] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1210355] : Irq Task complete.
+[1210372] : Bg Task OSid = 0
+[1210393] : KCCB Slot 0: Cmd=0x2abc0066, OSid=0
+[1210447] : KCCB Slot 0: Return value 1
+[1210477] : KCCB Slot 1: Cmd=0x2abc0066, OSid=0
+[1210518] : KCCB Slot 1: Return value 1
+[1210541] : KCCB Slot 2: Cmd=0x2abc006a, OSid=0
+[1210604] : Freelist [0xc002d000] cleaned
+[1210621] : KCCB Slot 2: Return value 1
+[1210650] : Bg Task complete DM Bitfield: 1
+[1210656] : Kick MTS Irq task DM=0
+[1210673] : Irq Task (EVENT_STATUS=0x00000010)
+[1210722] : Check Pow state: Int: 0x6, Ext: 0x3, Pow flags: 0x0, Fence Counters: Check: 29 - Update: 29
+[1210731] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1210758] : Irq Task complete.
+[1210776] : Bg Task OSid = 0
+[1210798] : KCCB Slot 3: Cmd=0x2abc0066, OSid=0
+[1210849] : KCCB Slot 3: Return value 1
+[1210885] : Bg Task complete DM Bitfield: 1
+[1210893] : Kick MTS Irq task DM=0
+[1210910] : Irq Task (EVENT_STATUS=0x00000010)
+[1210955] : Check Pow state: Int: 0x6, Ext: 0x3, Pow flags: 0x0, Fence Counters: Check: 29 - Update: 29
+[1210966] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1210992] : Irq Task complete.
+[1211011] : Bg Task OSid = 0
+[1211031] : KCCB Slot 4: Cmd=0x2abc0066, OSid=0
+[1211084] : KCCB Slot 4: Return value 1
+[1211120] : Bg Task complete DM Bitfield: 1
+[1211127] : Kick MTS Irq task DM=0
+[1211144] : Irq Task (EVENT_STATUS=0x00000010)
+[1211190] : Check Pow state: Int: 0x6, Ext: 0x3, Pow flags: 0x0, Fence Counters: Check: 29 - Update: 29
+[1211197] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1211221] : Irq Task complete.
+[1211304] : Bg Task OSid = 0
+[1211320] : KCCB Slot 5: Cmd=0x2abc006a, OSid=0
+[1211379] : FwCommonContext [0xc0085000] cleaned
+[1211395] : KCCB Slot 5: Return value 1
+[1211428] : Bg Task complete DM Bitfield: 1
+[1211437] : Kick MTS Irq task DM=0
+[1211454] : Irq Task (EVENT_STATUS=0x00000010)
+[1211502] : Check Pow state: Int: 0x6, Ext: 0x3, Pow flags: 0x0, Fence Counters: Check: 29 - Update: 29
+[1211513] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1211541] : Irq Task complete.
+[1211558] : Bg Task OSid = 0
+[1211577] : KCCB Slot 6: Cmd=0x2abc0066, OSid=0
+[1211632] : KCCB Slot 6: Return value 1
+[1211669] : Bg Task complete DM Bitfield: 1
+[1211678] : Kick MTS Irq task DM=0
+[1211697] : Irq Task (EVENT_STATUS=0x00000010)
+[1211744] : Check Pow state: Int: 0x6, Ext: 0x3, Pow flags: 0x0, Fence Counters: Check: 29 - Update: 29
+[1211753] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1211778] : Irq Task complete.
+[1211795] : Bg Task OSid = 0
+[1211813] : KCCB Slot 7: Cmd=0x2abc0066, OSid=0
+[1211866] : KCCB Slot 7: Return value 1
+[1211896] : KCCB Slot 8: Cmd=0x2abc0066, OSid=0
+[1211936] : KCCB Slot 8: Return value 1
+[1211966] : Bg Task complete DM Bitfield: 1
+[1211977] : Kick MTS Irq task DM=0
+[1211996] : Irq Task (EVENT_STATUS=0x00000010)
+[1212046] : Check Pow state: Int: 0x6, Ext: 0x3, Pow flags: 0x0, Fence Counters: Check: 29 - Update: 29
+[1212061] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1212091] : Irq Task complete.
+[1212109] : Bg Task OSid = 0
+[1212133] : KCCB Slot 9: Cmd=0x2abc0066, OSid=0
+[1212186] : KCCB Slot 9: Return value 1
+[1212220] : KCCB Slot 10: Cmd=0x2abc0066, OSid=0
+[1212267] : KCCB Slot 10: Return value 1
+[1212301] : Bg Task complete DM Bitfield: 1
+[1212311] : Kick MTS Irq task DM=0
+[1212327] : Irq Task (EVENT_STATUS=0x00000010)
+[1212380] : Check Pow state: Int: 0x6, Ext: 0x3, Pow flags: 0x0, Fence Counters: Check: 29 - Update: 29
+[1212388] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1212417] : Irq Task complete.
+[1212437] : Bg Task OSid = 0
+[1212461] : KCCB Slot 11: Cmd=0x2abc0066, OSid=0
+[1212516] : KCCB Slot 11: Return value 1
+[1212554] : Bg Task complete DM Bitfield: 1
+[1212565] : Kick MTS Irq task DM=0
+[1212584] : Irq Task (EVENT_STATUS=0x00000010)
+[1212632] : Check Pow state: Int: 0x6, Ext: 0x3, Pow flags: 0x0, Fence Counters: Check: 29 - Update: 29
+[1212646] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1212672] : Irq Task complete.
+[1212693] : Bg Task OSid = 0
+[1212716] : KCCB Slot 12: Cmd=0x2abc0066, OSid=0
+[1212769] : KCCB Slot 12: Return value 1
+[1212805] : Bg Task complete DM Bitfield: 1
+[1212814] : Kick MTS Irq task DM=0
+[1212831] : Irq Task (EVENT_STATUS=0x00000010)
+[1212878] : Check Pow state: Int: 0x6, Ext: 0x3, Pow flags: 0x0, Fence Counters: Check: 29 - Update: 29
+[1212890] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1212916] : Irq Task complete.
+[1212932] : Bg Task OSid = 0
+[1212951] : KCCB Slot 13: Cmd=0x2abc0066, OSid=0
+[1213002] : KCCB Slot 13: Return value 1
+[1213039] : Bg Task complete DM Bitfield: 1
+[1213046] : Kick MTS Irq task DM=0
+[1213063] : Irq Task (EVENT_STATUS=0x00000010)
+[1213105] : Check Pow state: Int: 0x6, Ext: 0x3, Pow flags: 0x0, Fence Counters: Check: 29 - Update: 29
+[1213113] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1213139] : Irq Task complete.
+[1213157] : Bg Task OSid = 0
+[1213175] : Bg Task complete DM Bitfield: 1
+[1213185] : Kick MTS Irq task DM=0
+[1213192] : Irq Task (EVENT_STATUS=0x00000010)
+[1213216] : Check Pow state: Int: 0x6, Ext: 0x3, Pow flags: 0x0, Fence Counters: Check: 29 - Update: 29
+[1213227] : Any RD-DM pending? 0, Any RD-DM Active? 0
+[1213248] : Irq Task complete.

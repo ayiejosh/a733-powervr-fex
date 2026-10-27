@@ -1,0 +1,112 @@
+diff --git a/pvr_queue.c b/pvr_queue.c
+index 4d9e1ed..3ce4f7d 100644
+--- a/pvr_queue.c
++++ b/pvr_queue.c
+@@ -362,6 +362,18 @@ static u32 job_cmds_size(struct pvr_job *job, u32 ufo_wait_count)
+  *
+  * Returns: Number of non-signaled native deps remaining.
+  */
++static bool
++is_paired_job_fence(struct dma_fence *fence, struct pvr_job *job)
++{
++	/* A fence between paired jobs cannot be turned into a pvr_queue_fence
++	 * (i.e. be backed by a UFO) until both jobs have been submitted, so it
++	 * must be counted as a remaining native dependency manually: the
++	 * submitting code inserts a partial render fence command for it.
++	 */
++	return job->type == DRM_PVR_JOB_TYPE_FRAGMENT && job->paired_job &&
++	       &job->paired_job->base.s_fence->scheduled == fence;
++}
++
+ static unsigned long job_count_remaining_native_deps(struct pvr_job *job)
+ {
+ 	unsigned long remaining_count = 0;
+@@ -371,6 +383,12 @@ static unsigned long job_count_remaining_native_deps(struct pvr_job *job)
+ 	xa_for_each(&job->base.dependencies, index, fence) {
+ 		struct pvr_queue_fence *jfence;
+ 
++		if (is_paired_job_fence(fence, job)) {
++			WARN_ON(dma_fence_is_signaled(fence));
++			remaining_count++;
++			continue;
++		}
++
+ 		jfence = to_pvr_queue_job_fence(fence);
+ 		if (!jfence)
+ 			continue;
+@@ -469,7 +487,7 @@ pvr_queue_get_job_kccb_fence(struct pvr_queue *queue, struct pvr_job *job)
+ 
+ static struct dma_fence *
+ pvr_queue_get_frag_job_dep(struct pvr_queue *queue, struct pvr_job *job,
+-			   struct pvr_job *frag_job)
++			   struct pvr_job *frag_job, bool paired)
+ {
+ 	struct dma_fence *f;
+ 	unsigned long index;
+@@ -486,6 +504,17 @@ pvr_queue_get_frag_job_dep(struct pvr_queue *queue, struct pvr_job *job,
+ 		return dma_fence_get(f);
+ 	}
+ 
++	if (paired) {
++		/* The paired fragment job's done fence and CCCB space must be
++		 * handled in the fragment queue's context, not the geometry
++		 * queue's: the fragment command goes to the fragment CCCB.
++		 */
++		struct pvr_queue *frag_queue = frag_job->ctx->queues.fragment;
++
++		pvr_queue_job_fence_init(frag_job->done_fence, frag_queue);
++		return pvr_queue_get_job_cccb_fence(frag_queue, frag_job);
++	}
++
+ 	return frag_job->base.sched->ops->prepare_job(&frag_job->base, &queue->entity);
+ }
+ 
+@@ -497,14 +526,14 @@ pvr_queue_get_paired_frag_job_dep(struct pvr_queue *queue, struct pvr_job *job)
+ 	if (job->type != DRM_PVR_JOB_TYPE_GEOMETRY || !job->paired_job)
+ 		return NULL;
+ 
+-	f = pvr_queue_get_frag_job_dep(queue, job, job->paired_job);
++	f = pvr_queue_get_frag_job_dep(queue, job, job->paired_job, true);
+ 	if (f || !job->chained_job)
+ 		return f;
+ 
+ 	/* The chained job comes after the partial render job in the CCCB, so its
+ 	 * done fence must be initialised after it.
+ 	 */
+-	return pvr_queue_get_frag_job_dep(queue, job, job->chained_job);
++	return pvr_queue_get_frag_job_dep(queue, job, job->chained_job, false);
+ }
+ 
+ /**
+@@ -653,9 +682,8 @@ static void pvr_queue_write_job_to_cccb(struct pvr_job *job, bool fence_only)
+ 		if (!jfence)
+ 			continue;
+ 
+-		/* Skip the partial render fence, we will place it at the end. */
+-		if (job->type == DRM_PVR_JOB_TYPE_FRAGMENT && job->paired_job &&
+-		    &job->paired_job->base.s_fence->scheduled == fence)
++		/* This fence will be placed last, as the partial render fence. */
++		if (is_paired_job_fence(fence, job))
+ 			continue;
+ 
+ 		if (dma_fence_is_signaled(&jfence->base))
+@@ -752,6 +780,19 @@ static struct dma_fence *pvr_queue_run_job(struct drm_sched_job *sched_job)
+ 	struct pvr_device *pvr_dev = job->pvr_dev;
+ 	int err;
+ 
++	/* TEMPORARY: the parsed command and job flags the firmware will get. */
++	{
++		const u32 *_c = (const u32 *)job->cmd;
++		u32 _n = job->cmd_len / 4, _i, _at = 0;
++		char _line[512];
++
++		for (_i = 0; _i < _n && _i < 120 && _at < sizeof(_line) - 12; _i++)
++			_at += scnprintf(_line + _at, sizeof(_line) - _at, " %08x", _c[_i]);
++		dev_info(pvr_dev->base.dev, "PVRDBGCMD: type=%u flags=%08x len=%u:%s\n",
++			 job->type, ((const struct rogue_fwif_cmd_geom *)job->cmd)->flags,
++			 job->cmd_len, _line);
++	}
++
+ 	/* The fragment job is issued along the geometry job when we use combined
+ 	 * geom+frag kicks. When we get there, we should simply return the
+ 	 * done_fence that's been initialized earlier.

@@ -1,0 +1,202 @@
+From a584a13e376fb12cfc5a3d3128992db9b77fbaf3 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 17:36:07 +0800
+Subject: [PATCH 136/269] gallium/pvr: the PDS state update - first
+ program-loading content in a stream
+
+  csb: PDS state update: 3 dwords, temps 4, data 6 dwords, code follows data
+  --- ALL PASS        (real open kernel)
+
+Three VDMCTRL_PDS_STATE packets telling the hardware where a program's data and code are,
+how many temporaries it needs, and that USC code is what to fetch next. This is the shape
+of the stream prologue the reference emits before any pipeline state, so it is the right
+place to start the content rather than an arbitrary packet.
+
+Two details that are quiet when wrong, both taken from how the reference uses the fields
+rather than from the field names:
+
+* pds_data_size is a count of ROGUE_VDMCTRL_PDS_STATE0_PDS_DATA_SIZE_UNIT_SIZE units, not
+  bytes. Passing bytes would under-report on any program whose data segment is not exactly
+  one unit, and the hardware would read a short segment without complaining.
+* The code segment follows the data segment, so STATE2's address is DERIVED from the data
+  address and size rather than passed in. A caller able to disagree with itself about
+  where the code starts is a caller able to produce a program that is half old and half
+  new.
+
+The check follows the pattern that has worked: a locally packed reference compared byte-
+for-byte against what landed in the buffer (so a field written into the wrong packet
+fails), then read back with the generated unpacker, then asserted on the fields whose
+values carry meaning - block type, both sd_type fields, and the temporary count. Comparing
+bytes alone would pass with every field mislabelled as long as the reference made the same
+mistake.
+---
+ src/gallium/drivers/pvr/pvr_csb.c   | 40 ++++++++++++++++
+ src/gallium/drivers/pvr/pvr_csb.h   | 15 ++++++
+ src/gallium/drivers/pvr/pvr_probe.c | 74 +++++++++++++++++++++++++++++
+ 3 files changed, 129 insertions(+)
+
+diff --git a/src/gallium/drivers/pvr/pvr_csb.c b/src/gallium/drivers/pvr/pvr_csb.c
+index 01bc2b0b..99ed0be1 100644
+--- a/src/gallium/drivers/pvr/pvr_csb.c
++++ b/src/gallium/drivers/pvr/pvr_csb.c
+@@ -78,6 +78,46 @@ pvr_csb_overflowed(const struct pvr_csb *csb)
+    return csb->overflowed;
+ }
+ 
++bool
++pvr_csb_emit_pds_state_update(struct pvr_csb *csb, uint64_t program_addr,
++                              uint32_t data_dwords, uint32_t temps)
++{
++   const uint32_t words = ROGUE_VDMCTRL_PDS_STATE0_length +
++                          ROGUE_VDMCTRL_PDS_STATE1_length +
++                          ROGUE_VDMCTRL_PDS_STATE2_length;
++   const uint32_t data_bytes = data_dwords * sizeof(uint32_t);
++   const uint32_t unit = ROGUE_VDMCTRL_PDS_STATE0_PDS_DATA_SIZE_UNIT_SIZE;
++   struct ROGUE_VDMCTRL_PDS_STATE0 state0 = {
++      .block_type = ROGUE_VDMCTRL_BLOCK_TYPE_PDS_STATE_UPDATE,
++      .dm_target = ROGUE_VDMCTRL_DM_TARGET_VDM,
++      .usc_target = ROGUE_VDMCTRL_USC_TARGET_ALL,
++      .usc_common_size = 0,
++      .usc_unified_size = 0,
++      .pds_temp_size = temps,
++      .pds_data_size = (data_bytes + unit - 1) / unit,
++   };
++   struct ROGUE_VDMCTRL_PDS_STATE1 state1 = {
++      .pds_data_addr = program_addr,
++      .sd_type = ROGUE_VDMCTRL_SD_TYPE_PDS,
++      .sd_next_type = ROGUE_VDMCTRL_SD_TYPE_USC,
++   };
++   struct ROGUE_VDMCTRL_PDS_STATE2 state2 = {
++      .pds_code_addr = program_addr + data_bytes,
++   };
++   uint32_t *dw = pvr_csb_emit(csb, words);
++
++   if (dw == NULL)
++      return false;
++
++   ROGUE_VDMCTRL_PDS_STATE0_pack(dw, &state0);
++   ROGUE_VDMCTRL_PDS_STATE1_pack(dw + ROGUE_VDMCTRL_PDS_STATE0_length, &state1);
++   ROGUE_VDMCTRL_PDS_STATE2_pack(dw + ROGUE_VDMCTRL_PDS_STATE0_length +
++                                    ROGUE_VDMCTRL_PDS_STATE1_length,
++                                &state2);
++
++   return true;
++}
++
+ uint32_t
+ pvr_csb_switch_buffer(struct pvr_csb *csb, void *map, uint32_t size_bytes,
+                       uint32_t guard_dwords)
+diff --git a/src/gallium/drivers/pvr/pvr_csb.h b/src/gallium/drivers/pvr/pvr_csb.h
+index 2e6bf608..b19e3947 100644
+--- a/src/gallium/drivers/pvr/pvr_csb.h
++++ b/src/gallium/drivers/pvr/pvr_csb.h
+@@ -68,6 +68,21 @@ void pvr_csb_init(struct pvr_csb *csb, void *map, uint32_t size_bytes,
+ uint32_t pvr_csb_switch_buffer(struct pvr_csb *csb, void *map, uint32_t size_bytes,
+                               uint32_t guard_dwords);
+ 
++/* Load a PDS program: the three VDMCTRL_PDS_STATE packets that tell the hardware where the
++ * program's data and code are, how many temporaries it needs, and that the next thing to
++ * fetch is USC code.
++ *
++ * `program_addr` is the device address of the program's DATA segment; the code segment
++ * follows it immediately, which is why STATE2 is derived rather than passed - a caller
++ * able to disagree with itself about where the code starts is a caller able to produce a
++ * program that is half old and half new.
++ *
++ * pds_data_size is in units of ROGUE_VDMCTRL_PDS_STATE0_PDS_DATA_SIZE_UNIT_SIZE, not
++ * bytes: the field is a count of units, and passing bytes would silently under-report on
++ * any program whose data segment is not one unit. */
++bool pvr_csb_emit_pds_state_update(struct pvr_csb *csb, uint64_t program_addr,
++                                   uint32_t data_dwords, uint32_t temps);
++
+ /* Dwords a stream link occupies - what the guard must be at minimum. */
+ #define PVR_CSB_LINK_DWORDS (ROGUE_VDMCTRL_STREAM_LINK0_length + \
+                              ROGUE_VDMCTRL_STREAM_LINK1_length)
+diff --git a/src/gallium/drivers/pvr/pvr_probe.c b/src/gallium/drivers/pvr/pvr_probe.c
+index 35e3c82a..7548c660 100644
+--- a/src/gallium/drivers/pvr/pvr_probe.c
++++ b/src/gallium/drivers/pvr/pvr_probe.c
+@@ -1115,6 +1115,80 @@ csb_check(int fd, struct pipe_screen *pscreen)
+     * together, checked against a locally packed reference and read back with the
+     * generated unpacker - the same pattern as the packet check, but this is content the
+     * GPU follows rather than a packet it merely reads. */
++   /* The first program-loading content in a stream: the PDS state update that says where a
++    * program's data and code are and how many temporaries it needs. Checked the way the
++    * packet check is - a locally packed reference compared against what landed in the
++    * buffer, then read back with the generated unpacker - so a field written in the wrong
++    * packet, or a size passed in the wrong units, fails rather than producing a plausible
++    * three dwords. */
++   {
++      const uint64_t prog_addr = 0x9ff0000000ULL;
++      const uint32_t data_dwords = 6;
++      const uint32_t temps = 4;
++      const uint32_t words = ROGUE_VDMCTRL_PDS_STATE0_length +
++                             ROGUE_VDMCTRL_PDS_STATE1_length +
++                             ROGUE_VDMCTRL_PDS_STATE2_length;
++      const uint32_t unit = ROGUE_VDMCTRL_PDS_STATE0_PDS_DATA_SIZE_UNIT_SIZE;
++      uint32_t reference[3];
++      struct ROGUE_VDMCTRL_PDS_STATE0 s0_ref = {
++         .block_type = ROGUE_VDMCTRL_BLOCK_TYPE_PDS_STATE_UPDATE,
++         .dm_target = ROGUE_VDMCTRL_DM_TARGET_VDM,
++         .usc_target = ROGUE_VDMCTRL_USC_TARGET_ALL,
++         .pds_temp_size = temps,
++         .pds_data_size = (data_dwords * 4 + unit - 1) / unit,
++      };
++      struct ROGUE_VDMCTRL_PDS_STATE1 s1_ref = {
++         .pds_data_addr = prog_addr,
++         .sd_type = ROGUE_VDMCTRL_SD_TYPE_PDS,
++         .sd_next_type = ROGUE_VDMCTRL_SD_TYPE_USC,
++      };
++      struct ROGUE_VDMCTRL_PDS_STATE2 s2_ref = {
++         .pds_code_addr = prog_addr + data_dwords * 4,
++      };
++      struct ROGUE_VDMCTRL_PDS_STATE0 s0_read = { 0 };
++      struct ROGUE_VDMCTRL_PDS_STATE1 s1_read = { 0 };
++      struct ROGUE_VDMCTRL_PDS_STATE2 s2_read = { 0 };
++
++      ROGUE_VDMCTRL_PDS_STATE0_pack(reference, &s0_ref);
++      ROGUE_VDMCTRL_PDS_STATE1_pack(reference + ROGUE_VDMCTRL_PDS_STATE0_length, &s1_ref);
++      ROGUE_VDMCTRL_PDS_STATE2_pack(reference + ROGUE_VDMCTRL_PDS_STATE0_length +
++                                       ROGUE_VDMCTRL_PDS_STATE1_length,
++                                    &s2_ref);
++
++      pvr_csb_reset(&csb);
++
++      if (!pvr_csb_emit_pds_state_update(&csb, prog_addr, data_dwords, temps) ||
++          pvr_csb_size(&csb) != words * 4) {
++         printf("csb:           FAIL: the PDS state update did not emit %u dwords\n",
++                words);
++         goto out;
++      }
++
++      if (memcmp(bo.map, reference, sizeof(reference)) != 0) {
++         printf("csb:           FAIL: the emitted PDS state update differs from packing "
++                "locally\n");
++         goto out;
++      }
++
++      ROGUE_VDMCTRL_PDS_STATE0_unpack(bo.map, &s0_read);
++      ROGUE_VDMCTRL_PDS_STATE1_unpack((uint32_t *)bo.map + ROGUE_VDMCTRL_PDS_STATE0_length,
++                                      &s1_read);
++      ROGUE_VDMCTRL_PDS_STATE2_unpack((uint32_t *)bo.map + ROGUE_VDMCTRL_PDS_STATE0_length +
++                                         ROGUE_VDMCTRL_PDS_STATE1_length,
++                                      &s2_read);
++
++      if (s0_read.pds_temp_size != temps ||
++          s0_read.block_type != ROGUE_VDMCTRL_BLOCK_TYPE_PDS_STATE_UPDATE ||
++          s1_read.sd_type != ROGUE_VDMCTRL_SD_TYPE_PDS ||
++          s1_read.sd_next_type != ROGUE_VDMCTRL_SD_TYPE_USC) {
++         printf("csb:           FAIL: PDS state readback lost a field\n");
++         goto out;
++      }
++
++      printf("csb:           PDS state update: %u dwords, temps %u, data %u dwords, "
++             "code follows data\n", words, s0_read.pds_temp_size, data_dwords);
++   }
++
+    /* Chaining, end to end: fill the first buffer to its guard, link to a second, follow
+     * the link, and check the data written afterwards is at the START of the second buffer
+     * and not past the guard of the first. Emitting a link without following it would send
+-- 
+2.47.3
+

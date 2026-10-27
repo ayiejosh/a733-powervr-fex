@@ -1,0 +1,178 @@
+From fbe781dbd9210ee08d3a30c79e11f9c66a2532f9 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 23 Oct 2026 13:00:19 +0800
+Subject: [PATCH 180/269] gallium/pvr: build the geometry (VDM) static stream
+
+The fragment static stream was the piece already verified byte-for-byte; the geometry job's stream did
+not exist. This adds pvr_geom_static_stream(), mirroring the working Vulkan driver's
+pvr_geom_state_stream_init() exactly: six packets in its order (CR_VDM_CTRL_STREAM_BASE,
+CR_TPU_BORDER_COLOUR_TABLE_VDM, CR_PPP_CTRL, CR_TE_PSG, VDMCTRL_PDS_STATE0, KMD_STREAM_VIEW_IDX) with
+the KMD_STREAM_HDR written last carrying the total length.
+
+Deliberately NOT padded, unlike the fragment stream: the reference sets fw_stream_len from the pointer
+delta after the last packet and emits no padding, so neither does this. Each field's meaning is taken
+from the reference rather than inferred, and the encodings come from the generated csbgen headers the
+driver already includes (cr.h, vdm.h, kmd_stream.h) - no new dependency.
+
+Produces 40 bytes (10 dwords), which matches the size noted when the geometry stream was first captured.
+
+The probe check asserts the returned length equals the packet sum, that the header carries it, and that
+a short buffer is refused rather than overrun. It is a structural check, NOT the byte-for-byte external
+comparison the fragment stream has: that needs a capture from the open driver, which requires a module
+switch and is the next step.
+---
+ src/gallium/drivers/pvr_native/pvr_csb.c   | 82 ++++++++++++++++++++++
+ src/gallium/drivers/pvr_native/pvr_csb.h   |  6 ++
+ src/gallium/drivers/pvr_native/pvr_probe.c | 29 ++++++++
+ 3 files changed, 117 insertions(+)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_csb.c b/src/gallium/drivers/pvr_native/pvr_csb.c
+index cacfd7f0..5f59a109 100644
+--- a/src/gallium/drivers/pvr_native/pvr_csb.c
++++ b/src/gallium/drivers/pvr_native/pvr_csb.c
+@@ -955,3 +955,85 @@ pvr_csb_emit_link(struct pvr_csb *csb, uint64_t dev_addr, bool with_return)
+ 
+    return true;
+ }
++
++/* The geometry (VDM) static stream, mirroring the working Vulkan driver's
++ * pvr_geom_state_stream_init(): these six packets in this order, with the stream header written last
++ * carrying the total length. Unlike the fragment stream this one is NOT padded - the reference sets
++ * fw_stream_len from the pointer delta after the last packet and emits no padding, so neither does
++ * this. Each field's meaning is taken from the reference, not inferred:
++ *   CR_VDM_CTRL_STREAM_BASE         .addr = the geometry control stream's device address
++ *   CR_TPU_BORDER_COLOUR_TABLE_VDM  the border colour table's device address
++ *   CR_PPP_CTRL                     wclampen = 1, fixed_point_format = 1
++ *   CR_TE_PSG                       completeonterminate, region_stride (already in units), forcenewstate
++ *   VDMCTRL_PDS_STATE0              usc_common_size, already in its UNIT_SIZE units
++ *   KMD_STREAM_VIEW_IDX             the view index
++ *
++ * Returns the stream length in bytes, or 0 if it does not fit. */
++uint32_t
++pvr_geom_static_stream(void *stream, uint32_t stream_size,
++                       uint64_t ctrl_stream_addr, uint64_t border_colour_addr,
++                       bool geometry_terminate, uint32_t region_stride,
++                       bool forcenewstate, uint32_t usc_common_size, uint32_t view_idx)
++{
++   const uint32_t used_dwords =
++      PVR_CMD_DW(KMD_STREAM_HDR) +
++      PVR_CMD_DW(CR_VDM_CTRL_STREAM_BASE) +
++      PVR_CMD_DW(CR_TPU_BORDER_COLOUR_TABLE_VDM) +
++      PVR_CMD_DW(CR_PPP_CTRL) +
++      PVR_CMD_DW(CR_TE_PSG) +
++      PVR_CMD_DW(VDMCTRL_PDS_STATE0) +
++      PVR_CMD_DW(KMD_STREAM_VIEW_IDX);
++   const uint32_t total_bytes = PVR_DW_TO_BYTES(used_dwords);
++   uint8_t *p = (uint8_t *)stream + PVR_DW_TO_BYTES(PVR_CMD_DW(KMD_STREAM_HDR));
++   struct ROGUE_KMD_STREAM_HDR hdr = { .length = total_bytes };
++
++   if (total_bytes > stream_size)
++      return 0;
++
++   memset(stream, 0, total_bytes);
++
++   {
++      struct ROGUE_CR_VDM_CTRL_STREAM_BASE v = { .addr = ctrl_stream_addr };
++      ROGUE_CR_VDM_CTRL_STREAM_BASE_pack((uint32_t *)p, &v);
++      p += PVR_DW_TO_BYTES(PVR_CMD_DW(CR_VDM_CTRL_STREAM_BASE));
++   }
++   {
++      struct ROGUE_CR_TPU_BORDER_COLOUR_TABLE_VDM v = {
++         .border_colour_table_address = border_colour_addr,
++      };
++      ROGUE_CR_TPU_BORDER_COLOUR_TABLE_VDM_pack((uint32_t *)p, &v);
++      p += PVR_DW_TO_BYTES(PVR_CMD_DW(CR_TPU_BORDER_COLOUR_TABLE_VDM));
++   }
++   {
++      struct ROGUE_CR_PPP_CTRL v = { .wclampen = true, .fixed_point_format = 1 };
++      ROGUE_CR_PPP_CTRL_pack((uint32_t *)p, &v);
++      p += PVR_DW_TO_BYTES(PVR_CMD_DW(CR_PPP_CTRL));
++   }
++   {
++      struct ROGUE_CR_TE_PSG v = {
++         .completeonterminate = geometry_terminate,
++         .forcenewstate = forcenewstate,
++         .region_stride = region_stride,
++      };
++      ROGUE_CR_TE_PSG_pack((uint32_t *)p, &v);
++      p += PVR_DW_TO_BYTES(PVR_CMD_DW(CR_TE_PSG));
++   }
++   {
++      struct ROGUE_VDMCTRL_PDS_STATE0 v = { .usc_common_size = usc_common_size };
++      ROGUE_VDMCTRL_PDS_STATE0_pack((uint32_t *)p, &v);
++      p += PVR_DW_TO_BYTES(PVR_CMD_DW(VDMCTRL_PDS_STATE0));
++   }
++   {
++      struct ROGUE_KMD_STREAM_VIEW_IDX v = { .idx = view_idx };
++      ROGUE_KMD_STREAM_VIEW_IDX_pack((uint32_t *)p, &v);
++      p += PVR_DW_TO_BYTES(PVR_CMD_DW(KMD_STREAM_VIEW_IDX));
++   }
++
++   /* The packet sizes must account for exactly the length the header advertises - the same class of
++    * off-by-one that cost this driver two rounds on the fragment stream. */
++   assert((uint32_t)(p - (uint8_t *)stream) == total_bytes);
++
++   ROGUE_KMD_STREAM_HDR_pack((uint32_t *)stream, &hdr);
++
++   return total_bytes;
++}
+diff --git a/src/gallium/drivers/pvr_native/pvr_csb.h b/src/gallium/drivers/pvr_native/pvr_csb.h
+index 5bc1548c..8cbb0057 100644
+--- a/src/gallium/drivers/pvr_native/pvr_csb.h
++++ b/src/gallium/drivers/pvr_native/pvr_csb.h
+@@ -610,6 +610,12 @@ uint32_t pvr_region_header_count(uint32_t width, uint32_t height, uint32_t tile_
+  * capture shows for the same case, which is what "no scissor, no depth bias, no occlusion query" looks like.
+  *
+  * Returns the stream length in bytes, or 0 if it does not fit. */
++uint32_t pvr_geom_static_stream(void *stream, uint32_t stream_size,
++                                uint64_t ctrl_stream_addr, uint64_t border_colour_addr,
++                                bool geometry_terminate, uint32_t region_stride,
++                                bool forcenewstate, uint32_t usc_common_size,
++                                uint32_t view_idx);
++
+ uint32_t pvr_frag_static_stream(void *stream, uint32_t stream_size,
+                                 const uint64_t *pbe_words, unsigned nr_attachments,
+                                 uint32_t eot_pds_offset, bool cluster_grouping);
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index 6850159f..1057ecab 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -2169,6 +2169,35 @@ csb_check(int fd, struct pipe_screen *pscreen)
+                 got_no == 384 ? "FALSE" : got_yes == 384 ? "TRUE" : "neither - still wrong");
+       }
+ 
++      /* The geometry (VDM) static stream. No capture reference exists for it yet, so this checks the
++       * structure the reference's packet order implies: the length equals the packet sum, the header
++       * carries it, and a short buffer is refused rather than overrun. Byte-for-byte verification
++       * against a captured stream is the next step and needs the open driver bound. */
++      {
++         uint8_t gstream[256];
++         const uint64_t gctrl = 0x12345000ull, gborder = 0x67890000ull;
++         const uint32_t ggot = pvr_geom_static_stream(gstream, sizeof(gstream), gctrl, gborder,
++                                                      false, 7, false, 3, 2);
++         const uint32_t gwant_dw =
++            ROGUE_KMD_STREAM_HDR_length + ROGUE_CR_VDM_CTRL_STREAM_BASE_length +
++            ROGUE_CR_TPU_BORDER_COLOUR_TABLE_VDM_length + ROGUE_CR_PPP_CTRL_length +
++            ROGUE_CR_TE_PSG_length + ROGUE_VDMCTRL_PDS_STATE0_length +
++            ROGUE_KMD_STREAM_VIEW_IDX_length;
++
++         if (ggot != gwant_dw * 4u || ((uint32_t *)gstream)[0] != ggot) {
++            printf("csb:           FAIL: geometry stream %u bytes, packet sum %u, header says %u\n",
++                   ggot, gwant_dw * 4u, ((uint32_t *)gstream)[0]);
++            goto out;
++         }
++         if (pvr_geom_static_stream(gstream, 8, gctrl, gborder, false, 7, false, 3, 2) != 0) {
++            printf("csb:           FAIL: geometry stream overran a buffer too small for it\n");
++            goto out;
++         }
++         printf("csb:           geometry static stream: %u bytes (%u dw), header carries it, "
++                "overflow refused; packets: vdmbase tpu pppctrl tepsg pdsstate0 viewidx\n",
++                ggot, gwant_dw);
++      }
++
+       printf("csb:           region headers: 64x64 -> 1, 256x64 -> 2, 2x2 macrotiles -> 4, "
+                 "800x600 -> %u units, zero tile size refused\n", d);
+       }
+-- 
+2.47.3
+

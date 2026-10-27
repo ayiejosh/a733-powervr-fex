@@ -1,0 +1,373 @@
+From ed86b1cee4ec635108208fd51936b96adb27dce4 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Mon, 26 Oct 2026 03:22:46 +0800
+Subject: [PATCH 258/269] gallium/pvr: native compute shader compile matches
+ the reference byte-for-byte
+
+Started porting the compute (CDM) pipeline natively: pvr_shader_compile_compute() runs the same pco
+pipeline the reference uses for compute (preprocess -> descriptor bindings -> lower -> postprocess ->
+compute sysval/shmem/descriptor shared-register allocation -> trans) and returns the USC binary plus
+pco_data. A probe mode (PVR_PROBE_CDM_COMPILE) compiles a compute SPIR-V module with the native compiler:
+for the triangle-draw shader it produces **456 bytes of USC code byte-identical to the shader the reference
+driver uploaded for the same module**, with final pco data temps=7 shareds=13 vtxins=1 coeffs=3 literals=9
+wg_id_mask=0x3 (the reference capture also has 9 literals).
+
+The same probe generates the PDS compute kernel program with the PDS library: its data segment is
+`00007200 00000010 90000002 80000000` and its code prefix `c2c00005 90012000 90016041 f0024001 d3000000
+f0034001 fc000002 d3000000` - identical to the captured reference program (the reference's extra code
+words are uninitialised heap in its staging buffer, zeros in ours).
+
+This is the compiler + kernel-program half of the native compute port; the remaining pieces are the
+descriptor/literal upload programs, the CDM control stream, the compute fw stream and the submission.
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c  | 115 ++++++++++++++
+ src/gallium/drivers/pvr_native/pvr_shader.c | 159 +++++++++++++++++++-
+ src/gallium/drivers/pvr_native/pvr_shader.h |   8 +
+ 3 files changed, 280 insertions(+), 2 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index ff423614..fe98115c 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -33,6 +33,7 @@
+ 
+ #include "compiler/spirv/nir_spirv.h"
+ #include "nir_builder.h"
++#include "pds/pvr_pds.h"
+ 
+ #include "pco/pco_data.h"
+ #include "pco_uscgen_programs.h"
+@@ -4134,6 +4135,118 @@ out:
+ 
+ 
+ /* Reads a capture file from the directory named by PVR_PROBE_CDM_DIR. */
++
++/* Compiles a compute SPIR-V module through spirv_to_nir + pco with the native driver's compiler and
++ * writes the USC binary out, so it can be compared byte-for-byte with the shader the reference driver
++ * uploads for the same module. */
++static void
++cdm_compile_check(struct pipe_screen *pscreen)
++{
++   struct pvr_screen *scr = pvr_screen(pscreen);
++   const char *path = getenv("PVR_PROBE_CDM_COMPILE");
++   const char *out_path = getenv("PVR_PROBE_CDM_COMPILE_OUT");
++   struct stat st;
++   uint32_t *words;
++   nir_shader *nir;
++   pco_data data = { 0 };
++   pco_shader *shader = NULL;
++   const void *binary = NULL;
++   unsigned size = 0;
++   FILE *f;
++   int fd;
++
++   if (out_path == NULL)
++      out_path = "/home/radxa/native-compute.bin";
++   if (stat(path, &st) != 0 || st.st_size < 20) {
++      printf("cdmc:          FAIL: cannot read %s\n", path);
++      return;
++   }
++   words = malloc(st.st_size);
++   fd = open(path, O_RDONLY);
++   if (words == NULL || fd < 0 || read(fd, words, st.st_size) != st.st_size) {
++      printf("cdmc:          FAIL: cannot load %s\n", path);
++      if (words)
++         free(words);
++      if (fd >= 0)
++         close(fd);
++      return;
++   }
++   close(fd);
++
++   nir = spirv_to_nir(words, st.st_size / 4, NULL, MESA_SHADER_COMPUTE, "main",
++                      pco_spirv_options(), pco_nir_options());
++   free(words);
++   if (nir == NULL) {
++      printf("cdmc:          FAIL: spirv_to_nir produced no NIR\n");
++      return;
++   }
++   if (!pvr_shader_compile_compute(scr->pco_ctx, nir, &data, &shader, &binary, &size)) {
++      printf("cdmc:          FAIL: pco compile failed\n");
++      return;
++   }
++   printf("cdmc:          compiled %u bytes USC; temps=%u shareds=%u wg=(%u,%u,%u) "
++          "literals=%u desc_sets=%u\n", size, data.common.temps, data.common.shareds,
++          data.cs.workgroup_size[0], data.cs.workgroup_size[1], data.cs.workgroup_size[2],
++          data.common.literals.count, (unsigned)data.common.desc_sets[0].binding_count);
++
++   /* Generate the PDS compute kernel program the compute submission would install: compare it with
++    * the reference capture (data at PDS+0x2640, code at PDS+0x2650 in captures/cdm-draw/pds.txt). */
++   {
++      const pco_data *sd = pco_shader_data(shader);
++      const struct pvr_device_info *dev_info = &pvr_screen(pscreen)->dev_info;
++
++      printf("cdmc:          final pco data: temps=%u shareds=%u vtxins=%u coeffs=%u "
++             "literals=%u wg_id_mask=0x%x\n", sd->common.temps, sd->common.shareds,
++             sd->common.vtxins, sd->common.coeffs, sd->common.literals.count,
++             sd->cs.workgroup_id_mask);
++      struct pvr_pds_compute_shader_program prog;
++      const uint64_t usc_dev_addr = 0xe000007200ULL;
++      uint32_t *stage_buf;
++      uint32_t data_dw, code_dw;
++      uint32_t *code;
++
++      pvr_pds_compute_shader_program_init(&prog);
++      prog.flattened_work_groups = true;
++      prog.kick_usc = true;
++      pvr_pds_setup_doutu(&prog.usc_task_control, usc_dev_addr, sd->common.temps,
++                          ROGUE_PDSINST_DOUTU_SAMPLE_RATE_INSTANCE, false);
++      if (sd->common.sys_vals[SYSTEM_VALUE_LOCAL_INVOCATION_INDEX].count > 0)
++         prog.local_input_regs[0] =
++            sd->common.sys_vals[SYSTEM_VALUE_LOCAL_INVOCATION_INDEX].start;
++      for (unsigned u = 0; u < 3; u++) {
++         if (sd->common.sys_vals[SYSTEM_VALUE_WORKGROUP_ID].count > u &&
++             (sd->cs.workgroup_id_mask & BITFIELD_BIT(u)))
++            prog.work_group_input_regs[u] =
++               sd->common.sys_vals[SYSTEM_VALUE_WORKGROUP_ID].start + u;
++         if (sd->common.sys_vals[SYSTEM_VALUE_NUM_WORKGROUPS].count > u)
++            prog.num_work_groups_regs[u] =
++               sd->common.sys_vals[SYSTEM_VALUE_NUM_WORKGROUPS].start + u;
++      }
++
++      pvr_pds_compute_shader(&prog, NULL, PDS_GENERATE_SIZES, dev_info);
++      data_dw = prog.data_size;
++      code_dw = prog.code_size;
++      stage_buf = calloc(data_dw + code_dw, sizeof(uint32_t));
++      code = pvr_pds_compute_shader(&prog, stage_buf, PDS_GENERATE_DATA_SEGMENT, dev_info);
++      pvr_pds_compute_shader(&prog, code, PDS_GENERATE_CODE_SEGMENT, dev_info);
++      printf("cdmc:          PDS data dw=%u:", data_dw);
++      for (unsigned i = 0; i < data_dw; i++)
++         printf(" %08x", stage_buf[i]);
++      printf("\ncdmc:          PDS code dw=%u:", code_dw);
++      for (unsigned i = 0; i < code_dw; i++)
++         printf(" %08x", code[i]);
++      printf("\n");
++      free(stage_buf);
++   }
++   f = fopen(out_path, "wb");
++   if (f) {
++      fwrite(binary, 1, size, f);
++      fclose(f);
++      printf("cdmc:          wrote %s\n", out_path);
++   }
++   ralloc_free(shader);
++}
++
+ static uint8_t *
+ cdm_read_capture(const char *dir, const char *name, uint32_t *size_out)
+ {
+@@ -4732,6 +4845,8 @@ main(int argc, char **argv)
+ 
+    /* Run the TQ fill replay first, before any job that can hang the TA (a failed draw triggers a
+     * firmware HWR, after which every later command in the process is discarded). */
++   if (getenv("PVR_PROBE_CDM_COMPILE"))
++      cdm_compile_check(screen);
+    const bool cdm_pass = getenv("PVR_PROBE_CDM_DIR") ? cdm_draw_check(fd, screen) : true;
+    const bool tq_pass = getenv("PVR_PROBE_TQ_STREAM") ? tq_fill_check(fd, screen) : true;
+ 
+diff --git a/src/gallium/drivers/pvr_native/pvr_shader.c b/src/gallium/drivers/pvr_native/pvr_shader.c
+index d8b95424..c1034f6e 100644
+--- a/src/gallium/drivers/pvr_native/pvr_shader.c
++++ b/src/gallium/drivers/pvr_native/pvr_shader.c
+@@ -12,7 +12,7 @@
+ 
+ #include "util/log.h"
+ 
+-static bool pvr_shader_compile_data(pco_ctx *ctx, struct nir_shader *nir,
++bool pvr_shader_compile_data(pco_ctx *ctx, struct nir_shader *nir,
+                                     pco_data *data, pco_shader **shader_out,
+                                     const void **data_out, unsigned *size_out);
+ 
+@@ -489,7 +489,7 @@ pvr_shader_destroy(struct pvr_shader *shader)
+    free(shader);
+ }
+ 
+-static bool
++bool
+ pvr_shader_compile_data(pco_ctx *ctx, struct nir_shader *nir, pco_data *data,
+                         pco_shader **shader_out, const void **data_out,
+                         unsigned *size_out)
+@@ -543,6 +543,161 @@ pvr_shader_compile_data(pco_ctx *ctx, struct nir_shader *nir, pco_data *data,
+    return true;
+ }
+ 
++
++/* Minimal compute compile: spirv_to_nir hands us the NIR, this runs the same pco pipeline as the
++ * reference (preprocess -> lower -> postprocess -> trans) with the driver-side data pco needs for a
++ * dispatch: descriptor bindings for the shader's resources, the compute system-value registers and
++ * the descriptor shared-register ranges the PDS descriptor program will fill. */
++struct pvr_compute_binding_desc {
++   unsigned desc_set;
++   unsigned binding;
++   unsigned size_in_dwords;
++};
++
++bool
++pvr_shader_compile_compute(pco_ctx *ctx, struct nir_shader *nir, pco_data *data,
++                           pco_shader **shader_out, const void **binary_out,
++                           unsigned *size_out)
++{
++   unsigned max_binding[ARRAY_SIZE(data->common.desc_sets)] = { 0 };
++   nir_variable *var;
++   unsigned set;
++   unsigned size;
++
++   data->common.literal_pool = true;
++
++   pco_preprocess_nir(ctx, nir, data);
++
++   nir_foreach_variable_with_modes (var, nir, nir_var_mem_ssbo | nir_var_mem_ubo |
++                                                 nir_var_mem_global | nir_var_image |
++                                                 nir_var_uniform) {
++      unsigned set_idx = var->data.descriptor_set;
++      unsigned bind = var->data.binding;
++
++      if (set_idx >= ARRAY_SIZE(data->common.desc_sets))
++         continue;
++      max_binding[set_idx] = MAX2(max_binding[set_idx], bind + 1);
++   }
++   for (set = 0; set < ARRAY_SIZE(data->common.desc_sets); set++) {
++      if (max_binding[set] == 0)
++         continue;
++      data->common.desc_sets[set].binding_count = max_binding[set];
++      data->common.desc_sets[set].bindings =
++         rzalloc_array_size(NULL, sizeof(pco_binding_data), max_binding[set]);
++   }
++
++   pco_lower_nir(ctx, nir, data);
++   pco_postprocess_nir(ctx, nir, data);
++
++   /* Compute system values: local invocation index lives in the vertex-input registers, workgroup
++    * id and workgroup count in the coefficients (the same split the reference uses). */
++   {
++      BITSET_DECLARE(system_values_read, SYSTEM_VALUE_MAX);
++      static const gl_system_value vtxin_sys_vals[] = { SYSTEM_VALUE_LOCAL_INVOCATION_INDEX };
++      static const gl_system_value coeff_sys_vals[] = { SYSTEM_VALUE_WORKGROUP_ID,
++                                                        SYSTEM_VALUE_NUM_WORKGROUPS };
++
++      BITSET_COPY(system_values_read, nir->info.system_values_read);
++      for (unsigned u = 0; u < ARRAY_SIZE(vtxin_sys_vals); u++) {
++         if (!BITSET_TEST(system_values_read, vtxin_sys_vals[u]))
++            continue;
++         {
++            unsigned dwords = nir_intrinsic_infos[nir_intrinsic_from_system_value(
++               vtxin_sys_vals[u])].dest_components;
++
++            data->common.sys_vals[vtxin_sys_vals[u]] =
++               (pco_range){ .start = data->common.vtxins, .count = dwords };
++            data->common.vtxins += dwords;
++         }
++         BITSET_CLEAR(system_values_read, vtxin_sys_vals[u]);
++      }
++      for (unsigned u = 0; u < ARRAY_SIZE(coeff_sys_vals); u++) {
++         if (!BITSET_TEST(system_values_read, coeff_sys_vals[u]))
++            continue;
++         {
++            unsigned dwords = nir_intrinsic_infos[nir_intrinsic_from_system_value(
++               coeff_sys_vals[u])].dest_components;
++
++            if (dwords > 1 && (data->common.coeffs & 1))
++               data->common.coeffs++;
++            data->common.sys_vals[coeff_sys_vals[u]] =
++               (pco_range){ .start = data->common.coeffs, .count = dwords };
++            data->common.coeffs += dwords;
++         }
++         BITSET_CLEAR(system_values_read, coeff_sys_vals[u]);
++      }
++
++      /* Workgroup-id components are the ones the PDS program must write. */
++      data->cs.workgroup_id_mask = 0;
++      nir_foreach_function_impl (impl, nir) {
++         nir_foreach_block (block, impl) {
++            nir_foreach_instr (instr, block) {
++               nir_intrinsic_instr *intr;
++
++               if (instr->type != nir_instr_type_intrinsic)
++                  continue;
++               intr = nir_instr_as_intrinsic(instr);
++               if (intr->intrinsic == nir_intrinsic_load_workgroup_id)
++                  data->cs.workgroup_id_mask |= nir_def_components_read(&intr->def);
++            }
++         }
++      }
++      data->cs.workgroup_id_mask = BITFIELD_MASK(util_last_bit(
++         data->cs.workgroup_id_mask ? data->cs.workgroup_id_mask : 3));
++   }
++
++   /* Shared memory handling (none for a shader that does not use it). */
++   data->cs.shmem.count = nir->info.shared_size;
++   data->cs.shmem.start = data->common.coeffs;
++   data->common.coeffs += data->cs.shmem.count >> 2;
++
++   /* Descriptor shared-register ranges: one buffer descriptor (16 B) per binding. */
++   data->common.shareds = ALIGN_POT(data->common.shareds, 4);
++   for (set = 0; set < ARRAY_SIZE(data->common.desc_sets); set++) {
++      pco_descriptor_set_data *desc_set = &data->common.desc_sets[set];
++      unsigned desc_set_size_dw = 0;
++
++      if (desc_set->binding_count == 0 || !desc_set->used)
++         continue;
++
++      for (unsigned b = 0; b < desc_set->binding_count; b++) {
++         pco_binding_data *bind = &desc_set->bindings[b];
++
++         if (!bind->used)
++            continue;
++         bind->range = (pco_range){ .start = desc_set_size_dw, .count = 4, .stride = 4 };
++         desc_set_size_dw += 4;
++      }
++      desc_set->range.start = data->common.shareds;
++      desc_set->range.count = desc_set_size_dw;
++      data->common.shareds += desc_set_size_dw;
++      for (unsigned b = 0; b < desc_set->binding_count; b++) {
++         pco_binding_data *bind = &desc_set->bindings[b];
++
++         if (!bind->used)
++            continue;
++         bind->range.start += desc_set->range.start;
++      }
++   }
++
++   *shader_out = pco_trans_nir(ctx, nir, data, NULL);
++   if (*shader_out == NULL) {
++      mesa_loge("pvr: pco failed to translate %s", nir->info.name);
++      return false;
++   }
++   ralloc_steal(*shader_out, nir);
++   pco_process_ir(ctx, *shader_out);
++   pco_encode_ir(ctx, *shader_out);
++   size = pco_shader_binary_size(*shader_out);
++   if (size == 0) {
++      mesa_loge("pvr: pco encoded no code for %s", nir->info.name);
++      return false;
++   }
++   *binary_out = pco_shader_binary_data(*shader_out);
++   *size_out = size;
++   return true;
++}
++
+ bool
+ pvr_shader_eot_create(pco_ctx *ctx, struct pvr_shader_eot *eot,
+                       const uint32_t state_words[2])
+diff --git a/src/gallium/drivers/pvr_native/pvr_shader.h b/src/gallium/drivers/pvr_native/pvr_shader.h
+index bd033007..c988af11 100644
+--- a/src/gallium/drivers/pvr_native/pvr_shader.h
++++ b/src/gallium/drivers/pvr_native/pvr_shader.h
+@@ -58,6 +58,14 @@ struct pvr_shader {
+ };
+ 
+ struct pvr_shader *pvr_shader_create(struct nir_shader *nir, pco_ctx *ctx);
++
++/* Compile any stage and hand back pco's data section as well (the compute path needs it). */
++bool pvr_shader_compile_data(pco_ctx *ctx, struct nir_shader *nir, pco_data *data,
++                             pco_shader **shader_out, const void **binary_out,
++                             unsigned *size_out);
++bool pvr_shader_compile_compute(pco_ctx *ctx, struct nir_shader *nir, pco_data *data,
++                                pco_shader **shader_out, const void **binary_out,
++                                unsigned *size_out);
+ void pvr_shader_destroy(struct pvr_shader *shader);
+ 
+ /* The launcher's two halves. The buffer it is generated into is [data segment][code segment] -
+-- 
+2.47.3
+

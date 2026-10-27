@@ -1,0 +1,232 @@
+From 71acaf550a3ddf4718264a6f7374d85b15963b70 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sun, 25 Oct 2026 04:04:06 +0800
+Subject: [PATCH 230/269] gallium/pvr: fragment-only submission works at the
+ kick level; TA still silent; PDS background programs filled
+
+New experiment halves: a fragment job submitted alone (no geometry) from this context DOES get
+kicked - the firmware logs "Kick 3D: ... Partial render:0" and the hardware executes until it faults
+on our fragment stream. So the context/queue machinery can dispatch a job and the firmware can write
+a hardware kick. The geometry kick is the specific path that produces "Kick TA" and then nothing.
+
+Also added the fragment stream's missing background-program state, which the reference always fills
+and this driver left at zero: the TPU border-colour table address and the two PDS background program
+word sets (the pixel shader the 3D stage runs for tiles with no fragments, and its partial-render
+variant). A zero there means "PDS heap base + 0" and the hardware executes whatever program sits at
+the bottom of the PDS heap - exactly the kind of silent wrongness this project keeps paying for.
+
+- pvr_csb_pds_bgnd_words(): packs CR_PDS_BGRND0/1/SIZEINFO.
+- pvr_frag_static_stream_fill_bgnd(): patches a built stream at the layout offsets the builder uses.
+- pvr_job_submit_frag_sync(): single fragment job + completion wait (PVR_PROBE_FRAG_ONLY).
+
+The fragment-only job now still page-faults (our bgnd program is the fragment PDS program, not a real
+background shader), but the kick itself is proven. Next: use that as the power-up/ordering probe for
+the geometry kick, and/or make a real background program.
+
+Verification: probe ALL PASS under the shim; traces archived in open-driver-perf/captures/real-runs/.
+---
+ src/gallium/drivers/pvr_native/pvr_csb.c   | 49 ++++++++++++++++++++++
+ src/gallium/drivers/pvr_native/pvr_csb.h   | 15 +++++++
+ src/gallium/drivers/pvr_native/pvr_probe.c | 28 ++++++++++++-
+ src/gallium/drivers/pvr_native/pvr_vm.c    | 44 +++++++++++++++++++
+ src/gallium/drivers/pvr_native/pvr_vm.h    |  7 ++++
+ 5 files changed, 142 insertions(+), 1 deletion(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_csb.c b/src/gallium/drivers/pvr_native/pvr_csb.c
+index 4dc1a964..7e24112f 100644
+--- a/src/gallium/drivers/pvr_native/pvr_csb.c
++++ b/src/gallium/drivers/pvr_native/pvr_csb.c
+@@ -1450,3 +1450,52 @@ pvr_geom_static_stream(void *stream, uint32_t stream_size,
+ 
+    return total_bytes;
+ }
++
++void
++pvr_csb_pds_bgnd_words(uint32_t shader_off, uint32_t texunicode_off,
++                       uint32_t texturedata_off, uint32_t temps_dwords,
++                       uint32_t shared_dwords, uint32_t texturestate_dwords,
++                       uint64_t words[3])
++{
++   struct ROGUE_CR_PDS_BGRND0_BASE bgnd0 = {
++      .shader_addr = shader_off,
++      .texunicode_addr = texunicode_off,
++   };
++   struct ROGUE_CR_PDS_BGRND1_BASE bgnd1 = {
++      .texturedata_addr = texturedata_off,
++   };
++   struct ROGUE_CR_PDS_BGRND3_SIZEINFO sizeinfo = {
++      .usc_sharedsize = DIV_ROUND_UP(shared_dwords,
++                                     ROGUE_CR_PDS_BGRND3_SIZEINFO_USC_SHAREDSIZE_UNIT_SIZE),
++      .pds_texturestatesize = DIV_ROUND_UP(texturestate_dwords,
++                                           ROGUE_CR_PDS_BGRND3_SIZEINFO_PDS_TEXTURESTATESIZE_UNIT_SIZE),
++      .pds_tempsize = DIV_ROUND_UP(temps_dwords,
++                                   ROGUE_CR_PDS_BGRND3_SIZEINFO_PDS_TEMPSIZE_UNIT_SIZE),
++   };
++
++   ROGUE_CR_PDS_BGRND0_BASE_pack(&words[0], &bgnd0);
++   ROGUE_CR_PDS_BGRND1_BASE_pack(&words[1], &bgnd1);
++   ROGUE_CR_PDS_BGRND3_SIZEINFO_pack(&words[2], &sizeinfo);
++}
++
++void
++pvr_frag_static_stream_fill_bgnd(void *stream, uint32_t stream_size,
++                                 uint64_t tpu_border_table_addr,
++                                 const uint64_t bgnd[3], const uint64_t pr_bgnd[3])
++{
++   const uint32_t pbe_dwords = PVR_MAX_COLOR_ATTACHMENTS * ROGUE_NUM_PBESTATE_REG_WORDS * 2;
++   const uint32_t tpu_off = (PVR_FRAG_PRE_PBE_DWORDS + pbe_dwords) * 4;
++   const uint32_t bgnd_off = tpu_off + PVR_CMD_DW(CR_TPU_BORDER_COLOUR_TABLE_PDM) * 4;
++   const uint32_t pr_bgnd_off = bgnd_off + ROGUE_NUM_CR_PDS_BGRND_WORDS * 8;
++   uint32_t *dw = (uint32_t *)stream;
++   struct ROGUE_CR_TPU_BORDER_COLOUR_TABLE_PDM tpu = {
++      .border_colour_table_address = tpu_border_table_addr,
++   };
++
++   if (pr_bgnd_off + ROGUE_NUM_CR_PDS_BGRND_WORDS * 8 > stream_size)
++      return;
++
++   ROGUE_CR_TPU_BORDER_COLOUR_TABLE_PDM_pack(&dw[tpu_off / 4], &tpu);
++   memcpy((uint8_t *)stream + bgnd_off, bgnd, ROGUE_NUM_CR_PDS_BGRND_WORDS * 8);
++   memcpy((uint8_t *)stream + pr_bgnd_off, pr_bgnd, ROGUE_NUM_CR_PDS_BGRND_WORDS * 8);
++}
+diff --git a/src/gallium/drivers/pvr_native/pvr_csb.h b/src/gallium/drivers/pvr_native/pvr_csb.h
+index 2050f737..a51645f6 100644
+--- a/src/gallium/drivers/pvr_native/pvr_csb.h
++++ b/src/gallium/drivers/pvr_native/pvr_csb.h
+@@ -731,6 +731,21 @@ uint32_t pvr_frag_static_stream(void *stream, uint32_t stream_size,
+                                 const uint64_t *pbe_words, unsigned nr_attachments,
+                                 uint32_t eot_pds_offset, bool cluster_grouping);
+ 
++/* Fill the parts of a built fragment stream that the reference always sets but this driver had left
++ * zero: the TPU border-colour table address and the PDS background programs (the pixel shader the
++ * 3D stage runs for tiles with no fragments, and its partial-render variant). A zero there is not
++ * "unused" - it is PDS heap base + 0, whatever program lives at the bottom of the PDS heap, which
++ * the hardware then tries to execute. */
++void pvr_frag_static_stream_fill_bgnd(void *stream, uint32_t stream_size,
++                                      uint64_t tpu_border_table_addr,
++                                      const uint64_t bgnd[3], const uint64_t pr_bgnd[3]);
++
++/* Pack the three CR_PDS_BGRND words for a background program. */
++void pvr_csb_pds_bgnd_words(uint32_t shader_off, uint32_t texunicode_off,
++                            uint32_t texturedata_off, uint32_t temps_dwords,
++                            uint32_t shared_dwords, uint32_t texturestate_dwords,
++                            uint64_t words[3]);
++
+ /* Dwords a stream link occupies - what the guard must be at minimum. */
+ #define PVR_CSB_LINK_DWORDS (ROGUE_VDMCTRL_STREAM_LINK0_length + \
+                              ROGUE_VDMCTRL_STREAM_LINK1_length)
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index e6987cf9..f02d8a64 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -1201,7 +1201,33 @@ real_job_done:
+                                                    dset_handle, 0, 2000);
+                   printf("hwrt:          minimal geometry job (terminate-only control) %s\n",
+                          gdone ? "COMPLETED" : "did not complete in 2 s");
+-               } else if (getenv("PVR_PROBE_GEOM_ONLY")) {
++               } else if (getenv("PVR_PROBE_FRAG_ONLY")) {
++                  /* Does the context dispatch a job at all when no geometry kick is involved? */
++                  const bool fdone = pvr_job_submit_frag_sync(vm, gpu_ctx.handle, fstream, f2,
++                                                              dset_handle, 0, 2000);
++
++                  printf("hwrt:          fragment-only submission %s\n",
++                         fdone ? "COMPLETED" : "did not complete in 2 s");
++               }
++               /* Fill the fragment stream's PDS background programs and TPU border table. The
++                * reference always sets these; left at zero they are "PDS heap base + 0", so the 3D
++                * stage executes whatever program sits at the bottom of the PDS heap. Reuse the
++                * fragment PDS program as the background program for now - this is about making the
++                * kick valid, not about the background colour. */
++               {
++                  uint64_t bgnd[3], pr_bgnd[3];
++
++                  pvr_csb_pds_bgnd_words(g_fs_pds_base_offset, g_fs_pds_base_offset,
++                                         g_fs_pds_base_offset, 0, 0, 0, bgnd);
++                  pvr_csb_pds_bgnd_words(g_fs_pds_base_offset, g_fs_pds_base_offset,
++                                         g_fs_pds_base_offset, 0, 0, 0, pr_bgnd);
++                  pvr_frag_static_stream_fill_bgnd(fstream, sizeof(fstream), rbctaddr, bgnd,
++                                                   pr_bgnd);
++                  printf("hwrt:          fragment stream: PDS bgnd = PDS+0x%x, border table 0x%"
++                         PRIx64 "\n", (unsigned)g_fs_pds_base_offset, rbctaddr);
++               }
++
++               if (getenv("PVR_PROBE_GEOM_ONLY")) {
+                   const bool gdone = pvr_job_submit_geom_sync(vm, gpu_ctx.handle, gstream, glen,
+                                                               dset_handle, 0, 2000);
+ 
+diff --git a/src/gallium/drivers/pvr_native/pvr_vm.c b/src/gallium/drivers/pvr_native/pvr_vm.c
+index edf3ad0c..2de214ac 100644
+--- a/src/gallium/drivers/pvr_native/pvr_vm.c
++++ b/src/gallium/drivers/pvr_native/pvr_vm.c
+@@ -454,6 +454,50 @@ pvr_job_submit_geom_sync(struct pvr_vm *vm, uint32_t context_handle,
+    return completed;
+ }
+ 
++bool
++pvr_job_submit_frag_sync(struct pvr_vm *vm, uint32_t context_handle,
++                         const void *frag_stream, uint32_t frag_len,
++                         uint32_t hwrt_set_handle, uint32_t hwrt_data_index,
++                         uint32_t timeout_ms)
++{
++   uint32_t done_sync = 0;
++   struct drm_pvr_sync_op ops[1];
++   struct drm_pvr_job job;
++   struct drm_pvr_ioctl_submit_jobs_args args = {
++      .jobs = { .stride = sizeof(job), .count = 1, .array = (__u64)(uintptr_t)&job },
++   };
++   bool completed;
++
++   if (drmSyncobjCreate(vm->fd, 0, &done_sync) != 0)
++      return false;
++
++   ops[0] = (struct drm_pvr_sync_op){
++      .handle = done_sync,
++      .flags = DRM_PVR_SYNC_OP_FLAG_SIGNAL | DRM_PVR_SYNC_OP_FLAG_HANDLE_TYPE_SYNCOBJ,
++   };
++   job = (struct drm_pvr_job){
++      .type = DRM_PVR_JOB_TYPE_FRAGMENT,
++      .context_handle = context_handle,
++      .cmd_stream = (uint64_t)(uintptr_t)frag_stream,
++      .cmd_stream_len = frag_len,
++      .sync_ops = { .stride = sizeof(ops[0]), .count = 1, .array = (__u64)(uintptr_t)ops },
++      .hwrt = { .set_handle = hwrt_set_handle, .data_index = hwrt_data_index },
++   };
++
++   if (drmIoctl(vm->fd, DRM_IOCTL_PVR_SUBMIT_JOBS, &args) != 0) {
++      mesa_loge("pvr: SUBMIT_JOBS fragment-only (%u B) failed: %s", frag_len, strerror(errno));
++      drmSyncobjDestroy(vm->fd, done_sync);
++      return false;
++   }
++
++   completed = drmSyncobjWait(vm->fd, &done_sync, 1, (int64_t)timeout_ms * 1000000LL, 0, NULL) == 0;
++   if (!completed)
++      mesa_loge("pvr: fragment-only job did not signal completion within %u ms", timeout_ms);
++
++   drmSyncobjDestroy(vm->fd, done_sync);
++   return completed;
++}
++
+ bool
+ pvr_job_submit_render(struct pvr_vm *vm, uint32_t context_handle,
+                       const void *geom_stream, uint32_t geom_len,
+diff --git a/src/gallium/drivers/pvr_native/pvr_vm.h b/src/gallium/drivers/pvr_native/pvr_vm.h
+index b69e53b6..61e849ac 100644
+--- a/src/gallium/drivers/pvr_native/pvr_vm.h
++++ b/src/gallium/drivers/pvr_native/pvr_vm.h
+@@ -151,6 +151,13 @@ bool pvr_job_submit_geom_sync(struct pvr_vm *vm, uint32_t context_handle,
+                               uint32_t hwrt_set_handle, uint32_t hwrt_data_index,
+                               uint32_t timeout_ms);
+ 
++/* Submit one fragment job and wait for its completion syncobj. Used to tell whether a context can
++ * dispatch jobs at all when no geometry kick is involved. */
++bool pvr_job_submit_frag_sync(struct pvr_vm *vm, uint32_t context_handle,
++                              const void *frag_stream, uint32_t frag_len,
++                              uint32_t hwrt_set_handle, uint32_t hwrt_data_index,
++                              uint32_t timeout_ms);
++
+ bool pvr_job_submit_render(struct pvr_vm *vm, uint32_t context_handle,
+                             const void *geom_stream, uint32_t geom_len,
+                             const void *frag_stream, uint32_t frag_len,
+-- 
+2.47.3
+

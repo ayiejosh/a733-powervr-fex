@@ -1,0 +1,46 @@
+From 7fc81e8945008f3392be4b5b11cd546d83134750 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sun, 25 Oct 2026 20:06:23 +0800
+Subject: [PATCH 250/269] gallium/pvr: use a timeline syncobj for transfer job
+ completion
+
+---
+ src/gallium/drivers/pvr_native/pvr_vm.c | 15 +++++++++++----
+ 1 file changed, 11 insertions(+), 4 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_vm.c b/src/gallium/drivers/pvr_native/pvr_vm.c
+index f5677b76..e459adda 100644
+--- a/src/gallium/drivers/pvr_native/pvr_vm.c
++++ b/src/gallium/drivers/pvr_native/pvr_vm.c
+@@ -538,7 +538,9 @@ pvr_job_submit_transfer_sync(struct pvr_vm *vm, uint32_t context_handle,
+ 
+    ops[0] = (struct drm_pvr_sync_op){
+       .handle = done_sync,
+-      .flags = DRM_PVR_SYNC_OP_FLAG_SIGNAL | DRM_PVR_SYNC_OP_FLAG_HANDLE_TYPE_SYNCOBJ,
++      .flags = DRM_PVR_SYNC_OP_FLAG_SIGNAL |
++               DRM_PVR_SYNC_OP_FLAG_HANDLE_TYPE_TIMELINE_SYNCOBJ,
++      .value = 1,
+    };
+    job = (struct drm_pvr_job){
+       .type = DRM_PVR_JOB_TYPE_TRANSFER_FRAG,
+@@ -554,9 +556,14 @@ pvr_job_submit_transfer_sync(struct pvr_vm *vm, uint32_t context_handle,
+       return false;
+    }
+ 
+-   completed = drmSyncobjWait(vm->fd, &done_sync, 1, (int64_t)timeout_ms * 1000000LL, 0, NULL) == 0;
+-   if (!completed)
+-      mesa_loge("pvr: transfer job did not signal completion within %u ms", timeout_ms);
++   {
++      uint64_t wait_point = 1;
++
++      completed = drmSyncobjTimelineWait(vm->fd, &done_sync, &wait_point, 1,
++                                         (int64_t)timeout_ms * 1000000LL, 0, NULL) == 0;
++      if (!completed)
++         mesa_loge("pvr: transfer job did not signal completion within %u ms", timeout_ms);
++   }
+ 
+    drmSyncobjDestroy(vm->fd, done_sync);
+    return completed;
+-- 
+2.47.3
+

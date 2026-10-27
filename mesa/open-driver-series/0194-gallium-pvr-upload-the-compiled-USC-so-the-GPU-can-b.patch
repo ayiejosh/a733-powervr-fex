@@ -1,0 +1,56 @@
+From ff2c0797e503e9b2690d95911b113e88ac48dc84 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sat, 24 Oct 2026 02:18:23 +0800
+Subject: [PATCH 194/269] gallium/pvr: upload the compiled USC so the GPU can
+ be pointed at it
+
+Compiling a shader is not the same as being able to run one: the GPU reads the program from a device
+address, so the encoded binary has to live in a BO that is mapped into the VM and whose address the
+PDS/VDM state can name. The probe now does that and reports the address:
+
+  shader: pco encoded 224 bytes of USC for a fragment shader
+  shader: 224 bytes of USC uploaded at device address 0x9ffffff000 - the GPU can now be pointed at it
+
+So the path NIR -> pco pipeline -> encoded USC -> mapped device address is complete. What remains
+between this and a drawn pixel is the PDS program that kicks that USC (the same doutuk/pds kick the
+VDM sync program already uses) and the control-stream blocks that reference it - the emitters for
+which (PDS state update, TA PDS base, PPP state, VDM state, index list) all exist.
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c | 21 +++++++++++++++++++++
+ 1 file changed, 21 insertions(+)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index 7867db68..c50a52d3 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -1115,6 +1115,27 @@ shader_compile_check(struct pipe_screen *pscreen)
+ 
+    printf("shader:        pco encoded %u bytes of USC for a fragment shader\n", size);
+ 
++   /* Upload the encoded USC to a GPU buffer. Compiling is not the same as being able to run it: the
++    * GPU reads the program from a device address, so the binary has to live in a BO that is mapped
++    * into the VM and whose address the PDS/VDM state can name. */
++   if (ok) {
++      struct pvr_screen *scr = pvr_screen(pscreen);
++      struct pvr_bo sbo = { 0 };
++      uint64_t saddr = 0;
++
++      if (pvr_bo_create(scr->fd, size, 1, &sbo) &&
++          (saddr = pvr_vm_alloc(&scr->vm, sbo.size, scr->vm.general.page_size)) != 0 &&
++          pvr_vm_map(&scr->vm, saddr, sbo.handle, sbo.size) &&
++          pvr_bo_map(scr->fd, &sbo)) {
++         memcpy(sbo.map, binary, size);
++         printf("shader:        %u bytes of USC uploaded at device address 0x%" PRIx64
++                " - the GPU can now be pointed at it\n", size, saddr);
++      } else {
++         printf("shader:        FAIL: could not upload the encoded USC\n");
++         ok = false;
++      }
++   }
++
+    /* A single non-zero number could be a constant. Compile a shader that does strictly
+     * more work and require strictly more code: that is the difference between "the
+     * compiler ran" and "something returned a plausible integer". */
+-- 
+2.47.3
+

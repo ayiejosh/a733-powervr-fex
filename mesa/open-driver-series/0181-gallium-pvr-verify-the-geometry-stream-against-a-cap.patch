@@ -1,0 +1,81 @@
+From ddd7df38920497bb380cb621b094956fce101ac3 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 23 Oct 2026 13:37:46 +0800
+Subject: [PATCH 181/269] gallium/pvr: verify the geometry stream against a
+ captured reference
+
+Captured the geometry static stream from the working Vulkan driver (PVR_CSB_DUMP, open driver bound):
+
+  00000028 00000000 003bf000 00000080 0001c400 00000020 00000202 00020000 20010000 00000000
+
+40 bytes, 10 dwords - the size the builder already produced. The probe now compares every dword that is
+fully determined by its inputs, and it matched on the first corrected run: the stream header (dw0/1),
+CR_VDM_CTRL_STREAM_BASE (dw2/3, address 0x80003bf000 stored directly), CR_TPU_BORDER_COLOUR_TABLE_VDM
+(dw4/5, address 0x8000071000 stored compacted >>2), CR_PPP_CTRL (dw6 = 0x202, wclampen + fixed_point)
+and KMD_STREAM_VIEW_IDX (dw9 = 0). dw7 (CR_TE_PSG) and dw8 (VDMCTRL_PDS_STATE0) encode runtime values
+the capture does not preserve, so they are printed rather than asserted.
+
+Two things the capture settled that source reading alone had wrong or ambiguous:
+
+ - CR_TPU_BORDER_COLOUR_TABLE_VDM is bits [0:37] and its generated packer compacts the byte address by
+   2, while CR_VDM_CTRL_STREAM_BASE is bits [2:39] and stores it directly. My first comparison "failed"
+   purely because I fed the compacted value (0x200001c400) as the input; the builder was already right,
+   and the real address was 0x8000071000. An external reference catches exactly this class of mistake.
+ - the stream really is 40 bytes with a 2-dword KMD_STREAM_HDR, not the 1-dword header the other
+   streams use.
+
+The capture also confirms the gating lesson: pvrsrvkm's refcount took 36 seconds to reach 0 before the
+switch. The hand-rolled script that crashed the board earlier never waited for it.
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c | 35 ++++++++++++++++++++++
+ 1 file changed, 35 insertions(+)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index 1057ecab..28103921 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -2198,6 +2198,41 @@ csb_check(int fd, struct pipe_screen *pscreen)
+                 ggot, gwant_dw);
+       }
+ 
++      /* The geometry stream against the capture taken from the working driver:
++       *   00000028 00000000 003bf000 00000080 0001c400 00000020 00000202 00020000 20010000 00000000
++       * The header, both address packets, CR_PPP_CTRL and the view index are fully determined by the
++       * inputs, so they are compared byte for byte - an external reference, not a self-check. dw7
++       * (CR_TE_PSG) and dw8 (VDMCTRL_PDS_STATE0) encode runtime values (region_stride, forcenewstate,
++       * usc_common_size) that the capture does not preserve, so they are printed, not asserted. */
++      {
++         static const uint32_t cg[10] = {
++            0x00000028u, 0x00000000u, 0x003bf000u, 0x00000080u, 0x0001c400u,
++            0x00000020u, 0x00000202u, 0x00020000u, 0x20010000u, 0x00000000u,
++         };
++         uint8_t gs[256];
++         const uint32_t g = pvr_geom_static_stream(gs, sizeof(gs), 0x80003bf000ull, 0x8000071000ull,
++                                                   false, 0, false, 0, 0);
++         const uint32_t *gd = (const uint32_t *)gs;
++         static const unsigned det[] = { 0, 1, 2, 3, 4, 5, 6, 9 };
++         bool ok = (g == 40);
++
++         for (unsigned i = 0; i < ARRAY_SIZE(det); i++)
++            if (gd[det[i]] != cg[det[i]])
++               ok = false;
++         if (!ok) {
++            printf("csb:           FAIL: geometry stream differs from the capture where it is determined "
++                   "by its inputs\n");
++            for (unsigned i = 0; i < ARRAY_SIZE(det); i++)
++               printf("csb:             dw%u got %08x capture %08x%s\n", det[i], gd[det[i]],
++                      cg[det[i]], gd[det[i]] == cg[det[i]] ? "" : "   <-- differs");
++            goto out;
++         }
++         printf("csb:           geometry stream MATCHES the capture at the header, both address packets, "
++                "CR_PPP_CTRL and the view index; dw7 TE_PSG %08x (capture %08x), dw8 PDS_STATE0 %08x "
++                "(capture %08x) - runtime inputs, reported not asserted\n",
++                gd[7], cg[7], gd[8], cg[8]);
++      }
++
+       printf("csb:           region headers: 64x64 -> 1, 256x64 -> 2, 2x2 macrotiles -> 4, "
+                 "800x600 -> %u units, zero tile size refused\n", d);
+       }
+-- 
+2.47.3
+

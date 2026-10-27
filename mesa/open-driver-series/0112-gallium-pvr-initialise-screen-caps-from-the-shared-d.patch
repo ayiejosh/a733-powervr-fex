@@ -1,0 +1,94 @@
+From 11b8c5dacbb9490f88baad301adc3fb08a2dd235 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 06:54:30 +0800
+Subject: [PATCH 112/269] gallium/pvr: initialise screen caps from the shared
+ defaults
+
+Call u_init_pipe_screen_caps(), the helper every driver uses for the baseline
+caps the state tracker relies on, then override only what can be sourced
+honestly: identity from the .pdsc table (device_id) and the two facts that are
+simply true of this part (integrated GPU, unified memory). caps is const in
+struct pipe_screen, so it is filled through a cast - the established pattern,
+see vc4_screen.c.
+
+Numeric limits are deliberately NOT declared yet. A driver that advertises a
+texture size it cannot allocate has the state tracker build tables on a lie;
+those numbers belong with the resource code that can honour them. Zeroed shader
+caps are safe rather than broken: st_extensions.c skips a stage outright when
+max_instructions is 0, so "no shader stages" is a truthful statement today.
+
+Measured effect: none yet, and that is the expected result. EGL still stops at
+"failed to create dri2 screen" because is_format_supported() honestly reports no
+formats, which is one step behind resource management. The driver fails cleanly
+(exit 5), not with a segfault.
+
+libgallium is linked into pvr-probe only, not into libpvr: the driver's objects
+normally live inside the megadriver, which already links it, and the driver must
+not carry its own copy of gallium aux symbols.
+---
+ src/gallium/drivers/pvr/meson.build  |  6 ++++--
+ src/gallium/drivers/pvr/pvr_screen.c | 20 ++++++++++++++++++++
+ 2 files changed, 24 insertions(+), 2 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr/meson.build b/src/gallium/drivers/pvr/meson.build
+index f3643793..32ccb43d 100644
+--- a/src/gallium/drivers/pvr/meson.build
++++ b/src/gallium/drivers/pvr/meson.build
+@@ -26,12 +26,14 @@ driver_pvr = declare_dependency(
+ )
+ 
+ # Runnable check for the enumeration path; needs no GPU (pairs with the drm-shim).
+-# Not installed.
++# Not installed. libgallium is linked here rather than into libpvr because the driver's
++# objects normally live inside the megadriver, which already links it - the driver needs
++# gallium aux symbols (u_init_pipe_screen_caps) but must not carry its own copy of them.
+ executable(
+   'pvr-probe',
+   'pvr_probe.c',
+   include_directories : [inc_gallium_aux, inc_gallium, inc_include, inc_src],
+-  link_with : [libpvr],
++  link_with : [libpvr, libgallium],
+   dependencies : [idep_mesautil, dep_libdrm],
+   install : false,
+ )
+diff --git a/src/gallium/drivers/pvr/pvr_screen.c b/src/gallium/drivers/pvr/pvr_screen.c
+index 719daffd..fd5f3042 100644
+--- a/src/gallium/drivers/pvr/pvr_screen.c
++++ b/src/gallium/drivers/pvr/pvr_screen.c
+@@ -27,6 +27,7 @@
+ #include "util/os_file.h"
+ #include "util/log.h"
+ #include "util/macros.h"
++#include "util/u_screen.h"
+ 
+ /* pco: the PowerVR compiler from src/imagination/pco, linked rather than rewritten. */
+ #include "pco/pco.h"
+@@ -120,6 +121,25 @@ pvr_screen_create(int fd, const struct pipe_screen_config *config,
+    for (unsigned i = 0; i < ARRAY_SIZE(screen->base.nir_options); i++)
+       screen->base.nir_options[i] = pco_nir_options();
+ 
++   /* Caps. u_init_pipe_screen_caps() supplies the defaults every driver relies on;
++    * 'caps' is const in struct pipe_screen, so it is filled through a cast, which is
++    * what the other drivers do (see vc4_screen.c). Only what can be sourced honestly
++    * is set here: identity from the .pdsc table, and the two facts that are simply
++    * true of this part. Numeric limits wait until resources exist to honour them -
++    * declaring a texture size the driver cannot allocate would be a lie the state
++    * tracker then builds tables on. Zeroed shader caps are safe: st_extensions.c
++    * skips a stage outright when max_instructions is 0. */
++   u_init_pipe_screen_caps(&screen->base, 1);
++   {
++      struct pipe_caps *caps = (struct pipe_caps *)&screen->base.caps;
++      const struct pvr_device_ident *ident = &screen->dev_info.ident;
++
++      caps->device_type = PIPE_DEVICE_TYPE_INTEGRATED_GPU;
++      caps->uma = true;             /* the GPU shares system RAM on this SoC */
++      caps->vendor_id = 0x1010;     /* Imagination Technologies PCI vendor ID */
++      caps->device_id = ident->device_id;
++   }
++
+    screen->base.destroy = pvr_destroy_screen;
+    screen->base.get_name = pvr_get_name;
+    screen->base.get_vendor = pvr_get_vendor;
+-- 
+2.47.3
+

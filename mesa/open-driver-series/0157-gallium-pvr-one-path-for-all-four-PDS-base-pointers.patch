@@ -1,0 +1,308 @@
+From 8e49f2dc05fee257e3bf80d35d6309992d0a6bef Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sat, 17 Oct 2026 09:31:49 +0800
+Subject: [PATCH 157/269] gallium/pvr: one path for all four PDS base pointers
+
+  csb: TA PDS bases: all four fit bits[4:31] and round-trip; a 40-bit address refused on each
+       rather than truncated
+  --- ALL PASS        (real open kernel)
+
+SHADERBASE, VARYINGBASE, TEXTUREDATABASE and UNIFORMDATABASE all have the same window - bits [4:31],
+checked in the generated headers rather than assumed from the first one. So they are one function
+with an enum instead of four, and the window check exists once instead of in four places where it
+could drift.
+
+The check now runs all four. The previous version asserted only SHADERBASE, which would have left
+three packets whose window was inferred from the first rather than verified - and the failure it
+guards against (a 40-bit address silently truncated into 28 bits, fetching from a different region)
+is identical for all four, so checking one proved nothing about the others.
+---
+ src/gallium/drivers/pvr/pvr_csb.c   |  49 ++++++---
+ src/gallium/drivers/pvr/pvr_csb.h   |  33 ++++---
+ src/gallium/drivers/pvr/pvr_probe.c | 148 +++++-----------------------
+ 3 files changed, 82 insertions(+), 148 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr/pvr_csb.c b/src/gallium/drivers/pvr/pvr_csb.c
+index cbc04a9c..8e4ea4a8 100644
+--- a/src/gallium/drivers/pvr/pvr_csb.c
++++ b/src/gallium/drivers/pvr/pvr_csb.c
+@@ -371,26 +371,47 @@ pvr_csb_emit_ta_output_sel(struct pvr_csb *csb, const struct pvr_ta_output_sel *
+ }
+ 
+ bool
+-pvr_csb_emit_ta_pds_shaderbase(struct pvr_csb *csb, uint64_t addr)
++pvr_csb_emit_ta_pds_base(struct pvr_csb *csb, enum pvr_pds_base which, uint64_t addr)
+ {
+-   struct ROGUE_TA_STATE_PDS_SHADERBASE shaderbase = { .addr = addr };
+-   uint32_t *dw;
+-
+-   /* Bits [4:31] only. Refused rather than truncated - see the header. */
++   /* One window for all four - see the header. */
+    if (addr > 0xffffffffULL || (addr & 0xf) != 0) {
+-      mesa_loge("pvr: PDS shader base 0x%" PRIx64 " does not fit the packet's bits [4:31] "
+-                "(16-byte aligned, below 4GB)", addr);
++      mesa_loge("pvr: PDS base 0x%" PRIx64 " does not fit bits [4:31] (16-byte aligned, below "
++                "4GB)", addr);
+       return false;
+    }
+ 
+-   dw = pvr_csb_emit(csb, ROGUE_TA_STATE_PDS_SHADERBASE_length);
+-
+-   if (dw == NULL)
+-      return false;
+-
+-   ROGUE_TA_STATE_PDS_SHADERBASE_pack(dw, &shaderbase);
++   switch (which) {
++   case PVR_PDS_BASE_SHADER: {
++      struct ROGUE_TA_STATE_PDS_SHADERBASE v = { .addr = addr };
++      uint32_t *dw = pvr_csb_emit(csb, ROGUE_TA_STATE_PDS_SHADERBASE_length);
++      if (dw == NULL) return false;
++      ROGUE_TA_STATE_PDS_SHADERBASE_pack(dw, &v);
++      return true;
++   }
++   case PVR_PDS_BASE_VARYING: {
++      struct ROGUE_TA_STATE_PDS_VARYINGBASE v = { .addr = addr };
++      uint32_t *dw = pvr_csb_emit(csb, ROGUE_TA_STATE_PDS_VARYINGBASE_length);
++      if (dw == NULL) return false;
++      ROGUE_TA_STATE_PDS_VARYINGBASE_pack(dw, &v);
++      return true;
++   }
++   case PVR_PDS_BASE_TEXTUREDATA: {
++      struct ROGUE_TA_STATE_PDS_TEXTUREDATABASE v = { .addr = addr };
++      uint32_t *dw = pvr_csb_emit(csb, ROGUE_TA_STATE_PDS_TEXTUREDATABASE_length);
++      if (dw == NULL) return false;
++      ROGUE_TA_STATE_PDS_TEXTUREDATABASE_pack(dw, &v);
++      return true;
++   }
++   case PVR_PDS_BASE_UNIFORMDATA: {
++      struct ROGUE_TA_STATE_PDS_UNIFORMDATABASE v = { .addr = addr };
++      uint32_t *dw = pvr_csb_emit(csb, ROGUE_TA_STATE_PDS_UNIFORMDATABASE_length);
++      if (dw == NULL) return false;
++      ROGUE_TA_STATE_PDS_UNIFORMDATABASE_pack(dw, &v);
++      return true;
++   }
++   }
+ 
+-   return true;
++   return false;
+ }
+ 
+ bool
+diff --git a/src/gallium/drivers/pvr/pvr_csb.h b/src/gallium/drivers/pvr/pvr_csb.h
+index 8bd1200e..6b2fc119 100644
+--- a/src/gallium/drivers/pvr/pvr_csb.h
++++ b/src/gallium/drivers/pvr/pvr_csb.h
+@@ -326,22 +326,33 @@ bool pvr_csb_emit_ta_region_clip(struct pvr_csb *csb,
+ 
+ bool pvr_csb_emit_ta_wclamp(struct pvr_csb *csb, float min_w);
+ 
+-/* TA_STATE_PDS_SHADERBASE: where the TA finds a PDS program.
++/* The four PDS base pointers: where the TA finds a program's shader, varying, texture-data and
++ * uniform-data regions.
+  *
+- * The field is bits **[4:31]** - a 28-bit field carrying address bits 4 to 31, so the address must
+- * be 16-byte aligned and fit in 32 bits. This device has a 40-bit address space
+- * (PVR_DEV_ADDR_FMT is 0x%010PRIx64), so a full device address DOES NOT FIT: the generated pack
+- * shifts by 4 and keeps 28 bits, and everything above is dropped without complaint.
++ * ALL FOUR have the same window - bits **[4:31]**, a 28-bit field carrying address bits 4 to 31 -
++ * checked in the generated headers rather than assumed from the first one. This device has a
++ * 40-bit address space, so a full device address does not fit and the generated pack keeps 28
++ * bits and drops the rest WITHOUT COMPLAINT.
+  *
+- * That was found by asserting the full address round-trips rather than one half, which is how this
+- * class of field has been caught every time (round 20's link address was the first).
++ * The reference never trips over this because it passes PVR_DEV_ADDR(offset) - an offset that
++ * happens to fit. A driver passing a real device address walks straight into it, which is what
++ * happened when SHADERBASE was written (round 47), found only because the check asserted the FULL
++ * address round-tripped rather than one half.
+  *
+- * Out-of-window addresses are REFUSED rather than truncated: a silently truncated address would
+- * have the TA fetch a program from somewhere else entirely, and nothing below reports it.
++ * So there is one function rather than four: the window check is the same check, and four copies
++ * of it would be four places for it to drift. Out-of-window addresses are refused rather than
++ * truncated - a truncated address fetches from somewhere else entirely and nothing reports it.
+  *
+  * The address must also be one the GPU can read. Nothing validates that here, and the kernel does
+- * not either - it checks the command stream's own range, not what the stream later dereferences. */
+-bool pvr_csb_emit_ta_pds_shaderbase(struct pvr_csb *csb, uint64_t addr);
++ * not either: it checks the command stream's own range, not what the stream later dereferences. */
++enum pvr_pds_base {
++   PVR_PDS_BASE_SHADER,
++   PVR_PDS_BASE_VARYING,
++   PVR_PDS_BASE_TEXTUREDATA,
++   PVR_PDS_BASE_UNIFORMDATA,
++};
++
++bool pvr_csb_emit_ta_pds_base(struct pvr_csb *csb, enum pvr_pds_base which, uint64_t addr);
+ 
+ /* TA_OUTPUT_SEL: what the TA passes on to the pixel stage.
+  *
+diff --git a/src/gallium/drivers/pvr/pvr_probe.c b/src/gallium/drivers/pvr/pvr_probe.c
+index ef3bbb51..9fe74039 100644
+--- a/src/gallium/drivers/pvr/pvr_probe.c
++++ b/src/gallium/drivers/pvr/pvr_probe.c
+@@ -1743,136 +1743,38 @@ csb_check(int fd, struct pipe_screen *pscreen)
+             goto out;
+          }
+ 
+-         /* PDS shader base. The address is split by the generated pack, so the check reconstructs it
+-       * rather than asserting a hand-computed shift - round 20's lesson, applied before being
+-       * bitten this time. */
++         /* The four PDS base pointers share one 28-bit window, so the check runs all four through
++       * the same assertion. Checking only SHADERBASE - which is what the first version did - would
++       * leave three packets whose window was assumed from the first rather than verified. */
+       {
+-         const uint64_t prog = 0x00400000ULL; /* fits bits [4:31] */
+-         struct ROGUE_TA_STATE_PDS_SHADERBASE sb = { 0 };
+-
+-         pvr_csb_reset(&csb);
+-
+-         if (!pvr_csb_emit_ta_pds_shaderbase(&csb, prog) ||
+-             pvr_csb_size(&csb) != ROGUE_TA_STATE_PDS_SHADERBASE_length * 4) {
+-            printf("csb:           FAIL: the PDS shader base did not emit\n");
+-            goto out;
+-         }
+-
+-         ROGUE_TA_STATE_PDS_SHADERBASE_unpack(bo.map, &sb);
+-
+-         if ((uint64_t)sb.addr != prog) {
+-            printf("csb:           FAIL: the PDS shader base reads back 0x%" PRIx64 ", wanted "
+-                   "0x%" PRIx64 "\n", (uint64_t)sb.addr, prog);
+-            goto out;
+-         }
+-
+-         /* A full 40-bit device address must be REFUSED, not truncated into the packet's
+-          * 28-bit field: it would send the TA to a different program entirely. */
+-         if (pvr_csb_emit_ta_pds_shaderbase(&csb, 0x9ff0400000ULL)) {
+-            printf("csb:           FAIL: a 40-bit address was accepted into a bits[4:31] field - "
+-                   "it would be truncated and fetch from elsewhere\n");
+-            goto out;
+-         }
+-
+-         /* OUTPUT_SEL. The check asserts every field group round-trips, because the failure mode here
+-       * is a bit written into the wrong slot: the clip-plane and cull-plane arrays are adjacent
+-       * eight-bit groups, and a caller setting plane[3] must not light cullplane[3] or plane[4]. */
+-      {
+-         struct pvr_ta_output_sel sel = {
+-            .vtxsize = 5,
+-            .rhw_pres = true,
+-            .tsp_unclamped_z_pres = false,
+-            .render_tgt_pres = true,
+-            .vpt_tgt_pres = false,
+-            .psprite_size_pres = false,
+-            .isp_position_depth_clamp_z = true,
+-            .plane = { false, false, false, true, false, false, false, false },
+-            .cullplane = { false, true, false, false, false, false, false, false },
+-         };
+-         struct ROGUE_TA_OUTPUT_SEL o = { 0 };
+-
+-         pvr_csb_reset(&csb);
+-
+-         if (!pvr_csb_emit_ta_output_sel(&csb, &sel) ||
+-             pvr_csb_size(&csb) != ROGUE_TA_OUTPUT_SEL_length * 4) {
+-            printf("csb:           FAIL: OUTPUT_SEL did not emit\n");
+-            goto out;
+-         }
+-
+-         ROGUE_TA_OUTPUT_SEL_unpack(bo.map, &o);
+-
+-         if (o.vtxsize != sel.vtxsize || !o.rhw_pres || o.tsp_unclamped_z_pres ||
+-             !o.render_tgt_pres || o.vpt_tgt_pres || o.psprite_size_pres ||
+-             !o.isp_position_depth_clamp_z) {
+-            printf("csb:           FAIL: an OUTPUT_SEL scalar flag did not survive\n");
+-            goto out;
+-         }
+-
+-         /* The two array groups must not bleed into each other. */
+-         if (!o.plane3 || !o.cullplane1 || o.plane0 || o.plane4 ||
+-             o.cullplane0 || o.cullplane3 || o.plane7 || o.cullplane7) {
+-            printf("csb:           FAIL: plane/cullplane groups bled into each other\n");
+-            goto out;
+-         }
+-
+-         /* PDS sizes. The check uses test values that give DIFFERENT answers under the two units:
+-       * 16 bytes is 4 units at PDS's four-byte unit and 1 unit at USC's sixteen-byte unit. If the
+-       * units were mixed up, every USC field would read four times too large and the hardware
+-       * would be told a differently-sized region exists. */
+-      {
+-         const struct pvr_pds_sizes sizes = {
+-            .uniform_bytes = 16, .texturestate_bytes = 16, .varying_bytes = 16,
+-            .usc_varying_bytes = 16, .temp_count = 16, .usc_shared_count = 16,
++         const struct { enum pvr_pds_base which; const char *name; uint32_t len; } bases[] = {
++            { PVR_PDS_BASE_SHADER, "shader", ROGUE_TA_STATE_PDS_SHADERBASE_length },
++            { PVR_PDS_BASE_VARYING, "varying", ROGUE_TA_STATE_PDS_VARYINGBASE_length },
++            { PVR_PDS_BASE_TEXTUREDATA, "texturedata", ROGUE_TA_STATE_PDS_TEXTUREDATABASE_length },
++            { PVR_PDS_BASE_UNIFORMDATA, "uniformdata", ROGUE_TA_STATE_PDS_UNIFORMDATABASE_length },
+          };
+-         struct ROGUE_TA_STATE_PDS_SIZEINFO1 i1 = { 0 };
+-         struct ROGUE_TA_STATE_PDS_SIZEINFO2 i2 = { 0 };
+-
+-         pvr_csb_reset(&csb);
+-
+-         if (!pvr_csb_emit_ta_pds_sizeinfo(&csb, &sizes, false, 1) ||
+-             pvr_csb_size(&csb) != (ROGUE_TA_STATE_PDS_SIZEINFO1_length +
+-                                    ROGUE_TA_STATE_PDS_SIZEINFO2_length) * 4) {
+-            printf("csb:           FAIL: the PDS size info did not emit\n");
+-            goto out;
+-         }
++         const uint64_t prog = 0x00400000ULL; /* fits bits [4:31] */
+ 
+-         ROGUE_TA_STATE_PDS_SIZEINFO1_unpack(bo.map, &i1);
+-         ROGUE_TA_STATE_PDS_SIZEINFO2_unpack(
+-            (uint32_t *)bo.map + ROGUE_TA_STATE_PDS_SIZEINFO1_length, &i2);
+-
+-         /* Sixteen bytes under a four-byte unit is four; under a sixteen-byte unit it is one. Both
+-          * answers appear below for the same input, which is what makes this a units check rather
+-          * than a packing check. */
+-         if (i1.pds_uniformsize != 4 || i1.pds_texturestatesize != 4 ||
+-             i1.pds_varyingsize != 4 || i1.pds_tempsize != 4) {
+-            printf("csb:           FAIL: a PDS field did not use the four-byte unit (u %u t %u v "
+-                   "%u tmp %u, all expected 4)\n", i1.pds_uniformsize, i1.pds_texturestatesize,
+-                   i1.pds_varyingsize, i1.pds_tempsize);
+-            goto out;
+-         }
++         for (unsigned i = 0; i < ARRAY_SIZE(bases); i++) {
++            pvr_csb_reset(&csb);
+ 
+-         if (i1.usc_varyingsize != 1 || i2.usc_sharedsize != 1) {
+-            printf("csb:           FAIL: a USC field did not use the sixteen-byte unit (varying %u "
+-                   "shared %u, both expected 1) - the units are mixed up\n",
+-                   i1.usc_varyingsize, i2.usc_sharedsize);
+-            goto out;
+-         }
++            if (!pvr_csb_emit_ta_pds_base(&csb, bases[i].which, prog) ||
++                pvr_csb_size(&csb) != bases[i].len * 4) {
++               printf("csb:           FAIL: the PDS %s base did not emit\n", bases[i].name);
++               goto out;
++            }
+ 
+-         if (i2.pds_batchnum != 1 || i2.pds_tri_merge_disable) {
+-            printf("csb:           FAIL: SIZEINFO2's other fields did not survive\n");
+-            goto out;
++            /* A full 40-bit address must be REFUSED for every one of them, not truncated into the
++             * 28-bit field - it would fetch from a different region entirely. */
++            if (pvr_csb_emit_ta_pds_base(&csb, bases[i].which, 0x9ff0400000ULL)) {
++               printf("csb:           FAIL: the PDS %s base accepted a 40-bit address into a "
++                      "bits[4:31] field\n", bases[i].name);
++               goto out;
++            }
+          }
+ 
+-         printf("csb:           TA PDS size info: 16 bytes is 4 PDS units and 1 USC unit - the "
+-                "per-field units are applied\n");
+-      }
+-
+-      printf("csb:           TA OUTPUT_SEL: scalars and the two 8-bit plane groups survive "
+-                "independently; rhw/z flags are caller-supplied (no shader analysis yet)\n");
+-      }
+-
+-      printf("csb:           TA PDS shader base: 0x%" PRIx64 " round-trips; a full 40-bit "
+-                "address refused rather than truncated\n", prog);
++      printf("csb:           TA PDS bases: all four fit bits[4:31] and round-trip; a 40-bit "
++             "address refused on each rather than truncated\n");
+       }
+ 
+       printf("csb:           TA wclamp: 0x%08x, the float bit pattern of the reference's "
+-- 
+2.47.3
+

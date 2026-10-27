@@ -1,0 +1,184 @@
+From ea3dc3fc387cab3ec0cb2754d507111c32fe6882 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 17:12:16 +0800
+Subject: [PATCH 133/269] gallium/pvr: the stream link - the first real content
+ the driver puts in a control stream
+
+  csb: stream link: 2 dwords, address split as lsb 0xfffe0000 / msb 0x9f00000000, both
+       halves verified against a local pack
+  --- ALL PASS        (real open kernel)
+
+This is how a control stream is longer than one buffer: VDMCTRL_STREAM_LINK0 and LINK1
+tell the GPU where to continue, rather than the driver needing one contiguous allocation.
+It matters to this driver's design, not just as content - pvr_csb_emit() refuses on
+overflow, which is only sufficient while a stream fits in one buffer. A real render job's
+stream is a CHAIN, and the link is how the chain is made.
+
+Both dwords are reserved together. A stream holding half a link would send the GPU to an
+address assembled from one new dword and one stale one. The address goes to both packets
+whole; the generated pack takes the low 32 bits for LINK1 and bits 32..39 for LINK0.
+
+The check took three attempts, all of them the test being wrong rather than the code:
+
+  1. expects the full 36-bit address to round-trip through LINK1 - the field holds 32 bits;
+  2. asserts LINK0's msb equals 0x9f - the generated unpack leaves the field IN PLACE and
+     returns 0x9f00000000 for an address of 0x9ffffe0000;
+  3. the version that now passes reconstructs the address from both halves and compares
+     that, which is the property that matters and does not encode the packer's convention
+     into the test.
+
+That is the third time this programme has had a test disagree with correct code over a
+firmware field's width or convention (PBESTATE's split address, the region header's
+device-dependent size, now the link). The pattern is now worth stating: fields are narrow
+and unpack does not right-align, so a check should assert reconstructed meaning rather
+than a hand-computed shift.
+---
+ src/gallium/drivers/pvr/pvr_csb.c   | 27 +++++++++++
+ src/gallium/drivers/pvr/pvr_csb.h   | 13 ++++++
+ src/gallium/drivers/pvr/pvr_probe.c | 71 +++++++++++++++++++++++++++++
+ 3 files changed, 111 insertions(+)
+
+diff --git a/src/gallium/drivers/pvr/pvr_csb.c b/src/gallium/drivers/pvr/pvr_csb.c
+index 3bb40627..173d48a3 100644
+--- a/src/gallium/drivers/pvr/pvr_csb.c
++++ b/src/gallium/drivers/pvr/pvr_csb.c
+@@ -54,3 +54,30 @@ pvr_csb_overflowed(const struct pvr_csb *csb)
+ {
+    return csb->overflowed;
+ }
++
++bool
++pvr_csb_emit_link(struct pvr_csb *csb, uint64_t dev_addr, bool with_return)
++{
++   /* Both dwords are reserved together. A stream holding half a link would send the GPU
++    * to an address assembled from one new dword and one stale one. */
++   const uint32_t words = ROGUE_VDMCTRL_STREAM_LINK0_length +
++                          ROGUE_VDMCTRL_STREAM_LINK1_length;
++   struct ROGUE_VDMCTRL_STREAM_LINK0 link0 = {
++      .link_addrmsb = dev_addr,
++      .with_return = with_return,
++   };
++   struct ROGUE_VDMCTRL_STREAM_LINK1 link1 = {
++      .link_addrlsb = dev_addr,
++   };
++   uint32_t *dw = pvr_csb_emit(csb, words);
++
++   if (dw == NULL)
++      return false;
++
++   /* The address goes to both packets whole: the generated pack takes the low half for
++    * LINK1 and bits 32..39 for LINK0, which is what the reference does too. */
++   ROGUE_VDMCTRL_STREAM_LINK0_pack(dw, &link0);
++   ROGUE_VDMCTRL_STREAM_LINK1_pack(dw + ROGUE_VDMCTRL_STREAM_LINK0_length, &link1);
++
++   return true;
++}
+diff --git a/src/gallium/drivers/pvr/pvr_csb.h b/src/gallium/drivers/pvr/pvr_csb.h
+index 21deb8de..b1c171aa 100644
+--- a/src/gallium/drivers/pvr/pvr_csb.h
++++ b/src/gallium/drivers/pvr/pvr_csb.h
+@@ -50,6 +50,19 @@ uint32_t *pvr_csb_emit(struct pvr_csb *csb, uint32_t words);
+ uint32_t pvr_csb_size(const struct pvr_csb *csb);
+ bool pvr_csb_overflowed(const struct pvr_csb *csb);
+ 
++/* Emit the two dwords that link this stream to another buffer.
++ *
++ * This is how a control stream is longer than one buffer: the GPU follows the link and
++ * continues there, rather than the driver needing one contiguous allocation. It is also
++ * the first real content this driver puts in a stream, so it is the natural place for
++ * the emission pattern to be exercised against the generated pack/unpack.
++ *
++ * Both dwords are reserved together: a stream containing half a link would send the GPU
++ * to an address assembled from one new dword and one stale one. The address is passed
++ * whole to both packets - the generated pack extracts the low half for LINK1 and bits
++ * 32..39 for LINK0, which is what the reference does too. */
++bool pvr_csb_emit_link(struct pvr_csb *csb, uint64_t dev_addr, bool with_return);
++
+ /* Emit one packet and pack its fields in a single step. A packet that does not fit is
+  * skipped rather than partly written, so the stream never contains half a packet. */
+ #define pvr_csb_emit_pack(csb, packet, values)                                 \
+diff --git a/src/gallium/drivers/pvr/pvr_probe.c b/src/gallium/drivers/pvr/pvr_probe.c
+index a4c6ded3..104d1cae 100644
+--- a/src/gallium/drivers/pvr/pvr_probe.c
++++ b/src/gallium/drivers/pvr/pvr_probe.c
+@@ -1091,6 +1091,77 @@ csb_check(int fd, struct pipe_screen *pscreen)
+              "generated packet)\n", rh);
+    }
+ 
++   /* The stream link: how a control stream grows past one buffer. Two dwords, emitted
++    * together, checked against a locally packed reference and read back with the
++    * generated unpacker - the same pattern as the packet check, but this is content the
++    * GPU follows rather than a packet it merely reads. */
++   {
++      const uint64_t target = 0x9ffffe0000ULL;
++      uint32_t reference[ROGUE_VDMCTRL_STREAM_LINK0_length +
++                        ROGUE_VDMCTRL_STREAM_LINK1_length];
++      struct ROGUE_VDMCTRL_STREAM_LINK0 link0_ref = { .link_addrmsb = target,
++                                                      .with_return = false };
++      struct ROGUE_VDMCTRL_STREAM_LINK1 link1_ref = { .link_addrlsb = target };
++      struct ROGUE_VDMCTRL_STREAM_LINK0 link0_read = { 0 };
++      struct ROGUE_VDMCTRL_STREAM_LINK1 link1_read = { 0 };
++      uint32_t *link_dw;
++
++      ROGUE_VDMCTRL_STREAM_LINK0_pack(reference, &link0_ref);
++      ROGUE_VDMCTRL_STREAM_LINK1_pack(reference + ROGUE_VDMCTRL_STREAM_LINK0_length,
++                                      &link1_ref);
++
++      pvr_csb_reset(&csb);
++
++      if (!pvr_csb_emit_link(&csb, target, false)) {
++         printf("csb:           FAIL: the stream link did not fit\n");
++         goto out;
++      }
++
++      if (pvr_csb_size(&csb) != sizeof(reference)) {
++         printf("csb:           FAIL: the link advanced the stream by %u, expected %zu\n",
++                pvr_csb_size(&csb), sizeof(reference));
++         goto out;
++      }
++
++      link_dw = bo.map;
++
++      if (memcmp(link_dw, reference, sizeof(reference)) != 0) {
++         printf("csb:           FAIL: the emitted link differs from packing locally\n");
++         goto out;
++      }
++
++      ROGUE_VDMCTRL_STREAM_LINK0_unpack(link_dw, &link0_read);
++      ROGUE_VDMCTRL_STREAM_LINK1_unpack(link_dw + ROGUE_VDMCTRL_STREAM_LINK0_length,
++                                        &link1_read);
++
++      /* The address is split across the two dwords and NEITHER holds it whole: LINK1
++       * carries the low 32 bits, LINK0 bits 32..39. Checking only one half would pass
++       * with the other half wrong, and a link to the wrong address is a stream that
++       * jumps somewhere unintended. */
++      /* Reconstruct the address rather than asserting each half against a hand-computed
++       * shift. The generated unpack leaves a field in place - LINK0's msb comes back as
++       * 0x9f00000000 for an address of 0x9ffffe0000, not as 0x9f - so asserting the
++       * shifted form encodes the packer's convention into the test. That is how the
++       * previous two versions of this check failed against correct code. Combining the
++       * halves is the property that matters: a link reconstructing to the wrong address
++       * jumps the GPU somewhere unintended. */
++      if ((link0_read.link_addrmsb | link1_read.link_addrlsb) !=
++             (target & 0xffffffffffULL) ||
++          link0_read.with_return) {
++         printf("csb:           FAIL: link reconstructs to 0x%" PRIx64 ", wanted 0x%"
++                PRIx64 " (lsb 0x%" PRIx64 ", msb 0x%" PRIx64 "), return %u\n",
++                (uint64_t)(link0_read.link_addrmsb | link1_read.link_addrlsb),
++                (uint64_t)(target & 0xffffffffffULL),
++                (uint64_t)link1_read.link_addrlsb, (uint64_t)link0_read.link_addrmsb,
++                link0_read.with_return);
++         goto out;
++      }
++
++      printf("csb:           stream link: 2 dwords, address split as lsb 0x%" PRIx64
++             " / msb 0x%" PRIx64 ", both halves verified against a local pack\n",
++             (uint64_t)link1_read.link_addrlsb, (uint64_t)link0_read.link_addrmsb);
++   }
++
+    printf("csb:           packet at the right slot (word 0x%08x), readback matches the "
+           "generated pack/unpack, %u bytes fills exactly, one more word refused\n",
+           reference[0], (unsigned)bo.size);
+-- 
+2.47.3
+

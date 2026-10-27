@@ -1,0 +1,217 @@
+From 32d6fc1d646aadfbf934c49bce843bea6c7401fa Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 20:43:05 +0800
+Subject: [PATCH 150/269] gallium/pvr: TA_STATE_ISPCTL, with dbenable derived
+ from the documentation not the name
+
+  csb: TA ISPCTL: dbenable from polygon offset (depth BIAS, not depth test),
+       scenable/tagwritedisable from discard and FS presence
+  --- ALL PASS        (real open kernel)
+
+The packet the round-43 header's pres_ispctl bit announces. Three fields are derived from state
+this driver already records, and each mapping was checked against the generated header's own doc
+comment rather than inferred from the field name:
+
+  dbenable  "If set, depth bias is enabled."   <- depth BIAS, not depth test
+  scenable  "If set, scissor coordinates are enabled."
+  tagwritedisable: no writes on discard or with no fragment shader
+
+That comment is what resolves round 43's open question. The reference's derivation
+(depth_bias.enable && obj_type == TRIANGLE) is correct, not a bug, and gallium's counterpart is
+offset_tri. Reading the name literally - "dbenable = depth test enabled" - is the obvious mistake,
+and the check is written to catch exactly it: with no polygon offset set, dbenable must be false
+even though depth testing is a separate concern entirely. A version that only packed and unpacked
+the struct would pass while being wrong.
+
+The fields that belong to state this driver does not compute yet (validid, upass, two_sided,
+bpres, vistest/visbool/visreg) are caller-supplied rather than defaulted, for the same reason the
+TA header only sets bits it can justify: a default is a claim.
+---
+ src/gallium/drivers/pvr/pvr_csb.c   | 32 ++++++++++++
+ src/gallium/drivers/pvr/pvr_csb.h   | 30 +++++++++++
+ src/gallium/drivers/pvr/pvr_probe.c | 78 ++++++++++++++++++++++++++++-
+ 3 files changed, 139 insertions(+), 1 deletion(-)
+
+diff --git a/src/gallium/drivers/pvr/pvr_csb.c b/src/gallium/drivers/pvr/pvr_csb.c
+index bd95e2fc..d4c9a71c 100644
+--- a/src/gallium/drivers/pvr/pvr_csb.c
++++ b/src/gallium/drivers/pvr/pvr_csb.c
+@@ -296,6 +296,38 @@ pvr_filter_from_pipe(enum pipe_tex_filter filter, enum ROGUE_TEXSTATE_FILTER *ou
+    }
+ }
+ 
++bool
++pvr_csb_emit_ta_ispctl(struct pvr_csb *csb,
++                       const struct pipe_rasterizer_state *rast,
++                       bool have_fragment_shader,
++                       const struct pvr_ta_ispctl *in)
++{
++   const bool discard = rast != NULL && rast->rasterizer_discard;
++   struct ROGUE_TA_STATE_ISPCTL ispctl = {
++      .validid = in->validid,
++      .upass = in->upass,
++      .two_sided = in->two_sided,
++      .bpres = in->bpres,
++      .vistest = in->vistest,
++      .visbool = in->visbool,
++      .visreg = in->visreg,
++      /* Depth BIAS, per the field's documented meaning - not depth test. offset_tri is
++       * gallium's triangle polygon-offset enable, the counterpart of the reference's
++       * depth_bias.enable with a triangle object type. */
++      .dbenable = !discard && rast != NULL && rast->offset_tri,
++      .scenable = !discard,
++      .tagwritedisable = discard || !have_fragment_shader,
++   };
++   uint32_t *dw = pvr_csb_emit(csb, ROGUE_TA_STATE_ISPCTL_length);
++
++   if (dw == NULL)
++      return false;
++
++   ROGUE_TA_STATE_ISPCTL_pack(dw, &ispctl);
++
++   return true;
++}
++
+ bool
+ pvr_csb_emit_ta_state_header(struct pvr_csb *csb, const struct pvr_ta_presence *pres)
+ {
+diff --git a/src/gallium/drivers/pvr/pvr_csb.h b/src/gallium/drivers/pvr/pvr_csb.h
+index 289dce5b..e2e0c1b4 100644
+--- a/src/gallium/drivers/pvr/pvr_csb.h
++++ b/src/gallium/drivers/pvr/pvr_csb.h
+@@ -25,6 +25,7 @@
+ #define __pvr_make_address(addr) (addr)
+ 
+ #include "pipe/p_defines.h"
++#include "pipe/p_state.h"
+ #include "util/format/u_formats.h"
+ 
+ #include "csbgen/rogue/cr.h"
+@@ -258,6 +259,35 @@ struct pvr_ta_presence {
+ bool pvr_csb_emit_ta_state_header(struct pvr_csb *csb,
+                                   const struct pvr_ta_presence *pres);
+ 
++/* TA_STATE_ISPCTL, the packet the header's pres_ispctl bit announces.
++ *
++ * Three of its fields are DERIVED from state this driver records, and each mapping is checked
++ * against the field's own documentation rather than guessed:
++ *
++ *   dbenable   "If set, depth bias is enabled."  The reference gates it on its depth_bias.enable
++ *              and the object being a triangle; gallium's equivalent is offset_tri. Note this is
++ *              depth BIAS, not depth test - reading the name as "depth test enabled" is the
++ *              obvious mistake and the generated header's comment is what rules it out.
++ *   scenable   "If set, scissor coordinates are enabled."  Off when rasterization is discarded.
++ *   tagwritedisable  no writes when rasterization is discarded or there is no fragment shader.
++ *
++ * The rest (visibility, user pass, two-sided) come from the caller: they belong to state this
++ * driver does not compute yet, and defaulting them would be asserting things nobody decided. */
++struct pvr_ta_ispctl {
++   uint32_t validid;
++   uint32_t upass;
++   bool two_sided;
++   bool bpres;
++   bool vistest;
++   bool visbool;
++   uint32_t visreg;
++};
++
++bool pvr_csb_emit_ta_ispctl(struct pvr_csb *csb,
++                            const struct pipe_rasterizer_state *rast,
++                            bool have_fragment_shader,
++                            const struct pvr_ta_ispctl *in);
++
+ /* Dwords a stream link occupies - what the guard must be at minimum. */
+ #define PVR_CSB_LINK_DWORDS (ROGUE_VDMCTRL_STREAM_LINK0_length + \
+                              ROGUE_VDMCTRL_STREAM_LINK1_length)
+diff --git a/src/gallium/drivers/pvr/pvr_probe.c b/src/gallium/drivers/pvr/pvr_probe.c
+index fcad1c1b..fcb45699 100644
+--- a/src/gallium/drivers/pvr/pvr_probe.c
++++ b/src/gallium/drivers/pvr/pvr_probe.c
+@@ -1539,7 +1539,83 @@ csb_check(int fd, struct pipe_screen *pscreen)
+             }
+          }
+ 
+-         printf("csb:           TA state header: presence bitmap matches all four requests "
++         /* ISPCTL's three derived fields. The check asserts the DERIVATIONS, because that is where
++       * the mistakes are: dbenable is depth BIAS (offset_tri), not depth test, and a version that
++       * read the name literally would pass any test that only packed and unpacked it. */
++      {
++         struct pipe_rasterizer_state rast = { 0 };
++         struct ROGUE_TA_STATE_ISPCTL g = { 0 };
++         const struct pvr_ta_ispctl in = {
++            .validid = 3, .upass = 1, .two_sided = true, .bpres = false,
++            .vistest = true, .visbool = false, .visreg = 7,
++         };
++
++         /* Bias on, no discard, fragment shader present. */
++         rast.offset_tri = 1;
++         pvr_csb_reset(&csb);
++
++         if (!pvr_csb_emit_ta_ispctl(&csb, &rast, true, &in)) {
++            printf("csb:           FAIL: ISPCTL did not emit\n");
++            goto out;
++         }
++
++         ROGUE_TA_STATE_ISPCTL_unpack(bo.map, &g);
++
++         if (!g.dbenable || !g.scenable || g.tagwritedisable) {
++            printf("csb:           FAIL: ISPCTL with bias, no discard, FS present gave db %u sc %u "
++                   "tagdis %u\n", g.dbenable, g.scenable, g.tagwritedisable);
++            goto out;
++         }
++
++         if (g.validid != in.validid || g.upass != in.upass || !g.two_sided ||
++             !g.vistest || g.visreg != in.visreg) {
++            printf("csb:           FAIL: a caller-supplied ISPCTL field did not survive\n");
++            goto out;
++         }
++
++         /* Bias OFF must clear dbenable - this is the assertion that separates "depth bias" from
++          * "depth test": with depth testing disabled in gallium terms but no polygon offset, a
++          * literal reading of the name would still set dbenable. */
++         rast.offset_tri = 0;
++         pvr_csb_reset(&csb);
++         (void)pvr_csb_emit_ta_ispctl(&csb, &rast, true, &in);
++         ROGUE_TA_STATE_ISPCTL_unpack(bo.map, &g);
++
++         if (g.dbenable) {
++            printf("csb:           FAIL: ISPCTL set dbenable with no polygon offset - it is being "
++                   "derived from the wrong state\n");
++            goto out;
++         }
++
++         /* Discard must clear both enables and set tagwritedisable. */
++         rast.rasterizer_discard = 1;
++         rast.offset_tri = 1;
++         pvr_csb_reset(&csb);
++         (void)pvr_csb_emit_ta_ispctl(&csb, &rast, true, &in);
++         ROGUE_TA_STATE_ISPCTL_unpack(bo.map, &g);
++
++         if (g.dbenable || g.scenable || !g.tagwritedisable) {
++            printf("csb:           FAIL: discard did not disable rasterization properly (db %u sc "
++                   "%u tagdis %u)\n", g.dbenable, g.scenable, g.tagwritedisable);
++            goto out;
++         }
++
++         /* No fragment shader must also disable tag writes. */
++         rast.rasterizer_discard = 0;
++         pvr_csb_reset(&csb);
++         (void)pvr_csb_emit_ta_ispctl(&csb, &rast, false, &in);
++         ROGUE_TA_STATE_ISPCTL_unpack(bo.map, &g);
++
++         if (!g.tagwritedisable) {
++            printf("csb:           FAIL: no fragment shader did not disable tag writes\n");
++            goto out;
++         }
++
++         printf("csb:           TA ISPCTL: dbenable from polygon offset (depth BIAS, not depth "
++                "test), scenable/tagwritedisable from discard and FS presence\n");
++      }
++
++      printf("csb:           TA state header: presence bitmap matches all four requests "
+                 "exactly, no unannounced bits, view_port_count follows the viewport bit\n");
+       }
+ 
+-- 
+2.47.3
+

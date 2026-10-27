@@ -1,0 +1,59 @@
+From 730122a276e22ac4e52759cbafb79e9b16c78d7c Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sat, 24 Oct 2026 05:31:38 +0800
+Subject: [PATCH 204/269] gallium/pvr: the launcher names the offset the shader
+ was actually uploaded to
+
+The last placeholder is gone: the PDS launcher's doutu offset is now computed the same way the upload
+address is - base + carveout, rounded up to a page, relative to the heap base - so the two agree by
+construction instead of by a constant someone had to keep in sync:
+
+  hwrt: launcher 36 B at 0x9ffffd0000, doutu offset 0x1000
+  shader: VS USC uploaded into the USC heap usable area at 0xe000001000; doutu offset = 0x1000
+  RENDER SUBMIT ACCEPTED
+
+The stream is unchanged in shape (VDM PDS update, DDM PDS update, VDM state, index list, terminate) and
+still accepted. The target is still unchanged, which now narrows to the remaining real gaps rather than
+placeholders: the launcher's temps are zero because it is built from a stub shader rather than the
+compiled one, and the fragment launcher still points at offset 0 because no fragment shader has been
+uploaded.
+
+Deriving the offset twice from the same heap arithmetic is a deliberate duplication - a format that has
+already cost this driver two rounds of "my builder is wrong" when the input was wrong.
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c | 13 +++++++++++--
+ 1 file changed, 11 insertions(+), 2 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index 9bf82703..d83eb540 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -747,14 +747,23 @@ real_job_done:
+                      uint8_t launcher[256];
+                      struct pvr_bo lbo = { 0 };
+                      uint64_t laddr = 0;
+-                     const uint32_t llen = pvr_shader_pds_launcher(&zeros, 0, launcher, sizeof(launcher));
++                     /* The launcher must name the SAME offset the compiled shader was uploaded to:
++                      * base + carveout, rounded up to a page, relative to the heap base. Using 0 here
++                      * was the placeholder that kept the TA pointed at empty space. */
++                     const struct pvr_heap *usc2 = &vm.heaps[DRM_PVR_HEAP_USC_CODE];
++                     const uint64_t doutu = usc2->size ?
++                        (ALIGN_POT(usc2->base + (usc2->size - usc2->usable_size),
++                                   (uint64_t)usc2->page_size) - usc2->base) : 0;
++                     const uint32_t llen = pvr_shader_pds_launcher(&zeros, (uint32_t)doutu,
++                                                                   launcher, sizeof(launcher));
+ 
+                      if (llen > 0 && pvr_bo_create(pvm_fd_for_probe, 4096, 1, &lbo) &&
+                          (laddr = pvr_vm_alloc(&vm, lbo.size, vm.general.page_size)) != 0 &&
+                          pvr_vm_map(&vm, laddr, lbo.handle, lbo.size) &&
+                          pvr_bo_map(pvm_fd_for_probe, &lbo)) {
+                         memcpy(lbo.map, launcher, llen);
+-                        printf("hwrt:          launcher %u B uploaded at 0x%" PRIx64 "\n", llen, laddr);
++                        printf("hwrt:          launcher %u B at 0x%" PRIx64 ", doutu offset 0x%" PRIx64 "\n",
++                               llen, laddr, doutu);
+                      } else {
+                         laddr = 0;
+                      }
+-- 
+2.47.3
+

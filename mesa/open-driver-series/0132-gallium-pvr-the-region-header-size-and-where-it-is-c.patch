@@ -1,0 +1,121 @@
+From 6262e588d9479ea1dae61af38d6faa09995d607d Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 16:55:01 +0800
+Subject: [PATCH 132/269] gallium/pvr: the region header size, and where it is
+ computed
+
+A geometry job's control stream has to reserve the region header before anything is
+written, and its size is device-derived rather than fixed:
+
+  csb: region header: 6 dwords reserved (device-derived, not a generated packet)
+  --- ALL PASS        (real open kernel)
+
+Six, not five: this part has simple_internal_parameter_format at version 2.
+
+Computed in the screen rather than in the CSB writer, which is the point of the change
+rather than an implementation detail. The previous attempt put the call in pvr_csb.c and
+failed to compile: including the hwdef headers there makes the generated csbgen headers
+see the Vulkan pvr_dev_addr_t as __pvr_address_type instead of this driver's uint64_t, and
+cdm.h does not build against it. The CSB writer needs the NUMBER, not the device - so the
+screen, where both header sets already coexist, computes it once and the writer just
+reserves what it is told. That is better factored than what it replaced, not a workaround
+dressed up as one.
+
+The check confirms the size is one of the two the hardware defines and that reserving it
+advances the stream by exactly that many dwords, so a mismatch between the two fails
+rather than producing a stream that is quietly the wrong length.
+
+Also records that the region header is NOT a csbgen-described packet - there is no
+REGION_HEADER in the descriptions - so the pack/unpack pattern used for PBESTATE in an
+earlier round does not apply to it. It is raw render-target state, and belongs with RT
+state emission rather than the generated-packet layer.
+---
+ src/gallium/drivers/pvr/pvr_probe.c  | 24 ++++++++++++++++++++++--
+ src/gallium/drivers/pvr/pvr_screen.c |  2 ++
+ src/gallium/drivers/pvr/pvr_screen.h |  8 ++++++++
+ 3 files changed, 32 insertions(+), 2 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr/pvr_probe.c b/src/gallium/drivers/pvr/pvr_probe.c
+index 2e0dd362..a4c6ded3 100644
+--- a/src/gallium/drivers/pvr/pvr_probe.c
++++ b/src/gallium/drivers/pvr/pvr_probe.c
+@@ -981,7 +981,7 @@ out:
+  * properties that matter are that packets land exactly where the writer says, and that
+  * running out of room is refused rather than silently overrunning the buffer. */
+ static bool
+-csb_check(int fd)
++csb_check(int fd, struct pipe_screen *pscreen)
+ {
+    struct pvr_bo bo = { 0 };
+    struct pvr_csb csb;
+@@ -1071,6 +1071,26 @@ csb_check(int fd)
+       goto out;
+    }
+ 
++   /* The region header, which is device-derived rather than a fixed packet: the stream
++    * has to reserve exactly this many dwords before anything is written. Not a generated
++    * packet, so there is nothing to pack and unpack - what is checked is the reservation
++    * and that it is one of the two sizes the hardware defines. */
++   {
++      const uint32_t rh = pvr_screen(pscreen)->region_header_dwords;
++
++      pvr_csb_reset(&csb);
++
++      if ((rh != 5 && rh != 6) || pvr_csb_emit(&csb, rh) == NULL ||
++          pvr_csb_size(&csb) != rh * 4) {
++         printf("csb:           FAIL: region header size %u did not reserve %u dwords\n",
++                rh, rh);
++         goto out;
++      }
++
++      printf("csb:           region header: %u dwords reserved (device-derived, not a "
++             "generated packet)\n", rh);
++   }
++
+    printf("csb:           packet at the right slot (word 0x%08x), readback matches the "
+           "generated pack/unpack, %u bytes fills exactly, one more word refused\n",
+           reference[0], (unsigned)bo.size);
+@@ -1220,7 +1240,7 @@ main(int argc, char **argv)
+    /* Before destroying the screen, which closes the fd. */
+    const bool bo_pass = bo_roundtrip(fd);
+    const bool vm_pass = vm_roundtrip(fd, &pvr_screen(screen)->dev_info);
+-   const bool csb_pass = csb_check(fd);
++   const bool csb_pass = csb_check(fd, screen);
+    const bool clear_pass = clear_check(screen);
+    const bool res_pass = resource_roundtrip(screen);
+    const bool ctx_pass = transfer_roundtrip(screen);
+diff --git a/src/gallium/drivers/pvr/pvr_screen.c b/src/gallium/drivers/pvr/pvr_screen.c
+index e59647ef..ca560810 100644
+--- a/src/gallium/drivers/pvr/pvr_screen.c
++++ b/src/gallium/drivers/pvr/pvr_screen.c
+@@ -240,6 +240,8 @@ pvr_screen_create(int fd, const struct pipe_screen_config *config,
+    else
+       mesa_logi("pvr: could not create the pco compiler context");
+ 
++   screen->region_header_dwords = rogue_get_region_header_size(&screen->dev_info);
++
+    /* GPU address space. Failure here is not fatal to enumeration - it only means no
+     * resource can be created, which is worth being able to see when probing a node
+     * this driver cannot actually drive. */
+diff --git a/src/gallium/drivers/pvr/pvr_screen.h b/src/gallium/drivers/pvr/pvr_screen.h
+index ee688caa..3ea90764 100644
+--- a/src/gallium/drivers/pvr/pvr_screen.h
++++ b/src/gallium/drivers/pvr/pvr_screen.h
+@@ -28,6 +28,14 @@ struct pvr_screen {
+    pco_ctx *pco_ctx;
+    char name[64];
+    unsigned int gpu_id;
++
++   /* Dwords a geometry job's region header occupies, from rogue_get_region_header_size -
++    * 6 on devices with the simple internal parameter format at version 2, 5 otherwise.
++    * Computed here rather than in the CSB writer on purpose: the writer needs the number,
++    * not the device, and the generated csbgen headers and the hwdef headers cannot both
++    * be included in the same file (the latter makes __pvr_address_type pvr_dev_addr_t,
++    * which the generated packets then fail to compile against). */
++   uint32_t region_header_dwords;
+    unsigned int num_phantoms;
+ 
+    /* GPU address space. vm_valid is false when the heaps or VM context could not be
+-- 
+2.47.3
+

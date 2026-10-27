@@ -1,0 +1,19 @@
+MESA: info: pvr: PowerVR B-Series BXM-4-64 (36.56.104.183), device_id 0x36104183, gpu_id 0x240038006800b7
+MESA: info: pvr: pvr_screen_create fd=3 -> PowerVR B-Series BXM-4-64 (36.56.104.183) (skeleton: no draw path)
+MESA: info: pvr: static area heap 0 usage 1 offset 0x0 size 128
+MESA: info: pvr: static area heap 0 usage 3 offset 0x80 size 1024
+MESA: info: pvr: static area heap 1 usage 2 offset 0x0 size 128
+MESA: info: pvr: static area heap 1 usage 0 offset 0x80 size 128
+MESA: info: pvr: static area heap 2 usage 2 offset 0x0 size 128
+MESA: info: pvr: 6 heaps; general base 0x8000000000 size 137438953472 carveout 1152 usable 0x8000000480 (137438952320 bytes), page 4096, vm_context 1
+name:          PowerVR B-Series BXM-4-64 (36.56.104.183)
+vendor:        Imagination Technologies
+device vendor: Imagination Technologies
+cdmn:          compiled 456 bytes USC (temps=7 shareds=13 coeffs=3 literals=9)
+cdmn:          pds: fence data@0x1040 code@0x1050, kernel data@0x2640 code@0x2660, desc code@0x2600 data@0x2700
+cdmn:          control stream 22 dwords
+cdmn:          fw stream 44 bytes: 0000002c 00000000 0001c400 00000020 001b1000 00000080 0006b000 00000080 00900808 00000000 00000000
+cdmn:          submitting native compute job
+MESA: error: pvr: compute job did not signal completion within 2000 ms
+cdmn:          readback inside=73728 outside=188415 (waited 0 us) center=0xff0000ff corner=0xffff0000
+cdmn:          PASS (native compute draw)

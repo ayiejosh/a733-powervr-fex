@@ -1,0 +1,392 @@
+From 8f51645eccf09bac4aebbfa5e889d1e7a1aeafe7 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sun, 25 Oct 2026 00:36:05 +0800
+Subject: [PATCH 222/269] gallium/pvr: per-job end-of-tile program, reference
+ free lists, and a geometry-only bisect
+
+The fragment stream's CR_EVENT_PIXEL_PDS_DATA now names a real per-job pixel-event program
+instead of a hardcoded offset:
+
+- pvr_csb_pbe_state_words(): PBESTATE_STATE_WORD0/1 (target address, format, MRT, norm, pack
+  mode) in the reference's encoding - these are the EOT program's emit inputs, not stream fields.
+- pvr_shader_eot_create(): the end-of-tile shader, built as NIR with pco's emitpix intrinsic and
+  compiled through the same pco path as the other shaders (pvr_usc.c's pvr_usc_eot equivalent).
+- the probe places the USC binary and the PDS pixel-event data segment in their heaps and passes
+  the data offset to both draw and liveness fragment streams.
+
+HWRT free lists now match the reference for one device: global 512..65536 pages growing 256 at a
+13% threshold, local fixed at the runtime minimum aligned to the free-list size alignment (64 KiB ->
+32 pages). The raw 25-page minimum is not a multiple of the page-count granularity the UAPI
+requires; CREATE_FREE_LIST then fails EINVAL and every submit fails with it.
+
+Two completion tests make the remaining problem measurable, and they settle where it is NOT:
+a geometry-only submission with the draw's stream, and the minimal 40-byte geometry job with an
+empty control stream - the latter's firmware stream is dword-identical to the reference's - both are
+accepted and never complete. So the stall is in firmware context setup shared by every geometry job,
+not in the draw stream, fragment stream, EOT program or free-list configuration.
+
+Verification: probe exits 0 ALL PASS under the noop shim; real-driver run logged in
+open-driver-perf/captures/real-runs/probe-real22.txt.
+---
+ src/gallium/drivers/pvr_native/pvr_csb.c    |  34 +++++
+ src/gallium/drivers/pvr_native/pvr_csb.h    |   8 ++
+ src/gallium/drivers/pvr_native/pvr_probe.c  | 150 +++++++++++++++++---
+ src/gallium/drivers/pvr_native/pvr_shader.c |  24 ++++
+ src/gallium/drivers/pvr_native/pvr_shader.h |  14 ++
+ 5 files changed, 213 insertions(+), 17 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_csb.c b/src/gallium/drivers/pvr_native/pvr_csb.c
+index 1419e241..4dc1a964 100644
+--- a/src/gallium/drivers/pvr_native/pvr_csb.c
++++ b/src/gallium/drivers/pvr_native/pvr_csb.c
+@@ -777,6 +777,40 @@ pvr_pbe_memlayout_linear(void)
+    return ROGUE_PBESTATE_MEMLAYOUT_LINEAR;
+ }
+ 
++void
++pvr_csb_pbe_state_words(uint64_t addr, enum pipe_format format, uint32_t mrt_index,
++                        uint32_t words[2])
++{
++   const struct util_format_description *desc = util_format_description(format);
++   const int chan = util_format_get_first_non_void_channel(format);
++   struct ROGUE_PBESTATE_STATE_WORD0 sw0 = { .address_low = addr };
++   struct ROGUE_PBESTATE_STATE_WORD1 sw1 = {
++      .address_high = addr,
++      .source_format = pvr_pbe_source_format_from_pipe(format, true),
++      .mrt_index = mrt_index,
++      .source_pos = ROGUE_PBESTATE_SOURCE_POS_START_BIT0,
++      .norm = chan >= 0 && desc->channel[chan].normalized,
++   };
++
++   /* Pack mode from the output format's first channel. */
++   if (desc->channel[chan].type == UTIL_FORMAT_TYPE_FLOAT) {
++      sw1.packmode = desc->channel[chan].size == 16
++                        ? ROGUE_PBESTATE_PACKMODE_F16F16F16F16
++                        : ROGUE_PBESTATE_PACKMODE_F32F32F32F32;
++   } else if (desc->channel[chan].size == 8) {
++      sw1.packmode = desc->channel[chan].type == UTIL_FORMAT_TYPE_SIGNED
++                        ? ROGUE_PBESTATE_PACKMODE_S8S8S8S8
++                        : ROGUE_PBESTATE_PACKMODE_U8U8U8U8;
++   } else {
++      sw1.packmode = desc->channel[chan].type == UTIL_FORMAT_TYPE_SIGNED
++                        ? ROGUE_PBESTATE_PACKMODE_S16S16S16S16
++                        : ROGUE_PBESTATE_PACKMODE_U16U16U16U16;
++   }
++
++   ROGUE_PBESTATE_STATE_WORD0_pack(&words[0], &sw0);
++   ROGUE_PBESTATE_STATE_WORD1_pack(&words[1], &sw1);
++}
++
+ bool
+ pvr_csb_pbe_words(enum pipe_format format, uint32_t stride_bytes, uint32_t width,
+                   uint32_t height, uint64_t words[3])
+diff --git a/src/gallium/drivers/pvr_native/pvr_csb.h b/src/gallium/drivers/pvr_native/pvr_csb.h
+index cf5750e7..2050f737 100644
+--- a/src/gallium/drivers/pvr_native/pvr_csb.h
++++ b/src/gallium/drivers/pvr_native/pvr_csb.h
+@@ -523,6 +523,14 @@ bool pvr_csb_emit_ta_pds_sizeinfo(struct pvr_csb *csb, const struct pvr_pds_size
+ bool pvr_csb_pbe_words(enum pipe_format format, uint32_t stride_bytes, uint32_t width,
+                        uint32_t height, uint64_t words[3]);
+ 
++/* The PBE *state* words (PBESTATE_STATE_WORD0/WORD1) for one colour attachment: target address,
++ * output format, MRT index, normalisation and pack mode. These do not belong in the fragment
++ * firmware stream - they are the emit words of the pixel-event program, which is what points the
++ * PBE at the render target at end of tile. `words[0]` is STATE_WORD0, `words[1]` STATE_WORD1, the
++ * same layout the reference's pvr_pbe_state_words() produces. */
++void pvr_csb_pbe_state_words(uint64_t addr, enum pipe_format format, uint32_t mrt_index,
++                             uint32_t words[2]);
++
+ /* The PBE (pixel backend) render-target address: PBESTATE_STATE_WORD0 + STATE_WORD1.
+  *
+  * The generated pack places the two halves like this:
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index 44f4b527..3b123769 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -38,6 +38,8 @@
+ #include "pvr_vm.h"
+ #include "pvr_hwrt.h"
+ #include "pvr_public.h"
++
++#include "pds/pvr_pds.h"
+ #include "pipe/p_screen.h"
+ #include "util/format/u_formats.h"
+ 
+@@ -141,6 +143,9 @@ static unsigned g_vs_vtxouts;
+ static struct pvr_shader_vertex_program_info g_vertex_prog_info;
+ static struct pvr_shader_pds_launcher_info g_fs_prog_info;
+ 
++/* Defined with the other placement helpers below, used by the draw test above them. */
++static uint64_t probe_place_eot_program(struct pvr_screen *scr, uint64_t rtaddr);
++
+ static bool
+ 
+ vm_roundtrip(int fd, struct pipe_screen *pscreen)
+@@ -563,8 +568,12 @@ vm_roundtrip(int fd, struct pipe_screen *pscreen)
+          bool okb = true;
+          /* Sizes from the device formulas and a capture of the reference's dataset for 512x512:
+           * tpc 2048 (probe rounds to a page), vheap 384 entries x 4 B, one region-header stride
+-          * (1536 B) per render-target data set, no RTC and no macrotile array for one layer. */
+-         const uint64_t sz[11] = { 4096, 4096, 4096, 1536, 4096, 4096, 4096, 4096, 4096, 4096, 256 };
++          * (1536 B) per render-target data set, no RTC and no macrotile array for one layer.
++          * The global free list needs room for its maximum page count (4 bytes per PM page): the
++          * reference grows it 2 MiB -> 256 MiB, so 65536 pages means a 256 KiB table. */
++         const uint64_t sz[11] = { 65536 * 4, 4096, 4096, 1536, 4096, 4096, 4096, 4096, 4096, 4096, 256 };
++         /* Free-list size alignment, from the reference: entries must respect the SLC cache line,
++          * i.e. sizes are multiples of (max(base align, cache line)/4) * PM page size = 64 KiB. */
+          struct pvr_bo *bos[11] = { &flbo[0], &flbo[1], &tpcbo, &vhbo, &mlibo, &mtabo, &rgnbo, &mli2, &mta2, &rgn2, &rtcbo };
+          uint64_t *ads[11] = { &fladdr[0], &fladdr[1], &tpcaddr, &vhaddr, &mliaddr, &mtaaddr, &rgnaddr, &mli2addr, &mta2addr, &rgn2addr, &rtcaddr };
+ 
+@@ -579,22 +588,33 @@ vm_roundtrip(int fd, struct pipe_screen *pscreen)
+ 
+          if (okb) {
+             uint32_t flmin = 0, flmax = 0;
+-            /* A free-list BO holds ROGUE_FREE_LIST_ENTRY_SIZE (4) bytes per PM page, not a page per
+-             * page, and the base address must be aligned. grow_threshold is a percentage (<= 100). */
+-            const uint32_t fl_pages = 1024;
+-            uint32_t fl_initial = 0;
++            /* The reference's free lists, for the same single-device case: a global table that
++             * starts at 2 MiB and grows 1 MiB at a time to 256 MiB (13% threshold), and a local
++             * table fixed at the runtime minimum. Ours were both 1024 pages with no growth, which
++             * the kernel accepts but is not a configuration the firmware is known to handle. */
++            const uint32_t global_initial_pages = 512;    /* 2 MiB */
++            const uint32_t global_max_pages = 65536;      /* 256 MiB */
++            const uint32_t global_grow_pages = 256;       /* 1 MiB */
++            /* The runtime minimum is 25 pages of 4 KiB, but free-list sizes are aligned to
++             * (cache_line/4) * PM page = 64 KiB, i.e. 32 pages, and the UAPI requires page counts
++             * to be multiples of 4. Using the raw 25 fails CREATE_FREE_LIST with EINVAL, which in
++             * turn makes every submit fail. */
++            const uint32_t local_pages =
++               (uint32_t)(ALIGN_POT(scr->dev_runtime_info.min_free_list_size, 65536) / 4096);
++
+             if (pvr_free_list_page_limits(pvm_fd_for_probe, &flmin, &flmax))
+-               printf("hwrt:          device free-list limits: %u..%u pages\n", flmin, flmax);
+-            fl_initial = flmin > fl_pages ? fl_pages : flmin;
+-            /* UAPI: page counts must be multiples of 4, and with grow_num_pages == 0 the initial
+-             * count must EQUAL the maximum. 1024 pages = 4096 bytes of entries. */
+-            fl_initial = fl_pages;
+-            okb = flmin && pvr_free_list_create(vm, fladdr[0], fl_initial, fl_pages, 0, 25, &flhandle[0]) &&
+-                  pvr_free_list_create(vm, fladdr[1], fl_initial, fl_pages, 0, 25, &flhandle[1]);
++               printf("hwrt:          device free-list limits: %u..%u pages, using global "
++                      "%u..%u grow %u, local %u\n", flmin, flmax, global_initial_pages,
++                      global_max_pages, global_grow_pages, local_pages);
++            /* UAPI: with grow_num_pages == 0 the initial count must equal the maximum (local). */
++            okb = flmin && local_pages >= flmin &&
++                  pvr_free_list_create(vm, fladdr[0], global_initial_pages, global_max_pages,
++                                       global_grow_pages, 13, &flhandle[0]) &&
++                  pvr_free_list_create(vm, fladdr[1], local_pages, local_pages, 0, 0,
++                                       &flhandle[1]);
+             if (okb) {
+                struct pvr_hwrt_dataset_desc d = {
+-                  .tpc_dev_addr = tpcaddr, .tpc_size = 4096, .tpc_stride = 0,
+-                  /* (sz computed above; 4 KiB page covers the 2048-byte tail-pointer cache) */
++                  .tpc_dev_addr = tpcaddr, .tpc_size = 2048, .tpc_stride = 0,
+                   /* Value for value what the reference's create_info carries for 512x512 on this
+                    * device: no RTC (one layer), no macrotile array, and ISP-merge registers left at
+                    * zero because the merge enhancement is absent. */
+@@ -695,6 +715,16 @@ vm_roundtrip(int fd, struct pipe_screen *pscreen)
+                      printf("vm:            the FRAGMENT job was refused too - the failure is in the "
+                             "context or hwrt lookup, not in the stream\n");
+                }
++               /* The smallest possible geometry job: 40-byte firmware stream, empty control
++                * stream. If this does not complete, nothing about the draw stream is involved. */
++               {
++                  const bool mindone = pvr_job_submit_geom_sync(vm, gpu_ctx.handle, rcsb.map,
++                                                                gl, dset_handle, 0, 2000);
++
++                  printf("vm:            minimal geometry job (empty control stream) %s\n",
++                         mindone ? "COMPLETED" : "did not complete in 2 s");
++               }
++
+                if (pvr_job_submit(vm, gpu_ctx.handle, DRM_PVR_JOB_TYPE_GEOMETRY, rcsb.map, gl, dset_handle, 0)) {
+                   printf("vm:            SUBMIT_JOBS ACCEPTED a real %u-byte geometry job at "
+                          "0x%" PRIx64 " (ctrl 0x%" PRIx64 ", border table 0x%" PRIx64 ") - the "
+@@ -723,6 +753,7 @@ real_job_done:
+          const uint32_t RTW = 512, RTH = 512;
+          struct pvr_bo rtbo = { 0 }, rtcsb = { 0 }, rctl = { 0 }, rbct = { 0 };
+          uint64_t rtaddr = 0, rctladdr = 0, rbctaddr = 0;
++         uint64_t eot_data_offset = 0;
+          bool ok2 = true;
+ 
+          if (!pvr_bo_create(pvm_fd_for_probe, (uint64_t)RTW * RTH * 4, 1, &rtbo)) {
+@@ -757,6 +788,17 @@ real_job_done:
+                printf("hwrt:          VM map or CPU map failed (rt 0x%" PRIx64 ")\n", rtaddr);
+          }
+ 
++         /* The per-job end-of-tile program. The fragment stream names it by PDS-heap offset; a
++          * hardcoded offset names whatever else happens to be there, and the fragment job then has
++          * no program that writes the render target at end of tile. */
++         if (ok2) {
++            eot_data_offset = probe_place_eot_program(scr, rtaddr);
++            if (eot_data_offset == 0) {
++               printf("hwrt:          FAIL: no end-of-tile program for the draw\n");
++               ok2 = false;
++            }
++         }
++
+          /* Firmware liveness check, before the draw: a geometry job whose control stream is only
+           * a STREAM_TERMINATE must complete. If it does not, the firmware is not completing our
+           * submissions at all and no draw state can render; if it does, the draw stream is what
+@@ -778,7 +820,7 @@ real_job_done:
+                _Alignas(8) static uint8_t dfrag[1024];
+                static const uint64_t dpbe[3] = { 0x0200003c68800000ull, 0x0000001f0000001full, 0 };
+                const uint32_t dfrag_len = pvr_frag_static_stream(dfrag, sizeof(dfrag), dpbe, 1,
+-                                                                 0x2780, false);
++                                                                 (uint32_t)eot_data_offset, false);
+                bool done;
+ 
+                pvr_csb_init(&tcsb, dbo.map, dbo.size, PVR_CSB_LINK_DWORDS);
+@@ -1067,7 +1109,18 @@ real_job_done:
+                /* The fragment stream has to live in its own buffer, so rebuild it there. */
+                _Alignas(8) static uint8_t fstream[1024];
+                const uint32_t f2 = pvr_frag_static_stream(fstream, sizeof(fstream), pbe_words, 1,
+-                                                         0x2780, false);
++                                                         (uint32_t)eot_data_offset, false);
++               /* Which half of the combined kick is stuck? A geometry-only submission uses the
++                * same firmware stream and control stream as the draw; if it completes, the geometry
++                * phase is fine and the fragment job is what never finishes. */
++               {
++                  const bool gdone = pvr_job_submit_geom_sync(vm, gpu_ctx.handle, gstream, glen,
++                                                              dset_handle, 0, 2000);
++
++                  printf("hwrt:          geometry-only submission %s\n",
++                         gdone ? "COMPLETED" : "did not complete in 2 s");
++               }
++
+                if (dump_streams) {
+                   printf("OURPBE: %016" PRIx64 " %016" PRIx64 " %016" PRIx64 "\n",
+                          pbe_words[0], pbe_words[1], pbe_words[2]);
+@@ -1449,7 +1502,70 @@ probe_map_bo_at(int fd, struct pvr_vm *vm, uint64_t addr, const void *data, uint
+    return true;
+ }
+ 
++/* Build and place the per-job pixel-event (end-of-tile) program: the pco-compiled USC shader that
++ * emits the pixel through the PBE, plus the PDS data segment that kicks it. This is what the
++ * fragment stream's CR_EVENT_PIXEL_PDS_DATA must name; the static EOT code at the kernel's PDS
++ * 'eot' area is only the shared code segment, not a program that knows about our render target.
++ * Returns the PDS-heap-relative offset of the data segment, or 0 on failure. */
++static uint64_t
++probe_place_eot_program(struct pvr_screen *scr, uint64_t rtaddr)
++{
++   const struct pvr_device_info *dev_info = &scr->dev_info;
++   const struct pvr_heap *usc = &scr->vm.heaps[DRM_PVR_HEAP_USC_CODE];
++   const struct pvr_heap *pds = &scr->vm.heaps[DRM_PVR_HEAP_PDS_CODE_DATA];
++   struct pvr_shader_eot eot = { 0 };
++   struct pvr_pds_event_program program = { 0 };
++   struct pvr_bo usc_bo = { 0 }, pds_bo = { 0 };
++   uint64_t usc_addr, pds_addr;
++   uint32_t state_words[2];
++   uint32_t staging[64] = { 0 };
++   uint32_t usc_offset;
++
++   pvr_csb_pbe_state_words(rtaddr, PIPE_FORMAT_R8G8B8A8_UNORM, 0, state_words);
++
++   if (!pvr_shader_eot_create(scr->pco_ctx, &eot, state_words)) {
++      printf("hwrt:          could not compile the end-of-tile program\n");
++      return 0;
++   }
++
++   /* USC code: DOUTU takes a USC-heap-relative offset. */
++   usc_addr = pvr_vm_heap_alloc(&scr->vm, DRM_PVR_HEAP_USC_CODE, eot.binary_size, 16, &usc_bo);
++   if (usc_addr == 0 || !pvr_bo_map(scr->fd, &usc_bo)) {
++      printf("hwrt:          could not place the end-of-tile USC code\n");
++      return 0;
++   }
++   memcpy(usc_bo.map, eot.binary, eot.binary_size);
++   usc_offset = usc_addr - usc->base;
++
++   /* The PDS program only kicks the USC shader (no DMA data of its own). */
++   pvr_pds_setup_doutu(&program.task_control, usc_offset, eot.temps,
++                       PVR_ROGUE_PDSINST_DOUT_FIELDS_DOUTU_SAMPLE_RATE_INSTANCE, false);
++
++   /* Data segment size, then the segment itself. */
++   pvr_pds_generate_pixel_event(&program, NULL, PDS_GENERATE_SIZES, dev_info);
++   if (program.data_size > ARRAY_SIZE(staging)) {
++      printf("hwrt:          end-of-tile data segment too large (%u dwords)\n",
++             program.data_size);
++      return 0;
++   }
++   pvr_pds_generate_pixel_event(&program, staging, PDS_GENERATE_DATA_SEGMENT, dev_info);
++
++   pds_addr = pvr_vm_heap_alloc(&scr->vm, DRM_PVR_HEAP_PDS_CODE_DATA,
++                                (uint64_t)program.data_size * 4, 16, &pds_bo);
++   if (pds_addr == 0 || !pvr_bo_map(scr->fd, &pds_bo)) {
++      printf("hwrt:          could not place the end-of-tile PDS data\n");
++      return 0;
++   }
++   memcpy(pds_bo.map, staging, program.data_size * 4);
++
++   printf("hwrt:          end-of-tile program: USC 0x%x (%u bytes, %u temps), PDS data 0x%"
++          PRIx64 " (%u dwords)\n", usc_offset, eot.binary_size, eot.temps,
++          pds_addr - pds->base, program.data_size);
++   return pds_addr - pds->base;
++}
++
+ /* First page of a heap's usable area: the firmware's static programs occupy the carveout at the
++ * base, and VM_MAP is page-granular, so the first byte a driver may map is the next page. *//* First page of a heap's usable area: the firmware's static programs occupy the carveout at the
+  * base, and VM_MAP is page-granular, so the first byte a driver may map is the next page. */
+ static uint64_t
+ probe_heap_usable_page(const struct pvr_heap *heap)
+diff --git a/src/gallium/drivers/pvr_native/pvr_shader.c b/src/gallium/drivers/pvr_native/pvr_shader.c
+index d3e86239..d8b95424 100644
+--- a/src/gallium/drivers/pvr_native/pvr_shader.c
++++ b/src/gallium/drivers/pvr_native/pvr_shader.c
+@@ -543,6 +543,30 @@ pvr_shader_compile_data(pco_ctx *ctx, struct nir_shader *nir, pco_data *data,
+    return true;
+ }
+ 
++bool
++pvr_shader_eot_create(pco_ctx *ctx, struct pvr_shader_eot *eot,
++                      const uint32_t state_words[2])
++{
++   nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, pco_nir_options(),
++                                                  "pvr_eot");
++   nir_def *state0 = nir_imm_int(&b, state_words[0]);
++   nir_def *state1 = nir_imm_int(&b, state_words[1]);
++   nir_intrinsic_instr *last = nir_emitpix_pco(&b, state0, state1);
++   pco_data data = { .fs.uses.olchk_skip = true };
++
++   /* The reference marks the last emit as owning the pixel: `freep` releases the pixel for the
++    * next EOT in the tile. */
++   nir_intrinsic_set_freep(last, true);
++   nir_jump(&b, nir_jump_return);
++
++   if (!pvr_shader_compile_data(ctx, b.shader, &data, &eot->pco, &eot->binary,
++                                &eot->binary_size))
++      return false;
++
++   eot->temps = pco_shader_data(eot->pco)->common.temps;
++   return true;
++}
++
+ bool
+ pvr_shader_compile(pco_ctx *ctx, struct nir_shader *nir, pco_shader **shader_out,
+                    const void **data_out, unsigned *size_out)
+diff --git a/src/gallium/drivers/pvr_native/pvr_shader.h b/src/gallium/drivers/pvr_native/pvr_shader.h
+index e2fbf287..bd033007 100644
+--- a/src/gallium/drivers/pvr_native/pvr_shader.h
++++ b/src/gallium/drivers/pvr_native/pvr_shader.h
+@@ -16,6 +16,20 @@
+ 
+ struct nir_shader;
+ 
++/* The end-of-tile (pixel-event) program: a tiny USC shader whose only job is to emit the pixel at
++ * end of tile through the pixel backend, using the PBE state words (target address, format) it is
++ * compiled with. The reference builds this per render target with pco (pvr_usc.c's pvr_usc_eot);
++ * without it the fragment job's CR_EVENT_PIXEL_PDS_DATA names a program that never writes anything. */
++struct pvr_shader_eot {
++   pco_shader *pco;
++   const void *binary;
++   unsigned binary_size;
++   unsigned temps;
++};
++
++bool pvr_shader_eot_create(pco_ctx *ctx, struct pvr_shader_eot *eot,
++                           const uint32_t state_words[2]);
++
+ /* One compiled shader: the pco shader and the microcode it encoded. */
+ struct pvr_shader {
+    pco_shader *pco;
+-- 
+2.47.3
+

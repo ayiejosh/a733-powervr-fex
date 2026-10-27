@@ -1,0 +1,11 @@
+[Unit]
+Description=Recompress idle zram pages with the secondary algorithm
+After=zramswap.service
+ConditionPathExists=/sys/block/zram0/recompress
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/zram-recompress.sh
+Nice=19
+IOSchedulingClass=idle
+TimeoutStartSec=600

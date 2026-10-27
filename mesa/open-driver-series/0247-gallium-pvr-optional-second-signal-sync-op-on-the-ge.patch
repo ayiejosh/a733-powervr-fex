@@ -1,0 +1,51 @@
+From ef3dc59455f2810b9e2441366b7ef6f45fab3f98 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sun, 25 Oct 2026 09:56:15 +0800
+Subject: [PATCH 247/269] gallium/pvr: optional second signal sync op on the
+ geometry submit (negative)
+
+The reference client's geometry job carries two signal sync ops (its render fence and the chained
+fragment fence). PVR_PROBE_EXTRA_SIGNAL gives the probe's geometry submit the same shape. Hardware test:
+still `Kick TA` -> `DM2 timed out`, so the sync-op count/fence commands are not the trigger.
+---
+ src/gallium/drivers/pvr_native/pvr_vm.c | 17 ++++++++++++++++-
+ 1 file changed, 16 insertions(+), 1 deletion(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_vm.c b/src/gallium/drivers/pvr_native/pvr_vm.c
+index c9964a41..b8d3a2f0 100644
+--- a/src/gallium/drivers/pvr_native/pvr_vm.c
++++ b/src/gallium/drivers/pvr_native/pvr_vm.c
+@@ -415,7 +415,7 @@ pvr_job_submit_geom_sync(struct pvr_vm *vm, uint32_t context_handle,
+                          uint32_t hwrt_set_handle, uint32_t hwrt_data_index,
+                          uint32_t timeout_ms)
+ {
+-   struct drm_pvr_sync_op sync_ops[1];
++   struct drm_pvr_sync_op sync_ops[2];
+    struct drm_pvr_job job = {
+       .type = DRM_PVR_JOB_TYPE_GEOMETRY,
+       .context_handle = context_handle,
+@@ -445,6 +445,21 @@ pvr_job_submit_geom_sync(struct pvr_vm *vm, uint32_t context_handle,
+       .value = 0,
+    };
+ 
++   /* Round-52: the reference client's geometry job carries two signal sync ops (its render fence and
++    * the fragment fence it chains); give ours the same shape. */
++   if (getenv("PVR_PROBE_EXTRA_SIGNAL")) {
++      uint32_t sync2 = 0;
++
++      if (drmSyncobjCreate(vm->fd, 0, &sync2) == 0) {
++         sync_ops[1] = (struct drm_pvr_sync_op){
++            .handle = sync2,
++            .flags = DRM_PVR_SYNC_OP_FLAG_SIGNAL | DRM_PVR_SYNC_OP_FLAG_HANDLE_TYPE_SYNCOBJ,
++            .value = 0,
++         };
++         job.sync_ops.count = 2;
++      }
++   }
++
+    if (drmIoctl(vm->fd, DRM_IOCTL_PVR_SUBMIT_JOBS, &args) != 0) {
+       mesa_loge("pvr: geometry-only submit failed: %s", strerror(errno));
+       drmSyncobjDestroy(vm->fd, sync);
+-- 
+2.47.3
+

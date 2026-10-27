@@ -1,0 +1,180 @@
+From c9db43cac3ad864895cbe8bbf2fe5ad164ff1bc5 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 21:57:49 +0800
+Subject: [PATCH 154/269] gallium/pvr: TA_OUTPUT_SEL, with two flags left to
+ the caller on purpose
+
+  csb: TA OUTPUT_SEL: scalars and the two 8-bit plane groups survive independently; rhw/z flags
+       are caller-supplied (no shader analysis yet)
+  --- ALL PASS        (real open kernel)
+
+The packet that says what the TA passes to the pixel stage. Two of its flags are NOT derived here:
+
+  rhw_pres              = the fragment shader uses w
+  tsp_unclamped_z_pres  = the fragment shader uses z
+
+The reference reads both from a per-shader usage record (fs_data->fs.uses.w / .z) produced by its own
+shader analysis. This driver has no equivalent - the pco pipeline runs on NIR and the information is
+in NIR's system-value usage, but extracting it needs an analysis pass that does not exist yet. Setting
+them from "the FS probably uses z" would be the plausible-inference mistake this programme has
+recorded five times, so they are caller-supplied and the header names the derivation as the next step
+rather than implying the driver knows.
+
+The check asserts the two 8-bit plane groups do not bleed into each other, which is the failure mode
+for adjacent bitfield arrays: plane[3] must not light cullplane[3] or plane[4].
+---
+ src/gallium/drivers/pvr/pvr_csb.c   | 36 ++++++++++++++++++++++
+ src/gallium/drivers/pvr/pvr_csb.h   | 31 +++++++++++++++++++
+ src/gallium/drivers/pvr/pvr_probe.c | 47 ++++++++++++++++++++++++++++-
+ 3 files changed, 113 insertions(+), 1 deletion(-)
+
+diff --git a/src/gallium/drivers/pvr/pvr_csb.c b/src/gallium/drivers/pvr/pvr_csb.c
+index 14d0738d..a0fa18ec 100644
+--- a/src/gallium/drivers/pvr/pvr_csb.c
++++ b/src/gallium/drivers/pvr/pvr_csb.c
+@@ -299,6 +299,42 @@ pvr_filter_from_pipe(enum pipe_tex_filter filter, enum ROGUE_TEXSTATE_FILTER *ou
+    }
+ }
+ 
++bool
++pvr_csb_emit_ta_output_sel(struct pvr_csb *csb, const struct pvr_ta_output_sel *sel)
++{
++   struct ROGUE_TA_OUTPUT_SEL o = {
++      .vtxsize = sel->vtxsize,
++      .rhw_pres = sel->rhw_pres,
++      .tsp_unclamped_z_pres = sel->tsp_unclamped_z_pres,
++      .render_tgt_pres = sel->render_tgt_pres,
++      .vpt_tgt_pres = sel->vpt_tgt_pres,
++      .psprite_size_pres = sel->psprite_size_pres,
++      .isp_position_depth_clamp_z = sel->isp_position_depth_clamp_z,
++   };
++   uint32_t *dw;
++
++   for (unsigned i = 0; i < 8; i++) {
++      switch (i) {
++      case 0: o.plane0 = sel->plane[0]; o.cullplane0 = sel->cullplane[0]; break;
++      case 1: o.plane1 = sel->plane[1]; o.cullplane1 = sel->cullplane[1]; break;
++      case 2: o.plane2 = sel->plane[2]; o.cullplane2 = sel->cullplane[2]; break;
++      case 3: o.plane3 = sel->plane[3]; o.cullplane3 = sel->cullplane[3]; break;
++      case 4: o.plane4 = sel->plane[4]; o.cullplane4 = sel->cullplane[4]; break;
++      case 5: o.plane5 = sel->plane[5]; o.cullplane5 = sel->cullplane[5]; break;
++      case 6: o.plane6 = sel->plane[6]; o.cullplane6 = sel->cullplane[6]; break;
++      case 7: o.plane7 = sel->plane[7]; o.cullplane7 = sel->cullplane[7]; break;
++      }
++   }
++
++   dw = pvr_csb_emit(csb, ROGUE_TA_OUTPUT_SEL_length);
++   if (dw == NULL)
++      return false;
++
++   ROGUE_TA_OUTPUT_SEL_pack(dw, &o);
++
++   return true;
++}
++
+ bool
+ pvr_csb_emit_ta_pds_shaderbase(struct pvr_csb *csb, uint64_t addr)
+ {
+diff --git a/src/gallium/drivers/pvr/pvr_csb.h b/src/gallium/drivers/pvr/pvr_csb.h
+index 25358635..79bf32e1 100644
+--- a/src/gallium/drivers/pvr/pvr_csb.h
++++ b/src/gallium/drivers/pvr/pvr_csb.h
+@@ -343,6 +343,37 @@ bool pvr_csb_emit_ta_wclamp(struct pvr_csb *csb, float min_w);
+  * not either - it checks the command stream's own range, not what the stream later dereferences. */
+ bool pvr_csb_emit_ta_pds_shaderbase(struct pvr_csb *csb, uint64_t addr);
+ 
++/* TA_OUTPUT_SEL: what the TA passes on to the pixel stage.
++ *
++ * Two of its flags are NOT derived here, and the reason is written down rather than left as a gap:
++ *
++ *   rhw_pres                 = the fragment shader uses w
++ *   tsp_unclamped_z_pres     = the fragment shader uses z
++ *
++ * The reference reads both from a per-shader usage record (`fs_data->fs.uses.w` / `.z`) produced by
++ * its own shader analysis. This driver has no equivalent: the pco pipeline runs on NIR and the
++ * information is in NIR's system-value usage, but deriving it needs an analysis pass that does not
++ * exist yet. Setting them from a guess - "the FS probably uses z" - would be the plausible-inference
++ * mistake this programme has recorded five times, so they are caller-supplied and the caller is the
++ * place that has to know.
++ *
++ * The clip-plane arrays are per-plane enables; a caller with no user clip planes leaves them false,
++ * which is a statement ("no planes") rather than an omission. */
++struct pvr_ta_output_sel {
++   uint32_t vtxsize;
++   bool rhw_pres;                    /* caller: FS uses w */
++   bool tsp_unclamped_z_pres;        /* caller: FS uses z */
++   bool render_tgt_pres;
++   bool vpt_tgt_pres;
++   bool psprite_size_pres;
++   bool isp_position_depth_clamp_z;
++   bool plane[8];
++   bool cullplane[8];
++};
++
++bool pvr_csb_emit_ta_output_sel(struct pvr_csb *csb,
++                                const struct pvr_ta_output_sel *sel);
++
+ /* Dwords a stream link occupies - what the guard must be at minimum. */
+ #define PVR_CSB_LINK_DWORDS (ROGUE_VDMCTRL_STREAM_LINK0_length + \
+                              ROGUE_VDMCTRL_STREAM_LINK1_length)
+diff --git a/src/gallium/drivers/pvr/pvr_probe.c b/src/gallium/drivers/pvr/pvr_probe.c
+index 9914cf4f..967651d4 100644
+--- a/src/gallium/drivers/pvr/pvr_probe.c
++++ b/src/gallium/drivers/pvr/pvr_probe.c
+@@ -1732,7 +1732,52 @@ csb_check(int fd, struct pipe_screen *pscreen)
+             goto out;
+          }
+ 
+-         printf("csb:           TA PDS shader base: 0x%" PRIx64 " round-trips; a full 40-bit "
++         /* OUTPUT_SEL. The check asserts every field group round-trips, because the failure mode here
++       * is a bit written into the wrong slot: the clip-plane and cull-plane arrays are adjacent
++       * eight-bit groups, and a caller setting plane[3] must not light cullplane[3] or plane[4]. */
++      {
++         struct pvr_ta_output_sel sel = {
++            .vtxsize = 5,
++            .rhw_pres = true,
++            .tsp_unclamped_z_pres = false,
++            .render_tgt_pres = true,
++            .vpt_tgt_pres = false,
++            .psprite_size_pres = false,
++            .isp_position_depth_clamp_z = true,
++            .plane = { false, false, false, true, false, false, false, false },
++            .cullplane = { false, true, false, false, false, false, false, false },
++         };
++         struct ROGUE_TA_OUTPUT_SEL o = { 0 };
++
++         pvr_csb_reset(&csb);
++
++         if (!pvr_csb_emit_ta_output_sel(&csb, &sel) ||
++             pvr_csb_size(&csb) != ROGUE_TA_OUTPUT_SEL_length * 4) {
++            printf("csb:           FAIL: OUTPUT_SEL did not emit\n");
++            goto out;
++         }
++
++         ROGUE_TA_OUTPUT_SEL_unpack(bo.map, &o);
++
++         if (o.vtxsize != sel.vtxsize || !o.rhw_pres || o.tsp_unclamped_z_pres ||
++             !o.render_tgt_pres || o.vpt_tgt_pres || o.psprite_size_pres ||
++             !o.isp_position_depth_clamp_z) {
++            printf("csb:           FAIL: an OUTPUT_SEL scalar flag did not survive\n");
++            goto out;
++         }
++
++         /* The two array groups must not bleed into each other. */
++         if (!o.plane3 || !o.cullplane1 || o.plane0 || o.plane4 ||
++             o.cullplane0 || o.cullplane3 || o.plane7 || o.cullplane7) {
++            printf("csb:           FAIL: plane/cullplane groups bled into each other\n");
++            goto out;
++         }
++
++         printf("csb:           TA OUTPUT_SEL: scalars and the two 8-bit plane groups survive "
++                "independently; rhw/z flags are caller-supplied (no shader analysis yet)\n");
++      }
++
++      printf("csb:           TA PDS shader base: 0x%" PRIx64 " round-trips; a full 40-bit "
+                 "address refused rather than truncated\n", prog);
+       }
+ 
+-- 
+2.47.3
+

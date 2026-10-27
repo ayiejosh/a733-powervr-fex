@@ -1,0 +1,20 @@
+#version 450
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(std430, set = 0, binding = 0) writeonly buffer Out { uint px[]; };
+void main() {
+   px[0u] = 0xa0000000u;
+   px[1u] = 0xa0000001u;
+   px[2u] = 0xa0000002u;
+   px[3u] = 0xa0000003u;
+   px[4u] = 0xa0000004u;
+   px[8u] = 0xa0000005u;
+   px[16u] = 0xa0000006u;
+   px[32u] = 0xa0000007u;
+   px[64u] = 0xa0000008u;
+   px[100u] = 0xa0000009u;
+   px[128u] = 0xa000000au;
+   px[256u] = 0xa000000bu;
+   px[512u] = 0xa000000cu;
+   px[1024u] = 0xa000000du;
+   px[4096u] = 0xa000000eu;
+}

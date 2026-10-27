@@ -1,0 +1,410 @@
+From 2a176f5e271d251a3b5bcdae2df22bfc0ce2d2a9 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 14:16:51 +0800
+Subject: [PATCH 117/269] gallium/pvr: run pco for real - the driver now
+ compiles shaders
+
+The compiler that has been linked since the skeleton round is now actually run.
+A NIR shader goes through the full pco pipeline and comes out as encoded USC
+microcode:
+
+  runtime: free list 102400..2147483648 bytes, shared 11264, coeffs 4096,
+           phantoms 1, cores 1
+  shader:  pco encoded 224 bytes of USC for a fragment shader
+  shader:  a three-store shader encodes 232 bytes (vs 224)
+
+The second line is what makes the first one evidence rather than a number: a
+shader that does strictly more work encodes strictly more code. A single non-zero
+size could have been a constant.
+
+In support of that:
+
+* DRM_PVR_DEV_QUERY_RUNTIME_INFO_GET, which pco_ctx_create needs and the driver did
+  not have. Translated the same way the Vulkan winsys does. core_count is pinned to
+  1 to match it - the kernel has no query for it, and inventing one would be worse
+  than agreeing with the reference.
+* The pco context is created once per screen with the USC library, a blob generated
+  at build time from pco/usclib's OpenCL sources. libpowervr_uscgen is linked for it.
+* pvr_shader_compile() runs preprocess, lower, postprocess, translate, process,
+  encode - copied from the Vulkan driver's build_shader() because the order is
+  load-bearing: getting it wrong yields a plausible binary rather than an error.
+
+Runnable check extended: the probe now reports the runtime info and compiles two
+fragment shaders, requiring the larger one to produce more bytes. Verified on the
+real open kernel module, ALL PASS.
+
+What this is NOT: nothing calls this from a GL draw yet. There is no create_vs_state
+or create_fs_state, no shader caps declared (so GL still reports 1.5/ES-CM 1.1 and
+exposes no shader stage), no pipeline state and no job submission. Compiling a shader
+is a prerequisite for drawing, not drawing.
+---
+ src/gallium/drivers/pvr/meson.build  |  9 +--
+ src/gallium/drivers/pvr/pvr_probe.c  | 95 +++++++++++++++++++++++++++-
+ src/gallium/drivers/pvr/pvr_screen.c | 47 ++++++++++++++
+ src/gallium/drivers/pvr/pvr_screen.h |  9 +++
+ src/gallium/drivers/pvr/pvr_shader.c | 49 ++++++++++++++
+ src/gallium/drivers/pvr/pvr_shader.h | 31 +++++++++
+ 6 files changed, 235 insertions(+), 5 deletions(-)
+ create mode 100644 src/gallium/drivers/pvr/pvr_shader.c
+ create mode 100644 src/gallium/drivers/pvr/pvr_shader.h
+
+diff --git a/src/gallium/drivers/pvr/meson.build b/src/gallium/drivers/pvr/meson.build
+index 53914e67..2683bed5 100644
+--- a/src/gallium/drivers/pvr/meson.build
++++ b/src/gallium/drivers/pvr/meson.build
+@@ -8,6 +8,7 @@ files_pvr = files(
+   'pvr_bo.c',
+   'pvr_context.c',
+   'pvr_resource.c',
++  'pvr_shader.c',
+   'pvr_vm.c',
+   'pvr_screen.c',
+ )
+@@ -20,8 +21,8 @@ libpvr = static_library(
+   # libpowervr_common: src/imagination/common - the .pdsc-generated device tables.
+   # libpowervr_compiler: pco - the NIR-based PowerVR compiler, ~25k lines, the
+   # same one the Vulkan driver uses. Linked here rather than rewritten.
+-  dependencies : [idep_mesautil, idep_nir_headers, dep_libdrm],
+-  link_with : [libpowervr_common, libpowervr_compiler],
++  dependencies : [idep_mesautil, idep_nir_headers, dep_libdrm, idep_pco_pygen, idep_pco_usclib, idep_pco_uscgen_programs_headers],
++  link_with : [libpowervr_common, libpowervr_compiler, libpowervr_uscgen],
+ )
+ 
+ driver_pvr = declare_dependency(
+@@ -36,8 +37,8 @@ driver_pvr = declare_dependency(
+ executable(
+   'pvr-probe',
+   'pvr_probe.c',
+-  include_directories : [inc_gallium_aux, inc_gallium, inc_include, inc_src],
++  include_directories : [inc_gallium_aux, inc_gallium, inc_include, inc_src, inc_imagination],
+   link_with : [libpvr, libgallium],
+-  dependencies : [idep_mesautil, dep_libdrm],
++  dependencies : [idep_mesautil, idep_nir_headers, dep_libdrm],
+   install : false,
+ )
+diff --git a/src/gallium/drivers/pvr/pvr_probe.c b/src/gallium/drivers/pvr/pvr_probe.c
+index a2fb6c2e..3f1bb055 100644
+--- a/src/gallium/drivers/pvr/pvr_probe.c
++++ b/src/gallium/drivers/pvr/pvr_probe.c
+@@ -22,6 +22,10 @@
+ 
+ #include "pvr_bo.h"
+ #include "pvr_context.h"
++#include "pvr_screen.h"
++#include "pvr_shader.h"
++
++#include "nir_builder.h"
+ #include "pvr_resource.h"
+ #include "pvr_vm.h"
+ #include "pvr_public.h"
+@@ -361,6 +365,94 @@ out_ctx:
+    return ok;
+ }
+ 
++/* Run the linked compiler over a shader and check it produces code. This is the whole
++ * point of having linked pco rather than written one: the driver must be able to get
++ * a NIR shader through it and out as an encoded binary. */
++static bool
++shader_compile_check(struct pipe_screen *pscreen)
++{
++   struct pvr_screen *screen = pvr_screen(pscreen);
++   pco_shader *shader = NULL;
++   const void *binary = NULL;
++   unsigned size = 0;
++   nir_builder b;
++   bool ok;
++
++   printf("runtime:       free list %" PRIu64 "..%" PRIu64 " bytes, shared %" PRIu64
++          ", coeffs %" PRIu64 ", phantoms %" PRIu64 ", cores %u\n",
++          screen->dev_runtime_info.min_free_list_size,
++          screen->dev_runtime_info.max_free_list_size,
++          screen->dev_runtime_info.reserved_shared_size,
++          screen->dev_runtime_info.max_coeffs,
++          screen->dev_runtime_info.num_phantoms,
++          screen->dev_runtime_info.core_count);
++
++   if (screen->pco_ctx == NULL) {
++      printf("shader:        FAIL: no pco context - the runtime info query must have failed\n");
++      return false;
++   }
++
++   /* The smallest fragment shader that goes through the real pipeline: pco's own
++    * passthrough shape, which stores a dummy value. */
++   b = nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, pco_nir_options(),
++                                      "pvr_check_fs");
++   b.shader->info.internal = false;
++   nir_frag_store_pco(&b, nir_imm_int(&b, 0), .base = 0);
++   nir_jump(&b, nir_jump_return);
++
++   if (!pvr_shader_compile(screen->pco_ctx, b.shader, &shader, &binary, &size)) {
++      printf("shader:        FAIL: pco produced no code\n");
++      ralloc_free(b.shader);
++      return false;
++   }
++
++   ok = binary != NULL && size > 0;
++
++   printf("shader:        pco encoded %u bytes of USC for a fragment shader\n", size);
++
++   /* A single non-zero number could be a constant. Compile a shader that does strictly
++    * more work and require strictly more code: that is the difference between "the
++    * compiler ran" and "something returned a plausible integer". */
++   {
++      pco_shader *bigger = NULL;
++      const void *bigger_bin = NULL;
++      unsigned bigger_size = 0;
++      nir_builder b2 = nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT,
++                                                      pco_nir_options(),
++                                                      "pvr_check_fs_two_stores");
++      b2.shader->info.internal = false;
++      nir_frag_store_pco(&b2, nir_imm_int(&b2, 0), .base = 0);
++      nir_frag_store_pco(&b2, nir_imm_int(&b2, 0), .base = 1);
++      nir_frag_store_pco(&b2, nir_imm_int(&b2, 0), .base = 2);
++      nir_jump(&b2, nir_jump_return);
++
++      if (!pvr_shader_compile(screen->pco_ctx, b2.shader, &bigger, &bigger_bin,
++                              &bigger_size)) {
++         printf("shader:        FAIL: the second shader produced no code\n");
++         ralloc_free(b.shader);
++         return false;
++      }
++
++      printf("shader:        a three-store shader encodes %u bytes (vs %u)\n",
++             bigger_size, size);
++
++      if (bigger_size <= size) {
++         printf("shader:        FAIL: more work did not produce more code - the size is\n"
++                "               not being derived from the shader\n");
++         ralloc_free(bigger);
++         ralloc_free(b.shader);
++         return false;
++      }
++
++      ralloc_free(bigger);
++   }
++   printf("shader:        %s (nir -> pco pipeline -> encoded binary)\n",
++          ok ? "PASS" : "FAIL");
++
++   ralloc_free(shader);
++   return ok;
++}
++
+ int
+ main(int argc, char **argv)
+ {
+@@ -392,10 +484,11 @@ main(int argc, char **argv)
+    const bool vm_pass = vm_roundtrip(fd);
+    const bool res_pass = resource_roundtrip(screen);
+    const bool ctx_pass = transfer_roundtrip(screen);
++   const bool shader_pass = shader_compile_check(screen);
+ 
+    screen->destroy(screen);
+ 
+-   const bool all = enum_pass && bo_pass && vm_pass && res_pass && ctx_pass;
++   const bool all = enum_pass && bo_pass && vm_pass && res_pass && ctx_pass && shader_pass;
+    printf("--- %s\n", all ? "ALL PASS" : "FAILURES ABOVE");
+    return all ? 0 : 1;
+ }
+diff --git a/src/gallium/drivers/pvr/pvr_screen.c b/src/gallium/drivers/pvr/pvr_screen.c
+index 23b090e5..373364e9 100644
+--- a/src/gallium/drivers/pvr/pvr_screen.c
++++ b/src/gallium/drivers/pvr/pvr_screen.c
+@@ -32,6 +32,9 @@
+ 
+ /* pco: the PowerVR compiler from src/imagination/pco, linked rather than rewritten. */
+ #include "pco/pco.h"
++#include "pco/pco_data.h"
++#include "hwdef/rogue_hw_utils.h"
++#include "pco_uscgen_programs.h"
+ 
+ #include "pvr_context.h"
+ #include "pvr_resource.h"
+@@ -99,6 +102,8 @@ pvr_destroy_screen(struct pipe_screen *pscreen)
+ {
+    struct pvr_screen *screen = pvr_screen(pscreen);
+ 
++   if (screen->pco_ctx != NULL)
++      ralloc_free(screen->pco_ctx);
+    if (screen->vm_valid)
+       pvr_vm_finish(&screen->vm);
+    if (screen->fd >= 0)
+@@ -132,6 +137,7 @@ pvr_screen_create(int fd, const struct pipe_screen_config *config,
+          const struct pvr_device_ident *ident = &screen->dev_info.ident;
+ 
+          screen->gpu_id = query.gpu_id;
++         screen->num_phantoms = query.num_phantoms;
+          snprintf(screen->name, sizeof(screen->name), "PowerVR %s %s (%u.%u.%u.%u)",
+                   ident->series_name, ident->public_name,
+                   ident->b, ident->v, ident->n, ident->c);
+@@ -170,6 +176,47 @@ pvr_screen_create(int fd, const struct pipe_screen_config *config,
+       caps->device_id = ident->device_id;
+    }
+ 
++   /* Runtime info: free-list sizing and the shader limits, which pco needs before it
++    * can be created. Same dev-queries and the same translation the Vulkan driver
++    * performs (winsys/powervr/pvr_drm.c). */
++   {
++      struct drm_pvr_dev_query_runtime_info kmd = { 0 };
++      struct drm_pvr_ioctl_dev_query_args rt_args = {
++         .type = DRM_PVR_DEV_QUERY_RUNTIME_INFO_GET,
++         .size = sizeof(kmd),
++         .pointer = (__u64)&kmd,
++      };
++
++      if (drmIoctl(fd, DRM_IOCTL_PVR_DEV_QUERY, &rt_args) == 0) {
++         screen->dev_runtime_info.min_free_list_size =
++            (uint64_t)kmd.free_list_min_pages << ROGUE_BIF_PM_PHYSICAL_PAGE_SHIFT;
++         screen->dev_runtime_info.max_free_list_size =
++            (uint64_t)kmd.free_list_max_pages << ROGUE_BIF_PM_PHYSICAL_PAGE_SHIFT;
++         screen->dev_runtime_info.reserved_shared_size =
++            kmd.common_store_alloc_region_size;
++         screen->dev_runtime_info.total_reserved_partition_size =
++            kmd.common_store_partition_space_size;
++         screen->dev_runtime_info.max_coeffs = kmd.max_coeffs;
++         screen->dev_runtime_info.cdm_max_local_mem_size_regs =
++            kmd.cdm_max_local_mem_size_regs;
++
++         /* The kernel has no core-count query yet; the Vulkan driver also pins this to
++          * 1 with a finishme, and matching that is more honest than inventing one. */
++         screen->dev_runtime_info.core_count = 1;
++         screen->dev_runtime_info.num_phantoms = screen->num_phantoms;
++      } else {
++         mesa_logi("pvr: runtime info query failed; the compiler will not be created");
++      }
++   }
++
++   /* The compiler. pco_ctx_create needs the device and runtime info; the USC library
++    * is a blob generated at build time from the OpenCL sources in pco/usclib. */
++   screen->pco_ctx = pco_ctx_create(&screen->dev_info, &screen->dev_runtime_info, NULL);
++   if (screen->pco_ctx != NULL)
++      pco_ctx_setup_usclib(screen->pco_ctx, pco_usclib_0_nir, sizeof(pco_usclib_0_nir));
++   else
++      mesa_logi("pvr: could not create the pco compiler context");
++
+    /* GPU address space. Failure here is not fatal to enumeration - it only means no
+     * resource can be created, which is worth being able to see when probing a node
+     * this driver cannot actually drive. */
+diff --git a/src/gallium/drivers/pvr/pvr_screen.h b/src/gallium/drivers/pvr/pvr_screen.h
+index 5833b965..ee688caa 100644
+--- a/src/gallium/drivers/pvr/pvr_screen.h
++++ b/src/gallium/drivers/pvr/pvr_screen.h
+@@ -7,6 +7,7 @@
+ #include "pipe/p_screen.h"
+ 
+ #include "common/pvr_device_info.h"
++#include "pco/pco.h"
+ #include "pvr_vm.h"
+ 
+ struct pvr_screen {
+@@ -18,8 +19,16 @@ struct pvr_screen {
+     * dev_info comes from src/imagination/common, which is generated from the .pdsc
+     * device descriptions - reused, not rewritten. */
+    struct pvr_device_info dev_info;
++
++   /* pco needs the runtime info as well as the device info - free-list sizes and the
++    * shader limits come from a separate dev-query. */
++   struct pvr_device_runtime_info dev_runtime_info;
++
++   /* The linked PowerVR compiler. Shared by every shader this screen compiles. */
++   pco_ctx *pco_ctx;
+    char name[64];
+    unsigned int gpu_id;
++   unsigned int num_phantoms;
+ 
+    /* GPU address space. vm_valid is false when the heaps or VM context could not be
+     * set up, which leaves enumeration working but resource creation unavailable -
+diff --git a/src/gallium/drivers/pvr/pvr_shader.c b/src/gallium/drivers/pvr/pvr_shader.c
+new file mode 100644
+index 00000000..59e9dd2a
+--- /dev/null
++++ b/src/gallium/drivers/pvr/pvr_shader.c
+@@ -0,0 +1,49 @@
++/* Copyright 2026 The Mesa authors
++ * SPDX-License-Identifier: MIT
++ */
++#include "pvr_shader.h"
++
++#include "pco/pco_data.h"
++
++#include "util/log.h"
++
++bool
++pvr_shader_compile(pco_ctx *ctx, struct nir_shader *nir, pco_shader **shader_out,
++                   const void **data_out, unsigned *size_out)
++{
++   pco_data data = { 0 };
++   pco_shader *shader;
++   unsigned size;
++
++   if (ctx == NULL) {
++      mesa_loge("pvr: no pco context; the compiler was never initialised");
++      return false;
++   }
++
++   /* Order matters and is copied from the Vulkan driver's build_shader(). Getting it
++    * wrong yields a plausible binary rather than an error. */
++   pco_preprocess_nir(ctx, nir, &data);
++   pco_lower_nir(ctx, nir, &data);
++   pco_postprocess_nir(ctx, nir, &data);
++
++   shader = pco_trans_nir(ctx, nir, &data, NULL);
++   if (shader == NULL) {
++      mesa_loge("pvr: pco failed to translate %s", nir->info.name);
++      return false;
++   }
++
++   pco_process_ir(ctx, shader);
++   pco_encode_ir(ctx, shader);
++
++   size = pco_shader_binary_size(shader);
++   if (size == 0) {
++      mesa_loge("pvr: pco encoded no code for %s", nir->info.name);
++      return false;
++   }
++
++   *shader_out = shader;
++   *data_out = pco_shader_binary_data(shader);
++   *size_out = size;
++
++   return true;
++}
+diff --git a/src/gallium/drivers/pvr/pvr_shader.h b/src/gallium/drivers/pvr/pvr_shader.h
+new file mode 100644
+index 00000000..8d262286
+--- /dev/null
++++ b/src/gallium/drivers/pvr/pvr_shader.h
+@@ -0,0 +1,31 @@
++/* Copyright 2026 The Mesa authors
++ * SPDX-License-Identifier: MIT
++ *
++ * GLSL/SPIR-V-independent shader entry points: this is where pco, the compiler the
++ * Vulkan driver also uses, is actually run. Nothing here invents a compiler; it runs
++ * the linked one over the NIR the state tracker hands us.
++ */
++#ifndef PVR_SHADER_H
++#define PVR_SHADER_H
++
++#include <stdbool.h>
++
++#include <stdint.h>
++
++#include "pco/pco.h"
++
++struct nir_shader;
++
++/* Runs the full pco pipeline over a NIR shader and returns the encoded binary.
++ *
++ * The sequence is the one the Vulkan driver uses (pvr_usc.c build_shader): preprocess,
++ * lower, postprocess, translate, process, encode. Reordering it produces a binary that
++ * is wrong rather than an error, which is why it is copied rather than guessed.
++ *
++ * Returns false if the compiler produced nothing. On success *data_out points at the
++ * binary, owned by the returned shader, and *size_out is its size in bytes.
++ */
++bool pvr_shader_compile(pco_ctx *ctx, struct nir_shader *nir, pco_shader **shader_out,
++                        const void **data_out, unsigned *size_out);
++
++#endif /* PVR_SHADER_H */
+-- 
+2.47.3
+

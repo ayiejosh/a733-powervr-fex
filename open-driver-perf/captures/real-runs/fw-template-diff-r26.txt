@@ -1,0 +1,41 @@
+# Firmware log-template diff: working Vulkan session (ref) vs fresh-boot failing native run
+# path: captures/real-runs/fwtrace-vkrender-r7.txt vs trace-freshboot.txt
+
+## present in reference, absent in the failing native run:
+     6  Store Freelist A type: N (N:local,N:global) for PMDMN: FL Total Pages N (max=N,grow size=N), FL-addr = A, stacktop = A, Alloc Page Count = N
+     2  BIFN page fault detected (Core N MMU Status: A Req Status: A)
+     2  GPU-N has locked up
+     2  GPU-N has locked up (see HWR logs for more info)
+     2  Updating Tiles In Flight (Dusts=N, PartitionMask=A, ISPCtl=A)
+     2  Phantom N: USCTiles=N
+     2  UFL-ND-Base: A (SP = N, NPB = N, NPT = N), FL-ND-Base: A (SP = N, NPB = N, NPT = N)
+     1  MMU fault event: A
+     1  Host Sync Partition repeat: N
+     1  TA finished
+     1  TA RTData A finished on HW context N
+     1  Perform TPC flush.
+     1  Loading stack-pointers for N (N:MidTA,N:ND) on context N, MLIST = A, ALIST = A
+     1  ND Buffers: FWCtx A, RTData A on ctx N, (MemCtx A)
+     1  ND RTData A ready on HW context N
+     1  Kick ND: FWCtx A @ N, RTD A, Partial render:N, CSW resume:N. (PID:N, prio:N, frame:N, ext:A, int:A)
+     1  ND finished, HWRTDataNState=Nfffffff, HWRTDataNState=N
+     1  ND RTData A finished on HW context N
+     1  Kick ND TQ: FWCtx A @ N, CSW resume:N. (PID:N, prio:N, frame:N, ext:A, int:A)
+     1  ND Transfer finished
+     1  HWRTData [A] HW Context N cleaned, executed commands = N
+
+## present in the failing native run, absent in reference:
+    14  HWR: CoreN, Register=A, OldValue=A, CurrValue=A
+     4  DMN has taken N ticks and deadline is N ticks
+     4  Final result for DMN is HWRNeeded=N with HWRChecksToGo=N
+     3  HWR: USC CoreN, uiNTotalSlotsUsedByDM=A, psDMHWCtl->uiNUSCSlotsUsedByDM=A, bHWRNeeded=N
+     3  USC Slots result for CoreN, DMN is HWRNeeded=N USCSlotsUsedByDM=N
+     3  USC slots: N used by DMN
+     2  Fast CRC Check result for CoreN, DMN is HWRNeeded=N
+     2  Full Signature Check result for CoreN, DMN is HWRNeeded=N
+     1  DMN timed out
+     1  RGX DMN phase count=A
+     1  Core N RGX_CR_EVENT_STATUS=A
+     1  USC slots: N empty
+     1  DMN has locked up
+     1  GPU has locked up (see HWR logs for more info)

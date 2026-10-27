@@ -1,0 +1,144 @@
+From e244141ce33542384109acebc7713ba9738a1c7e Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sat, 17 Oct 2026 10:25:56 +0800
+Subject: [PATCH 163/269] gallium/pvr: the PBE clip bounds, in inclusive pixels
+
+  csb: PBE clip: inclusive pixels (whole 0,0..799,599; offset 10,20..109,69; overhang clamped; zero
+       extent does not wrap)
+  --- ALL PASS        (real open kernel)
+
+Two clip rectangles on the same hardware with two different encodings: the TA's (round 45) is in
+units of a 16-pixel alignment, and this one - the PBE's - is in INCLUSIVE PIXEL coordinates. That is
+exactly the pair that gets conflated, so the header says which is which.
+
+The far edge is offset + extent MINUS ONE, clamped to the surface, and the reference uses a GUARDED
+decrement rather than a plain -1 because offset + extent can legitimately be 0, where a plain
+subtraction wraps to 0xFFFFFFFF and describes a clip region larger than any surface. The check
+covers that case explicitly.
+
+Not implemented: the reference 8-aligns the bounds when framebuffer compression is on. This driver
+sets frame_buffer_compression false wherever it describes a target, so an alignment that only
+applies to a feature it never enables is a thing to add if the feature arrives, not before.
+---
+ src/gallium/drivers/pvr/pvr_csb.c   | 16 ++++++++++++
+ src/gallium/drivers/pvr/pvr_csb.h   | 25 ++++++++++++++++++
+ src/gallium/drivers/pvr/pvr_probe.c | 40 +++++++++++++++++++++++++++++
+ 3 files changed, 81 insertions(+)
+
+diff --git a/src/gallium/drivers/pvr/pvr_csb.c b/src/gallium/drivers/pvr/pvr_csb.c
+index 5de38449..6deba238 100644
+--- a/src/gallium/drivers/pvr/pvr_csb.c
++++ b/src/gallium/drivers/pvr/pvr_csb.c
+@@ -383,6 +383,22 @@ pvr_pbe_linestride(uint32_t stride_bytes)
+    return (stride_bytes - 1) / ROGUE_PBESTATE_REG_WORD0_LINESTRIDE_UNIT_SIZE;
+ }
+ 
++void
++pvr_pbe_clip_from_area(uint32_t off_x, uint32_t off_y, uint32_t width, uint32_t height,
++                       uint32_t surface_width, uint32_t surface_height,
++                       struct pvr_pbe_clip *out)
++{
++   /* Guarded decrement, as the reference uses: offset + extent can be zero, where a plain -1
++    * would wrap to 0xFFFFFFFF and describe a clip region larger than any surface. */
++   const uint32_t far_x = off_x + width  > 0 ? off_x + width  - 1 : 0;
++   const uint32_t far_y = off_y + height > 0 ? off_y + height - 1 : 0;
++
++   out->min_x = off_x;
++   out->min_y = off_y;
++   out->max_x = MIN2(surface_width  > 0 ? surface_width  - 1 : 0, far_x);
++   out->max_y = MIN2(surface_height > 0 ? surface_height - 1 : 0, far_y);
++}
++
+ enum ROGUE_PBESTATE_SIZE
+ pvr_pbe_size_from_pixels(uint32_t pixels)
+ {
+diff --git a/src/gallium/drivers/pvr/pvr_csb.h b/src/gallium/drivers/pvr/pvr_csb.h
+index 453cfa0a..fe41cd97 100644
+--- a/src/gallium/drivers/pvr/pvr_csb.h
++++ b/src/gallium/drivers/pvr/pvr_csb.h
+@@ -465,6 +465,31 @@ uint32_t pvr_pbe_linestride(uint32_t stride_bytes);
+  * The largest size the enum names is 16384 pixels; anything larger has no encoding and is refused
+  * rather than mapped to the largest, which would describe a target as smaller than it is. */
+ enum ROGUE_PBESTATE_SIZE pvr_pbe_size_from_pixels(uint32_t pixels);
++
++/* The PBE's clip bounds.
++ *
++ * INCLUSIVE pixel coordinates, not aligned units - unlike the TA clip region (round 45), which
++ * divides by 16. Two different clip rectangles on the same hardware with two different encodings,
++ * which is exactly the kind of pair that gets conflated.
++ *
++ * The far edge is the offset plus the extent MINUS ONE, clamped to the surface, and the reference
++ * uses a guarded decrement (PVR_DEC_IF_NOT_ZERO) rather than a plain -1 because offset+extent can
++ * legitimately be 0, where a plain subtraction would wrap to 0xFFFFFFFF.
++ *
++ * The reference also 8-aligns the bounds when framebuffer compression is on. This driver sets
++ * frame_buffer_compression false wherever it describes a target, so that path is deliberately not
++ * implemented here rather than implemented and unused: an alignment that only applies to a feature
++ * this driver never enables is a thing to add if the feature arrives, not before. */
++struct pvr_pbe_clip {
++   uint32_t min_x;
++   uint32_t min_y;
++   uint32_t max_x;
++   uint32_t max_y;
++};
++
++void pvr_pbe_clip_from_area(uint32_t off_x, uint32_t off_y, uint32_t width, uint32_t height,
++                            uint32_t surface_width, uint32_t surface_height,
++                            struct pvr_pbe_clip *out);
+ enum ROGUE_PBESTATE_MEMLAYOUT pvr_pbe_memlayout_linear(void);
+ 
+ /* Dwords a stream link occupies - what the guard must be at minimum. */
+diff --git a/src/gallium/drivers/pvr/pvr_probe.c b/src/gallium/drivers/pvr/pvr_probe.c
+index 69eaa0b7..80e08790 100644
+--- a/src/gallium/drivers/pvr/pvr_probe.c
++++ b/src/gallium/drivers/pvr/pvr_probe.c
+@@ -1855,6 +1855,46 @@ csb_check(int fd, struct pipe_screen *pscreen)
+             goto out;
+          }
+ 
++         /* Concrete cases: the benchmark's own 800x600 whole-surface, an offset sub-rect, a
++          * rect that overhangs the surface (must clamp), and the degenerate zero-extent case the
++          * guarded decrement exists for. */
++         {
++            struct pvr_pbe_clip c = { 0 };
++
++            pvr_pbe_clip_from_area(0, 0, 800, 600, 800, 600, &c);
++            if (c.min_x || c.min_y || c.max_x != 799 || c.max_y != 599) {
++               printf("csb:           FAIL: whole-surface clip gave %u,%u..%u,%u (want 0,0..799,"
++                      "599)\n", c.min_x, c.min_y, c.max_x, c.max_y);
++               goto out;
++            }
++
++            pvr_pbe_clip_from_area(10, 20, 100, 50, 800, 600, &c);
++            if (c.min_x != 10 || c.min_y != 20 || c.max_x != 109 || c.max_y != 69) {
++               printf("csb:           FAIL: offset clip gave %u,%u..%u,%u (want 10,20..109,69) - "
++                      "the far edge is inclusive, not offset+extent\n", c.min_x, c.min_y, c.max_x,
++                      c.max_y);
++               goto out;
++            }
++
++            pvr_pbe_clip_from_area(700, 500, 400, 400, 800, 600, &c);
++            if (c.max_x != 799 || c.max_y != 599) {
++               printf("csb:           FAIL: an overhanging clip did not clamp to the surface "
++                      "(got %u,%u)\n", c.max_x, c.max_y);
++               goto out;
++            }
++
++            /* Zero extent: a plain -1 here would give 0xFFFFFFFF. */
++            pvr_pbe_clip_from_area(0, 0, 0, 0, 800, 600, &c);
++            if (c.max_x != 0 || c.max_y != 0) {
++               printf("csb:           FAIL: a zero-extent clip wrapped (got %u,%u)\n", c.max_x,
++                      c.max_y);
++               goto out;
++            }
++
++            printf("csb:           PBE clip: inclusive pixels (whole 0,0..799,599; offset "
++                   "10,20..109,69; overhang clamped; zero extent does not wrap)\n");
++         }
++
+          printf("csb:           PBE encodings: linestride (stride-1)/%u -> 0/1/2 for strides "
+                 "2/4/6, memlayout LINEAR, size as round-up log2 (100 px -> 128)\n", unit);
+       }
+-- 
+2.47.3
+

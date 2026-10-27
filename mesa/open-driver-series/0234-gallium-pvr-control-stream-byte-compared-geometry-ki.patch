@@ -1,0 +1,61 @@
+From c46856e7fa88edaee243a2a35d89b53104c89fd5 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sun, 25 Oct 2026 04:37:13 +0800
+Subject: [PATCH 234/269] gallium/pvr: control stream byte-compared; geometry
+ kick fails even with no vertex program
+
+Two bisect results from the round-19 A/B baseline:
+
+- The control-stream BO contents were dumped from a working Vulkan geometry-only frame (temporary
+  env dump in the Vulkan command buffer, reverted) and compared dword for dword with ours. The
+  PPP/terminate headers encode word-count+address-high exactly as ours do (0x1980/0x1380 vs
+  0x199F/0x139F - same fields, different addresses), the VDM state differs only in the PDS
+  data/code addresses and the PDS sizes derived from them, and the index list/terminate are
+  identical. So the control stream is structurally conformant; only address values differ.
+- A geometry job with NO vertex program at all (VDM state reduced to its one-word header;
+  PVR_PROBE_NO_VS) still logs "Kick TA" and times out. So neither the VDM state, the control stream
+  content nor the attribute program is what stops the TA kick.
+
+That leaves the TA-side inputs the kernel builds for the firmware: the HWRT firmware object
+(rt-data addresses, region-header addresses, free lists) and the context object. The next probe is a
+byte-level dump of those from the kernel for both drivers with addresses normalised.
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c | 15 ++++++++++++++-
+ 1 file changed, 14 insertions(+), 1 deletion(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index 17d3ef7d..2f1df387 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -1116,7 +1116,11 @@ real_job_done:
+                            pvr_csb_init(&ctl_csb, rctl.map, rctl.size, PVR_CSB_LINK_DWORDS);
+                            if (!pvr_csb_emit_ppp_state(&ctl_csb, paddr,
+                                                        pvr_csb_size(&block) / 4) ||
+-                               !pvr_csb_emit_vdm_state(&ctl_csb, false, 0, &vdm_vs,
++                               /* Round-21: a geometry job with no vertex program at all, to test
++                                * whether the TA kick itself completes (the hardware would then have
++                                * nothing to fetch and would finish immediately). */
++                               !pvr_csb_emit_vdm_state(&ctl_csb, false, 0,
++                                                       getenv("PVR_PROBE_NO_VS") ? NULL : &vdm_vs,
+                                                        &vdm_words) ||
+                                /* Non-indexed, like the captured working draw: the index buffer
+                                 * exists but the draw does not name it. An indexed draw relies on the
+@@ -1155,6 +1159,15 @@ real_job_done:
+                                     printf(" %08x", tw[i]);
+                                  printf("\n");
+                               }
++                              if (getenv("PVR_DUMP_CTRL")) {
++                                 const uint32_t *cw2 = (const uint32_t *)rctl.map;
++                                 const unsigned used = pvr_csb_size(&ctl_csb) / 4;
++
++                                 printf("OURCTRL: size=%u:", used);
++                                 for (unsigned i = 0; i < used; i++)
++                                    printf(" %08x", cw2[i]);
++                                 printf("\n");
++                              }
+                               printf("hwrt:          draw stream: TA block (%u w) + VDM state "
+                                      "(%u dw) + 3 indices + terminate; first dwords:",
+                                      pvr_csb_size(&block) / 4, vdm_words);
+-- 
+2.47.3
+

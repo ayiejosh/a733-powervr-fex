@@ -1,0 +1,81 @@
+From 85cab663c69f16ef82d305fb9357db751569ee91 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sun, 25 Oct 2026 04:11:32 +0800
+Subject: [PATCH 231/269] gallium/pvr: fragment-job kick probe; the 3D fault is
+ job-level, and submit timing is not it
+
+Round sixteen experiments on the last blocker (TA kick silent, fragment kick works):
+
+- Fragment-only job with the *dummy* fragment stream (no PDS background words, no border table)
+  page-faults at exactly the same BIF0 address and status (0xD041 / req 0x0010250000000000) as the
+  full fragment stream: so that fault comes from fragment-job *configuration*, not from the stream
+  contents, and it happens only ~130 ticks after "Kick 3D" - i.e. right after the kick, before the
+  stream is really consumed.
+- Waiting 1 s after context creation before submitting (PVR_PROBE_DELAY_MS) does not change the TA
+  kick result: not a context-initialisation race.
+- The kernel-parsed geometry command captured in this round is identical to the reference run's,
+  including the job header refs and flags (0x3), apart from the three address pairs; both runs even
+  reuse the same firmware addresses on this boot.
+- PVR_PROBE_FRAG_THEN_GEOM chains a fragment job then a geometry job (in case the TA kick needs state
+  a 3D kick establishes); the fragment job's own fault currently pre-empts it.
+
+Verification: probe ALL PASS under the shim; dmesg command captures archived in
+open-driver-perf/captures/real-runs/.
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c | 30 +++++++++++++++++++---
+ 1 file changed, 26 insertions(+), 4 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index f02d8a64..b359c7fe 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -528,6 +528,13 @@ vm_roundtrip(int fd, struct pipe_screen *pscreen)
+                 "PT store/resume PDS programs built, %u-byte static state\n", len);
+       }
+ 
++      if (getenv("PVR_PROBE_DELAY_MS")) {
++         const unsigned ms = (unsigned)strtoul(getenv("PVR_PROBE_DELAY_MS"), NULL, 0);
++
++         usleep(ms * 1000);
++         printf("vm:            waited %u ms after context creation before submitting\n", ms);
++      }
++
+       printf("vm:            sizes: drm_pvr_job=%zu obj_array=%zu hwrt_ref=%zu\n",
+              sizeof(struct drm_pvr_job), sizeof(struct drm_pvr_obj_array),
+              sizeof(struct drm_pvr_hwrt_data_ref));
+@@ -1201,13 +1208,28 @@ real_job_done:
+                                                    dset_handle, 0, 2000);
+                   printf("hwrt:          minimal geometry job (terminate-only control) %s\n",
+                          gdone ? "COMPLETED" : "did not complete in 2 s");
+-               } else if (getenv("PVR_PROBE_FRAG_ONLY")) {
+-                  /* Does the context dispatch a job at all when no geometry kick is involved? */
+-                  const bool fdone = pvr_job_submit_frag_sync(vm, gpu_ctx.handle, fstream, f2,
++               } else if (getenv("PVR_PROBE_FRAG_ONLY") || getenv("PVR_PROBE_FRAG_THEN_GEOM")) {
++                  /* Does the context dispatch a job at all when no geometry kick is involved? A
++                   * clean fragment job also gives the TA kick a context that has completed real
++                   * work, which tests whether the geometry kick depends on state a prior 3D kick
++                   * establishes. */
++                  _Alignas(8) static uint8_t dfstream[1024];
++                  static const uint64_t dpbe[3] = { 0x0200003c68800000ull,
++                                                    0x0000001f0000001full, 0 };
++                  const uint32_t df2 = pvr_frag_static_stream(dfstream, sizeof(dfstream), dpbe, 1,
++                                                              (uint32_t)eot_data_offset, false);
++                  const bool fdone = pvr_job_submit_frag_sync(vm, gpu_ctx.handle, dfstream, df2,
+                                                               dset_handle, 0, 2000);
+ 
+-                  printf("hwrt:          fragment-only submission %s\n",
++                  printf("hwrt:          fragment-only (dummy state) %s\n",
+                          fdone ? "COMPLETED" : "did not complete in 2 s");
++                  if (getenv("PVR_PROBE_FRAG_THEN_GEOM")) {
++                     const bool gdone = pvr_job_submit_geom_sync(vm, gpu_ctx.handle, gstream,
++                                                                 glen, dset_handle, 0, 2000);
++
++                     printf("hwrt:          geometry after a fragment job %s\n",
++                            gdone ? "COMPLETED" : "did not complete in 2 s");
++                  }
+                }
+                /* Fill the fragment stream's PDS background programs and TPU border table. The
+                 * reference always sets these; left at zero they are "PDS heap base + 0", so the 3D
+-- 
+2.47.3
+

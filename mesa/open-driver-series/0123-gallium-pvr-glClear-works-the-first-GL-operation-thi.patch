@@ -1,0 +1,287 @@
+From 12c78b5a10306dc491a6f8a51a3149915c3f1a10 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 15:19:57 +0800
+Subject: [PATCH 123/269] gallium/pvr: glClear works - the first GL operation
+ this driver actually performs
+
+  clear: whole target 0xff0000ff, scissored top-left 0xff00ff00, outside the box
+         still 0xff0000ff
+  clear: PASS (glClear writes the target; scissor respected)
+
+Implemented with Mesa's own software clear helpers (util_clear_render_target and
+util_clear_depth_stencil), which write through pipe_texture_map - an interface this
+driver already implements. So the work was mapping PIPE_CLEAR_* bits and the scissor
+box onto the recorded framebuffer, not writing a clear.
+
+Honest about the mechanism: the clear happens on the CPU, into memory the GPU can also
+reach. That is only correct because the mapping is write-combined and therefore
+coherent (uncached reads see CPU writes) - the same property the transfers rely on. It
+should be replaced by a GPU clear once there is job submission to issue one. Until
+then it is the difference between glClear working and not, and it is a real result
+rather than a stub: the pixels are verified by reading them back out of the buffer.
+
+The check uses 0/1 channel values so the expected bytes are exact (opaque red is
+0xff0000ff in RGBA8 little-endian) and there is no rounding question to argue about,
+and it covers the scissored path in both directions - changed inside the box, unchanged
+outside it.
+
+Refused rather than approximated: a partial colour or stencil mask. The helper clears
+whole channels, so honouring a partial mask with it would clear channels the
+application asked to preserve, which is a visible wrong result. It logs and leaves the
+target untouched instead. st routes partial-mask buffers through its quad path, which
+needs the draw stack that does not exist yet.
+
+Nothing draws: this clears, it does not rasterise. There is still no vertex processing,
+no CSB generation and no job submission, and no benchmark is possible.
+---
+ src/gallium/drivers/pvr/pvr_context.c |  82 +++++++++++++++++++
+ src/gallium/drivers/pvr/pvr_probe.c   | 112 +++++++++++++++++++++++++-
+ 2 files changed, 193 insertions(+), 1 deletion(-)
+
+diff --git a/src/gallium/drivers/pvr/pvr_context.c b/src/gallium/drivers/pvr/pvr_context.c
+index ca0385d2..1ec7dafc 100644
+--- a/src/gallium/drivers/pvr/pvr_context.c
++++ b/src/gallium/drivers/pvr/pvr_context.c
+@@ -11,6 +11,8 @@
+ 
+ #include "string.h"
+ 
++#include "util/u_surface.h"
++
+ #include "pvr_resource.h"
+ #include "pvr_screen.h"
+ #include "pvr_shader.h"
+@@ -315,6 +317,85 @@ pvr_set_viewport_states(struct pipe_context *pctx, unsigned start_slot,
+    ctx->nr_viewports = MAX2(ctx->nr_viewports, start_slot + num_viewports);
+ }
+ 
++/* GL clear.
++ *
++ * Implemented with Mesa's own software clear helpers (util_clear_render_target /
++ * util_clear_depth_stencil), which write through pipe_texture_map - an interface this
++ * driver already implements. So this is a real, working glClear rather than a stub,
++ * and it costs almost nothing because the helpers do the work.
++ *
++ * Honest about the mechanism: the clear happens on the CPU, into memory the GPU can
++ * also reach. That is only correct because the mapping is write-combined and therefore
++ * coherent (uncached reads see CPU writes) - the same property the transfers rely on.
++ * It will be replaced by a GPU clear when there is job submission to issue one; until
++ * then a CPU clear is the difference between glClear working and not.
++ *
++ * ponytail: one buffer per PIPE_CLEAR_COLORx bit, whole-channel clears only. Partial
++ * channel masks are refused rather than approximate: clearing a channel the
++ * application asked to preserve is a visible wrong result, whereas not clearing is at
++ * least the previous contents. st routes partial-mask buffers through its quad path,
++ * which needs the draw stack that does not exist yet. */
++static void
++pvr_clear(struct pipe_context *pctx, unsigned buffers, uint32_t color_clear_mask,
++          uint8_t stencil_clear_mask, const struct pipe_scissor_state *scissor_state,
++          const union pipe_color_union *color, double depth, unsigned stencil)
++{
++   struct pvr_context *ctx = pvr_context(pctx);
++   unsigned dstx = 0, dsty = 0, width = ctx->fb.width, height = ctx->fb.height;
++
++   if (scissor_state != NULL) {
++      dstx = scissor_state->minx;
++      dsty = scissor_state->miny;
++      width = scissor_state->maxx - scissor_state->minx;
++      height = scissor_state->maxy - scissor_state->miny;
++
++      if (width == 0 || height == 0)
++         return;
++   }
++
++   for (unsigned i = 0; i < ctx->fb.nr_cbufs; i++) {
++      if ((buffers & (PIPE_CLEAR_COLOR0 << i)) == 0)
++         continue;
++
++      if (ctx->fb.cbufs[i].texture == NULL)
++         continue;
++
++      if (color_clear_mask != 0xf) {
++         static bool warned;
++
++         if (!warned) {
++            mesa_logw("pvr: masked colour clear (mask 0x%x) is not supported yet; "
++                      "leaving the target untouched", color_clear_mask);
++            warned = true;
++         }
++         continue;
++      }
++
++      util_clear_render_target(pctx, &ctx->fb.cbufs[i], color, dstx, dsty, width,
++                               height);
++   }
++
++   if ((buffers & PIPE_CLEAR_DEPTHSTENCIL) != 0 && ctx->fb.zsbuf.texture != NULL) {
++      unsigned flags = buffers & PIPE_CLEAR_DEPTHSTENCIL;
++
++      if ((stencil_clear_mask & 0xff) != 0xff) {
++         static bool warned;
++
++         if (!warned) {
++            mesa_logw("pvr: masked stencil clear (mask 0x%x) is not supported yet",
++                      stencil_clear_mask);
++            warned = true;
++         }
++         flags &= ~PIPE_CLEAR_STENCIL;
++      }
++
++      if (flags != 0) {
++         util_clear_depth_stencil(pctx, &ctx->fb.zsbuf, flags, depth, stencil, dstx,
++                                  dsty, width, height);
++      }
++   }
++}
++
+ static struct pvr_shader *
+ pvr_shader_from_state(struct pipe_context *pctx, const struct pipe_shader_state *state)
+ {
+@@ -386,6 +467,7 @@ pvr_context_create(struct pipe_screen *pscreen, UNUSED void *priv,
+ 
+    ctx->base.screen = pscreen;
+    ctx->base.destroy = pvr_context_destroy;
++   ctx->base.clear = pvr_clear;
+    ctx->base.flush = pvr_flush;
+    ctx->base.sampler_view_destroy = pvr_sampler_view_destroy;
+    ctx->base.sampler_view_release = pvr_sampler_view_release;
+diff --git a/src/gallium/drivers/pvr/pvr_probe.c b/src/gallium/drivers/pvr/pvr_probe.c
+index 2ae2a481..af44fe62 100644
+--- a/src/gallium/drivers/pvr/pvr_probe.c
++++ b/src/gallium/drivers/pvr/pvr_probe.c
+@@ -769,6 +769,114 @@ out:
+    return ok;
+ }
+ 
++/* glClear, end to end: clear a render target, then read the pixels back out of the
++ * buffer the way the GPU would read them. Uses 0/1 channel values so the expected bytes
++ * are exact and there is no rounding question to argue about. */
++static bool
++clear_check(struct pipe_screen *pscreen)
++{
++   const unsigned size = 64;
++   struct pipe_resource templ = {
++      .target = PIPE_TEXTURE_2D,
++      .format = PIPE_FORMAT_R8G8B8A8_UNORM,
++      .width0 = size,
++      .height0 = size,
++      .depth0 = 1,
++      .array_size = 1,
++      .last_level = 0,
++      .nr_samples = 1,
++      .usage = PIPE_USAGE_DEFAULT,
++      .bind = PIPE_BIND_RENDER_TARGET,
++   };
++   struct pipe_context *pctx = pscreen->context_create(pscreen, NULL, 0);
++   struct pipe_framebuffer_state fb = { 0 };
++   union pipe_color_union red = { .f = { 1.0f, 0.0f, 0.0f, 1.0f } };
++   union pipe_color_union green = { .f = { 0.0f, 1.0f, 0.0f, 1.0f } };
++   const struct pipe_scissor_state scissor = {
++      .minx = 0, .miny = 0, .maxx = 32, .maxy = 32,
++   };
++   const struct pipe_box box = { .width = size, .height = size, .depth = 1 };
++   struct pipe_resource *res;
++   struct pipe_transfer *trans = NULL;
++   uint32_t *px;
++   bool ok = false;
++
++   if (pctx == NULL) {
++      printf("clear:         FAIL: no context\n");
++      return false;
++   }
++
++   res = pscreen->resource_create(pscreen, &templ);
++   if (res == NULL) {
++      printf("clear:         FAIL: no target\n");
++      pctx->destroy(pctx);
++      return false;
++   }
++
++   fb.width = size;
++   fb.height = size;
++   fb.nr_cbufs = 1;
++   fb.cbufs[0].texture = res;
++   fb.cbufs[0].format = res->format;
++   pctx->set_framebuffer_state(pctx, &fb);
++
++   /* RGBA8 little-endian: R in the low byte, so opaque red is 0xff0000ff. */
++   pctx->clear(pctx, PIPE_CLEAR_COLOR0, 0xf, 0xff, NULL, &red, 0.0, 0);
++
++   px = pctx->texture_map(pctx, res, 0, PIPE_MAP_READ, &box, &trans);
++   if (px == NULL) {
++      printf("clear:         FAIL: could not read the target back\n");
++      goto out;
++   }
++
++   if (px[0] != 0xff0000ffu || px[size * size - 1] != 0xff0000ffu) {
++      printf("clear:         FAIL: whole-target clear gave 0x%08x / 0x%08x, expected "
++             "0xff0000ff\n", px[0], px[size * size - 1]);
++      pctx->texture_unmap(pctx, trans);
++      goto out;
++   }
++
++   pctx->texture_unmap(pctx, trans);
++   trans = NULL;
++
++   /* Now a scissored clear: only the top-left 32x32 may change. */
++   pctx->clear(pctx, PIPE_CLEAR_COLOR0, 0xf, 0xff, &scissor, &green, 0.0, 0);
++
++   px = pctx->texture_map(pctx, res, 0, PIPE_MAP_READ, &box, &trans);
++   if (px == NULL) {
++      printf("clear:         FAIL: could not read the target back after the scissor\n");
++      goto out;
++   }
++
++   if (px[0] != 0xff00ff00u) {
++      printf("clear:         FAIL: scissored clear left 0x%08x inside the box, expected "
++             "0xff00ff00\n", px[0]);
++      pctx->texture_unmap(pctx, trans);
++      goto out;
++   }
++
++   if (px[40 * size + 40] != 0xff0000ffu) {
++      printf("clear:         FAIL: the scissor leaked outside the box (0x%08x)\n",
++             px[40 * size + 40]);
++      pctx->texture_unmap(pctx, trans);
++      goto out;
++   }
++
++   printf("clear:         whole target 0x%08x, scissored top-left 0x%08x, outside the "
++          "box still 0x%08x\n", 0xff0000ffu, px[0], px[40 * size + 40]);
++   ok = true;
++
++out:
++   if (trans != NULL)
++      pctx->texture_unmap(pctx, trans);
++   pscreen->resource_destroy(pscreen, res);
++   pctx->destroy(pctx);
++
++   printf("clear:         %s (glClear writes the target; scissor respected)\n",
++          ok ? "PASS" : "FAIL");
++   return ok;
++}
++
+ int
+ main(int argc, char **argv)
+ {
+@@ -799,6 +907,7 @@ main(int argc, char **argv)
+    const bool bo_pass = bo_roundtrip(fd);
+    const bool vm_pass = vm_roundtrip(fd);
+    const bool csb_pass = csb_check(fd);
++   const bool clear_pass = clear_check(screen);
+    const bool res_pass = resource_roundtrip(screen);
+    const bool ctx_pass = transfer_roundtrip(screen);
+    const bool shader_pass = shader_compile_check(screen);
+@@ -809,7 +918,8 @@ main(int argc, char **argv)
+    screen->destroy(screen);
+ 
+    const bool all = enum_pass && bo_pass && vm_pass && res_pass && ctx_pass &&
+-                    shader_pass && state_pass && fb_pass && pipe_pass && csb_pass;
++                    shader_pass && state_pass && fb_pass && pipe_pass && csb_pass &&
++                    clear_pass;
+    printf("--- %s\n", all ? "ALL PASS" : "FAILURES ABOVE");
+    return all ? 0 : 1;
+ }
+-- 
+2.47.3
+

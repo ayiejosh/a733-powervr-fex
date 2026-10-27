@@ -1,0 +1,271 @@
+c0011b02: 96 cf        	b16	0xc0011a2e <.text+0x11a2e>
+c0011b04: a0 32 02 00  	addiu	$21, $zero, 0x2 <.text+0x2>
+c0011b08: b4 fe a4 00  	lw	$21, 0xa4($20)
+c0011b0c: 9c fc e4 e1  	lw	$4, -0x1e1c($gp)
+c0011b10: a2 41 ff c0  	lui	$2, 0xc0ff <.text+0xc0ff>
+c0011b14: 42 50 fc ff  	ori	$2, $2, 0xfffc <.text+0xfffc>
+c0011b18: 55 00 50 12  	and	$2, $21, $2
+c0011b1c: a0 02 58 10  	movz	$2, $zero, $21
+c0011b20: 40 2e        	andi16	$4, $4, 0x80 <.text+0x80>
+c0011b22: 04 b4 ff 01  	bnez	$4, 0xc0011f24 <.text+0x11f24>
+c0011b26: a2 0e        	move	$21, $2
+c0011b28: 4e 48        	lw	$2, 0x38($sp)
+c0011b2a: d4 fc c8 00  	lw	$6, 0xc8($20)
+c0011b2e: f4 fc cc 00  	lw	$7, 0xcc($20)
+c0011b32: a5 41 80 cf  	lui	$5, 0xcf80 <.text+0xcf80>
+c0011b36: c2 33 01 00  	addiu	$fp, $2, 0x1 <.text+0x1>
+c0011b3a: 5c fc 08 e9  	lw	$2, -0x16f8($gp)
+c0011b3e: 42 00 00 98  	sll	$2, $2, 0x13 <.text+0x13>
+c0011b42: 82 30 48 02  	addiu	$4, $2, 0x248 <.text+0x248>
+c0011b46: e5 44        	or16	$4, $5
+c0011b48: 40 eb        	sw16	$6, 0x0($4)
+c0011b4a: c1 eb        	sw16	$7, 0x4($4)
+c0011b4c: 16 94 d6 01  	beqz	$22, 0xc0011efc <.text+0x11efc>
+c0011b50: 01 ee        	li16	$4, 0x1 <.text+0x1>
+c0011b52: 94 fc 14 01  	lw	$4, 0x114($20)
+c0011b56: a4 40 08 02  	bnezc	$4, 0xc0011f6a <.text+0x11f6a>
+c0011b5a: a4 41 80 cf  	lui	$4, 0xcf80 <.text+0xcf80>
+c0011b5e: 42 30 58 02  	addiu	$2, $2, 0x258 <.text+0x258>
+c0011b62: 81 ee        	li16	$5, 0x1 <.text+0x1>
+c0011b64: d4 44        	or16	$2, $4
+c0011b66: b4 f8 14 01  	sw	$5, 0x114($20)
+c0011b6a: a0 ea        	sw16	$5, 0x0($2)
+c0011b6c: 01 ef        	li16	$6, 0x1 <.text+0x1>
+c0011b6e: a0 0c        	move	$5, $zero
+c0011b70: 9c fc 08 e9  	lw	$4, -0x16f8($gp)
+c0011b74: 84 00 00 98  	sll	$4, $4, 0x13 <.text+0x13>
+c0011b78: 00 f4 72 47  	jal	0x8ee4 <.text+0x8ee4>
+c0011b7c: 84 30 58 02  	addiu	$4, $4, 0x258 <.text+0x258>
+c0011b80: 02 94 7f ff  	beqz	$2, 0xc0011a82 <.text+0x11a82>
+c0011b84: 40 0c        	move	$2, $zero
+c0011b86: 00 74 48 96  	jals	0x12c90 <.text+0x12c90>
+c0011b8a: 80 0c        	move	$4, $zero
+c0011b8c: 5c fc e0 e1  	lw	$2, -0x1e20($gp)
+c0011b90: 26 2d        	andi16	$2, $2, 0x8 <.text+0x8>
+c0011b92: a2 40 31 03  	bnezc	$2, 0xc00121f8 <.text+0x121f8>
+c0011b96: 5c fc 08 e9  	lw	$2, -0x16f8($gp)
+c0011b9a: 92 fc 54 00  	lw	$4, 0x54($18)
+c0011b9e: a5 41 80 cf  	lui	$5, 0xcf80 <.text+0xcf80>
+c0011ba2: 42 00 00 98  	sll	$2, $2, 0x13 <.text+0x13>
+c0011ba6: 42 30 88 0c  	addiu	$2, $2, 0xc88 <.text+0xc88>
+c0011baa: d5 44        	or16	$2, $5
+c0011bac: 20 ea        	sw16	$4, 0x0($2)
+c0011bae: 5c fc 08 e9  	lw	$2, -0x16f8($gp)
+c0011bb2: 95 fc 04 00  	lw	$4, 0x4($21)
+c0011bb6: 42 00 00 98  	sll	$2, $2, 0x13 <.text+0x13>
+c0011bba: 42 30 98 0c  	addiu	$2, $2, 0xc98 <.text+0xc98>
+c0011bbe: d5 44        	or16	$2, $5
+c0011bc0: 20 ea        	sw16	$4, 0x0($2)
+c0011bc2: 55 fc 28 00  	lw	$2, 0x28($21)
+c0011bc6: a2 40 44 02  	bnezc	$2, 0xc0012052 <.text+0x12052>
+c0011bca: 9c fc 08 e9  	lw	$4, -0x16f8($gp)
+c0011bce: d5 20 08 10  	lwp	$6, 0x8($21)
+c0011bd2: a2 41 80 cf  	lui	$2, 0xcf80 <.text+0xcf80>
+c0011bd6: 84 00 00 98  	sll	$4, $4, 0x13 <.text+0x13>
+c0011bda: a4 30 80 0c  	addiu	$5, $4, 0xc80 <.text+0xc80>
+c0011bde: d5 44        	or16	$2, $5
+c0011be0: 20 eb        	sw16	$6, 0x0($2)
+c0011be2: a1 eb        	sw16	$7, 0x4($2)
+c0011be4: b2 fc 58 00  	lw	$5, 0x58($18)
+c0011be8: a2 41 80 cf  	lui	$2, 0xcf80 <.text+0xcf80>
+c0011bec: 84 30 28 0c  	addiu	$4, $4, 0xc28 <.text+0xc28>
+c0011bf0: e2 44        	or16	$4, $2
+c0011bf2: c0 ea        	sw16	$5, 0x0($4)
+c0011bf4: 9c fc 08 e9  	lw	$4, -0x16f8($gp)
+c0011bf8: d4 fc 00 01  	lw	$6, 0x100($20)
+c0011bfc: f4 fc 04 01  	lw	$7, 0x104($20)
+c0011c00: 15 fd 28 00  	lw	$8, 0x28($21)
+c0011c04: 84 00 00 98  	sll	$4, $4, 0x13 <.text+0x13>
+c0011c08: a4 30 38 0c  	addiu	$5, $4, 0xc38 <.text+0xc38>
+c0011c0c: ea 44        	or16	$5, $2
+c0011c0e: 50 eb        	sw16	$6, 0x0($5)
+c0011c10: d1 eb        	sw16	$7, 0x4($5)
+c0011c12: a4 30 40 0c  	addiu	$5, $4, 0xc40 <.text+0xc40>
+c0011c16: 84 30 00 0c  	addiu	$4, $4, 0xc00 <.text+0xc00>
+c0011c1a: d4 fc f0 00  	lw	$6, 0xf0($20)
+c0011c1e: f4 fc f4 00  	lw	$7, 0xf4($20)
+c0011c22: ea 44        	or16	$5, $2
+c0011c24: e2 44        	or16	$4, $2
+c0011c26: 50 eb        	sw16	$6, 0x0($5)
+c0011c28: d1 eb        	sw16	$7, 0x4($5)
+c0011c2a: 04 f9 00 00  	sw	$8, 0x0($4)
+c0011c2e: 9c fc 08 e9  	lw	$4, -0x16f8($gp)
+c0011c32: b5 fc 2c 00  	lw	$5, 0x2c($21)
+c0011c36: 84 00 00 98  	sll	$4, $4, 0x13 <.text+0x13>
+c0011c3a: 84 30 08 0c  	addiu	$4, $4, 0xc08 <.text+0xc08>
+c0011c3e: e2 44        	or16	$4, $2
+c0011c40: c0 ea        	sw16	$5, 0x0($4)
+c0011c42: 9c fc 08 e9  	lw	$4, -0x16f8($gp)
+c0011c46: b5 fc 30 00  	lw	$5, 0x30($21)
+c0011c4a: 84 00 00 98  	sll	$4, $4, 0x13 <.text+0x13>
+c0011c4e: 84 30 10 0c  	addiu	$4, $4, 0xc10 <.text+0xc10>
+c0011c52: e2 44        	or16	$4, $2
+c0011c54: c0 ea        	sw16	$5, 0x0($4)
+c0011c56: 9c fc 08 e9  	lw	$4, -0x16f8($gp)
+c0011c5a: b5 fc 20 00  	lw	$5, 0x20($21)
+c0011c5e: 84 00 00 98  	sll	$4, $4, 0x13 <.text+0x13>
+c0011c62: 84 30 18 0c  	addiu	$4, $4, 0xc18 <.text+0xc18>
+c0011c66: e2 44        	or16	$4, $2
+c0011c68: c0 ea        	sw16	$5, 0x0($4)
+c0011c6a: 9c fc 08 e9  	lw	$4, -0x16f8($gp)
+c0011c6e: b5 fc 24 00  	lw	$5, 0x24($21)
+c0011c72: 84 00 00 98  	sll	$4, $4, 0x13 <.text+0x13>
+c0011c76: 84 30 20 0c  	addiu	$4, $4, 0xc20 <.text+0xc20>
+c0011c7a: e2 44        	or16	$4, $2
+c0011c7c: c0 ea        	sw16	$5, 0x0($4)
+c0011c7e: 9c fc 08 e9  	lw	$4, -0x16f8($gp)
+c0011c82: b2 14 6c 00  	lbu	$5, 0x6c($18)
+c0011c86: 84 00 00 98  	sll	$4, $4, 0x13 <.text+0x13>
+c0011c8a: 84 30 98 40  	addiu	$4, $4, 0x4098 <.text+0x4098>
+c0011c8e: e2 44        	or16	$4, $2
+c0011c90: c0 8a        	sb16	$5, 0x0($4)
+c0011c92: dc fc 08 e9  	lw	$6, -0x16f8($gp)
+c0011c96: 92 20 40 10  	lwp	$4, 0x40($18)
+c0011c9a: c6 00 00 98  	sll	$6, $6, 0x13 <.text+0x13>
+c0011c9e: e6 30 a0 17  	addiu	$7, $6, 0x17a0 <.text+0x17a0>
+c0011ca2: fa 44        	or16	$7, $2
+c0011ca4: 70 ea        	sw16	$4, 0x0($7)
+c0011ca6: f1 ea        	sw16	$5, 0x4($7)
+c0011ca8: 94 20 08 11  	lwp	$4, 0x108($20)
+c0011cac: a4 00 90 3a  	or	$7, $4, $5
+c0011cb0: 07 b4 94 01  	bnez	$7, 0xc0011fdc <.text+0x11fdc>
+c0011cb4: e6 30 b0 0c  	addiu	$7, $6, 0xcb0 <.text+0xcb0>
+c0011cb8: 96 70 01 00  	xori	$4, $22, 0x1 <.text+0x1>
+c0011cbc: c6 30 e0 0c  	addiu	$6, $6, 0xce0 <.text+0xce0>
+c0011cc0: 04 b4 a1 02  	bnez	$4, 0xc0012206 <.text+0x12206>
+c0011cc4: 94 f8 d8 00  	sw	$4, 0xd8($20)
+c0011cc8: f2 44        	or16	$6, $2
+c0011cca: 01 ee        	li16	$4, 0x1 <.text+0x1>
+c0011ccc: 60 ea        	sw16	$4, 0x0($6)
+c0011cce: 9c fc 08 e9  	lw	$4, -0x16f8($gp)
+c0011cd2: 84 00 00 98  	sll	$4, $4, 0x13 <.text+0x13>
+c0011cd6: 84 30 20 0d  	addiu	$4, $4, 0xd20 <.text+0xd20>
+c0011cda: d4 44        	or16	$2, $4
+c0011cdc: 20 e8        	sw16	$zero, 0x0($2)
+c0011cde: 5c fc 08 e9  	lw	$2, -0x16f8($gp)
+c0011ce2: a4 41 80 cf  	lui	$4, 0xcf80 <.text+0xcf80>
+c0011ce6: 00 85        	movep	$6, $7, $zero, $zero
+c0011ce8: 42 00 00 98  	sll	$2, $2, 0x13 <.text+0x13>
+c0011cec: a2 30 b0 0c  	addiu	$5, $2, 0xcb0 <.text+0xcb0>
+c0011cf0: ec 44        	or16	$5, $4
+c0011cf2: 42 30 b8 0c  	addiu	$2, $2, 0xcb8 <.text+0xcb8>
+c0011cf6: 50 eb        	sw16	$6, 0x0($5)
+c0011cf8: d4 44        	or16	$2, $4
+c0011cfa: d1 eb        	sw16	$7, 0x4($5)
+c0011cfc: 81 ee        	li16	$5, 0x1 <.text+0x1>
+c0011cfe: a0 ea        	sw16	$5, 0x0($2)
+c0011d00: 5c fc 08 e9  	lw	$2, -0x16f8($gp)
+c0011d04: b4 fc d8 00  	lw	$5, 0xd8($20)
+c0011d08: 42 00 00 98  	sll	$2, $2, 0x13 <.text+0x13>
+c0011d0c: 42 30 20 0d  	addiu	$2, $2, 0xd20 <.text+0xd20>
+c0011d10: e2 44        	or16	$4, $2
+c0011d12: c0 ea        	sw16	$5, 0x0($4)
+c0011d14: 14 f8 d0 00  	sw	$zero, 0xd0($20)
+c0011d18: 14 f8 d4 00  	sw	$zero, 0xd4($20)
+c0011d1c: 5c fc e4 e1  	lw	$2, -0x1e1c($gp)
+c0011d20: 20 2d        	andi16	$2, $2, 0x80 <.text+0x80>
+c0011d22: 02 b4 4f 01  	bnez	$2, 0xc0011fc4 <.text+0x11fc4>
+c0011d26: a4 41 03 70  	lui	$4, 0x7003 <.text+0x7003>
+c0011d2a: bc fc 08 e9  	lw	$5, -0x16f8($gp)
+c0011d2e: a4 41 80 cf  	lui	$4, 0xcf80 <.text+0xcf80>
+c0011d32: 45 00 00 98  	sll	$2, $5, 0x13 <.text+0x13>
+c0011d36: 42 30 a8 40  	addiu	$2, $2, 0x40a8 <.text+0x40a8>
+c0011d3a: d4 44        	or16	$2, $4
+c0011d3c: d1 2e        	andi16	$5, $5, 0x1 <.text+0x1>
+c0011d3e: a0 ea        	sw16	$5, 0x0($2)
+c0011d40: bc fc 08 e9  	lw	$5, -0x16f8($gp)
+c0011d44: 45 00 00 98  	sll	$2, $5, 0x13 <.text+0x13>
+c0011d48: 42 30 a8 40  	addiu	$2, $2, 0x40a8 <.text+0x40a8>
+c0011d4c: d4 44        	or16	$2, $4
+c0011d4e: d1 2e        	andi16	$5, $5, 0x1 <.text+0x1>
+c0011d50: a0 ea        	sw16	$5, 0x0($2)
+c0011d52: 16 94 1b 00  	beqz	$22, 0xc0011d8c <.text+0x11d8c>
+c0011d56: 5c fc 08 e9  	lw	$2, -0x16f8($gp)
+c0011d5a: 42 00 00 98  	sll	$2, $2, 0x13 <.text+0x13>
+c0011d5e: 42 30 68 0c  	addiu	$2, $2, 0xc68 <.text+0xc68>
+c0011d62: e2 44        	or16	$4, $2
+c0011d64: 01 ed        	li16	$2, 0x1 <.text+0x1>
+c0011d66: 40 e9        	sw16	$2, 0x0($4)
+c0011d68: 54 fc a8 00  	lw	$2, 0xa8($20)
+c0011d6c: 26 2e        	andi16	$4, $2, 0x8 <.text+0x8>
+c0011d6e: a4 40 32 02  	bnezc	$4, 0xc00121d6 <.text+0x121d6>
+c0011d72: 9c fc 08 e9  	lw	$4, -0x16f8($gp)
+c0011d76: a0 0c        	move	$5, $zero
+c0011d78: 01 ef        	li16	$6, 0x1 <.text+0x1>
+c0011d7a: 84 00 00 98  	sll	$4, $4, 0x13 <.text+0x13>
+c0011d7e: 00 f4 72 47  	jal	0x8ee4 <.text+0x8ee4>
+c0011d82: 84 30 68 0c  	addiu	$4, $4, 0xc68 <.text+0xc68>
+c0011d86: 02 94 7c fe  	beqz	$2, 0xc0011a82 <.text+0x11a82>
+c0011d8a: 40 0c        	move	$2, $zero
+c0011d8c: 17 b4 ee 01  	bnez	$23, 0xc001216c <.text+0x1216c>
+c0011d90: 5c fc 08 e9  	lw	$2, -0x16f8($gp)
+c0011d94: 92 20 38 10  	lwp	$4, 0x38($18)
+c0011d98: a6 41 80 cf  	lui	$6, 0xcf80 <.text+0xcf80>
+c0011d9c: fc fc e4 e1  	lw	$7, -0x1e1c($gp)
+c0011da0: 42 00 00 98  	sll	$2, $2, 0x13 <.text+0x13>
+c0011da4: 02 31 08 04  	addiu	$8, $2, 0x408 <.text+0x408>
+c0011da8: c8 00 90 42  	or	$8, $8, $6
+c0011dac: 88 f8 00 00  	sw	$4, 0x0($8)
+c0011db0: a8 f8 04 00  	sw	$5, 0x4($8)
+c0011db4: 42 30 18 04  	addiu	$2, $2, 0x418 <.text+0x418>
+c0011db8: d6 44        	or16	$2, $6
+c0011dba: 93 fc 08 00  	lw	$4, 0x8($19)
+c0011dbe: b3 fc 0c 00  	lw	$5, 0xc($19)
+c0011dc2: 20 ea        	sw16	$4, 0x0($2)
+c0011dc4: a1 ea        	sw16	$5, 0x4($2)
+c0011dc6: fc 2f        	andi16	$7, $7, 0x40 <.text+0x40>
+c0011dc8: 07 b4 c8 01  	bnez	$7, 0xc001215c <.text+0x1215c>
+c0011dcc: 01 ef        	li16	$6, 0x1 <.text+0x1>
+c0011dce: 5c fc e0 e1  	lw	$2, -0x1e20($gp)
+c0011dd2: 26 2d        	andi16	$2, $2, 0x8 <.text+0x8>
+c0011dd4: 02 b4 bb 01  	bnez	$2, 0xc001214e <.text+0x1214e>
+c0011dd8: c0 0c        	move	$6, $zero
+c0011dda: 52 fc 78 00  	lw	$2, 0x78($18)
+c0011dde: 22 2d        	andi16	$2, $2, 0x2 <.text+0x2>
+c0011de0: 02 94 74 00  	beqz	$2, 0xc0011ecc <.text+0x11ecc>
+c0011de4: 94 fc a8 00  	lw	$4, 0xa8($20)
+c0011de8: 84 50 04 00  	ori	$4, $4, 0x4 <.text+0x4>
+c0011dec: 94 f8 a8 00  	sw	$4, 0xa8($20)
+c0011df0: 9c fc e4 e1  	lw	$4, -0x1e1c($gp)
+c0011df4: 42 2e        	andi16	$4, $4, 0x2 <.text+0x2>
+c0011df6: 04 b4 8c 01  	bnez	$4, 0xc0012112 <.text+0x12112>
+c0011dfa: 6c 48        	lw	$3, 0x30($sp)
+c0011dfc: bc fc 08 e9  	lw	$5, -0x16f8($gp)
+c0011e00: 5c fc e8 e1  	lw	$2, -0x1e18($gp)
+c0011e04: 01 ee        	li16	$4, 0x1 <.text+0x1>
+c0011e06: 85 00 10 20  	sllv	$4, $4, $5
+c0011e0a: c2 d0 00 01  	andi	$6, $2, 0x100 <.text+0x100>
+c0011e0e: 06 b4 60 01  	bnez	$6, 0xc00120d2 <.text+0x120d2>
+c0011e12: 91 f8 70 00  	sw	$4, 0x70($17)
+c0011e16: 42 00 ac 04  	ext	$2, $2, 0x12, 0x1 <.text+0x1>
+c0011e1a: 02 b4 2e 01  	bnez	$2, 0xc001207a <.text+0x1207a>
+c0011e1e: 5c fc 28 ea  	lw	$2, -0x15d8($gp)
+c0011e22: 5c fc 08 e9  	lw	$2, -0x16f8($gp)
+c0011e26: a4 41 80 cf  	lui	$4, 0xcf80 <.text+0xcf80>
+c0011e2a: 81 ed        	li16	$3, 0x1 <.text+0x1>
+c0011e2c: 42 00 00 98  	sll	$2, $2, 0x13 <.text+0x13>
+c0011e30: 42 30 00 04  	addiu	$2, $2, 0x400 <.text+0x400>
+c0011e34: d4 44        	or16	$2, $4
+c0011e36: a0 e9        	sw16	$3, 0x0($2)
+c0011e38: 44 fc 60 01  	lw	$2, 0x160($4)
+c0011e3c: 64 fc 64 01  	lw	$3, 0x164($4)
+c0011e40: 62 00 10 2b  	xor	$5, $2, $3
+c0011e44: 45 40 06 00  	bgez	$5, 0xc0011e54 <.text+0x11e54>
+c0011e48: bf 2d        	andi16	$3, $3, 0xffff <.text+0xffff>
+c0011e4a: 44 fc 60 01  	lw	$2, 0x160($4)
+c0011e4e: 64 fc 64 01  	lw	$3, 0x164($4)
+c0011e52: bf 2d        	andi16	$3, $3, 0xffff <.text+0xffff>
+c0011e54: 51 20 40 90  	swp	$2, 0x40($17)
+c0011e58: 01 ee        	li16	$4, 0x1 <.text+0x1>
+c0011e5a: a3 41 80 cf  	lui	$3, 0xcf80 <.text+0xcf80>
+c0011e5e: 91 18 38 00  	sb	$4, 0x38($17)
+c0011e62: 40 0c        	move	$2, $zero
+c0011e64: 9c 18 b8 ea  	sb	$4, -0x1548($gp)
+c0011e68: 03 f8 00 0b  	sw	$zero, 0xb00($3)
+c0011e6c: 3d 23 40 50  	lwm32	$16, $17, $18, $19, $20, $21, $22, $23, $fp, $ra, 0x40($sp) <.text+0x40>
+c0011e70: 1a 47        	jraddiusp	0x68 <.text+0x68>
+c0011e72: 9f 45        	jr16	$ra
+c0011e74: 01 ed        	li16	$2, 0x1 <.text+0x1>
+c0011e76: 00 94 ba fd  	b	0xc00119ee <.text+0x119ee>
+c0011e7a: 00 0e        	move	$16, $zero
+c0011e7c: 5c fc e4 e1  	lw	$2, -0x1e1c($gp)

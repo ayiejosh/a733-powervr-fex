@@ -1,0 +1,46 @@
+From 0ba967e490fb276d6790847e0388104fe7f1644c Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sat, 24 Oct 2026 08:20:24 +0800
+Subject: [PATCH 211/269] gallium/pvr: emit a region clip covering the whole
+ target
+
+Tested the first of the two remaining hypotheses for the unchanged target: a draw with no clip region
+covers no tiles, so the fragment stage never runs. The control stream now carries a full-target clip
+
+  8000001f 0000001f   region clip, 32x32 tiles covering the 512x512 target
+
+and the submission is still accepted - but the target is STILL unchanged, so the clip was not the
+missing piece. That eliminates hypothesis 2 and leaves hypothesis 1: the vertex buffer address probably
+does not belong where it was put.
+
+The clip stays: it is required for a correct draw whether or not it was the blocker, and leaving a
+draw with no clip region would be a latent bug the moment the real cause is fixed.
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index c210a64f..7e053770 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -801,6 +801,17 @@ real_job_done:
+ 
+                      if (g_vertex_prog_addr != 0)
+                         pvr_csb_emit_pds_state_update(&ctl_csb, g_vertex_prog_addr, 0, 0, false);
++                     /* A clip region covering the whole target. Without one the draw covers no
++                      * tiles, the fragment stage is never reached, and nothing can be written - which
++                      * is what "target unchanged" would mean at this point. 16 is the alignment for
++                      * this device's 16x16 tiles. */
++                     {
++                        struct pvr_region_clip clip;
++                        pvr_region_clip_from_rect(0, 0, RTW, RTH, 16, &clip);
++                        if (!pvr_csb_emit_ta_region_clip(&ctl_csb, &clip))
++                           printf("hwrt:          could not emit the region clip\n");
++                     }
++
+                      if (!pvr_csb_emit_pds_state_update(&ctl_csb, laddr, 0, 0, false) ||
+                          !pvr_csb_emit_pds_state_update(&ctl_csb, faddr, 0, 0, true) ||
+                          !pvr_csb_emit_vdm_state(&ctl_csb, false, 0, g_vertex_data_addr != 0, g_vertex_data_addr, &vdm_words) ||
+-- 
+2.47.3
+

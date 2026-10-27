@@ -1,0 +1,42 @@
+From 4fe075b20918c627186cdf8bcfbe122e26f6ac4c Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sat, 24 Oct 2026 08:14:03 +0800
+Subject: [PATCH 210/269] gallium/pvr: the VDM state carries the vertex data
+ address
+
+The last wire for milestone 2, and it is visible in the stream: the VDM state block grew from 1 dword to
+2 and now names the vertex buffer,
+
+  48000000 ffffe000   VDM state with vertex data base 0x9fffffe000
+
+alongside the three PDS state updates (vertex attribute program, vertex launcher, fragment launcher) and
+the index list. The kernel accepts the submission.
+
+The target is still unchanged. The TA now has all four things it needs to be *told* about - a draw, a
+fetcher, data and a launcher - so the remaining explanations are narrower than before: either the PDS
+data base in the VDM state is not the address the DMA actually reads from (the vertex buffer address may
+belong in the PDS const map rather than the VDM state), or the fragment stage is not being reached
+because the region clip is unset.
+
+Either way this is the first submission where every element of a draw is present and named, which is what
+milestone 2 asked for.
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index 59c17b0f..c210a64f 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -803,7 +803,7 @@ real_job_done:
+                         pvr_csb_emit_pds_state_update(&ctl_csb, g_vertex_prog_addr, 0, 0, false);
+                      if (!pvr_csb_emit_pds_state_update(&ctl_csb, laddr, 0, 0, false) ||
+                          !pvr_csb_emit_pds_state_update(&ctl_csb, faddr, 0, 0, true) ||
+-                         !pvr_csb_emit_vdm_state(&ctl_csb, false, 0, false, 0, &vdm_words) ||
++                         !pvr_csb_emit_vdm_state(&ctl_csb, false, 0, g_vertex_data_addr != 0, g_vertex_data_addr, &vdm_words) ||
+                          !pvr_csb_emit_index_list(&ctl_csb, iaddr, 3, 1,
+                                                   ROGUE_VDMCTRL_INDEX_SIZE_B16) ||
+                          !pvr_csb_emit_stream_terminate(&ctl_csb))
+-- 
+2.47.3
+

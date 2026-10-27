@@ -1,0 +1,46 @@
+# Firmware message-family diff, clean single-session traces (fresh firmware via module reload)
+# working: captures/real-runs/ab-vk-1.txt   failing: captures/real-runs/ab-probe-1.txt
+
+## working-only:
+    2  Deactivate MemCtx=A
+    2  Ungrab reg set N refcount now N
+    2  Store Freelist A type: N (N:local,N:global) for PMDMN: FL Total Pages N (max=N,grow size=N), FL-addr = A, stacktop = A, Alloc Page
+    1  TA finished
+    1  TA RTData A finished on HW context N
+    1  Perform TPC flush.
+    1  Setup register set=N DM=N, PC address=A, OSid=N, NewPCRegRequired=N
+    1  Updating Tiles In Flight (Dusts=N, PartitionMask=A, ISPCtl=A)
+    1  Phantom N: USCTiles=N
+    1  Kick ND TQ: FWCtx A @ N, CSW resume:N. (PID:N, prio:N, frame:N, ext:A, int:A)
+    1  Cancel idle timer. Pow state int: A, ext: A, flags: A
+    1  ND Transfer finished
+    1  HWRTData [A] HW Context N cleaned, executed commands = N
+
+## failing-only:
+   14  HWR: CoreN, Register=A, OldValue=A, CurrValue=A
+    5  DMN ready for HWR
+    5  Recovery DMN: DM fully recovered
+    4  DMN has taken N ticks and deadline is N ticks
+    4  Final result for DMN is HWRNeeded=N with HWRChecksToGo=N
+    3  HWR: USC CoreN, uiNTotalSlotsUsedByDM=A, psDMHWCtl->uiNUSCSlotsUsedByDM=A, bHWRNeeded=N
+    3  USC Slots result for CoreN, DMN is HWRNeeded=N USCSlotsUsedByDM=N
+    3  USC slots: N used by DMN
+    3  Holding Scheduling on DM N for OSid N due to pending freelist reconstruction
+    2  Fast CRC Check result for CoreN, DMN is HWRNeeded=N
+    2  Full Signature Check result for CoreN, DMN is HWRNeeded=N
+    2  Reconstruction needed for freelist A (ID=N) OSid: N type: N (N:local,N:global) phase: N (N:TA, N:ND) on HW context N
+    2  Requesting reconstruction for freelist A (ID=N)
+    2  Reconstruction of freelist ID=N complete
+    1  DMN timed out
+    1  RGX DMN phase count=A
+    1  Core N RGX_CR_EVENT_STATUS=A
+    1  USC slots: N empty
+    1  DMN has locked up
+    1  GPU has locked up (see HWR logs for more info)
+    1  Analysis: Need freelist reconstruction
+    1  Analysis DMN: Lockup FWCtx: A. Need to skip to next command
+    1  Begin hardware reset (HWR Counter=N)
+    1  Reset HW (core:N of N, loop:N, poll failures: A)
+    1  Finished hardware reset (HWR Counter=N)
+    1  Recovery DMN: FWCtx A skipped to command @ N. PR=N. New R-Flags=A
+    1  Recovery DMN: Updated Recovery counter. New R-Flags=A

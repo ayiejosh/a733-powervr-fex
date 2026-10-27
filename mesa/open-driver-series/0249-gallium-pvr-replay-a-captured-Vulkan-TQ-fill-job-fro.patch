@@ -1,0 +1,267 @@
+From c78195f80226f518c9f032d78aed575813fb3d00 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sun, 25 Oct 2026 19:53:41 +0800
+Subject: [PATCH 249/269] gallium/pvr: replay a captured Vulkan TQ fill job
+ from the native probe
+
+Add pvr_job_submit_transfer_sync() and a PVR_PROBE_TQ_STREAM-gated tq_fill_check() that
+replays a captured working Vulkan TQ_3D fill job from the native driver: a destination
+buffer is mapped at the same device address the reference used, the pixel-event PDS
+program and TQ fill USC kernel are installed at the offsets the captured stream names,
+and the 176-byte captured stream is submitted verbatim on a native transfer context.
+
+Result on the board: the firmware accepts the kick ("Kick 3D TQ" -> "3D Transfer
+finished") and a CPU readback shows the GPU wrote the whole target with the expected
+pattern (changed=4096/4096, mismatched=0, first=0xdeadbeef); pvr-probe --- ALL PASS.
+The kernel-side completion sync does not signal yet (separate issue); the readback
+verifies the GPU write itself.
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c | 150 ++++++++++++++++++++-
+ src/gallium/drivers/pvr_native/pvr_vm.c    |  41 ++++++
+ src/gallium/drivers/pvr_native/pvr_vm.h    |   3 +
+ 3 files changed, 193 insertions(+), 1 deletion(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index 15b3eca4..a4410d75 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -4116,6 +4116,150 @@ out:
+ }
+ 
+ 
++/* TQ fill replay (round 82): replay the captured working Vulkan TQ fill job from the native driver.
++ * Destination buffer is mapped at the same device address the reference used, the two PDS programs the
++ * job names are installed at the same PDS heap offsets, and the 176-byte captured stream is submitted
++ * verbatim on a native transfer context. A CPU readback then checks the buffer for the fill pattern. */
++#define TQ_FILL_DST_ADDR 0x80000b1000ULL
++#define TQ_FILL_DST_SIZE (64u * 64u * 4u)
++#define TQ_FILL_PATTERN 0xdeadbeefu
++
++static bool
++tq_fill_check(int fd, struct pipe_screen *pscreen)
++{
++   struct pvr_screen *scr = pvr_screen(pscreen);
++   struct pvr_vm *vm = &scr->vm;
++   const struct pvr_heap *pds = &vm->heaps[DRM_PVR_HEAP_PDS_CODE_DATA];
++   /* The captured fill's pixel-event PDS program (data at PDS+0x2600, code at PDS+0x2620). */
++   static const uint32_t ev_data[8] = { 0x00005c00, 0x00000000, 0x0002c400, 0x00081a20,
++                                        0x90000002, 0x00000000, 0x00000000, 0x00000000 };
++   static const uint32_t ev_code[4] = { 0xf0040101, 0xf4000002 };
++   const char *path = getenv("PVR_PROBE_TQ_STREAM");
++   struct drm_pvr_ioctl_create_context_args cargs = {
++      .type = DRM_PVR_CTX_TYPE_TRANSFER_FRAG,
++      .vm_context_handle = vm->context_handle,
++   };
++   struct pvr_bo dstbo = { 0 }, pdsbo = { 0 }, uscbo = { 0 };
++   uint8_t *stream = NULL;
++   uint32_t stream_len = 0;
++   int tfd = -1;
++   bool ok = false, completed;
++
++   if (!path) {
++      printf("tq:            FAIL: PVR_PROBE_TQ_STREAM not set\n");
++      return false;
++   }
++
++   tfd = open(path, O_RDONLY);
++   if (tfd < 0) {
++      printf("tq:            FAIL: cannot open %s\n", path);
++      return false;
++   }
++   if (read(tfd, &stream_len, sizeof(stream_len)) != sizeof(stream_len) ||
++       stream_len == 0 || stream_len > 4096) {
++      printf("tq:            FAIL: bad stream header\n");
++      close(tfd);
++      return false;
++   }
++   stream = malloc(stream_len);
++   if (!stream || read(tfd, stream, stream_len) != (ssize_t)stream_len) {
++      printf("tq:            FAIL: cannot read stream %s\n", path);
++      close(tfd);
++      free(stream);
++      return false;
++   }
++   close(tfd);
++
++   if (drmIoctl(fd, DRM_IOCTL_PVR_CREATE_CONTEXT, &cargs) != 0) {
++      printf("tq:            FAIL: transfer context: %s\n", strerror(errno));
++      goto out;
++   }
++
++   /* Destination buffer at exactly the address the reference used. */
++   if (!pvr_bo_create(fd, TQ_FILL_DST_SIZE, 4096, &dstbo) ||
++       !pvr_vm_map(vm, TQ_FILL_DST_ADDR, dstbo.handle, dstbo.size) ||
++       !pvr_bo_map(fd, &dstbo)) {
++      printf("tq:            FAIL: cannot map destination at 0x%llx\n",
++             (unsigned long long)TQ_FILL_DST_ADDR);
++      goto out_ctx;
++   }
++   memset(dstbo.map, 0, TQ_FILL_DST_SIZE);
++
++   /* PDS programs at the offsets named by the captured stream. */
++   if (!pvr_bo_create(fd, 0x2000, 4096, &pdsbo) ||
++       !pvr_vm_map(vm, pds->base + 0x2000, pdsbo.handle, pdsbo.size) ||
++       !pvr_bo_map(fd, &pdsbo)) {
++      printf("tq:            FAIL: cannot map PDS program page\n");
++      goto out_bo;
++   }
++   memcpy((uint8_t *)pdsbo.map + 0x600, ev_data, sizeof(ev_data));
++   memcpy((uint8_t *)pdsbo.map + 0x620, ev_code, sizeof(ev_code));
++
++   /* The pixel-event program kicks the TQ fill kernel in the USC heap at offset 0x5c00
++    * (captured from the working reference run: 16 bytes). */
++   {
++      static const uint32_t usc_fill[4] = { 0xc280a048, 0x01804080, 0xff000088, 0xfffffff2 };
++      const struct pvr_heap *usc = &vm->heaps[DRM_PVR_HEAP_USC_CODE];
++
++      if (!pvr_bo_create(fd, 0x2000, 4096, &uscbo) ||
++          !pvr_vm_map(vm, usc->base + 0x5000, uscbo.handle, uscbo.size) ||
++          !pvr_bo_map(fd, &uscbo)) {
++         printf("tq:            FAIL: cannot map USC program page\n");
++         goto out_bo;
++      }
++      memcpy((uint8_t *)uscbo.map + 0xc00, usc_fill, sizeof(usc_fill));
++      printf("tq:            USC fill kernel installed at USC+0x5c00 (%zu bytes)\n",
++             sizeof(usc_fill));
++   }
++
++   completed = pvr_job_submit_transfer_sync(vm, cargs.handle, stream, stream_len, 2000);
++   printf("tq:            fill replay %s (stream %u B, dst 0x%llx, PDS event data 0x2600 / code 0x2620)\n",
++          completed ? "COMPLETED (sync signalled)" : "sync did not signal in 2 s", stream_len,
++          (unsigned long long)TQ_FILL_DST_ADDR);
++
++   /* Whether or not the sync signals, the firmware trace shows the job completing; poll the CPU
++    * mapping for the fill pattern so the GPU write itself is verified independently. */
++   {
++      const uint32_t *px = dstbo.map;
++      uint32_t changed = 0, mismatched = 0;
++      unsigned waited_us = 0;
++
++      while (waited_us < 3000000) {
++         uint32_t bad = 0, nz = 0;
++
++         for (uint32_t i = 0; i < TQ_FILL_DST_SIZE / 4; i++) {
++            if (px[i] != 0)
++               nz++;
++            if (px[i] != TQ_FILL_PATTERN)
++               bad++;
++         }
++         changed = nz;
++         mismatched = bad;
++         if (nz == TQ_FILL_DST_SIZE / 4 && bad == 0)
++            break;
++         usleep(1000);
++         waited_us += 1000;
++      }
++      printf("tq:            readback changed=%u/%u mismatched=%u first=0x%08x (waited %u us)\n",
++             changed, TQ_FILL_DST_SIZE / 4, mismatched, px[0], waited_us);
++      ok = changed == TQ_FILL_DST_SIZE / 4 && mismatched == 0;
++   }
++   printf("tq:            %s (native TQ fill job writes the target)\n", ok ? "PASS" : "FAIL");
++   {
++      struct drm_pvr_ioctl_destroy_context_args dargs = { .handle = cargs.handle };
++
++      drmIoctl(fd, DRM_IOCTL_PVR_DESTROY_CONTEXT, &dargs);
++   }
++   pvr_bo_destroy(fd, &uscbo);
++   pvr_bo_destroy(fd, &pdsbo);
++out_bo:
++   pvr_bo_destroy(fd, &dstbo);
++out_ctx:
++out:
++   free(stream);
++   return ok;
++}
++
+ int
+ main(int argc, char **argv)
+ {
+@@ -4138,6 +4282,10 @@ main(int argc, char **argv)
+    printf("vendor:        %s\n", screen->get_vendor(screen));
+    printf("device vendor: %s\n", screen->get_device_vendor(screen));
+ 
++   /* Run the TQ fill replay first, before any job that can hang the TA (a failed draw triggers a
++    * firmware HWR, after which every later command in the process is discarded). */
++   const bool tq_pass = getenv("PVR_PROBE_TQ_STREAM") ? tq_fill_check(fd, screen) : true;
++
+    const bool enum_pass = strstr(screen->get_name(screen), expect) != NULL;
+    printf("enumeration:   %s (expected substring %s)\n",
+           enum_pass ? "PASS" : "FAIL", expect);
+@@ -4158,7 +4306,7 @@ main(int argc, char **argv)
+ 
+    const bool all = enum_pass && bo_pass && vm_pass && res_pass && ctx_pass &&
+                     shader_pass && state_pass && fb_pass && pipe_pass && csb_pass &&
+-                    clear_pass;
++                    clear_pass && tq_pass;
+    printf("--- %s\n", all ? "ALL PASS" : "FAILURES ABOVE");
+    return all ? 0 : 1;
+ }
+diff --git a/src/gallium/drivers/pvr_native/pvr_vm.c b/src/gallium/drivers/pvr_native/pvr_vm.c
+index 625c29fc..f5677b76 100644
+--- a/src/gallium/drivers/pvr_native/pvr_vm.c
++++ b/src/gallium/drivers/pvr_native/pvr_vm.c
+@@ -521,6 +521,47 @@ pvr_job_submit_frag_sync(struct pvr_vm *vm, uint32_t context_handle,
+    return completed;
+ }
+ 
++bool
++pvr_job_submit_transfer_sync(struct pvr_vm *vm, uint32_t context_handle,
++                             const void *stream, uint32_t stream_len, uint32_t timeout_ms)
++{
++   uint32_t done_sync = 0;
++   struct drm_pvr_sync_op ops[1];
++   struct drm_pvr_job job;
++   struct drm_pvr_ioctl_submit_jobs_args args = {
++      .jobs = { .stride = sizeof(job), .count = 1, .array = (__u64)(uintptr_t)&job },
++   };
++   bool completed;
++
++   if (drmSyncobjCreate(vm->fd, 0, &done_sync) != 0)
++      return false;
++
++   ops[0] = (struct drm_pvr_sync_op){
++      .handle = done_sync,
++      .flags = DRM_PVR_SYNC_OP_FLAG_SIGNAL | DRM_PVR_SYNC_OP_FLAG_HANDLE_TYPE_SYNCOBJ,
++   };
++   job = (struct drm_pvr_job){
++      .type = DRM_PVR_JOB_TYPE_TRANSFER_FRAG,
++      .context_handle = context_handle,
++      .cmd_stream = (uint64_t)(uintptr_t)stream,
++      .cmd_stream_len = stream_len,
++      .sync_ops = { .stride = sizeof(ops[0]), .count = 1, .array = (__u64)(uintptr_t)ops },
++   };
++
++   if (drmIoctl(vm->fd, DRM_IOCTL_PVR_SUBMIT_JOBS, &args) != 0) {
++      mesa_loge("pvr: SUBMIT_JOBS transfer (%u B) failed: %s", stream_len, strerror(errno));
++      drmSyncobjDestroy(vm->fd, done_sync);
++      return false;
++   }
++
++   completed = drmSyncobjWait(vm->fd, &done_sync, 1, (int64_t)timeout_ms * 1000000LL, 0, NULL) == 0;
++   if (!completed)
++      mesa_loge("pvr: transfer job did not signal completion within %u ms", timeout_ms);
++
++   drmSyncobjDestroy(vm->fd, done_sync);
++   return completed;
++}
++
+ bool
+ pvr_job_submit_render(struct pvr_vm *vm, uint32_t context_handle,
+                       const void *geom_stream, uint32_t geom_len,
+diff --git a/src/gallium/drivers/pvr_native/pvr_vm.h b/src/gallium/drivers/pvr_native/pvr_vm.h
+index 3e8e60dd..6554e9c6 100644
+--- a/src/gallium/drivers/pvr_native/pvr_vm.h
++++ b/src/gallium/drivers/pvr_native/pvr_vm.h
+@@ -153,6 +153,9 @@ bool pvr_job_submit_geom_sync(struct pvr_vm *vm, uint32_t context_handle,
+ 
+ /* Submit one fragment job and wait for its completion syncobj. Used to tell whether a context can
+  * dispatch jobs at all when no geometry kick is involved. */
++bool pvr_job_submit_transfer_sync(struct pvr_vm *vm, uint32_t context_handle,
++                                  const void *stream, uint32_t stream_len, uint32_t timeout_ms);
++
+ bool pvr_job_submit_frag_sync(struct pvr_vm *vm, uint32_t context_handle,
+                               const void *frag_stream, uint32_t frag_len,
+                               uint32_t hwrt_set_handle, uint32_t hwrt_data_index,
+-- 
+2.47.3
+

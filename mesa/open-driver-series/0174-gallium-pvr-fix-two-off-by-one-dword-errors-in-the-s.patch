@@ -1,0 +1,52 @@
+From 239aade2fb15bb111e0d2fce4cbf81ff997850da Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sun, 18 Oct 2026 10:08:35 +0800
+Subject: [PATCH 174/269] gallium/pvr: fix two off-by-one-dword errors in the
+ static stream placement
+
+The builder now agrees with itself: 368 bytes returned, 368 summed by its own macros, EOT at byte 364.
+
+Round 78's apparent "one inconsistent expression" was two independent errors with one shared cause: the
+offset helper returns WHERE the EOT packet is packed, not the end of the stream.
+  1. total_dwords omitted the EOT packet's own length, so the builder returned one dword less than its
+     macros summed to;
+  2. the EOT offset then subtracted that length from a tail that never contained it, placing the packet
+     one slot early - caught by the check reading addr 0x0 at byte 364 instead of 0x20.
+
+Both found by reading the function once, which round 78 identified as the next step.
+
+Remaining gap to the captured working stream: 368 vs 384 = 16 bytes = 4 dwords, all before the EOT.
+---
+ src/gallium/drivers/pvr/pvr_csb.c | 13 ++++++++++---
+ 1 file changed, 10 insertions(+), 3 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr/pvr_csb.c b/src/gallium/drivers/pvr/pvr_csb.c
+index 10716acc..9a31b97d 100644
+--- a/src/gallium/drivers/pvr/pvr_csb.c
++++ b/src/gallium/drivers/pvr/pvr_csb.c
+@@ -419,12 +419,19 @@ pvr_frag_static_stream(void *stream, uint32_t stream_size, const uint64_t *pbe_w
+    const uint32_t pbe_dwords = PVR_MAX_COLOR_ATTACHMENTS * ROGUE_NUM_PBESTATE_REG_WORDS * 2;
+    const uint32_t filled_dwords = nr_attachments * ROGUE_NUM_PBESTATE_REG_WORDS * 2;
+    const uint32_t tail_dwords = PVR_FRAG_TAIL_DWORDS(cluster_grouping);
+-   const uint32_t total_dwords = PVR_FRAG_PRE_PBE_DWORDS + pbe_dwords + tail_dwords;
++   /* PVR_FRAG_TAIL_DWORDS stops at KMD_STREAM_VIEW_IDX - the offset helper returns the point where the
++    * EOT packet is PACKED, not the end of the stream - so the EOT packet's own length has to be added
++    * for the total. Omitting it made the builder return one dword less than its own macros summed to,
++    * which is what round 78 mistook for a two-number disagreement. */
++   const uint32_t total_dwords = PVR_FRAG_PRE_PBE_DWORDS + pbe_dwords + tail_dwords +
++                                 PVR_CMD_DW(CR_EVENT_PIXEL_PDS_DATA);
+    const uint32_t total_bytes = PVR_DW_TO_BYTES(total_dwords);
+    const uint32_t pbe_byte_off = PVR_DW_TO_BYTES(PVR_FRAG_PRE_PBE_DWORDS);
++   /* tail_dwords stops AT the EOT packet's slot (the offset helper returns where it is packed), so the
++    * packet goes immediately after the tail - subtracting the EOT length here, as the first version did,
++    * put it one packet early. */
+    const uint32_t eot_byte_off = pbe_byte_off + PVR_DW_TO_BYTES(pbe_dwords) +
+-                                 PVR_DW_TO_BYTES(tail_dwords -
+-                                                 PVR_CMD_DW(CR_EVENT_PIXEL_PDS_DATA));
++                                 PVR_DW_TO_BYTES(tail_dwords);
+    struct ROGUE_CR_EVENT_PIXEL_PDS_DATA eot = { .addr = eot_pds_offset };
+    uint32_t *dw = stream;
+ 
+-- 
+2.47.3
+

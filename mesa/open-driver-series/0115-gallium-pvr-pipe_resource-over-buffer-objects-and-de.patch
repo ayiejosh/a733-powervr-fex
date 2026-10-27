@@ -1,0 +1,416 @@
+From 946c6baede9485784d574c9c77b21b3332cc8445 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 07:48:03 +0800
+Subject: [PATCH 115/269] gallium/pvr: pipe_resource over buffer objects and
+ device addresses
+
+The driver can now hand out resources: allocate a buffer object, give it a device
+address, map it into the GPU's address space, and destroy it in the right order.
+
+The screen owns the GPU address space, created at screen creation. Failure to get
+it is deliberately NOT fatal to enumeration - it only means resources cannot be
+created, which is worth being able to see when probing a node this driver cannot
+actually drive.
+
+ponytail ceiling, stated in the header: v1 lays every resource out linearly and
+supports only what that honestly describes - buffers and non-mipmapped,
+non-arrayed 2D textures. The layout the GPU needs for texturing (tiling, and the
+stride and padding rules that go with it) is stage 3. Until then a resource is real
+memory the GPU can reach, not yet something a sampler can read. Mipmaps, arrays,
+multisampling and 3D are refused rather than accepted and laid out as if they were
+level 0 - the failure that matters is the quiet one.
+
+Verified on the real open kernel module, ALL PASS:
+
+  resource: 256x256 RGBA8 -> stride 1024, 262144 bytes, device address 0x9ffffc0000
+  resource: PASS (create, device address, GPU map, destroy; mipmaps refused)
+
+The check also confirms a mipmapped resource is refused. Incidental validation:
+creating a second VM context on the same fd (one from the screen, one from the VM
+check) works, so multiple contexts per file are fine.
+---
+ src/gallium/drivers/pvr/meson.build    |   1 +
+ src/gallium/drivers/pvr/pvr_probe.c    |  78 +++++++++++++++-
+ src/gallium/drivers/pvr/pvr_resource.c | 123 +++++++++++++++++++++++++
+ src/gallium/drivers/pvr/pvr_resource.h |  48 ++++++++++
+ src/gallium/drivers/pvr/pvr_screen.c   |  13 +++
+ src/gallium/drivers/pvr/pvr_screen.h   |   7 ++
+ 6 files changed, 269 insertions(+), 1 deletion(-)
+ create mode 100644 src/gallium/drivers/pvr/pvr_resource.c
+ create mode 100644 src/gallium/drivers/pvr/pvr_resource.h
+
+diff --git a/src/gallium/drivers/pvr/meson.build b/src/gallium/drivers/pvr/meson.build
+index e0f5ff7f..84d88dca 100644
+--- a/src/gallium/drivers/pvr/meson.build
++++ b/src/gallium/drivers/pvr/meson.build
+@@ -6,6 +6,7 @@
+ 
+ files_pvr = files(
+   'pvr_bo.c',
++  'pvr_resource.c',
+   'pvr_vm.c',
+   'pvr_screen.c',
+ )
+diff --git a/src/gallium/drivers/pvr/pvr_probe.c b/src/gallium/drivers/pvr/pvr_probe.c
+index a060f6cb..ca934222 100644
+--- a/src/gallium/drivers/pvr/pvr_probe.c
++++ b/src/gallium/drivers/pvr/pvr_probe.c
+@@ -21,9 +21,11 @@
+ #include <fcntl.h>
+ 
+ #include "pvr_bo.h"
++#include "pvr_resource.h"
+ #include "pvr_vm.h"
+ #include "pvr_public.h"
+ #include "pipe/p_screen.h"
++#include "util/format/u_formats.h"
+ 
+ /* Requests a deliberately unaligned size for one of the two so the round-up rule is
+  * exercised: the kernel rejects a size that is not a whole number of device pages
+@@ -174,6 +176,79 @@ out:
+    return ok;
+ }
+ 
++/* A real pipe_resource: allocated, given a device address, mapped into the GPU's
++ * address space, and destroyed. Also checks that the shapes this driver cannot lay
++ * out are refused rather than accepted and described wrongly. */
++static bool
++resource_roundtrip(struct pipe_screen *pscreen)
++{
++   struct pipe_resource templ = {
++      .target = PIPE_TEXTURE_2D,
++      .format = PIPE_FORMAT_R8G8B8A8_UNORM,
++      .width0 = 256,
++      .height0 = 256,
++      .depth0 = 1,
++      .array_size = 1,
++      .last_level = 0,
++      .nr_samples = 1,
++      .usage = PIPE_USAGE_DEFAULT,
++      .bind = PIPE_BIND_RENDER_TARGET | PIPE_BIND_SAMPLER_VIEW,
++   };
++   struct pipe_resource *tex, *buf = NULL, *mipmap;
++   struct pvr_resource *r;
++   bool ok = false;
++
++   tex = pscreen->resource_create(pscreen, &templ);
++   if (!tex) {
++      printf("resource:      FAIL: could not create a 256x256 R8G8B8A8 texture\n");
++      return false;
++   }
++
++   r = pvr_resource(tex);
++   printf("resource:      256x256 RGBA8 -> stride %u, %" PRIu64 " bytes, "
++          "device address 0x%" PRIx64 "\n", r->stride, r->dev_size, r->dev_addr);
++
++   if (r->stride != 256 * 4 || r->dev_addr == 0 || r->dev_size % 4096 != 0) {
++      printf("resource:      FAIL: stride/address/size wrong\n");
++      goto out;
++   }
++
++   templ.target = PIPE_BUFFER;
++   templ.format = PIPE_FORMAT_R8_UNORM;
++   templ.width0 = 4096;
++   templ.height0 = 1;
++   templ.bind = PIPE_BIND_VERTEX_BUFFER;
++   buf = pscreen->resource_create(pscreen, &templ);
++   if (!buf) {
++      printf("resource:      FAIL: could not create a buffer resource\n");
++      goto out;
++   }
++
++   /* Refusing is the honest answer for shapes the linear layout cannot describe; the
++    * failure that matters is accepting one and laying it out as if it were level 0. */
++   templ.target = PIPE_TEXTURE_2D;
++   templ.width0 = 256;
++   templ.height0 = 256;
++   templ.last_level = 4;
++   mipmap = pscreen->resource_create(pscreen, &templ);
++   if (mipmap != NULL) {
++      printf("resource:      FAIL: accepted a mipmapped resource it cannot lay out\n");
++      pscreen->resource_destroy(pscreen, mipmap);
++      goto out;
++   }
++
++   ok = true;
++
++out:
++   if (buf)
++      pscreen->resource_destroy(pscreen, buf);
++   pscreen->resource_destroy(pscreen, tex);
++
++   printf("resource:      %s (create, device address, GPU map, destroy; mipmaps refused)\n",
++          ok ? "PASS" : "FAIL");
++   return ok;
++}
++
+ int
+ main(int argc, char **argv)
+ {
+@@ -203,10 +278,11 @@ main(int argc, char **argv)
+    /* Before destroying the screen, which closes the fd. */
+    const bool bo_pass = bo_roundtrip(fd);
+    const bool vm_pass = vm_roundtrip(fd);
++   const bool res_pass = resource_roundtrip(screen);
+ 
+    screen->destroy(screen);
+ 
+-   const bool all = enum_pass && bo_pass && vm_pass;
++   const bool all = enum_pass && bo_pass && vm_pass && res_pass;
+    printf("--- %s\n", all ? "ALL PASS" : "FAILURES ABOVE");
+    return all ? 0 : 1;
+ }
+diff --git a/src/gallium/drivers/pvr/pvr_resource.c b/src/gallium/drivers/pvr/pvr_resource.c
+new file mode 100644
+index 00000000..033d70d7
+--- /dev/null
++++ b/src/gallium/drivers/pvr/pvr_resource.c
+@@ -0,0 +1,123 @@
++/* Copyright 2026 The Mesa authors
++ * SPDX-License-Identifier: MIT
++ */
++#include <inttypes.h>
++
++#include "pvr_resource.h"
++
++#include "pipe/p_screen.h"
++#include "util/format/u_formats.h"
++#include "util/log.h"
++#include "util/u_inlines.h"
++#include "util/u_memory.h"
++
++#include "pvr_screen.h"
++
++/* What the linear layout can honestly describe. Anything else is refused rather than
++ * accepted and laid out wrongly - a mipmapped or arrayed resource quietly treated as
++ * level 0 is the kind of thing that renders wrong long after it is created. */
++static bool
++pvr_resource_layout(const struct pipe_resource *templ, uint32_t *stride,
++                    uint64_t *size)
++{
++   switch (templ->target) {
++   case PIPE_BUFFER:
++      *stride = 0;
++      *size = templ->width0;
++      return true;
++
++   case PIPE_TEXTURE_2D:
++      *stride = util_format_get_stride(templ->format, templ->width0);
++      *size = (uint64_t)*stride * templ->height0;
++      return true;
++
++   default:
++      return false;
++   }
++}
++
++struct pipe_resource *
++pvr_resource_create(struct pipe_screen *pscreen, const struct pipe_resource *templ)
++{
++   struct pvr_screen *screen = pvr_screen(pscreen);
++   struct pvr_resource *res;
++   uint32_t stride = 0;
++   uint64_t size = 0;
++
++   if (templ->last_level != 0 || templ->array_size != 1 || templ->nr_samples > 1) {
++      mesa_logd("pvr: refusing a mipmapped/arrayed/multisampled resource");
++      return NULL;
++   }
++
++   if (templ->target == PIPE_TEXTURE_2D && templ->depth0 != 1) {
++      mesa_logd("pvr: refusing a 2D resource with depth");
++      return NULL;
++   }
++
++   if (!pvr_resource_layout(templ, &stride, &size)) {
++      mesa_logd("pvr: no layout for target %u", templ->target);
++      return NULL;
++   }
++
++   res = CALLOC_STRUCT(pvr_resource);
++   if (!res)
++      return NULL;
++
++   res->base = *templ;
++   res->base.screen = pscreen;
++   pipe_reference_init(&res->base.reference, 1);
++
++   res->stride = stride;
++
++   /* size 0 would be rejected by the kernel; an empty buffer is a real thing to ask
++    * for, so give it one page rather than failing. */
++   if (size == 0)
++      size = 4096;
++
++   if (!pvr_bo_create(screen->fd, size, 1, &res->bo))
++      goto fail;
++
++   if (screen->vm_valid) {
++      res->dev_size = res->bo.size;
++      res->dev_addr =
++         pvr_vm_alloc(&screen->vm, res->dev_size, screen->vm.general.page_size);
++
++      if (res->dev_addr == 0) {
++         mesa_loge("pvr: out of device address space for %" PRIu64 " bytes",
++                   res->dev_size);
++         goto fail_bo;
++      }
++
++      if (!pvr_vm_map(&screen->vm, res->dev_addr, res->bo.handle, res->dev_size))
++         goto fail_addr;
++   }
++
++   return &res->base;
++
++fail_addr:
++   pvr_vm_free(&screen->vm, res->dev_addr, res->dev_size);
++   res->dev_addr = 0;
++fail_bo:
++   pvr_bo_destroy(screen->fd, &res->bo);
++fail:
++   FREE(res);
++   return NULL;
++}
++
++void
++pvr_resource_destroy(struct pipe_screen *pscreen, struct pipe_resource *prsc)
++{
++   struct pvr_screen *screen = pvr_screen(pscreen);
++   struct pvr_resource *res = pvr_resource(prsc);
++
++   /* The GPU mapping goes first, then the address, then the object - the same order
++    * the Vulkan winsys tears down in. */
++   if (res->dev_addr != 0) {
++      pvr_vm_unmap(&screen->vm, res->dev_addr, res->dev_size);
++      pvr_vm_free(&screen->vm, res->dev_addr, res->dev_size);
++      res->dev_addr = 0;
++   }
++
++   pvr_bo_destroy(screen->fd, &res->bo);
++   FREE(res);
++}
+diff --git a/src/gallium/drivers/pvr/pvr_resource.h b/src/gallium/drivers/pvr/pvr_resource.h
+new file mode 100644
+index 00000000..247b892d
+--- /dev/null
++++ b/src/gallium/drivers/pvr/pvr_resource.h
+@@ -0,0 +1,48 @@
++/* Copyright 2026 The Mesa authors
++ * SPDX-License-Identifier: MIT
++ *
++ * pipe_resource backed by a buffer object with a device address.
++ *
++ * ponytail: v1 lays every resource out linearly and supports only what that can
++ * honestly describe - buffers and non-mipmapped, non-arrayed 2D textures. The layout
++ * the GPU actually needs for texturing (tiling, and the stride/padding rules that go
++ * with it) is stage 3 work; until then a resource is real memory the GPU can reach,
++ * not yet something a sampler can read. Mipmaps, arrays and 3D are refused rather
++ * than accepted and laid out wrongly.
++ */
++#ifndef PVR_RESOURCE_H
++#define PVR_RESOURCE_H
++
++#include "pipe/p_context.h"
++#include "pipe/p_screen.h"
++#include "pipe/p_state.h"
++
++#include "pvr_bo.h"
++
++struct pvr_resource {
++   struct pipe_resource base;
++
++   struct pvr_bo bo;
++
++   /* Where the GPU sees it. 0 while unmapped from the GPU address space. */
++   uint64_t dev_addr;
++
++   /* Bytes the device address covers, i.e. the page-aligned BO size. */
++   uint64_t dev_size;
++
++   /* Bytes between rows, for the linear layout. */
++   uint32_t stride;
++};
++
++struct pipe_resource *pvr_resource_create(struct pipe_screen *pscreen,
++                                          const struct pipe_resource *templ);
++
++void pvr_resource_destroy(struct pipe_screen *pscreen, struct pipe_resource *prsc);
++
++static inline struct pvr_resource *
++pvr_resource(struct pipe_resource *prsc)
++{
++   return (struct pvr_resource *)prsc;
++}
++
++#endif /* PVR_RESOURCE_H */
+diff --git a/src/gallium/drivers/pvr/pvr_screen.c b/src/gallium/drivers/pvr/pvr_screen.c
+index fd5f3042..22b6e1e3 100644
+--- a/src/gallium/drivers/pvr/pvr_screen.c
++++ b/src/gallium/drivers/pvr/pvr_screen.c
+@@ -32,6 +32,8 @@
+ /* pco: the PowerVR compiler from src/imagination/pco, linked rather than rewritten. */
+ #include "pco/pco.h"
+ 
++#include "pvr_resource.h"
++
+ static const char *
+ pvr_get_name(struct pipe_screen *pscreen)
+ {
+@@ -71,6 +73,8 @@ pvr_destroy_screen(struct pipe_screen *pscreen)
+ {
+    struct pvr_screen *screen = pvr_screen(pscreen);
+ 
++   if (screen->vm_valid)
++      pvr_vm_finish(&screen->vm);
+    if (screen->fd >= 0)
+       close(screen->fd);
+    ralloc_free(screen);
+@@ -140,11 +144,20 @@ pvr_screen_create(int fd, const struct pipe_screen_config *config,
+       caps->device_id = ident->device_id;
+    }
+ 
++   /* GPU address space. Failure here is not fatal to enumeration - it only means no
++    * resource can be created, which is worth being able to see when probing a node
++    * this driver cannot actually drive. */
++   screen->vm_valid = pvr_vm_init(fd, &screen->vm);
++   if (!screen->vm_valid)
++      mesa_logi("pvr: no GPU address space; resources will not be creatable");
++
+    screen->base.destroy = pvr_destroy_screen;
+    screen->base.get_name = pvr_get_name;
+    screen->base.get_vendor = pvr_get_vendor;
+    screen->base.get_device_vendor = pvr_get_device_vendor;
+    screen->base.is_format_supported = pvr_is_format_supported;
++   screen->base.resource_create = pvr_resource_create;
++   screen->base.resource_destroy = pvr_resource_destroy;
+ 
+    return &screen->base;
+ }
+diff --git a/src/gallium/drivers/pvr/pvr_screen.h b/src/gallium/drivers/pvr/pvr_screen.h
+index 5b2874c2..5833b965 100644
+--- a/src/gallium/drivers/pvr/pvr_screen.h
++++ b/src/gallium/drivers/pvr/pvr_screen.h
+@@ -7,6 +7,7 @@
+ #include "pipe/p_screen.h"
+ 
+ #include "common/pvr_device_info.h"
++#include "pvr_vm.h"
+ 
+ struct pvr_screen {
+    struct pipe_screen base;
+@@ -19,6 +20,12 @@ struct pvr_screen {
+    struct pvr_device_info dev_info;
+    char name[64];
+    unsigned int gpu_id;
++
++   /* GPU address space. vm_valid is false when the heaps or VM context could not be
++    * set up, which leaves enumeration working but resource creation unavailable -
++    * a useful distinction when probing a node this driver cannot drive. */
++   struct pvr_vm vm;
++   bool vm_valid;
+ };
+ 
+ static inline struct pvr_screen *
+-- 
+2.47.3
+

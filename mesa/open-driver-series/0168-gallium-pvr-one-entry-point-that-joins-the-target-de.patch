@@ -1,0 +1,135 @@
+From 800669c1c409cb87556d49091f942387236e812b Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sat, 17 Oct 2026 11:00:23 +0800
+Subject: [PATCH 168/269] gallium/pvr: one entry point that joins the
+ target-description pieces
+
+  csb: PBE target description: RGBA8 -> 8_PER_CHANNEL with four distinct channel selectors, address
+       and MRT index carried; depth refused
+  --- ALL PASS        (real open kernel)
+
+The format selector (round 63), the channel swizzles (round 64) and the address were landed separately
+and tested separately. This joins them, so a caller holding a pipe_resource and a device does not have
+to know which piece came from which function or in what order - which is the point at which three
+verified parts become one usable one.
+
+It does NOT read dev_info: with_packed_usc_channel is passed in, because it is a device feature
+COMBINED with the format's signedness and the caller is the thing that has both. Keeping it a
+parameter is what makes the check able to exercise both values for the same format.
+
+Depth is refused, and the check asserts that it is refused rather than half-described: the single
+channel rule produces a selector the PBE does not take, and a target description that is half-filled
+is worse than none, because every field looks plausible.
+---
+ src/gallium/drivers/pvr/pvr_csb.c   | 14 +++++++++++
+ src/gallium/drivers/pvr/pvr_csb.h   | 17 +++++++++++++
+ src/gallium/drivers/pvr/pvr_probe.c | 38 +++++++++++++++++++++++++++++
+ 3 files changed, 69 insertions(+)
+
+diff --git a/src/gallium/drivers/pvr/pvr_csb.c b/src/gallium/drivers/pvr/pvr_csb.c
+index 239e62a4..7cd15b2d 100644
+--- a/src/gallium/drivers/pvr/pvr_csb.c
++++ b/src/gallium/drivers/pvr/pvr_csb.c
+@@ -427,6 +427,20 @@ pvr_pbe_swizzles_from_pipe_format(enum pipe_format format,
+    return true;
+ }
+ 
++bool
++pvr_pbe_target_from_format(enum pipe_format format, uint64_t addr, uint32_t mrt_index,
++                           bool with_packed_usc_channel, struct pvr_pbe_target *out)
++{
++   if (!pvr_pbe_swizzles_from_pipe_format(format, out->swizzle))
++      return false;
++
++   out->addr = addr;
++   out->mrt_index = mrt_index;
++   out->source_format = pvr_pbe_source_format_from_pipe(format, with_packed_usc_channel);
++
++   return true;
++}
++
+ enum ROGUE_PBESTATE_SOURCE_FORMAT
+ pvr_pbe_source_format_from_pipe(enum pipe_format format, bool with_packed_usc_channel)
+ {
+diff --git a/src/gallium/drivers/pvr/pvr_csb.h b/src/gallium/drivers/pvr/pvr_csb.h
+index 5766cb0b..0b6315c3 100644
+--- a/src/gallium/drivers/pvr/pvr_csb.h
++++ b/src/gallium/drivers/pvr/pvr_csb.h
+@@ -438,8 +438,25 @@ struct pvr_pbe_target {
+    uint64_t addr;
+    enum ROGUE_PBESTATE_SOURCE_FORMAT source_format;
+    uint32_t mrt_index;
++
++   /* The four channel selectors, translated from the format's swizzle (round 64). */
++   enum ROGUE_PBESTATE_SWIZ swizzle[4];
+ };
+ 
++/* Fill a target description from a gallium format and a device address.
++ *
++ * This is the entry point a recorded framebuffer would use: it joins the three pieces landed
++ * separately - the source-format selector (round 63), the channel swizzles (round 64) and the address
++ * - so a caller with a pipe_resource and a device does not have to know which of them came from which
++ * function, or in what order. It does NOT read dev_info: `with_packed_usc_channel` is passed in,
++ * because it is a device feature combined with the format's signedness and the caller is the thing
++ * that has both.
++ *
++ * Refuses any format whose layout or swizzle it cannot express - including depth, whose single-channel
++ * rule produces a selector the PBE does not take. */
++bool pvr_pbe_target_from_format(enum pipe_format format, uint64_t addr, uint32_t mrt_index,
++                                bool with_packed_usc_channel, struct pvr_pbe_target *out);
++
+ bool pvr_csb_emit_pbe_target(struct pvr_csb *csb, const struct pvr_pbe_target *target);
+ 
+ /* PBE register encodings that are not plain values.
+diff --git a/src/gallium/drivers/pvr/pvr_probe.c b/src/gallium/drivers/pvr/pvr_probe.c
+index 7108e1d0..255886cf 100644
+--- a/src/gallium/drivers/pvr/pvr_probe.c
++++ b/src/gallium/drivers/pvr/pvr_probe.c
+@@ -2004,6 +2004,44 @@ csb_check(int fd, struct pipe_screen *pscreen)
+             goto out;
+          }
+ 
++         /* The target description, joined from the three pieces. RGBA8 with the packed-USC feature
++          * must come out 8-per-channel with four DISTINCT channel selectors; a depth format must be
++          * refused rather than half-filled. */
++         {
++            struct pvr_pbe_target t = { 0 };
++
++            if (!pvr_pbe_target_from_format(PIPE_FORMAT_R8G8B8A8_UNORM, 0x400000, 2, true, &t)) {
++               printf("csb:           FAIL: a colour target format produced no description\n");
++               goto out;
++            }
++
++            if (t.source_format != ROGUE_PBESTATE_SOURCE_FORMAT_8_PER_CHANNEL ||
++                t.addr != 0x400000 || t.mrt_index != 2) {
++               printf("csb:           FAIL: the target description has format %u addr 0x%" PRIx64
++                      " mrt %u\n", t.source_format, t.addr, t.mrt_index);
++               goto out;
++            }
++
++            for (unsigned i = 0; i < 4; i++) {
++               for (unsigned j = 0; j < i; j++) {
++                  if (t.swizzle[j] == t.swizzle[i]) {
++                     printf("csb:           FAIL: target channels %u and %u share a selector\n", j,
++                            i);
++                     goto out;
++                  }
++               }
++            }
++
++            /* Depth cannot be described, so it must not be half-described either. */
++            if (pvr_pbe_target_from_format(PIPE_FORMAT_Z24_UNORM_S8_UINT, 0x400000, 0, true, &t)) {
++               printf("csb:           FAIL: a depth format produced a target description\n");
++               goto out;
++            }
++
++            printf("csb:           PBE target description: RGBA8 -> 8_PER_CHANNEL with four distinct "
++                   "channel selectors, address and MRT index carried; depth refused\n");
++         }
++
+          printf("csb:           region headers: 64x64 -> 1, 256x64 -> 2, 2x2 macrotiles -> 4, "
+                 "800x600 -> %u units, zero tile size refused\n", d);
+       }
+-- 
+2.47.3
+

@@ -1,0 +1,1820 @@
+Device ID: 0
+Debug log type: none
+21272960:T0-MAIN>   Phantom 0: USCTiles=6
+21272977:T0-PM> Is TA: 0, finished: 0 on HW 1 (HWRTData = 0xc02d1bc0, MemCtx = 0xc0045000). FL different between TA/3D: global:1, local:2
+21272993:T0-PM> UFL-3D-Base: 0x000000800252c900 (SP = 431, 4PB = 16, 4PT = 0), FL-3D-Base: 0x000000800273f010 (SP = 8, 4PB = 8, 4PT = 9)
+21273005:T0-PM> ALIST1 SP = 11, MLIST1 SP = 9 (VCE 0x000000015dbd4001, TE 0x00000001a7368001, ALIST 0x00000001044db001)
+21273031:T0-MAIN> Kick 3D: FWCtx 0xc0045118 @ 10016, RTD 0xc02d1bc0, Partial render:0, CSW resume:0. (PID:15703, prio:1, frame:16414, ext:0x0000050c, int:0x00006f1a)
+21273195:T0-MAIN> TA finished
+21273241:T0-PM> Is TA: 1, finished: 1 on HW 0 (HWRTData = 0xc03d6980, MemCtx = 0xc01edf40). FL different between TA/3D: global:1, local:2
+21273273:T0-PM> UFL-TA-Base: 0x0000008000051900 (SP = 431, 4PB = 16, 4PT = 0), FL-TA-Base: 0x0000008000260010 (SP = 8, 4PB = 8, 4PT = 9)
+21273292:T0-PM> ALIST0 SP = 11, MLIST0 SP = 9 (VCE 0x000000005c82a001, TE 0x00000000e93dc001, ALIST 0x000000006c0be001)
+21273314:T0-RTD> TA RTData 0xc03d6980 finished on HW context 0
+21273331:T0-MAIN> Perform TPC flush.
+21273422:T0-MAIN> UFO Updates for FWCtx 0xc024f900 @ 10384
+21273448:T0-MAIN> UFO Update: [0xc02d0020] = 0x0000000b
+21273464:T0-MAIN> UFO Update: [0xc0042528] = 0x00000519
+21273560:T0-BIF> Deactivate MemCtx=0xc01edf40, ungrab reg set 2 refcount now 0
+21273775:T0-MTS> Irq Task complete.
+21273832:T0-MTS> Irq Task (EVENT_STATUS=0x00000000)
+21273918:T0-MTS> Irq Task complete.
+21273954:T0-MTS> Irq Task (EVENT_STATUS=0x00000010)
+21274032:T0-MTS> Irq Task complete.
+21274155:T0-MAIN> UFO Checks for FWCtx 0xc024f9d8 @ 36952
+21274196:T0-MAIN> UFO PR-Check: [0xc02d0020] is 0x0000000b requires >= 0x0000000b
+21274290:T0-MTS> Kick MTS Irq task DM=0
+21274328:T0-MTS> Irq Task (EVENT_STATUS=0x00000010)
+21274475:T0-MTS> Irq Task complete.
+21274525:T0-MTS> Bg Task complete DM Bitfield: 1
+21274540:T0-MTS> Kick MTS Irq task DM=0
+21274556:T0-MTS> Irq Task (EVENT_STATUS=0x00000010)
+21274638:T0-MTS> Irq Task complete.
+21274677:T0-MTS> Bg Task Driver ID = 0
+21274791:T0-MTS> Bg Task complete DM Bitfield: 0
+21276592:T0-MTS> Irq Task (EVENT_STATUS=0x00000018)
+21276631:T0-PM> PM running primary config (Core 0)
+21276649:T0-MAIN> 3D finished, HWRTData0State=3, HWRTData1State=4
+21276687:T0-PM> Is TA: 0, finished: 1 on HW 1 (HWRTData = 0xc02d1bc0, MemCtx = 0xc0045000). FL different between TA/3D: global:1, local:2
+21276703:T0-PM> UFL-3D-Base: 0x000000800252c900 (SP = 447, 4PB = 0, 4PT = 0), FL-3D-Base: 0x000000800273f010 (SP = 25, 4PB = 0, 4PT = 0)
+21276716:T0-PM> ALIST1 SP = 11, MLIST1 SP = 9 (VCE 0x000000015dbd4001, TE 0x00000001a7368001, ALIST 0x00000001044db001)
+21276725:T0-RTD> 3D RTData 0xc02d1bc0 finished on HW context 1
+21276795:T0-MAIN> UFO Updates for FWCtx 0xc0045118 @ 10352
+21276810:T0-MAIN> UFO Update: [0xc0097028] = 0x00000704
+21276818:T0-MAIN> UFO Update: [0xc0042330] = 0x00000519
+21276831:T0-MAIN> UFO Update: [0xc0042070] = 0x00000519
+21276898:T0-MTS> Ready-to-run debug Driver ID = 0, DM = 3, item = 0xc024f9d8
+21276922:T0-MTS> Client command header DM = 3, client CCB = 0xc02a0000, cmd = 0xc02a9070
+21276958:T0-PM> PM running primary config (Core 0)
+21276981:T0-BIF> Activate MemCtx=0xc01edf40 DM=3 secure=0
+21276992:T0-BIF> Setup register set=2 DM=3, PC address=0x00000001a25a5000, OSid=0, NewPCRegRequired=0
+21277010:T0-BIF> Grab reg set 2 refcount now 1
+21277074:T0-PM> PM running primary config (Core 0)
+21277102:T0-RTD> Store Freelist 0xc02d18c0 type: 0 (0:local,1:global) for PMDM1: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x000000800273f010, stacktop = 0x0000000000000019, Alloc Page Count = 0, Alloc MMU Page Count = 0
+21277110:T0-PM> PM reverting to previous config (Core 0)
+21277118:T0-PM> PM running primary config (Core 0)
+21277126:T0-RTD> Store Freelist 0xc03d6800 type: 0 (0:local,1:global) for PMDM0: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x0000008000260010, stacktop = 0x0000000000000008, Alloc Page Count = 8, Alloc MMU Page Count = 9
+21277135:T0-PM> PM reverting to previous config (Core 0)
+21277159:T0-RTD> Load Freelist 0xc03d6800 type: 0 (0:local,1:global) for PMDM1: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x0000008000260010, stacktop = 0x0000000000000008, Alloc Page Count = 8, Alloc MMU Page Count = 9
+21277182:T0-PM> PM running primary config (Core 0)
+21277195:T0-RTD> Store Freelist 0xc0045500 type: 1 (0:local,1:global) for PMDM1: FL Total Pages 448 (max=9216,grow size=256), FL-addr = 0x000000800252c900, stacktop = 0x00000000000001bf, Alloc Page Count = 0, Alloc MMU Page Count = 0
+21277206:T0-PM> PM reverting to previous config (Core 0)
+21277218:T0-PM> PM running primary config (Core 0)
+21277227:T0-RTD> Store Freelist 0xc024fc80 type: 1 (0:local,1:global) for PMDM0: FL Total Pages 448 (max=65536,grow size=256), FL-addr = 0x0000008000051900, stacktop = 0x00000000000001af, Alloc Page Count = 16, Alloc MMU Page Count = 0
+21277236:T0-PM> PM reverting to previous config (Core 0)
+21277244:T0-RTD> Load Freelist 0xc024fc80 type: 1 (0:local,1:global) for PMDM1: FL Total Pages 448 (max=65536,grow size=256), FL-addr = 0x0000008000051900, stacktop = 0x00000000000001af, Alloc Page Count = 16, Alloc MMU Page Count = 0
+21277267:T0-RTD> CONTEXT_PB_BASE set to 0x0, FL different between TA/3D: local: 0, global: 0
+21277295:T0-RTD> Loading stack-pointers for 1 (0:MidTA,1:3D) on context 1, MLIST = 0x00000009, ALIST = 0x000000000000000b
+21277323:T0-RTD> 3D Buffers: FWCtx 0xc024f9d8, RTData 0xc03d6980 on ctx 1, (MemCtx 0xc01edf40)
+21277336:T0-RTD> 3D RTData 0xc03d6980 ready on HW context 1
+21277388:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x80135000)
+21277399:T0-MAIN>   Phantom 0: USCTiles=6
+21277419:T0-PM> Is TA: 0, finished: 0 on HW 1 (HWRTData = 0xc03d6980, MemCtx = 0xc01edf40). FL different between TA/3D: global:0, local:0
+21277436:T0-PM> UFL-3D-Base: 0x0000008000051900 (SP = 431, 4PB = 16, 4PT = 0), FL-3D-Base: 0x0000008000260010 (SP = 8, 4PB = 8, 4PT = 9)
+21277446:T0-PM> ALIST1 SP = 11, MLIST1 SP = 9 (VCE 0x000000005c82a001, TE 0x00000000e93dc001, ALIST 0x000000006c0be001)
+21277464:T0-MAIN> Kick 3D: FWCtx 0xc024f9d8 @ 36976, RTD 0xc03d6980, Partial render:0, CSW resume:0. (PID:15935, prio:1, frame:41, ext:0x00000cc1, int:0x00006f1b)
+21277514:T0-BIF> Deactivate MemCtx=0xc0045000, ungrab reg set 1 refcount now 0
+21277663:T0-MTS> Irq Task complete.
+21277706:T0-MTS> Bg Task Driver ID = 0
+21277764:T0-MTS> Bg Task complete DM Bitfield: 0
+21277783:T0-MTS> Bg Task Driver ID = 0
+21277793:T0-MTS> Bg Task complete DM Bitfield: 0
+21279105:T0-MTS> Bg Task Driver ID = 0
+21279131:T0-MTS> KCCB Slot 681: Cmd=0x2abc0071, Driver ID=0
+21279173:T0-MAIN> cCCB Woff update = 3512, DM = 2, FWCtx = 0xc0045040
+21279254:T0-MTS> Kick MTS Irq task DM=0
+21279306:T0-MAIN> cCCB Woff update = 10784, DM = 3, FWCtx = 0xc0045118
+21279368:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 10392
+21279401:T0-MAIN> UFO PR-Check: [0xc0097030] is 0x00000702 requires >= 0x00000703
+21279464:T0-MTS> Irq Task (EVENT_STATUS=0x00000000)
+21279589:T0-MTS> Ready-to-run debug Driver ID = 0, DM = 2, item = 0xc0045040
+21279633:T0-MTS> Client command header DM = 2, client CCB = 0xc0067000, cmd = 0xc0067d48
+21279652:T0-PM> PM running primary config (Core 0)
+21279702:T0-BIF> Activate MemCtx=0xc0045000 DM=2 secure=0
+21279723:T0-BIF> Setup register set=1 DM=2, PC address=0x000000014ffb1000, OSid=0, NewPCRegRequired=0
+21279743:T0-BIF> Grab reg set 1 refcount now 1
+21279808:T0-PM> PM pause 3D DALLOC: PM_PAGE_MANAGEOP set to 0x2
+21279871:T0-RTD> Load Freelist 0xc03d6f40 type: 0 (0:local,1:global) for PMDM0: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x0000008002741010, stacktop = 0x0000000000000019, Alloc Page Count = 0, Alloc MMU Page Count = 0
+21279911:T0-RTD> Load Freelist 0xc0045500 type: 1 (0:local,1:global) for PMDM0: FL Total Pages 448 (max=9216,grow size=256), FL-addr = 0x000000800252c900, stacktop = 0x00000000000001bf, Alloc Page Count = 0, Alloc MMU Page Count = 0
+21279952:T0-RTD> CONTEXT_PB_BASE set to 0x3, FL different between TA/3D: local: 1, global: 1
+21279976:T0-PM> PM unpause 3D DALLOC: PM_PAGE_MANAGEOP set to 0x0
+21280029:T0-RTD> TA RTData 0xc03d74c0 loaded on HW context 0
+21280048:T0-RTD> TA Buffers: FWCtx 0xc0045040, RTData 0xc03d74c0, VHeap 0x00000080014b9000, TPC 0x00000080014bb000 (MemCtx 0xc0045000)
+21280103:T0-RTD> TE Region headers base 0x00000080014b1000 (RGNHDR Init: 1)
+21280174:T0-PM> Is TA: 1, finished: 0 on HW 0 (HWRTData = 0xc03d74c0, MemCtx = 0xc0045000). FL different between TA/3D: global:1, local:2
+21280190:T0-PM> UFL-TA-Base: 0x000000800252c900 (SP = 447, 4PB = 0, 4PT = 0), FL-TA-Base: 0x0000008002741010 (SP = 25, 4PB = 0, 4PT = 0)
+21280205:T0-PM> ALIST0 SP = 0, MLIST0 SP = 0 (VCE 0x0000000068311001, TE 0x000000006831a001, ALIST 0x0000000068318001)
+21280232:T0-MAIN> Kick TA: FWCtx 0xc0045040 @ 3400, RTD 0xc03d74c0, First kick:1, Last kick:1, CSW resume:0. (PID:15703, prio:1, frame:16414, ext:0x0000415b, int:0x00006f1c)
+21280415:T0-MTS> Irq Task complete.
+21280546:T0-MTS> Bg Task complete DM Bitfield: 0
+21280599:T0-MTS> Bg Task Driver ID = 0
+21280711:T0-MTS> Bg Task complete DM Bitfield: 0
+21280835:T0-MTS> Irq Task (EVENT_STATUS=0x00000030)
+21280884:T0-MAIN> TA finished
+21280914:T0-PM> Is TA: 1, finished: 1 on HW 0 (HWRTData = 0xc03d74c0, MemCtx = 0xc0045000). FL different between TA/3D: global:1, local:2
+21280939:T0-PM> UFL-TA-Base: 0x000000800252c900 (SP = 431, 4PB = 16, 4PT = 0), FL-TA-Base: 0x0000008002741010 (SP = 8, 4PB = 8, 4PT = 9)
+21280960:T0-PM> ALIST0 SP = 11, MLIST0 SP = 9 (VCE 0x0000000068318001, TE 0x000000006830d001, ALIST 0x0000000068312001)
+21280978:T0-RTD> TA RTData 0xc03d74c0 finished on HW context 0
+21280991:T0-MAIN> Perform TPC flush.
+21281057:T0-MAIN> UFO Updates for FWCtx 0xc0045040 @ 3480
+21281086:T0-MAIN> UFO Update: [0xc0097030] = 0x00000703
+21281100:T0-MAIN> UFO Update: [0xc0042250] = 0x00000519
+21281180:T0-BIF> Deactivate MemCtx=0xc0045000, ungrab reg set 1 refcount now 0
+21281360:T0-MTS> Irq Task complete.
+21281405:T0-MTS> Bg Task Driver ID = 0
+21281503:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 10392
+21281531:T0-MAIN> UFO PR-Check: [0xc0097030] is 0x00000703 requires >= 0x00000703
+21281608:T0-MTS> Kick MTS Irq task DM=0
+21281646:T0-MTS> Irq Task (EVENT_STATUS=0x00000010)
+21281761:T0-MTS> Irq Task complete.
+21281803:T0-MTS> Bg Task complete DM Bitfield: 0
+21281832:T0-MTS> Bg Task Driver ID = 0
+21281851:T0-MTS> Bg Task complete DM Bitfield: 0
+21282744:T0-MTS> Bg Task Driver ID = 0
+21282769:T0-MTS> KCCB Slot 682: Cmd=0x2abc0071, Driver ID=0
+21282805:T0-MAIN> cCCB Woff update = 3624, DM = 2, FWCtx = 0xc0045040
+21282896:T0-MTS> Kick MTS Irq task DM=0
+21282936:T0-MAIN> cCCB Woff update = 11184, DM = 3, FWCtx = 0xc0045118
+21282980:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 10784
+21283009:T0-MAIN> UFO PR-Check: [0xc009702c] is 0x00000702 requires >= 0x00000703
+21283065:T0-MTS> Irq Task (EVENT_STATUS=0x00000010)
+21283166:T0-MTS> Ready-to-run debug Driver ID = 0, DM = 2, item = 0xc0045040
+21283209:T0-MTS> Client command header DM = 2, client CCB = 0xc0067000, cmd = 0xc0067db8
+21283228:T0-PM> PM running primary config (Core 0)
+21283279:T0-BIF> Activate MemCtx=0xc0045000 DM=2 secure=0
+21283310:T0-BIF> Setup register set=1 DM=2, PC address=0x000000014ffb1000, OSid=0, NewPCRegRequired=0
+21283335:T0-BIF> Grab reg set 1 refcount now 1
+21283436:T0-PM> PM running primary config (Core 0)
+21283480:T0-RTD> Store Freelist 0xc03d6f40 type: 0 (0:local,1:global) for PMDM0: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x0000008002741010, stacktop = 0x0000000000000008, Alloc Page Count = 8, Alloc MMU Page Count = 9
+21283497:T0-PM> PM reverting to previous config (Core 0)
+21283539:T0-RTD> Load Freelist 0xc02d1900 type: 0 (0:local,1:global) for PMDM0: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x0000008002740010, stacktop = 0x0000000000000019, Alloc Page Count = 0, Alloc MMU Page Count = 0
+21283583:T0-RTD> CONTEXT_PB_BASE set to 0x3, FL different between TA/3D: local: 1, global: 1
+21283639:T0-RTD> TA RTData 0xc02d1cc0 loaded on HW context 0
+21283665:T0-RTD> TA Buffers: FWCtx 0xc0045040, RTData 0xc02d1cc0, VHeap 0x0000008002c21200, TPC 0x0000008002c3a000 (MemCtx 0xc0045000)
+21283717:T0-RTD> TE Region headers base 0x0000008002c1da00 (RGNHDR Init: 1)
+21283786:T0-PM> Is TA: 1, finished: 0 on HW 0 (HWRTData = 0xc02d1cc0, MemCtx = 0xc0045000). FL different between TA/3D: global:1, local:2
+21283802:T0-PM> UFL-TA-Base: 0x000000800252c900 (SP = 431, 4PB = 16, 4PT = 0), FL-TA-Base: 0x0000008002740010 (SP = 25, 4PB = 0, 4PT = 0)
+21283819:T0-PM> ALIST0 SP = 0, MLIST0 SP = 0 (VCE 0x0000000068318001, TE 0x000000006830d001, ALIST 0x0000000068312001)
+21283844:T0-MAIN> Kick TA: FWCtx 0xc0045040 @ 3512, RTD 0xc02d1cc0, First kick:1, Last kick:1, CSW resume:0. (PID:15703, prio:1, frame:16414, ext:0x0000415c, int:0x00006f1d)
+21284032:T0-MTS> Irq Task complete.
+21284111:T0-MTS> KCCB Slot 683: Cmd=0x2abc0071, Driver ID=0
+21284156:T0-MAIN> cCCB Woff update = 3760, DM = 2, FWCtx = 0xc0045040
+21284212:T0-MAIN> UFO Checks for FWCtx 0xc0045040 @ 3624
+21284245:T0-MAIN> UFO Check: [0xc00426c0] is 0x00000ac1 requires 0x00000519
+21284312:T0-MAIN> cCCB Woff update = 11584, DM = 3, FWCtx = 0xc0045118
+21284430:T0-MTS> Bg Task complete DM Bitfield: 0
+21284455:T0-MTS> Irq Task (EVENT_STATUS=0x00000030)
+21284500:T0-MAIN> TA finished
+21284542:T0-PM> Is TA: 1, finished: 1 on HW 0 (HWRTData = 0xc02d1cc0, MemCtx = 0xc0045000). FL different between TA/3D: global:1, local:2
+21284565:T0-PM> UFL-TA-Base: 0x000000800252c900 (SP = 415, 4PB = 32, 4PT = 0), FL-TA-Base: 0x0000008002740010 (SP = 8, 4PB = 8, 4PT = 9)
+21284576:T0-PM> ALIST0 SP = 11, MLIST0 SP = 9 (VCE 0x0000000169689001, TE 0x0000000104de2001, ALIST 0x0000000122b07001)
+21284586:T0-RTD> TA RTData 0xc02d1cc0 finished on HW context 0
+21284597:T0-MAIN> Perform TPC flush.
+21284636:T0-MAIN> UFO Updates for FWCtx 0xc0045040 @ 3592
+21284649:T0-MAIN> UFO Update: [0xc009702c] = 0x00000703
+21284661:T0-MAIN> UFO Update: [0xc00426f0] = 0x00000519
+21284730:T0-BIF> Deactivate MemCtx=0xc0045000, ungrab reg set 1 refcount now 0
+21284777:T0-PM> PM running primary config (Core 0)
+21284791:T0-MAIN> 3D finished, HWRTData0State=3, HWRTData1State=4
+21284819:T0-PM> Is TA: 0, finished: 1 on HW 1 (HWRTData = 0xc03d6980, MemCtx = 0xc01edf40). FL different between TA/3D: global:1, local:2
+21284840:T0-PM> UFL-3D-Base: 0x0000008000051900 (SP = 447, 4PB = 0, 4PT = 0), FL-3D-Base: 0x0000008000260010 (SP = 25, 4PB = 0, 4PT = 0)
+21284850:T0-PM> ALIST1 SP = 11, MLIST1 SP = 9 (VCE 0x000000005c82a001, TE 0x00000000e93dc001, ALIST 0x000000006c0be001)
+21284859:T0-RTD> 3D RTData 0xc03d6980 finished on HW context 1
+21284917:T0-MAIN> UFO Updates for FWCtx 0xc024f9d8 @ 37312
+21284935:T0-MAIN> UFO Update: [0xc02d0020] = 0x0000000c
+21284942:T0-MAIN> UFO Update: [0xc00425e8] = 0x00000519
+21284952:T0-MAIN> UFO Update: [0xc0042128] = 0x00000519
+21285018:T0-MTS> Ready-to-run debug Driver ID = 0, DM = 3, item = 0xc0045118
+21285042:T0-MTS> Client command header DM = 3, client CCB = 0xc0046000, cmd = 0xc00488b0
+21285075:T0-PM> PM running primary config (Core 0)
+21285096:T0-BIF> Activate MemCtx=0xc0045000 DM=3 secure=0
+21285108:T0-BIF> Setup register set=1 DM=3, PC address=0x000000014ffb1000, OSid=0, NewPCRegRequired=0
+21285122:T0-BIF> Grab reg set 1 refcount now 1
+21285167:T0-PM> PM running primary config (Core 0)
+21285187:T0-RTD> Store Freelist 0xc03d6800 type: 0 (0:local,1:global) for PMDM1: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x0000008000260010, stacktop = 0x0000000000000019, Alloc Page Count = 0, Alloc MMU Page Count = 0
+21285197:T0-PM> PM reverting to previous config (Core 0)
+21285221:T0-RTD> Load Freelist 0xc03d6f40 type: 0 (0:local,1:global) for PMDM1: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x0000008002741010, stacktop = 0x0000000000000008, Alloc Page Count = 8, Alloc MMU Page Count = 9
+21285244:T0-PM> PM running primary config (Core 0)
+21285256:T0-RTD> Store Freelist 0xc024fc80 type: 1 (0:local,1:global) for PMDM1: FL Total Pages 448 (max=65536,grow size=256), FL-addr = 0x0000008000051900, stacktop = 0x00000000000001bf, Alloc Page Count = 0, Alloc MMU Page Count = 0
+21285265:T0-PM> PM reverting to previous config (Core 0)
+21285274:T0-PM> PM running primary config (Core 0)
+21285283:T0-RTD> Store Freelist 0xc0045500 type: 1 (0:local,1:global) for PMDM0: FL Total Pages 448 (max=9216,grow size=256), FL-addr = 0x000000800252c900, stacktop = 0x000000000000019f, Alloc Page Count = 32, Alloc MMU Page Count = 0
+21285291:T0-PM> PM reverting to previous config (Core 0)
+21285300:T0-RTD> Load Freelist 0xc0045500 type: 1 (0:local,1:global) for PMDM1: FL Total Pages 448 (max=9216,grow size=256), FL-addr = 0x000000800252c900, stacktop = 0x000000000000019f, Alloc Page Count = 32, Alloc MMU Page Count = 0
+21285321:T0-RTD> CONTEXT_PB_BASE set to 0x2, FL different between TA/3D: local: 1, global: 0
+21285355:T0-RTD> Loading stack-pointers for 1 (0:MidTA,1:3D) on context 1, MLIST = 0x00000009, ALIST = 0x000000000000000b
+21285384:T0-RTD> 3D Buffers: FWCtx 0xc0045118, RTData 0xc03d74c0 on ctx 1, (MemCtx 0xc0045000)
+21285397:T0-RTD> 3D RTData 0xc03d74c0 ready on HW context 1
+21285452:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x8001500f)
+21285465:T0-MAIN>   Phantom 0: USCTiles=6
+21285482:T0-PM> Is TA: 0, finished: 0 on HW 1 (HWRTData = 0xc03d74c0, MemCtx = 0xc0045000). FL different between TA/3D: global:0, local:2
+21285501:T0-PM> UFL-3D-Base: 0x000000800252c900 (SP = 415, 4PB = 32, 4PT = 0), FL-3D-Base: 0x0000008002741010 (SP = 8, 4PB = 8, 4PT = 9)
+21285513:T0-PM> ALIST1 SP = 11, MLIST1 SP = 9 (VCE 0x0000000068318001, TE 0x000000006830d001, ALIST 0x0000000068312001)
+21285533:T0-MAIN> Kick 3D: FWCtx 0xc0045118 @ 10416, RTD 0xc03d74c0, Partial render:0, CSW resume:0. (PID:15703, prio:1, frame:16414, ext:0x0000415b, int:0x00006f1c)
+21285584:T0-BIF> Deactivate MemCtx=0xc01edf40, ungrab reg set 2 refcount now 0
+21285738:T0-MTS> Irq Task complete.
+21285773:T0-MTS> Irq Task (EVENT_STATUS=0x00000000)
+21285822:T0-MTS> Irq Task complete.
+21285852:T0-MTS> Bg Task Driver ID = 0
+21285937:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 10784
+21285959:T0-MAIN> UFO PR-Check: [0xc009702c] is 0x00000703 requires >= 0x00000703
+21285986:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 11184
+21285999:T0-MAIN> UFO PR-Check: [0xc0097018] is 0x000004a4 requires >= 0x000004a5
+21286032:T0-MTS> Bg Task complete DM Bitfield: 0
+21288272:T0-MTS> Bg Task Driver ID = 0
+21288341:T0-MTS> Bg Task complete DM Bitfield: 0
+21289715:T0-MTS> Irq Task (EVENT_STATUS=0x00000018)
+21289753:T0-PM> PM running primary config (Core 0)
+21289773:T0-MAIN> 3D finished, HWRTData0State=3, HWRTData1State=4
+21289810:T0-PM> Is TA: 0, finished: 1 on HW 1 (HWRTData = 0xc03d74c0, MemCtx = 0xc0045000). FL different between TA/3D: global:0, local:2
+21289826:T0-PM> UFL-3D-Base: 0x000000800252c900 (SP = 431, 4PB = 16, 4PT = 0), FL-3D-Base: 0x0000008002741010 (SP = 25, 4PB = 0, 4PT = 0)
+21289837:T0-PM> ALIST1 SP = 11, MLIST1 SP = 9 (VCE 0x0000000068318001, TE 0x000000006830d001, ALIST 0x0000000068312001)
+21289851:T0-RTD> 3D RTData 0xc03d74c0 finished on HW context 1
+21289913:T0-MAIN> UFO Updates for FWCtx 0xc0045118 @ 10752
+21289929:T0-MAIN> UFO Update: [0xc0097030] = 0x00000704
+21289935:T0-MAIN> UFO Update: [0xc00421c0] = 0x00000519
+21289991:T0-MTS> Ready-to-run debug Driver ID = 0, DM = 3, item = 0xc0045118
+21290013:T0-MTS> Client command header DM = 3, client CCB = 0xc0046000, cmd = 0xc0048a38
+21290053:T0-PM> PM running primary config (Core 0)
+21290076:T0-BIF> Activate MemCtx=0xc0045000 DM=3 secure=0
+21290087:T0-BIF> Setup register set=1 DM=3, PC address=0x000000014ffb1000, OSid=0, NewPCRegRequired=0
+21290099:T0-BIF> Grab reg set 1 refcount now 2
+21290160:T0-PM> PM running primary config (Core 0)
+21290187:T0-RTD> Store Freelist 0xc03d6f40 type: 0 (0:local,1:global) for PMDM1: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x0000008002741010, stacktop = 0x0000000000000019, Alloc Page Count = 0, Alloc MMU Page Count = 0
+21290198:T0-PM> PM reverting to previous config (Core 0)
+21290205:T0-PM> PM running primary config (Core 0)
+21290214:T0-RTD> Store Freelist 0xc02d1900 type: 0 (0:local,1:global) for PMDM0: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x0000008002740010, stacktop = 0x0000000000000008, Alloc Page Count = 8, Alloc MMU Page Count = 9
+21290221:T0-PM> PM reverting to previous config (Core 0)
+21290236:T0-RTD> Load Freelist 0xc02d1900 type: 0 (0:local,1:global) for PMDM1: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x0000008002740010, stacktop = 0x0000000000000008, Alloc Page Count = 8, Alloc MMU Page Count = 9
+21290260:T0-RTD> CONTEXT_PB_BASE set to 0x0, FL different between TA/3D: local: 0, global: 0
+21290289:T0-RTD> Loading stack-pointers for 1 (0:MidTA,1:3D) on context 1, MLIST = 0x00000009, ALIST = 0x000000000000000b
+21290315:T0-RTD> 3D Buffers: FWCtx 0xc0045118, RTData 0xc02d1cc0 on ctx 1, (MemCtx 0xc0045000)
+21290324:T0-RTD> 3D RTData 0xc02d1cc0 ready on HW context 1
+21290379:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x8001500f)
+21290388:T0-MAIN>   Phantom 0: USCTiles=6
+21290404:T0-PM> Is TA: 0, finished: 0 on HW 1 (HWRTData = 0xc02d1cc0, MemCtx = 0xc0045000). FL different between TA/3D: global:0, local:0
+21290421:T0-PM> UFL-3D-Base: 0x000000800252c900 (SP = 431, 4PB = 16, 4PT = 0), FL-3D-Base: 0x0000008002740010 (SP = 8, 4PB = 8, 4PT = 9)
+21290433:T0-PM> ALIST1 SP = 11, MLIST1 SP = 9 (VCE 0x0000000169689001, TE 0x0000000104de2001, ALIST 0x0000000122b07001)
+21290455:T0-MAIN> Kick 3D: FWCtx 0xc0045118 @ 10808, RTD 0xc02d1cc0, Partial render:0, CSW resume:0. (PID:15703, prio:1, frame:16414, ext:0x0000415c, int:0x00006f1d)
+21290504:T0-BIF> Deactivate MemCtx=0xc0045000, ungrab reg set 1 refcount now 1
+21290734:T0-MTS> Irq Task complete.
+21290802:T0-MTS> Bg Task Driver ID = 0
+21290940:T0-MTS> Bg Task complete DM Bitfield: 0
+21290974:T0-MTS> Bg Task Driver ID = 0
+21291028:T0-MTS> Bg Task complete DM Bitfield: 0
+21294232:T0-MTS> Irq Task (EVENT_STATUS=0x00000018)
+21294267:T0-PM> PM running primary config (Core 0)
+21294284:T0-MAIN> 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+21294318:T0-PM> Is TA: 0, finished: 1 on HW 1 (HWRTData = 0xc02d1cc0, MemCtx = 0xc0045000). FL different between TA/3D: global:0, local:0
+21294338:T0-PM> UFL-3D-Base: 0x000000800252c900 (SP = 447, 4PB = 0, 4PT = 0), FL-3D-Base: 0x0000008002740010 (SP = 25, 4PB = 0, 4PT = 0)
+21294350:T0-PM> ALIST1 SP = 11, MLIST1 SP = 9 (VCE 0x0000000169689001, TE 0x0000000104de2001, ALIST 0x0000000122b07001)
+21294358:T0-RTD> 3D RTData 0xc02d1cc0 finished on HW context 1
+21294408:T0-MAIN> UFO Updates for FWCtx 0xc0045118 @ 11144
+21294423:T0-MAIN> UFO Update: [0xc009702c] = 0x00000704
+21294432:T0-MAIN> UFO Update: [0xc00426c0] = 0x00000519
+21294444:T0-MAIN> UFO Update: [0xc0042368] = 0x00000519
+21294511:T0-BIF> Deactivate MemCtx=0xc0045000, ungrab reg set 1 refcount now 0
+21294572:T0-MAIN> UFO Checks for FWCtx 0xc0045040 @ 3624
+21294590:T0-MAIN> UFO Check: [0xc00426c0] is 0x00000519 requires 0x00000519
+21294652:T0-MTS> Ready-to-run debug Driver ID = 0, DM = 2, item = 0xc0045040
+21294676:T0-MTS> Client command header DM = 2, client CCB = 0xc0067000, cmd = 0xc0067e40
+21294690:T0-PM> PM running primary config (Core 0)
+21294717:T0-BIF> Activate MemCtx=0xc0045000 DM=2 secure=0
+21294727:T0-BIF> Setup register set=1 DM=2, PC address=0x000000014ffb1000, OSid=0, NewPCRegRequired=0
+21294737:T0-BIF> Grab reg set 1 refcount now 1
+21294799:T0-RTD> Load Freelist 0xc0045b80 type: 0 (0:local,1:global) for PMDM0: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x00000080025f2010, stacktop = 0x0000000000000019, Alloc Page Count = 0, Alloc MMU Page Count = 0
+21294824:T0-RTD> CONTEXT_PB_BASE set to 0x2, FL different between TA/3D: local: 1, global: 0
+21294864:T0-RTD> TA RTData 0xc0045e80 loaded on HW context 0
+21294875:T0-RTD> TA Buffers: FWCtx 0xc0045040, RTData 0xc0045e80, VHeap 0x000000800273cc00, TPC 0x0000008000014700 (MemCtx 0xc0045000)
+21294911:T0-RTD> TE Region headers base 0x000000800256de00 (RGNHDR Init: 1)
+21294936:T0-PM> Is TA: 1, finished: 0 on HW 0 (HWRTData = 0xc0045e80, MemCtx = 0xc0045000). FL different between TA/3D: global:0, local:2
+21294949:T0-PM> UFL-TA-Base: 0x000000800252c900 (SP = 447, 4PB = 0, 4PT = 0), FL-TA-Base: 0x00000080025f2010 (SP = 25, 4PB = 0, 4PT = 0)
+21294962:T0-PM> ALIST0 SP = 0, MLIST0 SP = 0 (VCE 0x000000016fc9a001, TE 0x0000000111e9a001, ALIST 0x0000000170ac6001)
+21294977:T0-MAIN> Kick TA: FWCtx 0xc0045040 @ 3648, RTD 0xc0045e80, First kick:1, Last kick:1, CSW resume:0. (PID:15703, prio:1, frame:16414, ext:0x00004158, int:0x00006f1e)
+21295076:T0-MAIN> TA finished
+21295097:T0-PM> Is TA: 1, finished: 1 on HW 0 (HWRTData = 0xc0045e80, MemCtx = 0xc0045000). FL different between TA/3D: global:0, local:2
+21295109:T0-PM> UFL-TA-Base: 0x000000800252c900 (SP = 447, 4PB = 0, 4PT = 0), FL-TA-Base: 0x00000080025f2010 (SP = 10, 4PB = 6, 4PT = 9)
+21295123:T0-PM> ALIST0 SP = 2, MLIST0 SP = 9 (VCE 0x0000000170ac6001, TE 0x0000000128beb001, ALIST 0x00000001ae9be001)
+21295133:T0-RTD> TA RTData 0xc0045e80 finished on HW context 0
+21295146:T0-MAIN> Perform TPC flush.
+21295191:T0-MAIN> UFO Updates for FWCtx 0xc0045040 @ 3728
+21295207:T0-MAIN> UFO Update: [0xc0097018] = 0x000004a5
+21295215:T0-MAIN> UFO Update: [0xc0042160] = 0x00000519
+21295267:T0-BIF> Deactivate MemCtx=0xc0045000, ungrab reg set 1 refcount now 0
+21295329:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 11184
+21295348:T0-MAIN> UFO PR-Check: [0xc0097018] is 0x000004a5 requires >= 0x000004a5
+21295408:T0-MTS> Ready-to-run debug Driver ID = 0, DM = 3, item = 0xc0045118
+21295432:T0-MTS> Client command header DM = 3, client CCB = 0xc0046000, cmd = 0xc0048bc8
+21295464:T0-PM> PM running primary config (Core 0)
+21295485:T0-BIF> Activate MemCtx=0xc0045000 DM=3 secure=0
+21295494:T0-BIF> Setup register set=1 DM=3, PC address=0x000000014ffb1000, OSid=0, NewPCRegRequired=0
+21295508:T0-BIF> Grab reg set 1 refcount now 1
+21295576:T0-PM> PM running primary config (Core 0)
+21295601:T0-RTD> Store Freelist 0xc02d1900 type: 0 (0:local,1:global) for PMDM1: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x0000008002740010, stacktop = 0x0000000000000019, Alloc Page Count = 0, Alloc MMU Page Count = 0
+21295611:T0-PM> PM reverting to previous config (Core 0)
+21295625:T0-PM> PM running primary config (Core 0)
+21295638:T0-RTD> Store Freelist 0xc0045b80 type: 0 (0:local,1:global) for PMDM0: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x00000080025f2010, stacktop = 0x000000000000000a, Alloc Page Count = 6, Alloc MMU Page Count = 9
+21295645:T0-PM> PM reverting to previous config (Core 0)
+21295669:T0-RTD> Load Freelist 0xc0045b80 type: 0 (0:local,1:global) for PMDM1: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x00000080025f2010, stacktop = 0x000000000000000a, Alloc Page Count = 6, Alloc MMU Page Count = 9
+21295696:T0-RTD> CONTEXT_PB_BASE set to 0x0, FL different between TA/3D: local: 0, global: 0
+21295730:T0-RTD> Loading stack-pointers for 1 (0:MidTA,1:3D) on context 1, MLIST = 0x00000009, ALIST = 0x0000000000000002
+21295759:T0-RTD> 3D Buffers: FWCtx 0xc0045118, RTData 0xc0045e80 on ctx 1, (MemCtx 0xc0045000)
+21295771:T0-RTD> 3D RTData 0xc0045e80 ready on HW context 1
+21295821:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x8001500f)
+21295835:T0-MAIN>   Phantom 0: USCTiles=6
+21295854:T0-PM> Is TA: 0, finished: 0 on HW 1 (HWRTData = 0xc0045e80, MemCtx = 0xc0045000). FL different between TA/3D: global:0, local:0
+21295871:T0-PM> UFL-3D-Base: 0x000000800252c900 (SP = 447, 4PB = 0, 4PT = 0), FL-3D-Base: 0x00000080025f2010 (SP = 10, 4PB = 6, 4PT = 9)
+21295881:T0-PM> ALIST1 SP = 2, MLIST1 SP = 9 (VCE 0x0000000170ac6001, TE 0x0000000128beb001, ALIST 0x00000001ae9be001)
+21295903:T0-MAIN> Kick 3D: FWCtx 0xc0045118 @ 11208, RTD 0xc0045e80, Partial render:0, CSW resume:0. (PID:15703, prio:1, frame:16414, ext:0x00004158, int:0x00006f1e)
+21296003:T0-PM> PM running primary config (Core 0)
+21296020:T0-MAIN> 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+21296051:T0-PM> Is TA: 0, finished: 1 on HW 1 (HWRTData = 0xc0045e80, MemCtx = 0xc0045000). FL different between TA/3D: global:0, local:0
+21296068:T0-PM> UFL-3D-Base: 0x000000800252c900 (SP = 447, 4PB = 0, 4PT = 0), FL-3D-Base: 0x00000080025f2010 (SP = 25, 4PB = 0, 4PT = 0)
+21296080:T0-PM> ALIST1 SP = 2, MLIST1 SP = 9 (VCE 0x0000000170ac6001, TE 0x0000000128beb001, ALIST 0x00000001ae9be001)
+21296093:T0-RTD> 3D RTData 0xc0045e80 finished on HW context 1
+21296141:T0-MAIN> UFO Updates for FWCtx 0xc0045118 @ 11544
+21296163:T0-MAIN> UFO Update: [0xc0097018] = 0x000004a6
+21296172:T0-MAIN> UFO Update: [0xc0042238] = 0x00000519
+21296180:T0-MAIN> UFO Update: [0xc0042478] = 0x00000519
+21296233:T0-BIF> Deactivate MemCtx=0xc0045000, ungrab reg set 1 refcount now 0
+21296375:T0-MTS> Irq Task complete.
+21296410:T0-MTS> Irq Task (EVENT_STATUS=0x00000000)
+21296469:T0-MTS> Irq Task complete.
+21296490:T0-MTS> Irq Task (EVENT_STATUS=0x00000000)
+21296537:T0-MTS> Irq Task complete.
+21296557:T0-MTS> Bg Task Driver ID = 0
+21296636:T0-MTS> Bg Task complete DM Bitfield: 0
+21296653:T0-MTS> Kick MTS Irq task DM=0
+21296667:T0-MTS> Irq Task (EVENT_STATUS=0x00000000)
+21296730:T0-MTS> Irq Task complete.
+21296755:T0-MTS> Bg Task Driver ID = 0
+21296773:T0-MTS> Bg Task complete DM Bitfield: 0
+21296781:T0-MTS> Kick MTS Irq task DM=0
+21296792:T0-MTS> Irq Task (EVENT_STATUS=0x00000000)
+21296835:T0-MTS> Irq Task complete.
+21298702:T0-MTS> Bg Task Driver ID = 0
+21298723:T0-MTS> KCCB Slot 684: Cmd=0x2abc0071, Driver ID=0
+21298746:T0-MAIN> cCCB Woff update = 3872, DM = 2, FWCtx = 0xc0045040
+21298794:T0-MTS> Kick MTS Irq task DM=0
+21298817:T0-MAIN> cCCB Woff update = 11984, DM = 3, FWCtx = 0xc0045118
+21298844:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 11584
+21298863:T0-MAIN> UFO PR-Check: [0xc0097034] is 0x00000702 requires >= 0x00000703
+21298895:T0-MTS> Irq Task (EVENT_STATUS=0x00000000)
+21298955:T0-MTS> Ready-to-run debug Driver ID = 0, DM = 2, item = 0xc0045040
+21298979:T0-MTS> Client command header DM = 2, client CCB = 0xc0067000, cmd = 0xc0067eb0
+21298993:T0-PM> PM running primary config (Core 0)
+21299019:T0-BIF> Activate MemCtx=0xc0045000 DM=2 secure=0
+21299031:T0-BIF> Setup register set=1 DM=2, PC address=0x000000014ffb1000, OSid=0, NewPCRegRequired=0
+21299046:T0-BIF> Grab reg set 1 refcount now 1
+21299117:T0-RTD> Load Freelist 0xc03d6f80 type: 0 (0:local,1:global) for PMDM0: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x0000008002742010, stacktop = 0x0000000000000019, Alloc Page Count = 0, Alloc MMU Page Count = 0
+21299145:T0-RTD> CONTEXT_PB_BASE set to 0x2, FL different between TA/3D: local: 1, global: 0
+21299187:T0-RTD> TA RTData 0xc03d75c0 loaded on HW context 0
+21299200:T0-RTD> TA Buffers: FWCtx 0xc0045040, RTData 0xc03d75c0, VHeap 0x00000080014b9600, TPC 0x00000080014c3000 (MemCtx 0xc0045000)
+21299231:T0-RTD> TE Region headers base 0x00000080014b2e00 (RGNHDR Init: 1)
+21299279:T0-PM> Is TA: 1, finished: 0 on HW 0 (HWRTData = 0xc03d75c0, MemCtx = 0xc0045000). FL different between TA/3D: global:0, local:2
+21299291:T0-PM> UFL-TA-Base: 0x000000800252c900 (SP = 447, 4PB = 0, 4PT = 0), FL-TA-Base: 0x0000008002742010 (SP = 25, 4PB = 0, 4PT = 0)
+21299305:T0-PM> ALIST0 SP = 0, MLIST0 SP = 0 (VCE 0x0000000068322001, TE 0x0000000068329001, ALIST 0x0000000068333001)
+21299321:T0-MAIN> Kick TA: FWCtx 0xc0045040 @ 3760, RTD 0xc03d75c0, First kick:1, Last kick:1, CSW resume:0. (PID:15703, prio:1, frame:16415, ext:0x0000415f, int:0x00006f1f)
+21299467:T0-MTS> Irq Task complete.
+21299502:T0-MTS> Irq Task (EVENT_STATUS=0x00000020)
+21299536:T0-MAIN> TA finished
+21299558:T0-PM> Is TA: 1, finished: 1 on HW 0 (HWRTData = 0xc03d75c0, MemCtx = 0xc0045000). FL different between TA/3D: global:0, local:2
+21299579:T0-PM> UFL-TA-Base: 0x000000800252c900 (SP = 447, 4PB = 0, 4PT = 0), FL-TA-Base: 0x0000008002742010 (SP = 10, 4PB = 6, 4PT = 9)
+21299590:T0-PM> ALIST0 SP = 2, MLIST0 SP = 9 (VCE 0x0000000068333001, TE 0x0000000068336001, ALIST 0x000000006832b001)
+21299600:T0-RTD> TA RTData 0xc03d75c0 finished on HW context 0
+21299615:T0-MAIN> Perform TPC flush.
+21299665:T0-MAIN> UFO Updates for FWCtx 0xc0045040 @ 3840
+21299682:T0-MAIN> UFO Update: [0xc0097034] = 0x00000703
+21299690:T0-MAIN> UFO Update: [0xc0042048] = 0x00000519
+21299745:T0-BIF> Deactivate MemCtx=0xc0045000, ungrab reg set 1 refcount now 0
+21299810:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 11584
+21299827:T0-MAIN> UFO PR-Check: [0xc0097034] is 0x00000703 requires >= 0x00000703
+21299880:T0-MTS> Ready-to-run debug Driver ID = 0, DM = 3, item = 0xc0045118
+21299902:T0-MTS> Client command header DM = 3, client CCB = 0xc0046000, cmd = 0xc0048d58
+21299937:T0-PM> PM running primary config (Core 0)
+21299955:T0-BIF> Activate MemCtx=0xc0045000 DM=3 secure=0
+21299968:T0-BIF> Setup register set=1 DM=3, PC address=0x000000014ffb1000, OSid=0, NewPCRegRequired=0
+21299980:T0-BIF> Grab reg set 1 refcount now 1
+21300049:T0-PM> PM running primary config (Core 0)
+21300084:T0-RTD> Store Freelist 0xc0045b80 type: 0 (0:local,1:global) for PMDM1: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x00000080025f2010, stacktop = 0x0000000000000019, Alloc Page Count = 0, Alloc MMU Page Count = 0
+21300093:T0-PM> PM reverting to previous config (Core 0)
+21300103:T0-PM> PM running primary config (Core 0)
+21300112:T0-RTD> Store Freelist 0xc03d6f80 type: 0 (0:local,1:global) for PMDM0: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x0000008002742010, stacktop = 0x000000000000000a, Alloc Page Count = 6, Alloc MMU Page Count = 9
+21300125:T0-PM> PM reverting to previous config (Core 0)
+21300143:T0-RTD> Load Freelist 0xc03d6f80 type: 0 (0:local,1:global) for PMDM1: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x0000008002742010, stacktop = 0x000000000000000a, Alloc Page Count = 6, Alloc MMU Page Count = 9
+21300161:T0-RTD> CONTEXT_PB_BASE set to 0x0, FL different between TA/3D: local: 0, global: 0
+21300193:T0-RTD> Loading stack-pointers for 1 (0:MidTA,1:3D) on context 1, MLIST = 0x00000009, ALIST = 0x0000000000000002
+21300221:T0-RTD> 3D Buffers: FWCtx 0xc0045118, RTData 0xc03d75c0 on ctx 1, (MemCtx 0xc0045000)
+21300231:T0-RTD> 3D RTData 0xc03d75c0 ready on HW context 1
+21300285:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x8001500f)
+21300295:T0-MAIN>   Phantom 0: USCTiles=6
+21300310:T0-PM> Is TA: 0, finished: 0 on HW 1 (HWRTData = 0xc03d75c0, MemCtx = 0xc0045000). FL different between TA/3D: global:0, local:0
+21300326:T0-PM> UFL-3D-Base: 0x000000800252c900 (SP = 447, 4PB = 0, 4PT = 0), FL-3D-Base: 0x0000008002742010 (SP = 10, 4PB = 6, 4PT = 9)
+21300336:T0-PM> ALIST1 SP = 2, MLIST1 SP = 9 (VCE 0x0000000068333001, TE 0x0000000068336001, ALIST 0x000000006832b001)
+21300359:T0-MAIN> Kick 3D: FWCtx 0xc0045118 @ 11608, RTD 0xc03d75c0, Partial render:0, CSW resume:0. (PID:15703, prio:1, frame:16415, ext:0x0000415f, int:0x00006f1f)
+21300490:T0-MTS> Irq Task complete.
+21300561:T0-MTS> Irq Task (EVENT_STATUS=0x00000118)
+21300606:T0-PM> PM running primary config (Core 0)
+21300624:T0-MAIN> 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+21300658:T0-PM> Is TA: 0, finished: 1 on HW 1 (HWRTData = 0xc03d75c0, MemCtx = 0xc0045000). FL different between TA/3D: global:0, local:0
+21300677:T0-PM> UFL-3D-Base: 0x000000800252c900 (SP = 447, 4PB = 0, 4PT = 0), FL-3D-Base: 0x0000008002742010 (SP = 25, 4PB = 0, 4PT = 0)
+21300688:T0-PM> ALIST1 SP = 2, MLIST1 SP = 9 (VCE 0x0000000068333001, TE 0x0000000068336001, ALIST 0x000000006832b001)
+21300697:T0-RTD> 3D RTData 0xc03d75c0 finished on HW context 1
+21300749:T0-MAIN> UFO Updates for FWCtx 0xc0045118 @ 11944
+21300767:T0-MAIN> UFO Update: [0xc0097034] = 0x00000704
+21300776:T0-MAIN> UFO Update: [0xc00421f8] = 0x00000519
+21300785:T0-MAIN> UFO Update: [0xc00424b0] = 0x00000519
+21300841:T0-BIF> Deactivate MemCtx=0xc0045000, ungrab reg set 1 refcount now 0
+21300952:T0-MTS> Irq Task complete.
+21300984:T0-MTS> Bg Task complete DM Bitfield: 1
+21300995:T0-MTS> Kick MTS Irq task DM=0
+21301004:T0-MTS> Irq Task (EVENT_STATUS=0x00000000)
+21301053:T0-MTS> Irq Task complete.
+21301078:T0-MTS> Bg Task Driver ID = 0
+21301110:T0-MTS> Bg Task complete DM Bitfield: 0
+21301118:T0-MTS> Kick MTS Irq task DM=0
+21301131:T0-MTS> Irq Task (EVENT_STATUS=0x00000000)
+21301184:T0-MTS> Irq Task complete.
+21301406:T0-MTS> Bg Task Driver ID = 0
+21301432:T0-MTS> KCCB Slot 685: Cmd=0x2abc0071, Driver ID=0
+21301459:T0-MAIN> cCCB Woff update = 3984, DM = 2, FWCtx = 0xc0045040
+21301512:T0-MTS> Kick MTS Irq task DM=0
+21301530:T0-MAIN> cCCB Woff update = 12384, DM = 3, FWCtx = 0xc0045118
+21301558:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 11984
+21301577:T0-MAIN> UFO PR-Check: [0xc0097020] is 0x00000704 requires >= 0x00000705
+21301608:T0-MTS> Irq Task (EVENT_STATUS=0x00000000)
+21301672:T0-MTS> Ready-to-run debug Driver ID = 0, DM = 2, item = 0xc0045040
+21301695:T0-MTS> Client command header DM = 2, client CCB = 0xc0067000, cmd = 0xc0067f20
+21301707:T0-PM> PM running primary config (Core 0)
+21301734:T0-BIF> Activate MemCtx=0xc0045000 DM=2 secure=0
+21301747:T0-BIF> Setup register set=1 DM=2, PC address=0x000000014ffb1000, OSid=0, NewPCRegRequired=0
+21301762:T0-BIF> Grab reg set 1 refcount now 1
+21301826:T0-RTD> Load Freelist 0xc02d1840 type: 0 (0:local,1:global) for PMDM0: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x00000080025f4010, stacktop = 0x0000000000000019, Alloc Page Count = 0, Alloc MMU Page Count = 0
+21301856:T0-RTD> CONTEXT_PB_BASE set to 0x2, FL different between TA/3D: local: 1, global: 0
+21301898:T0-RTD> TA RTData 0xc02d19c0 loaded on HW context 0
+21301910:T0-RTD> TA Buffers: FWCtx 0xc0045040, RTData 0xc02d19c0, VHeap 0x0000008002c20000, TPC 0x0000008002c22000 (MemCtx 0xc0045000)
+21301941:T0-RTD> TE Region headers base 0x0000008002c18000 (RGNHDR Init: 1)
+21301988:T0-PM> Is TA: 1, finished: 0 on HW 0 (HWRTData = 0xc02d19c0, MemCtx = 0xc0045000). FL different between TA/3D: global:0, local:2
+21302001:T0-PM> UFL-TA-Base: 0x000000800252c900 (SP = 447, 4PB = 0, 4PT = 0), FL-TA-Base: 0x00000080025f4010 (SP = 25, 4PB = 0, 4PT = 0)
+21302011:T0-PM> ALIST0 SP = 0, MLIST0 SP = 0 (VCE 0x0000000131c35001, TE 0x000000012c8a7001, ALIST 0x00000001aaa53001)
+21302028:T0-MAIN> Kick TA: FWCtx 0xc0045040 @ 3872, RTD 0xc02d19c0, First kick:1, Last kick:1, CSW resume:0. (PID:15703, prio:1, frame:16415, ext:0x0000415d, int:0x00006f20)
+21302193:T0-MTS> Irq Task complete.
+21302281:T0-MTS> Irq Task (EVENT_STATUS=0x00000020)
+21302320:T0-MAIN> TA finished
+21302341:T0-PM> Is TA: 1, finished: 1 on HW 0 (HWRTData = 0xc02d19c0, MemCtx = 0xc0045000). FL different between TA/3D: global:0, local:2
+21302358:T0-PM> UFL-TA-Base: 0x000000800252c900 (SP = 431, 4PB = 16, 4PT = 0), FL-TA-Base: 0x00000080025f4010 (SP = 8, 4PB = 8, 4PT = 9)
+21302368:T0-PM> ALIST0 SP = 11, MLIST0 SP = 9 (VCE 0x00000001aaa53001, TE 0x0000000167996001, ALIST 0x000000010263a001)
+21302378:T0-RTD> TA RTData 0xc02d19c0 finished on HW context 0
+21302396:T0-MAIN> Perform TPC flush.
+21302441:T0-MAIN> UFO Updates for FWCtx 0xc0045040 @ 3952
+21302458:T0-MAIN> UFO Update: [0xc0097020] = 0x00000705
+21302465:T0-MAIN> UFO Update: [0xc0042638] = 0x00000519
+21302512:T0-BIF> Deactivate MemCtx=0xc0045000, ungrab reg set 1 refcount now 0
+21302561:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 11984
+21302578:T0-MAIN> UFO PR-Check: [0xc0097020] is 0x00000705 requires >= 0x00000705
+21302625:T0-MTS> Ready-to-run debug Driver ID = 0, DM = 3, item = 0xc0045118
+21302646:T0-MTS> Client command header DM = 3, client CCB = 0xc0046000, cmd = 0xc0048ee8
+21302675:T0-PM> PM running primary config (Core 0)
+21302693:T0-BIF> Activate MemCtx=0xc0045000 DM=3 secure=0
+21302703:T0-BIF> Setup register set=1 DM=3, PC address=0x000000014ffb1000, OSid=0, NewPCRegRequired=0
+21302715:T0-BIF> Grab reg set 1 refcount now 1
+21302775:T0-PM> PM running primary config (Core 0)
+21302802:T0-RTD> Store Freelist 0xc03d6f80 type: 0 (0:local,1:global) for PMDM1: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x0000008002742010, stacktop = 0x0000000000000019, Alloc Page Count = 0, Alloc MMU Page Count = 0
+21302812:T0-PM> PM reverting to previous config (Core 0)
+21302823:T0-PM> PM running primary config (Core 0)
+21302831:T0-RTD> Store Freelist 0xc02d1840 type: 0 (0:local,1:global) for PMDM0: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x00000080025f4010, stacktop = 0x0000000000000008, Alloc Page Count = 8, Alloc MMU Page Count = 9
+21302838:T0-PM> PM reverting to previous config (Core 0)
+21302857:T0-RTD> Load Freelist 0xc02d1840 type: 0 (0:local,1:global) for PMDM1: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x00000080025f4010, stacktop = 0x0000000000000008, Alloc Page Count = 8, Alloc MMU Page Count = 9
+21302878:T0-RTD> CONTEXT_PB_BASE set to 0x0, FL different between TA/3D: local: 0, global: 0
+21302908:T0-RTD> Loading stack-pointers for 1 (0:MidTA,1:3D) on context 1, MLIST = 0x00000009, ALIST = 0x000000000000000b
+21302931:T0-RTD> 3D Buffers: FWCtx 0xc0045118, RTData 0xc02d19c0 on ctx 1, (MemCtx 0xc0045000)
+21302942:T0-RTD> 3D RTData 0xc02d19c0 ready on HW context 1
+21302997:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x8001500f)
+21303015:T0-MAIN>   Phantom 0: USCTiles=6
+21303034:T0-PM> Is TA: 0, finished: 0 on HW 1 (HWRTData = 0xc02d19c0, MemCtx = 0xc0045000). FL different between TA/3D: global:0, local:0
+21303057:T0-PM> UFL-3D-Base: 0x000000800252c900 (SP = 431, 4PB = 16, 4PT = 0), FL-3D-Base: 0x00000080025f4010 (SP = 8, 4PB = 8, 4PT = 9)
+21303067:T0-PM> ALIST1 SP = 11, MLIST1 SP = 9 (VCE 0x00000001aaa53001, TE 0x0000000167996001, ALIST 0x000000010263a001)
+21303089:T0-MAIN> Kick 3D: FWCtx 0xc0045118 @ 12008, RTD 0xc02d19c0, Partial render:0, CSW resume:0. (PID:15703, prio:1, frame:16415, ext:0x0000415d, int:0x00006f20)
+21303307:T0-MTS> Irq Task complete.
+21303365:T0-MTS> Bg Task complete DM Bitfield: 0
+21303386:T0-MTS> Kick MTS Irq task DM=0
+21303401:T0-MTS> Irq Task (EVENT_STATUS=0x00000000)
+21303497:T0-MTS> Irq Task complete.
+21303531:T0-MTS> Bg Task Driver ID = 0
+21303650:T0-MTS> KCCB Slot 686: Cmd=0x2abc0071, Driver ID=0
+21303712:T0-MAIN> cCCB Woff update = 4096, DM = 2, FWCtx = 0xc0045040
+21303829:T0-MTS> Kick MTS Irq task DM=0
+21303870:T0-MAIN> cCCB Woff update = 12784, DM = 3, FWCtx = 0xc0045118
+21303938:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 12384
+21303969:T0-MAIN> UFO PR-Check: [0xc00971ac] is 0x0000000a requires >= 0x0000000b
+21304033:T0-MTS> Irq Task (EVENT_STATUS=0x00000010)
+21304166:T0-MTS> Ready-to-run debug Driver ID = 0, DM = 2, item = 0xc0045040
+21304208:T0-MTS> Client command header DM = 2, client CCB = 0xc0067000, cmd = 0xc0067f90
+21304238:T0-PM> PM running primary config (Core 0)
+21304286:T0-BIF> Activate MemCtx=0xc0045000 DM=2 secure=0
+21304309:T0-BIF> Setup register set=1 DM=2, PC address=0x000000014ffb1000, OSid=0, NewPCRegRequired=0
+21304340:T0-BIF> Grab reg set 1 refcount now 2
+21304428:T0-PM> PM pause 3D DALLOC: PM_PAGE_MANAGEOP set to 0x2
+21304511:T0-RTD> Load Freelist 0xc0504980 type: 0 (0:local,1:global) for PMDM0: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x000000800216a010, stacktop = 0x0000000000000019, Alloc Page Count = 0, Alloc MMU Page Count = 0
+21304552:T0-RTD> CONTEXT_PB_BASE set to 0x2, FL different between TA/3D: local: 1, global: 0
+21304578:T0-PM> PM unpause 3D DALLOC: PM_PAGE_MANAGEOP set to 0x0
+21304631:T0-RTD> TA RTData 0xc0586a40 loaded on HW context 0
+21304656:T0-RTD> TA Buffers: FWCtx 0xc0045040, RTData 0xc0586a40, VHeap 0x0000008002171200, TPC 0x000000800218a000 (MemCtx 0xc0045000)
+21304726:T0-RTD> TE Region headers base 0x000000800216fb40 (RGNHDR Init: 1)
+21304789:T0-PM> Is TA: 1, finished: 0 on HW 0 (HWRTData = 0xc0586a40, MemCtx = 0xc0045000). FL different between TA/3D: global:0, local:2
+21304814:T0-PM> UFL-TA-Base: 0x000000800252c900 (SP = 431, 4PB = 16, 4PT = 0), FL-TA-Base: 0x000000800216a010 (SP = 25, 4PB = 0, 4PT = 0)
+21304839:T0-PM> ALIST0 SP = 0, MLIST0 SP = 0 (VCE 0x0000000152c57001, TE 0x0000000170838001, ALIST 0x00000001b0eba001)
+21304877:T0-MAIN> Kick TA: FWCtx 0xc0045040 @ 3984, RTD 0xc0586a40, First kick:1, Last kick:1, CSW resume:0. (PID:15703, prio:1, frame:16415, ext:0x0000415a, int:0x00006f21)
+21305091:T0-MTS> Irq Task complete.
+21305149:T0-MTS> Irq Task (EVENT_STATUS=0x00000030)
+21305208:T0-MAIN> TA finished
+21305246:T0-PM> Is TA: 1, finished: 1 on HW 0 (HWRTData = 0xc0586a40, MemCtx = 0xc0045000). FL different between TA/3D: global:0, local:2
+21305280:T0-PM> UFL-TA-Base: 0x000000800252c900 (SP = 437, 4PB = 10, 4PT = 0), FL-TA-Base: 0x000000800216a010 (SP = 10, 4PB = 6, 4PT = 9)
+21305301:T0-PM> ALIST0 SP = 2, MLIST0 SP = 9 (VCE 0x00000001b0eba001, TE 0x0000000152c56001, ALIST 0x00000001708b8001)
+21305323:T0-RTD> TA RTData 0xc0586a40 finished on HW context 0
+21305342:T0-MAIN> Perform TPC flush.
+21305412:T0-MAIN> UFO Updates for FWCtx 0xc0045040 @ 4064
+21305442:T0-MAIN> UFO Update: [0xc00971ac] = 0x0000000b
+21305460:T0-MAIN> UFO Update: [0xc0042558] = 0x00000519
+21305550:T0-BIF> Deactivate MemCtx=0xc0045000, ungrab reg set 1 refcount now 1
+21305746:T0-MTS> Irq Task complete.
+21305844:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 12384
+21305870:T0-MAIN> UFO PR-Check: [0xc00971ac] is 0x0000000b requires >= 0x0000000b
+21305937:T0-MTS> Bg Task complete DM Bitfield: 1
+21305968:T0-MTS> Kick MTS Irq task DM=0
+21305991:T0-MTS> Irq Task (EVENT_STATUS=0x00000010)
+21306107:T0-MTS> Irq Task complete.
+21306159:T0-MTS> Bg Task Driver ID = 0
+21306242:T0-MTS> Bg Task complete DM Bitfield: 0
+21306276:T0-MTS> Bg Task Driver ID = 0
+21306339:T0-MTS> Bg Task complete DM Bitfield: 0
+21306789:T0-MTS> Irq Task (EVENT_STATUS=0x00000018)
+21306828:T0-PM> PM running primary config (Core 0)
+21306849:T0-MAIN> 3D finished, HWRTData0State=3, HWRTData1State=4
+21306885:T0-PM> Is TA: 0, finished: 1 on HW 1 (HWRTData = 0xc02d19c0, MemCtx = 0xc0045000). FL different between TA/3D: global:0, local:2
+21306903:T0-PM> UFL-3D-Base: 0x000000800252c900 (SP = 447, 4PB = 0, 4PT = 0), FL-3D-Base: 0x00000080025f4010 (SP = 25, 4PB = 0, 4PT = 0)
+21306913:T0-PM> ALIST1 SP = 11, MLIST1 SP = 9 (VCE 0x00000001aaa53001, TE 0x0000000167996001, ALIST 0x000000010263a001)
+21306925:T0-RTD> 3D RTData 0xc02d19c0 finished on HW context 1
+21306988:T0-MAIN> UFO Updates for FWCtx 0xc0045118 @ 12344
+21307009:T0-MAIN> UFO Update: [0xc0097020] = 0x00000706
+21307018:T0-MAIN> UFO Update: [0xc0042740] = 0x00000519
+21307026:T0-MAIN> UFO Update: [0xc00422c8] = 0x00000519
+21307079:T0-MTS> Ready-to-run debug Driver ID = 0, DM = 3, item = 0xc0045118
+21307103:T0-MTS> Client command header DM = 3, client CCB = 0xc0046000, cmd = 0xc0049078
+21307141:T0-PM> PM running primary config (Core 0)
+21307165:T0-BIF> Activate MemCtx=0xc0045000 DM=3 secure=0
+21307180:T0-BIF> Setup register set=1 DM=3, PC address=0x000000014ffb1000, OSid=0, NewPCRegRequired=0
+21307196:T0-BIF> Grab reg set 1 refcount now 2
+21307261:T0-PM> PM running primary config (Core 0)
+21307287:T0-RTD> Store Freelist 0xc02d1840 type: 0 (0:local,1:global) for PMDM1: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x00000080025f4010, stacktop = 0x0000000000000019, Alloc Page Count = 0, Alloc MMU Page Count = 0
+21307295:T0-PM> PM reverting to previous config (Core 0)
+21307305:T0-PM> PM running primary config (Core 0)
+21307315:T0-RTD> Store Freelist 0xc0504980 type: 0 (0:local,1:global) for PMDM0: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x000000800216a010, stacktop = 0x000000000000000a, Alloc Page Count = 6, Alloc MMU Page Count = 9
+21307327:T0-PM> PM reverting to previous config (Core 0)
+21307345:T0-RTD> Load Freelist 0xc0504980 type: 0 (0:local,1:global) for PMDM1: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x000000800216a010, stacktop = 0x000000000000000a, Alloc Page Count = 6, Alloc MMU Page Count = 9
+21307365:T0-RTD> CONTEXT_PB_BASE set to 0x0, FL different between TA/3D: local: 0, global: 0
+21307396:T0-RTD> Loading stack-pointers for 1 (0:MidTA,1:3D) on context 1, MLIST = 0x00000009, ALIST = 0x0000000000000002
+21307423:T0-RTD> 3D Buffers: FWCtx 0xc0045118, RTData 0xc0586a40 on ctx 1, (MemCtx 0xc0045000)
+21307432:T0-RTD> 3D RTData 0xc0586a40 ready on HW context 1
+21307487:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x8001500f)
+21307499:T0-MAIN>   Phantom 0: USCTiles=6
+21307516:T0-PM> Is TA: 0, finished: 0 on HW 1 (HWRTData = 0xc0586a40, MemCtx = 0xc0045000). FL different between TA/3D: global:0, local:0
+21307533:T0-PM> UFL-3D-Base: 0x000000800252c900 (SP = 447, 4PB = 0, 4PT = 0), FL-3D-Base: 0x000000800216a010 (SP = 10, 4PB = 6, 4PT = 9)
+21307544:T0-PM> ALIST1 SP = 2, MLIST1 SP = 9 (VCE 0x00000001b0eba001, TE 0x0000000152c56001, ALIST 0x00000001708b8001)
+21307564:T0-MAIN> Kick 3D: FWCtx 0xc0045118 @ 12408, RTD 0xc0586a40, Partial render:0, CSW resume:0. (PID:15703, prio:1, frame:16415, ext:0x0000415a, int:0x00006f21)
+21307605:T0-BIF> Deactivate MemCtx=0xc0045000, ungrab reg set 1 refcount now 1
+21307813:T0-MTS> Irq Task complete.
+21307860:T0-MTS> Irq Task (EVENT_STATUS=0x00000118)
+21307894:T0-PM> PM running primary config (Core 0)
+21307911:T0-MAIN> 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+21307943:T0-PM> Is TA: 0, finished: 1 on HW 1 (HWRTData = 0xc0586a40, MemCtx = 0xc0045000). FL different between TA/3D: global:0, local:0
+21307961:T0-PM> UFL-3D-Base: 0x000000800252c900 (SP = 447, 4PB = 0, 4PT = 0), FL-3D-Base: 0x000000800216a010 (SP = 25, 4PB = 0, 4PT = 0)
+21307971:T0-PM> ALIST1 SP = 2, MLIST1 SP = 9 (VCE 0x00000001b0eba001, TE 0x0000000152c56001, ALIST 0x00000001708b8001)
+21307983:T0-RTD> 3D RTData 0xc0586a40 finished on HW context 1
+21308050:T0-MAIN> UFO Updates for FWCtx 0xc0045118 @ 12744
+21308067:T0-MAIN> UFO Update: [0xc00971ac] = 0x0000000c
+21308079:T0-MAIN> UFO Update: [0xc0042098] = 0x00000519
+21308088:T0-MAIN> UFO Update: [0xc0042050] = 0x00000519
+21308137:T0-BIF> Deactivate MemCtx=0xc0045000, ungrab reg set 1 refcount now 0
+21308248:T0-MTS> Irq Task complete.
+21308278:T0-MTS> Bg Task Driver ID = 0
+21308318:T0-MTS> Bg Task complete DM Bitfield: 0
+21308332:T0-MTS> Kick MTS Irq task DM=0
+21308349:T0-MTS> Irq Task (EVENT_STATUS=0x00000000)
+21308400:T0-MTS> Irq Task complete.
+21308422:T0-MTS> Bg Task Driver ID = 0
+21308435:T0-MTS> Bg Task complete DM Bitfield: 0
+21308441:T0-MTS> Kick MTS Irq task DM=0
+21308452:T0-MTS> Irq Task (EVENT_STATUS=0x00000000)
+21308494:T0-MTS> Irq Task complete.
+21313373:T0-MTS> Bg Task Driver ID = 0
+21313391:T0-MTS> KCCB Slot 687: Cmd=0x2abc0071, Driver ID=0
+21313418:T0-MAIN> cCCB Woff update = 4208, DM = 2, FWCtx = 0xc0045040
+21313467:T0-MTS> Kick MTS Irq task DM=0
+21313489:T0-MAIN> cCCB Woff update = 13184, DM = 3, FWCtx = 0xc0045118
+21313518:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 12784
+21313533:T0-MAIN> UFO PR-Check: [0xc0097038] is 0x00000702 requires >= 0x00000703
+21313567:T0-MTS> Irq Task (EVENT_STATUS=0x00000000)
+21313635:T0-MTS> Ready-to-run debug Driver ID = 0, DM = 2, item = 0xc0045040
+21313658:T0-MTS> Client command header DM = 2, client CCB = 0xc0067000, cmd = 0xc0068000
+21313675:T0-PM> PM running primary config (Core 0)
+21313701:T0-BIF> Activate MemCtx=0xc0045000 DM=2 secure=0
+21313718:T0-BIF> Setup register set=1 DM=2, PC address=0x000000014ffb1000, OSid=0, NewPCRegRequired=0
+21313730:T0-BIF> Grab reg set 1 refcount now 1
+21313804:T0-RTD> Load Freelist 0xc03d6fc0 type: 0 (0:local,1:global) for PMDM0: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x00000080014ab010, stacktop = 0x0000000000000019, Alloc Page Count = 0, Alloc MMU Page Count = 0
+21313830:T0-RTD> CONTEXT_PB_BASE set to 0x2, FL different between TA/3D: local: 1, global: 0
+21313874:T0-RTD> TA RTData 0xc03d76c0 loaded on HW context 0
+21313887:T0-RTD> TA Buffers: FWCtx 0xc0045040, RTData 0xc03d76c0, VHeap 0x00000080014b9c00, TPC 0x00000080014cb000 (MemCtx 0xc0045000)
+21313918:T0-RTD> TE Region headers base 0x00000080014b4c00 (RGNHDR Init: 1)
+21313963:T0-PM> Is TA: 1, finished: 0 on HW 0 (HWRTData = 0xc03d76c0, MemCtx = 0xc0045000). FL different between TA/3D: global:0, local:2
+21313977:T0-PM> UFL-TA-Base: 0x000000800252c900 (SP = 447, 4PB = 0, 4PT = 0), FL-TA-Base: 0x00000080014ab010 (SP = 25, 4PB = 0, 4PT = 0)
+21313986:T0-PM> ALIST0 SP = 0, MLIST0 SP = 0 (VCE 0x0000000068345001, TE 0x0000000068342001, ALIST 0x0000000068350001)
+21314005:T0-MAIN> Kick TA: FWCtx 0xc0045040 @ 4096, RTD 0xc03d76c0, First kick:1, Last kick:1, CSW resume:0. (PID:15703, prio:1, frame:16415, ext:0x0000415e, int:0x00006f22)
+21314165:T0-MTS> Irq Task complete.
+21314243:T0-MTS> Irq Task (EVENT_STATUS=0x00000020)
+21314281:T0-MAIN> TA finished
+21314308:T0-PM> Is TA: 1, finished: 1 on HW 0 (HWRTData = 0xc03d76c0, MemCtx = 0xc0045000). FL different between TA/3D: global:0, local:2
+21314324:T0-PM> UFL-TA-Base: 0x000000800252c900 (SP = 431, 4PB = 16, 4PT = 0), FL-TA-Base: 0x00000080014ab010 (SP = 8, 4PB = 8, 4PT = 9)
+21314335:T0-PM> ALIST0 SP = 11, MLIST0 SP = 9 (VCE 0x0000000068350001, TE 0x000000006833c001, ALIST 0x0000000068346001)
+21314347:T0-RTD> TA RTData 0xc03d76c0 finished on HW context 0
+21314362:T0-MAIN> Perform TPC flush.
+21314414:T0-MAIN> UFO Updates for FWCtx 0xc0045040 @ 4176
+21314429:T0-MAIN> UFO Update: [0xc0097038] = 0x00000703
+21314433:T0-MAIN> UFO Update: [0xc00427f8] = 0x00000519
+21314477:T0-BIF> Deactivate MemCtx=0xc0045000, ungrab reg set 1 refcount now 0
+21314526:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 12784
+21314543:T0-MAIN> UFO PR-Check: [0xc0097038] is 0x00000703 requires >= 0x00000703
+21314592:T0-MTS> Ready-to-run debug Driver ID = 0, DM = 3, item = 0xc0045118
+21314614:T0-MTS> Client command header DM = 3, client CCB = 0xc0046000, cmd = 0xc0049208
+21314645:T0-PM> PM running primary config (Core 0)
+21314663:T0-BIF> Activate MemCtx=0xc0045000 DM=3 secure=0
+21314674:T0-BIF> Setup register set=1 DM=3, PC address=0x000000014ffb1000, OSid=0, NewPCRegRequired=0
+21314687:T0-BIF> Grab reg set 1 refcount now 1
+21314750:T0-PM> PM running primary config (Core 0)
+21314782:T0-RTD> Store Freelist 0xc0504980 type: 0 (0:local,1:global) for PMDM1: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x000000800216a010, stacktop = 0x0000000000000019, Alloc Page Count = 0, Alloc MMU Page Count = 0
+21314793:T0-PM> PM reverting to previous config (Core 0)
+21314800:T0-PM> PM running primary config (Core 0)
+21314806:T0-RTD> Store Freelist 0xc03d6fc0 type: 0 (0:local,1:global) for PMDM0: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x00000080014ab010, stacktop = 0x0000000000000008, Alloc Page Count = 8, Alloc MMU Page Count = 9
+21314815:T0-PM> PM reverting to previous config (Core 0)
+21314833:T0-RTD> Load Freelist 0xc03d6fc0 type: 0 (0:local,1:global) for PMDM1: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x00000080014ab010, stacktop = 0x0000000000000008, Alloc Page Count = 8, Alloc MMU Page Count = 9
+21314852:T0-RTD> CONTEXT_PB_BASE set to 0x0, FL different between TA/3D: local: 0, global: 0
+21314884:T0-RTD> Loading stack-pointers for 1 (0:MidTA,1:3D) on context 1, MLIST = 0x00000009, ALIST = 0x000000000000000b
+21314904:T0-RTD> 3D Buffers: FWCtx 0xc0045118, RTData 0xc03d76c0 on ctx 1, (MemCtx 0xc0045000)
+21314916:T0-RTD> 3D RTData 0xc03d76c0 ready on HW context 1
+21314969:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x8001500f)
+21314981:T0-MAIN>   Phantom 0: USCTiles=6
+21314997:T0-PM> Is TA: 0, finished: 0 on HW 1 (HWRTData = 0xc03d76c0, MemCtx = 0xc0045000). FL different between TA/3D: global:0, local:0
+21315014:T0-PM> UFL-3D-Base: 0x000000800252c900 (SP = 431, 4PB = 16, 4PT = 0), FL-3D-Base: 0x00000080014ab010 (SP = 8, 4PB = 8, 4PT = 9)
+21315026:T0-PM> ALIST1 SP = 11, MLIST1 SP = 9 (VCE 0x0000000068350001, TE 0x000000006833c001, ALIST 0x0000000068346001)
+21315044:T0-MAIN> Kick 3D: FWCtx 0xc0045118 @ 12808, RTD 0xc03d76c0, Partial render:0, CSW resume:0. (PID:15703, prio:1, frame:16415, ext:0x0000415e, int:0x00006f22)
+21315169:T0-MTS> Irq Task complete.
+21315202:T0-MTS> Bg Task complete DM Bitfield: 0
+21315218:T0-MTS> Kick MTS Irq task DM=0
+21315230:T0-MTS> Irq Task (EVENT_STATUS=0x00000000)
+21315273:T0-MTS> Irq Task complete.
+21315295:T0-MTS> Bg Task Driver ID = 0
+21315352:T0-MTS> KCCB Slot 688: Cmd=0x2abc0071, Driver ID=0
+21315379:T0-MAIN> cCCB Woff update = 4344, DM = 2, FWCtx = 0xc0045040
+21315409:T0-MAIN> UFO Checks for FWCtx 0xc0045040 @ 4208
+21315430:T0-MAIN> UFO Check: [0xc0042618] is 0x00000ac1 requires 0x00000519
+21315470:T0-MAIN> cCCB Woff update = 13584, DM = 3, FWCtx = 0xc0045118
+21315509:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 13184
+21315531:T0-MAIN> UFO PR-Check: [0xc0097024] is 0x00000704 requires >= 0x00000705
+21315562:T0-MTS> KCCB Slot 689: Cmd=0x2abc0071, Driver ID=0
+21315586:T0-MAIN> cCCB Woff update = 4480, DM = 2, FWCtx = 0xc0045040
+21315617:T0-MAIN> cCCB Woff update = 13984, DM = 3, FWCtx = 0xc0045118
+21315689:T0-MTS> Bg Task complete DM Bitfield: 0
+21315720:T0-MTS> Bg Task Driver ID = 0
+21315754:T0-MTS> Bg Task complete DM Bitfield: 0
+21319185:T0-MTS> Irq Task (EVENT_STATUS=0x00000018)
+21319219:T0-PM> PM running primary config (Core 0)
+21319234:T0-MAIN> 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+21319267:T0-PM> Is TA: 0, finished: 1 on HW 1 (HWRTData = 0xc03d76c0, MemCtx = 0xc0045000). FL different between TA/3D: global:0, local:0
+21319286:T0-PM> UFL-3D-Base: 0x000000800252c900 (SP = 447, 4PB = 0, 4PT = 0), FL-3D-Base: 0x00000080014ab010 (SP = 25, 4PB = 0, 4PT = 0)
+21319298:T0-PM> ALIST1 SP = 11, MLIST1 SP = 9 (VCE 0x0000000068350001, TE 0x000000006833c001, ALIST 0x0000000068346001)
+21319307:T0-RTD> 3D RTData 0xc03d76c0 finished on HW context 1
+21319363:T0-MAIN> UFO Updates for FWCtx 0xc0045118 @ 13144
+21319382:T0-MAIN> UFO Update: [0xc0097038] = 0x00000704
+21319392:T0-MAIN> UFO Update: [0xc0042618] = 0x00000519
+21319401:T0-MAIN> UFO Update: [0xc0042790] = 0x00000519
+21319472:T0-BIF> Deactivate MemCtx=0xc0045000, ungrab reg set 1 refcount now 0
+21319535:T0-MAIN> UFO Checks for FWCtx 0xc0045040 @ 4208
+21319556:T0-MAIN> UFO Check: [0xc0042618] is 0x00000519 requires 0x00000519
+21319576:T0-MAIN> UFO Checks for FWCtx 0xc0045040 @ 4344
+21319587:T0-MAIN> UFO Check: [0xc0042210] is 0x00000ac1 requires 0x00000519
+21319640:T0-MTS> Ready-to-run debug Driver ID = 0, DM = 2, item = 0xc0045040
+21319664:T0-MTS> Client command header DM = 2, client CCB = 0xc0067000, cmd = 0xc0068088
+21319682:T0-PM> PM running primary config (Core 0)
+21319713:T0-BIF> Activate MemCtx=0xc0045000 DM=2 secure=0
+21319723:T0-BIF> Setup register set=1 DM=2, PC address=0x000000014ffb1000, OSid=0, NewPCRegRequired=0
+21319740:T0-BIF> Grab reg set 1 refcount now 1
+21319811:T0-RTD> Load Freelist 0xc02d1880 type: 0 (0:local,1:global) for PMDM0: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x000000800273e010, stacktop = 0x0000000000000019, Alloc Page Count = 0, Alloc MMU Page Count = 0
+21319840:T0-RTD> CONTEXT_PB_BASE set to 0x2, FL different between TA/3D: local: 1, global: 0
+21319886:T0-RTD> TA RTData 0xc02d1ac0 loaded on HW context 0
+21319899:T0-RTD> TA Buffers: FWCtx 0xc0045040, RTData 0xc02d1ac0, VHeap 0x0000008002c20600, TPC 0x0000008002c2a000 (MemCtx 0xc0045000)
+21319928:T0-RTD> TE Region headers base 0x0000008002c19e00 (RGNHDR Init: 1)
+21319978:T0-PM> Is TA: 1, finished: 0 on HW 0 (HWRTData = 0xc02d1ac0, MemCtx = 0xc0045000). FL different between TA/3D: global:0, local:2
+21319992:T0-PM> UFL-TA-Base: 0x000000800252c900 (SP = 447, 4PB = 0, 4PT = 0), FL-TA-Base: 0x000000800273e010 (SP = 25, 4PB = 0, 4PT = 0)
+21320002:T0-PM> ALIST0 SP = 0, MLIST0 SP = 0 (VCE 0x000000013c63f001, TE 0x000000016cda0001, ALIST 0x0000000170a84001)
+21320021:T0-MAIN> Kick TA: FWCtx 0xc0045040 @ 4232, RTD 0xc02d1ac0, First kick:1, Last kick:1, CSW resume:0. (PID:15703, prio:1, frame:16415, ext:0x00004161, int:0x00006f23)
+21320187:T0-MTS> Irq Task complete.
+21320231:T0-MTS> Bg Task Driver ID = 0
+21320284:T0-MTS> Irq Task (EVENT_STATUS=0x00000020)
+21320319:T0-MAIN> TA finished
+21320341:T0-PM> Is TA: 1, finished: 1 on HW 0 (HWRTData = 0xc02d1ac0, MemCtx = 0xc0045000). FL different between TA/3D: global:0, local:2
+21320365:T0-PM> UFL-TA-Base: 0x000000800252c900 (SP = 431, 4PB = 16, 4PT = 0), FL-TA-Base: 0x000000800273e010 (SP = 8, 4PB = 8, 4PT = 9)
+21320376:T0-PM> ALIST0 SP = 11, MLIST0 SP = 9 (VCE 0x0000000170a84001, TE 0x000000010a118001, ALIST 0x00000001aff02001)
+21320389:T0-RTD> TA RTData 0xc02d1ac0 finished on HW context 0
+21320399:T0-MAIN> Perform TPC flush.
+21320455:T0-MAIN> UFO Updates for FWCtx 0xc0045040 @ 4312
+21320476:T0-MAIN> UFO Update: [0xc0097024] = 0x00000705
+21320485:T0-MAIN> UFO Update: [0xc0042728] = 0x00000519
+21320570:T0-BIF> Deactivate MemCtx=0xc0045000, ungrab reg set 1 refcount now 0
+21320641:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 13184
+21320659:T0-MAIN> UFO PR-Check: [0xc0097024] is 0x00000705 requires >= 0x00000705
+21320684:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 13584
+21320696:T0-MAIN> UFO PR-Check: [0xc009701c] is 0x000004a4 requires >= 0x000004a5
+21320754:T0-MTS> Ready-to-run debug Driver ID = 0, DM = 3, item = 0xc0045118
+21320780:T0-MTS> Client command header DM = 3, client CCB = 0xc0046000, cmd = 0xc0049398
+21320816:T0-PM> PM running primary config (Core 0)
+21320834:T0-BIF> Activate MemCtx=0xc0045000 DM=3 secure=0
+21320846:T0-BIF> Setup register set=1 DM=3, PC address=0x000000014ffb1000, OSid=0, NewPCRegRequired=0
+21320864:T0-BIF> Grab reg set 1 refcount now 1
+21320931:T0-PM> PM running primary config (Core 0)
+21320959:T0-RTD> Store Freelist 0xc03d6fc0 type: 0 (0:local,1:global) for PMDM1: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x00000080014ab010, stacktop = 0x0000000000000019, Alloc Page Count = 0, Alloc MMU Page Count = 0
+21320971:T0-PM> PM reverting to previous config (Core 0)
+21320982:T0-PM> PM running primary config (Core 0)
+21320996:T0-RTD> Store Freelist 0xc02d1880 type: 0 (0:local,1:global) for PMDM0: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x000000800273e010, stacktop = 0x0000000000000008, Alloc Page Count = 8, Alloc MMU Page Count = 9
+21321004:T0-PM> PM reverting to previous config (Core 0)
+21321025:T0-RTD> Load Freelist 0xc02d1880 type: 0 (0:local,1:global) for PMDM1: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x000000800273e010, stacktop = 0x0000000000000008, Alloc Page Count = 8, Alloc MMU Page Count = 9
+21321046:T0-RTD> CONTEXT_PB_BASE set to 0x0, FL different between TA/3D: local: 0, global: 0
+21321080:T0-RTD> Loading stack-pointers for 1 (0:MidTA,1:3D) on context 1, MLIST = 0x00000009, ALIST = 0x000000000000000b
+21321106:T0-RTD> 3D Buffers: FWCtx 0xc0045118, RTData 0xc02d1ac0 on ctx 1, (MemCtx 0xc0045000)
+21321117:T0-RTD> 3D RTData 0xc02d1ac0 ready on HW context 1
+21321179:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x8001500f)
+21321196:T0-MAIN>   Phantom 0: USCTiles=6
+21321216:T0-PM> Is TA: 0, finished: 0 on HW 1 (HWRTData = 0xc02d1ac0, MemCtx = 0xc0045000). FL different between TA/3D: global:0, local:0
+21321233:T0-PM> UFL-3D-Base: 0x000000800252c900 (SP = 431, 4PB = 16, 4PT = 0), FL-3D-Base: 0x000000800273e010 (SP = 8, 4PB = 8, 4PT = 9)
+21321245:T0-PM> ALIST1 SP = 11, MLIST1 SP = 9 (VCE 0x0000000170a84001, TE 0x000000010a118001, ALIST 0x00000001aff02001)
+21321267:T0-MAIN> Kick 3D: FWCtx 0xc0045118 @ 13208, RTD 0xc02d1ac0, Partial render:0, CSW resume:0. (PID:15703, prio:1, frame:16415, ext:0x00004161, int:0x00006f23)
+21321450:T0-MTS> Irq Task complete.
+21321606:T0-MTS> Bg Task complete DM Bitfield: 1
+21321637:T0-MTS> Kick MTS Irq task DM=0
+21321663:T0-MTS> Irq Task (EVENT_STATUS=0x00000000)
+21321770:T0-MTS> Irq Task complete.
+21321816:T0-MTS> Bg Task Driver ID = 0
+21321971:T0-MTS> Bg Task complete DM Bitfield: 0
+21325114:T0-MTS> Irq Task (EVENT_STATUS=0x00000018)
+21325150:T0-PM> PM running primary config (Core 0)
+21325164:T0-MAIN> 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+21325199:T0-PM> Is TA: 0, finished: 1 on HW 1 (HWRTData = 0xc02d1ac0, MemCtx = 0xc0045000). FL different between TA/3D: global:0, local:0
+21325215:T0-PM> UFL-3D-Base: 0x000000800252c900 (SP = 447, 4PB = 0, 4PT = 0), FL-3D-Base: 0x000000800273e010 (SP = 25, 4PB = 0, 4PT = 0)
+21325227:T0-PM> ALIST1 SP = 11, MLIST1 SP = 9 (VCE 0x0000000170a84001, TE 0x000000010a118001, ALIST 0x00000001aff02001)
+21325237:T0-RTD> 3D RTData 0xc02d1ac0 finished on HW context 1
+21325292:T0-MAIN> UFO Updates for FWCtx 0xc0045118 @ 13544
+21325309:T0-MAIN> UFO Update: [0xc0097024] = 0x00000706
+21325318:T0-MAIN> UFO Update: [0xc0042210] = 0x00000519
+21325326:T0-MAIN> UFO Update: [0xc0042430] = 0x00000519
+21325398:T0-BIF> Deactivate MemCtx=0xc0045000, ungrab reg set 1 refcount now 0
+21325455:T0-MAIN> UFO Checks for FWCtx 0xc0045040 @ 4344
+21325475:T0-MAIN> UFO Check: [0xc0042210] is 0x00000519 requires 0x00000519
+21325535:T0-MTS> Ready-to-run debug Driver ID = 0, DM = 2, item = 0xc0045040
+21325557:T0-MTS> Client command header DM = 2, client CCB = 0xc0067000, cmd = 0xc0068110
+21325570:T0-PM> PM running primary config (Core 0)
+21325597:T0-BIF> Activate MemCtx=0xc0045000 DM=2 secure=0
+21325608:T0-BIF> Setup register set=1 DM=2, PC address=0x000000014ffb1000, OSid=0, NewPCRegRequired=0
+21325620:T0-BIF> Grab reg set 1 refcount now 1
+21325677:T0-RTD> Load Freelist 0xc0045bc0 type: 0 (0:local,1:global) for PMDM0: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x00000080025f3010, stacktop = 0x0000000000000019, Alloc Page Count = 0, Alloc MMU Page Count = 0
+21325699:T0-RTD> CONTEXT_PB_BASE set to 0x2, FL different between TA/3D: local: 1, global: 0
+21325734:T0-RTD> TA RTData 0xc0098000 loaded on HW context 0
+21325747:T0-RTD> TA Buffers: FWCtx 0xc0045040, RTData 0xc0098000, VHeap 0x000000800273d200, TPC 0x0000008000014780 (MemCtx 0xc0045000)
+21325780:T0-RTD> TE Region headers base 0x000000800256de80 (RGNHDR Init: 1)
+21325809:T0-PM> Is TA: 1, finished: 0 on HW 0 (HWRTData = 0xc0098000, MemCtx = 0xc0045000). FL different between TA/3D: global:0, local:2
+21325824:T0-PM> UFL-TA-Base: 0x000000800252c900 (SP = 447, 4PB = 0, 4PT = 0), FL-TA-Base: 0x00000080025f3010 (SP = 25, 4PB = 0, 4PT = 0)
+21325834:T0-PM> ALIST0 SP = 0, MLIST0 SP = 0 (VCE 0x0000000127df2001, TE 0x0000000169608001, ALIST 0x00000001aaa1b001)
+21325850:T0-MAIN> Kick TA: FWCtx 0xc0045040 @ 4368, RTD 0xc0098000, First kick:1, Last kick:1, CSW resume:0. (PID:15703, prio:1, frame:16415, ext:0x00004160, int:0x00006f24)
+21325942:T0-MAIN> TA finished
+21325965:T0-PM> Is TA: 1, finished: 1 on HW 0 (HWRTData = 0xc0098000, MemCtx = 0xc0045000). FL different between TA/3D: global:0, local:2
+21325979:T0-PM> UFL-TA-Base: 0x000000800252c900 (SP = 447, 4PB = 0, 4PT = 0), FL-TA-Base: 0x00000080025f3010 (SP = 10, 4PB = 6, 4PT = 9)
+21325990:T0-PM> ALIST0 SP = 2, MLIST0 SP = 9 (VCE 0x00000001aaa1b001, TE 0x0000000122ff8001, ALIST 0x00000001a27c2001)
+21326000:T0-RTD> TA RTData 0xc0098000 finished on HW context 0
+21326011:T0-MAIN> Perform TPC flush.
+21326057:T0-MAIN> UFO Updates for FWCtx 0xc0045040 @ 4448
+21326071:T0-MAIN> UFO Update: [0xc009701c] = 0x000004a5
+21326081:T0-MAIN> UFO Update: [0xc0042410] = 0x00000519
+21326137:T0-BIF> Deactivate MemCtx=0xc0045000, ungrab reg set 1 refcount now 0
+21326194:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 13584
+21326213:T0-MAIN> UFO PR-Check: [0xc009701c] is 0x000004a5 requires >= 0x000004a5
+21326263:T0-MTS> Ready-to-run debug Driver ID = 0, DM = 3, item = 0xc0045118
+21326285:T0-MTS> Client command header DM = 3, client CCB = 0xc0046000, cmd = 0xc0049528
+21326316:T0-PM> PM running primary config (Core 0)
+21326334:T0-BIF> Activate MemCtx=0xc0045000 DM=3 secure=0
+21326345:T0-BIF> Setup register set=1 DM=3, PC address=0x000000014ffb1000, OSid=0, NewPCRegRequired=0
+21326357:T0-BIF> Grab reg set 1 refcount now 1
+21326420:T0-PM> PM running primary config (Core 0)
+21326449:T0-RTD> Store Freelist 0xc02d1880 type: 0 (0:local,1:global) for PMDM1: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x000000800273e010, stacktop = 0x0000000000000019, Alloc Page Count = 0, Alloc MMU Page Count = 0
+21326460:T0-PM> PM reverting to previous config (Core 0)
+21326468:T0-PM> PM running primary config (Core 0)
+21326473:T0-RTD> Store Freelist 0xc0045bc0 type: 0 (0:local,1:global) for PMDM0: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x00000080025f3010, stacktop = 0x000000000000000a, Alloc Page Count = 6, Alloc MMU Page Count = 9
+21326484:T0-PM> PM reverting to previous config (Core 0)
+21326502:T0-RTD> Load Freelist 0xc0045bc0 type: 0 (0:local,1:global) for PMDM1: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x00000080025f3010, stacktop = 0x000000000000000a, Alloc Page Count = 6, Alloc MMU Page Count = 9
+21326527:T0-RTD> CONTEXT_PB_BASE set to 0x0, FL different between TA/3D: local: 0, global: 0
+21326558:T0-RTD> Loading stack-pointers for 1 (0:MidTA,1:3D) on context 1, MLIST = 0x00000009, ALIST = 0x0000000000000002
+21326588:T0-RTD> 3D Buffers: FWCtx 0xc0045118, RTData 0xc0098000 on ctx 1, (MemCtx 0xc0045000)
+21326600:T0-RTD> 3D RTData 0xc0098000 ready on HW context 1
+21326653:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x8001500f)
+21326665:T0-MAIN>   Phantom 0: USCTiles=6
+21326681:T0-PM> Is TA: 0, finished: 0 on HW 1 (HWRTData = 0xc0098000, MemCtx = 0xc0045000). FL different between TA/3D: global:0, local:0
+21326697:T0-PM> UFL-3D-Base: 0x000000800252c900 (SP = 447, 4PB = 0, 4PT = 0), FL-3D-Base: 0x00000080025f3010 (SP = 10, 4PB = 6, 4PT = 9)
+21326708:T0-PM> ALIST1 SP = 2, MLIST1 SP = 9 (VCE 0x00000001aaa1b001, TE 0x0000000122ff8001, ALIST 0x00000001a27c2001)
+21326733:T0-MAIN> Kick 3D: FWCtx 0xc0045118 @ 13608, RTD 0xc0098000, Partial render:0, CSW resume:0. (PID:15703, prio:1, frame:16415, ext:0x00004160, int:0x00006f24)
+21326872:T0-MTS> Irq Task complete.
+21326902:T0-MTS> Irq Task (EVENT_STATUS=0x00000118)
+21326941:T0-PM> PM running primary config (Core 0)
+21326957:T0-MAIN> 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+21326992:T0-PM> Is TA: 0, finished: 1 on HW 1 (HWRTData = 0xc0098000, MemCtx = 0xc0045000). FL different between TA/3D: global:0, local:0
+21327010:T0-PM> UFL-3D-Base: 0x000000800252c900 (SP = 447, 4PB = 0, 4PT = 0), FL-3D-Base: 0x00000080025f3010 (SP = 25, 4PB = 0, 4PT = 0)
+21327021:T0-PM> ALIST1 SP = 2, MLIST1 SP = 9 (VCE 0x00000001aaa1b001, TE 0x0000000122ff8001, ALIST 0x00000001a27c2001)
+21327031:T0-RTD> 3D RTData 0xc0098000 finished on HW context 1
+21327081:T0-MAIN> UFO Updates for FWCtx 0xc0045118 @ 13944
+21327101:T0-MAIN> UFO Update: [0xc009701c] = 0x000004a6
+21327109:T0-MAIN> UFO Update: [0xc0042780] = 0x00000519
+21327120:T0-MAIN> UFO Update: [0xc0042560] = 0x00000519
+21327173:T0-BIF> Deactivate MemCtx=0xc0045000, ungrab reg set 1 refcount now 0
+21327302:T0-MTS> Irq Task complete.
+21327333:T0-MTS> Irq Task (EVENT_STATUS=0x00000000)
+21327389:T0-MTS> Irq Task complete.
+21327408:T0-MTS> Bg Task Driver ID = 0
+21327493:T0-MTS> Bg Task complete DM Bitfield: 0
+21327507:T0-MTS> Kick MTS Irq task DM=0
+21327525:T0-MTS> Irq Task (EVENT_STATUS=0x00000000)
+21327581:T0-MTS> Irq Task complete.
+21327609:T0-MTS> Bg Task Driver ID = 0
+21327629:T0-MTS> Bg Task complete DM Bitfield: 0
+21327635:T0-MTS> Kick MTS Irq task DM=0
+21327646:T0-MTS> Irq Task (EVENT_STATUS=0x00000000)
+21327695:T0-MTS> Irq Task complete.
+21329650:T0-MTS> Bg Task Driver ID = 0
+21329673:T0-MTS> KCCB Slot 690: Cmd=0x2abc0071, Driver ID=0
+21329697:T0-MAIN> cCCB Woff update = 4592, DM = 2, FWCtx = 0xc0045040
+21329754:T0-MTS> Kick MTS Irq task DM=0
+21329773:T0-MAIN> cCCB Woff update = 14384, DM = 3, FWCtx = 0xc0045118
+21329799:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 13984
+21329818:T0-MAIN> UFO PR-Check: [0xc009703c] is 0x00000702 requires >= 0x00000703
+21329850:T0-MTS> Irq Task (EVENT_STATUS=0x00000000)
+21329915:T0-MTS> Ready-to-run debug Driver ID = 0, DM = 2, item = 0xc0045040
+21329940:T0-MTS> Client command header DM = 2, client CCB = 0xc0067000, cmd = 0xc0068180
+21329954:T0-PM> PM running primary config (Core 0)
+21329979:T0-BIF> Activate MemCtx=0xc0045000 DM=2 secure=0
+21329991:T0-BIF> Setup register set=1 DM=2, PC address=0x000000014ffb1000, OSid=0, NewPCRegRequired=0
+21330003:T0-BIF> Grab reg set 1 refcount now 1
+21330063:T0-RTD> Load Freelist 0xc03d7400 type: 0 (0:local,1:global) for PMDM0: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x00000080014ac010, stacktop = 0x0000000000000019, Alloc Page Count = 0, Alloc MMU Page Count = 0
+21330091:T0-RTD> CONTEXT_PB_BASE set to 0x2, FL different between TA/3D: local: 1, global: 0
+21330127:T0-RTD> TA RTData 0xc03d77c0 loaded on HW context 0
+21330139:T0-RTD> TA Buffers: FWCtx 0xc0045040, RTData 0xc03d77c0, VHeap 0x00000080014ba200, TPC 0x00000080014d3000 (MemCtx 0xc0045000)
+21330174:T0-RTD> TE Region headers base 0x00000080014b6a00 (RGNHDR Init: 1)
+21330221:T0-PM> Is TA: 1, finished: 0 on HW 0 (HWRTData = 0xc03d77c0, MemCtx = 0xc0045000). FL different between TA/3D: global:0, local:2
+21330234:T0-PM> UFL-TA-Base: 0x000000800252c900 (SP = 447, 4PB = 0, 4PT = 0), FL-TA-Base: 0x00000080014ac010 (SP = 25, 4PB = 0, 4PT = 0)
+21330244:T0-PM> ALIST0 SP = 0, MLIST0 SP = 0 (VCE 0x0000000068361001, TE 0x000000006836a001, ALIST 0x000000006835f001)
+21330261:T0-MAIN> Kick TA: FWCtx 0xc0045040 @ 4480, RTD 0xc03d77c0, First kick:1, Last kick:1, CSW resume:0. (PID:15703, prio:1, frame:16416, ext:0x00004165, int:0x00006f25)
+21330400:T0-MTS> Irq Task complete.
+21330431:T0-MTS> Irq Task (EVENT_STATUS=0x00000020)
+21330465:T0-MAIN> TA finished
+21330483:T0-PM> Is TA: 1, finished: 1 on HW 0 (HWRTData = 0xc03d77c0, MemCtx = 0xc0045000). FL different between TA/3D: global:0, local:2
+21330506:T0-PM> UFL-TA-Base: 0x000000800252c900 (SP = 447, 4PB = 0, 4PT = 0), FL-TA-Base: 0x00000080014ac010 (SP = 10, 4PB = 6, 4PT = 9)
+21330517:T0-PM> ALIST0 SP = 2, MLIST0 SP = 9 (VCE 0x000000006835f001, TE 0x0000000068367001, ALIST 0x0000000068366001)
+21330528:T0-RTD> TA RTData 0xc03d77c0 finished on HW context 0
+21330537:T0-MAIN> Perform TPC flush.
+21330595:T0-MAIN> UFO Updates for FWCtx 0xc0045040 @ 4560
+21330610:T0-MAIN> UFO Update: [0xc009703c] = 0x00000703
+21330618:T0-MAIN> UFO Update: [0xc00423a0] = 0x00000519
+21330665:T0-BIF> Deactivate MemCtx=0xc0045000, ungrab reg set 1 refcount now 0
+21330727:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 13984
+21330745:T0-MAIN> UFO PR-Check: [0xc009703c] is 0x00000703 requires >= 0x00000703
+21330796:T0-MTS> Ready-to-run debug Driver ID = 0, DM = 3, item = 0xc0045118
+21330819:T0-MTS> Client command header DM = 3, client CCB = 0xc0046000, cmd = 0xc00496b8
+21330855:T0-PM> PM running primary config (Core 0)
+21330879:T0-BIF> Activate MemCtx=0xc0045000 DM=3 secure=0
+21330888:T0-BIF> Setup register set=1 DM=3, PC address=0x000000014ffb1000, OSid=0, NewPCRegRequired=0
+21330901:T0-BIF> Grab reg set 1 refcount now 1
+21330964:T0-PM> PM running primary config (Core 0)
+21330988:T0-RTD> Store Freelist 0xc0045bc0 type: 0 (0:local,1:global) for PMDM1: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x00000080025f3010, stacktop = 0x0000000000000019, Alloc Page Count = 0, Alloc MMU Page Count = 0
+21331000:T0-PM> PM reverting to previous config (Core 0)
+21331006:T0-PM> PM running primary config (Core 0)
+21331014:T0-RTD> Store Freelist 0xc03d7400 type: 0 (0:local,1:global) for PMDM0: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x00000080014ac010, stacktop = 0x000000000000000a, Alloc Page Count = 6, Alloc MMU Page Count = 9
+21331023:T0-PM> PM reverting to previous config (Core 0)
+21331048:T0-RTD> Load Freelist 0xc03d7400 type: 0 (0:local,1:global) for PMDM1: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x00000080014ac010, stacktop = 0x000000000000000a, Alloc Page Count = 6, Alloc MMU Page Count = 9
+21331078:T0-RTD> CONTEXT_PB_BASE set to 0x0, FL different between TA/3D: local: 0, global: 0
+21331115:T0-RTD> Loading stack-pointers for 1 (0:MidTA,1:3D) on context 1, MLIST = 0x00000009, ALIST = 0x0000000000000002
+21331142:T0-RTD> 3D Buffers: FWCtx 0xc0045118, RTData 0xc03d77c0 on ctx 1, (MemCtx 0xc0045000)
+21331153:T0-RTD> 3D RTData 0xc03d77c0 ready on HW context 1
+21331218:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x8001500f)
+21331229:T0-MAIN>   Phantom 0: USCTiles=6
+21331249:T0-PM> Is TA: 0, finished: 0 on HW 1 (HWRTData = 0xc03d77c0, MemCtx = 0xc0045000). FL different between TA/3D: global:0, local:0
+21331268:T0-PM> UFL-3D-Base: 0x000000800252c900 (SP = 447, 4PB = 0, 4PT = 0), FL-3D-Base: 0x00000080014ac010 (SP = 10, 4PB = 6, 4PT = 9)
+21331279:T0-PM> ALIST1 SP = 2, MLIST1 SP = 9 (VCE 0x000000006835f001, TE 0x0000000068367001, ALIST 0x0000000068366001)
+21331300:T0-MAIN> Kick 3D: FWCtx 0xc0045118 @ 14008, RTD 0xc03d77c0, Partial render:0, CSW resume:0. (PID:15703, prio:1, frame:16416, ext:0x00004165, int:0x00006f25)
+21331437:T0-MTS> Irq Task complete.
+21331512:T0-MTS> Irq Task (EVENT_STATUS=0x00000118)
+21331568:T0-PM> PM running primary config (Core 0)
+21331588:T0-MAIN> 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+21331626:T0-PM> Is TA: 0, finished: 1 on HW 1 (HWRTData = 0xc03d77c0, MemCtx = 0xc0045000). FL different between TA/3D: global:0, local:0
+21331654:T0-PM> UFL-3D-Base: 0x000000800252c900 (SP = 447, 4PB = 0, 4PT = 0), FL-3D-Base: 0x00000080014ac010 (SP = 25, 4PB = 0, 4PT = 0)
+21331665:T0-PM> ALIST1 SP = 2, MLIST1 SP = 9 (VCE 0x000000006835f001, TE 0x0000000068367001, ALIST 0x0000000068366001)
+21331675:T0-RTD> 3D RTData 0xc03d77c0 finished on HW context 1
+21331728:T0-MAIN> UFO Updates for FWCtx 0xc0045118 @ 14344
+21331746:T0-MAIN> UFO Update: [0xc009703c] = 0x00000704
+21331758:T0-MAIN> UFO Update: [0xc00424e0] = 0x00000519
+21331768:T0-MAIN> UFO Update: [0xc00426a8] = 0x00000519
+21331826:T0-BIF> Deactivate MemCtx=0xc0045000, ungrab reg set 1 refcount now 0
+21331941:T0-MTS> Irq Task complete.
+21331960:T0-MTS> Bg Task complete DM Bitfield: 1
+21331974:T0-MTS> Kick MTS Irq task DM=0
+21331987:T0-MTS> Irq Task (EVENT_STATUS=0x00000000)
+21332028:T0-MTS> Irq Task complete.
+21332048:T0-MTS> Bg Task Driver ID = 0
+21332079:T0-MTS> Bg Task complete DM Bitfield: 0
+21332088:T0-MTS> Kick MTS Irq task DM=0
+21332102:T0-MTS> Irq Task (EVENT_STATUS=0x00000000)
+21332152:T0-MTS> Irq Task complete.
+21334848:T0-MTS> Bg Task Driver ID = 0
+21334894:T0-MTS> Bg Task complete DM Bitfield: 0
+21334901:T0-MTS> Kick MTS Irq task DM=0
+21334914:T0-MTS> Irq Task (EVENT_STATUS=0x00000000)
+21334968:T0-MTS> Irq Task complete.
+21375274:T0-MTS> Bg Task Driver ID = 0
+21375328:T0-MTS> Bg Task complete DM Bitfield: 0
+21375341:T0-MTS> Kick MTS Irq task DM=0
+21375353:T0-MTS> Irq Task (EVENT_STATUS=0x00000000)
+21375416:T0-MTS> Irq Task complete.
+21375621:T0-MTS> Bg Task Driver ID = 0
+21375643:T0-MTS> KCCB Slot 691: Cmd=0x2abc00c8, Driver ID=0
+21375684:T0-MTS> Bg Task complete DM Bitfield: 1
+21375698:T0-MTS> Kick MTS Irq task DM=0
+21375709:T0-MTS> Irq Task (EVENT_STATUS=0x00000000)
+21375775:T0-MTS> Irq Task complete.
+21375801:T0-MTS> Bg Task Driver ID = 0
+21375820:T0-MTS> Bg Task complete DM Bitfield: 0
+21375829:T0-MTS> Kick MTS Irq task DM=0
+21375841:T0-MTS> Irq Task (EVENT_STATUS=0x00000000)
+21375893:T0-MTS> Irq Task complete.
+21375906:T0-MAIN> GPU units deinit
+21375927:T0-PM> PM running primary config (Core 0)
+21375945:T0-RTD> Store Freelist 0xc03d7400 type: 0 (0:local,1:global) for PMDM0: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x00000080014ac010, stacktop = 0x0000000000000019, Alloc Page Count = 0, Alloc MMU Page Count = 0
+21375956:T0-PM> PM reverting to previous config (Core 0)
+21375968:T0-PM> PM running primary config (Core 0)
+21375981:T0-RTD> Store Freelist 0xc0045500 type: 1 (0:local,1:global) for PMDM0: FL Total Pages 448 (max=9216,grow size=256), FL-addr = 0x000000800252c900, stacktop = 0x00000000000001bf, Alloc Page Count = 0, Alloc MMU Page Count = 0
+21375988:T0-PM> PM reverting to previous config (Core 0)
+21375998:T0-PM> PM running primary config (Core 0)
+21376016:T0-PM> PM running primary config (Core 0)
+21376021:T0-RTD> Store Freelist 0xc03d7400 type: 0 (0:local,1:global) for PMDM1: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x00000080014ac010, stacktop = 0x0000000000000019, Alloc Page Count = 0, Alloc MMU Page Count = 0
+21376032:T0-PM> PM reverting to previous config (Core 0)
+21376037:T0-PM> PM running primary config (Core 0)
+21376048:T0-RTD> Store Freelist 0xc0045500 type: 1 (0:local,1:global) for PMDM1: FL Total Pages 448 (max=9216,grow size=256), FL-addr = 0x000000800252c900, stacktop = 0x00000000000001bf, Alloc Page Count = 0, Alloc MMU Page Count = 0
+21376058:T0-PM> PM reverting to previous config (Core 0)
+21376088:T0-MAIN> GPU deinit
+474:T0-MAIN> State of firmware's private data at boot time: 1 (0 = uninitialised, 1 = initialised); Fw State Flags = 0x00000001
+491:T0-MAIN> State of firmware's private data at boot time: 1 (0 = uninitialised, 1 = initialised); Fw State Flags = 0x00000001
+506:T0-MAIN> Core clock set to 1104000000 Hz
+526:T0-MAIN> GPU init
+555:T0-MAIN> Host Sync Partition marker: 101
+801:T0-MTS> Bg Task Driver ID = 0
+828:T0-MTS> KCCB Slot 692: Cmd=0x2abc0066, Driver ID=0
+903:T0-MTS> KCCB Slot 693: Cmd=0x2abc0065, Driver ID=0
+931:T0-MAIN> cCCB Woff update = 78792, DM = 3, FWCtx = 0xc024f400
+994:T0-MTS> Kick MTS Irq task DM=0
+1015:T0-MTS> Irq Task (EVENT_STATUS=0x00000000)
+1086:T0-MTS> Ready-to-run debug Driver ID = 0, DM = 3, item = 0xc024f400
+1111:T0-MTS> Client command header DM = 3, client CCB = 0xc0250000, cmd = 0xc0263300
+1196:T0-MAIN> GPU Units init (# mask: 0x1)
+1250:T0-BIF> Activate MemCtx=0xc01edf40 DM=3 secure=0
+1266:T0-BIF> Setup register set=2 DM=3, PC address=0x00000001a25a5000, OSid=0, NewPCRegRequired=1
+1277:T0-BIF> Alloc PC set 3 as register range [4 - 4]
+1305:T0-BIF> Grab reg set 3 refcount now 1
+1325:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x00025000)
+1332:T0-MAIN>   Phantom 0: USCTiles=6
+1350:T0-MAIN> Kick 3D TQ: FWCtx 0xc024f400 @ 78592, CSW resume:0. (PID:15935, prio:1, frame:43, ext:0x00000cc8, int:0x00006f26)
+1412:T0-MAIN> 3D Transfer finished
+1463:T0-MAIN> UFO Updates for FWCtx 0xc024f400 @ 78768
+1476:T0-MAIN> UFO Update: [0xc0042208] = 0x00000519
+1515:T0-BIF> Deactivate MemCtx=0xc01edf40, ungrab reg set 3 refcount now 0
+1609:T0-MTS> Irq Task complete.
+1639:T0-MTS> Irq Task (EVENT_STATUS=0x00000000)
+1677:T0-MTS> Irq Task complete.
+1711:T0-MTS> KCCB Slot 694: Cmd=0x2abc0071, Driver ID=0
+1740:T0-MAIN> cCCB Woff update = 10528, DM = 2, FWCtx = 0xc024f900
+1792:T0-MTS> Kick MTS Irq task DM=0
+1817:T0-MAIN> cCCB Woff update = 37776, DM = 3, FWCtx = 0xc024f9d8
+1847:T0-MAIN> UFO Checks for FWCtx 0xc024f9d8 @ 37352
+1868:T0-MAIN> UFO Check: [0xc0042208] is 0x00000519 requires 0x00000519
+1891:T0-MAIN> UFO Checks for FWCtx 0xc024f9d8 @ 37376
+1904:T0-MAIN> UFO PR-Check: [0xc02d00b0] is 0x00000008 requires >= 0x00000009
+1939:T0-MTS> Irq Task (EVENT_STATUS=0x00000000)
+2012:T0-MTS> Ready-to-run debug Driver ID = 0, DM = 2, item = 0xc024f900
+2037:T0-MTS> Client command header DM = 2, client CCB = 0xc02c0000, cmd = 0xc02c28b0
+2056:T0-PM> PM running primary config (Core 0)
+2084:T0-BIF> Activate MemCtx=0xc01edf40 DM=2 secure=0
+2096:T0-BIF> Setup register set=3 DM=2, PC address=0x00000001a25a5000, OSid=0, NewPCRegRequired=0
+2109:T0-BIF> Grab reg set 3 refcount now 1
+2174:T0-RTD> Load Freelist 0xc04b38c0 type: 0 (0:local,1:global) for PMDM0: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x00000080070da010, stacktop = 0x0000000000000019, Alloc Page Count = 0, Alloc MMU Page Count = 0
+2197:T0-RTD> Load Freelist 0xc024fc80 type: 1 (0:local,1:global) for PMDM0: FL Total Pages 448 (max=65536,grow size=256), FL-addr = 0x0000008000051900, stacktop = 0x00000000000001bf, Alloc Page Count = 0, Alloc MMU Page Count = 0
+2219:T0-RTD> CONTEXT_PB_BASE set to 0x3, FL different between TA/3D: local: 1, global: 1
+2257:T0-RTD> TA RTData 0xc04b3c80 loaded on HW context 0
+2271:T0-RTD> TA Buffers: FWCtx 0xc024f900, RTData 0xc04b3c80, VHeap 0x00000080070e1200, TPC 0x00000080070fa000 (MemCtx 0xc01edf40)
+2302:T0-RTD> TE Region headers base 0x00000080070dfb40 (RGNHDR Init: 1)
+2331:T0-PM> Is TA: 1, finished: 0 on HW 0 (HWRTData = 0xc04b3c80, MemCtx = 0xc01edf40). FL different between TA/3D: global:1, local:2
+2344:T0-PM> UFL-TA-Base: 0x0000008000051900 (SP = 447, 4PB = 0, 4PT = 0), FL-TA-Base: 0x00000080070da010 (SP = 25, 4PB = 0, 4PT = 0)
+2354:T0-PM> ALIST0 SP = 0, MLIST0 SP = 0 (VCE 0x00000000b54df001, TE 0x00000000abb02001, ALIST 0x00000000abb0b001)
+2372:T0-MAIN> Kick TA: FWCtx 0xc024f900 @ 10416, RTD 0xc04b3c80, First kick:1, Last kick:1, CSW resume:0. (PID:15935, prio:1, frame:43, ext:0x00000ccb, int:0x00006f27)
+2505:T0-MTS> Irq Task complete.
+2533:T0-MTS> Irq Task (EVENT_STATUS=0x00000020)
+2573:T0-MAIN> TA finished
+2591:T0-PM> Is TA: 1, finished: 1 on HW 0 (HWRTData = 0xc04b3c80, MemCtx = 0xc01edf40). FL different between TA/3D: global:1, local:2
+2607:T0-PM> UFL-TA-Base: 0x0000008000051900 (SP = 447, 4PB = 0, 4PT = 0), FL-TA-Base: 0x00000080070da010 (SP = 10, 4PB = 6, 4PT = 9)
+2617:T0-PM> ALIST0 SP = 2, MLIST0 SP = 9 (VCE 0x00000000abb0b001, TE 0x00000000abb00001, ALIST 0x00000000abb06001)
+2629:T0-RTD> TA RTData 0xc04b3c80 finished on HW context 0
+2638:T0-MAIN> Perform TPC flush.
+2676:T0-MAIN> UFO Updates for FWCtx 0xc024f900 @ 10496
+2691:T0-MAIN> UFO Update: [0xc02d00b0] = 0x00000009
+2698:T0-MAIN> UFO Update: [0xc0042500] = 0x00000519
+2750:T0-BIF> Deactivate MemCtx=0xc01edf40, ungrab reg set 3 refcount now 0
+2795:T0-MAIN> UFO Checks for FWCtx 0xc024f9d8 @ 37376
+2811:T0-MAIN> UFO PR-Check: [0xc02d00b0] is 0x00000009 requires >= 0x00000009
+2858:T0-MTS> Ready-to-run debug Driver ID = 0, DM = 3, item = 0xc024f9d8
+2877:T0-MTS> Client command header DM = 3, client CCB = 0xc02a0000, cmd = 0xc02a9218
+2909:T0-PM> PM running primary config (Core 0)
+2924:T0-BIF> Activate MemCtx=0xc01edf40 DM=3 secure=0
+2933:T0-BIF> Setup register set=3 DM=3, PC address=0x00000001a25a5000, OSid=0, NewPCRegRequired=0
+2947:T0-BIF> Grab reg set 3 refcount now 1
+3007:T0-PM> PM running primary config (Core 0)
+3027:T0-RTD> Store Freelist 0xc04b38c0 type: 0 (0:local,1:global) for PMDM0: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x00000080070da010, stacktop = 0x000000000000000a, Alloc Page Count = 6, Alloc MMU Page Count = 9
+3034:T0-PM> PM reverting to previous config (Core 0)
+3049:T0-RTD> Load Freelist 0xc04b38c0 type: 0 (0:local,1:global) for PMDM1: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x00000080070da010, stacktop = 0x000000000000000a, Alloc Page Count = 6, Alloc MMU Page Count = 9
+3063:T0-PM> PM running primary config (Core 0)
+3073:T0-RTD> Store Freelist 0xc024fc80 type: 1 (0:local,1:global) for PMDM0: FL Total Pages 448 (max=65536,grow size=256), FL-addr = 0x0000008000051900, stacktop = 0x00000000000001bf, Alloc Page Count = 0, Alloc MMU Page Count = 0
+3082:T0-PM> PM reverting to previous config (Core 0)
+3093:T0-RTD> Load Freelist 0xc024fc80 type: 1 (0:local,1:global) for PMDM1: FL Total Pages 448 (max=65536,grow size=256), FL-addr = 0x0000008000051900, stacktop = 0x00000000000001bf, Alloc Page Count = 0, Alloc MMU Page Count = 0
+3109:T0-RTD> CONTEXT_PB_BASE set to 0x0, FL different between TA/3D: local: 0, global: 0
+3135:T0-RTD> Loading stack-pointers for 1 (0:MidTA,1:3D) on context 1, MLIST = 0x00000009, ALIST = 0x0000000000000002
+3162:T0-RTD> 3D Buffers: FWCtx 0xc024f9d8, RTData 0xc04b3c80 on ctx 1, (MemCtx 0xc01edf40)
+3171:T0-RTD> 3D RTData 0xc04b3c80 ready on HW context 1
+3219:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x80135000)
+3229:T0-MAIN>   Phantom 0: USCTiles=6
+3247:T0-PM> Is TA: 0, finished: 0 on HW 1 (HWRTData = 0xc04b3c80, MemCtx = 0xc01edf40). FL different between TA/3D: global:0, local:0
+3263:T0-PM> UFL-3D-Base: 0x0000008000051900 (SP = 447, 4PB = 0, 4PT = 0), FL-3D-Base: 0x00000080070da010 (SP = 10, 4PB = 6, 4PT = 9)
+3273:T0-PM> ALIST1 SP = 2, MLIST1 SP = 9 (VCE 0x00000000abb0b001, TE 0x00000000abb00001, ALIST 0x00000000abb06001)
+3294:T0-MAIN> Kick 3D: FWCtx 0xc024f9d8 @ 37400, RTD 0xc04b3c80, Partial render:0, CSW resume:0. (PID:15935, prio:1, frame:43, ext:0x00000ccb, int:0x00006f27)
+3467:T0-MTS> Irq Task complete.
+3571:T0-MTS> Bg Task complete DM Bitfield: 1
+3591:T0-MTS> Kick MTS Irq task DM=0
+3604:T0-MTS> Irq Task (EVENT_STATUS=0x00000010)
+3668:T0-MTS> Irq Task complete.
+3689:T0-MTS> Irq Task (EVENT_STATUS=0x00000118)
+3721:T0-PM> PM running primary config (Core 0)
+3735:T0-MAIN> 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+3767:T0-PM> Is TA: 0, finished: 1 on HW 1 (HWRTData = 0xc04b3c80, MemCtx = 0xc01edf40). FL different between TA/3D: global:0, local:0
+3782:T0-PM> UFL-3D-Base: 0x0000008000051900 (SP = 447, 4PB = 0, 4PT = 0), FL-3D-Base: 0x00000080070da010 (SP = 25, 4PB = 0, 4PT = 0)
+3792:T0-PM> ALIST1 SP = 2, MLIST1 SP = 9 (VCE 0x00000000abb0b001, TE 0x00000000abb00001, ALIST 0x00000000abb06001)
+3802:T0-RTD> 3D RTData 0xc04b3c80 finished on HW context 1
+3857:T0-MAIN> UFO Updates for FWCtx 0xc024f9d8 @ 37736
+3874:T0-MAIN> UFO Update: [0xc02d00b0] = 0x0000000a
+3884:T0-MAIN> UFO Update: [0xc00422a0] = 0x00000519
+3891:T0-MAIN> UFO Update: [0xc0042818] = 0x00000519
+3936:T0-BIF> Deactivate MemCtx=0xc01edf40, ungrab reg set 3 refcount now 0
+4036:T0-MTS> Irq Task complete.
+4069:T0-MTS> Bg Task Driver ID = 0
+4104:T0-MTS> Bg Task complete DM Bitfield: 0
+4112:T0-MTS> Kick MTS Irq task DM=0
+4126:T0-MTS> Irq Task (EVENT_STATUS=0x00000000)
+4175:T0-MTS> Irq Task complete.
+4196:T0-MTS> Bg Task Driver ID = 0
+4235:T0-MTS> Bg Task complete DM Bitfield: 0
+4241:T0-MTS> Kick MTS Irq task DM=0
+4254:T0-MTS> Irq Task (EVENT_STATUS=0x00000000)
+4298:T0-MTS> Irq Task complete.
+4316:T0-MTS> Bg Task Driver ID = 0
+4328:T0-MTS> Bg Task complete DM Bitfield: 0
+4334:T0-MTS> Kick MTS Irq task DM=0
+4342:T0-MTS> Irq Task (EVENT_STATUS=0x00000000)
+4378:T0-MTS> Irq Task complete.
+9869:T0-MTS> Bg Task Driver ID = 0
+9888:T0-MTS> KCCB Slot 695: Cmd=0x2abc0066, Driver ID=0
+9963:T0-MTS> KCCB Slot 696: Cmd=0x2abc0071, Driver ID=0
+9996:T0-MAIN> cCCB Woff update = 4704, DM = 2, FWCtx = 0xc0045040
+10053:T0-MTS> Kick MTS Irq task DM=0
+10075:T0-MAIN> cCCB Woff update = 14784, DM = 3, FWCtx = 0xc0045118
+10103:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 14384
+10122:T0-MAIN> UFO PR-Check: [0xc00971a0] is 0x0000000c requires >= 0x0000000d
+10162:T0-MTS> Irq Task (EVENT_STATUS=0x00000000)
+10246:T0-MTS> Ready-to-run debug Driver ID = 0, DM = 2, item = 0xc0045040
+10270:T0-MTS> Client command header DM = 2, client CCB = 0xc0067000, cmd = 0xc00681f0
+10284:T0-PM> PM running primary config (Core 0)
+10313:T0-BIF> Activate MemCtx=0xc0045000 DM=2 secure=0
+10329:T0-BIF> Setup register set=1 DM=2, PC address=0x000000014ffb1000, OSid=0, NewPCRegRequired=1
+10339:T0-BIF> Alloc PC set 4 as register range [5 - 5]
+10363:T0-BIF> Grab reg set 4 refcount now 1
+10432:T0-RTD> Load Freelist 0xc05042c0 type: 0 (0:local,1:global) for PMDM0: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x0000008002167010, stacktop = 0x0000000000000019, Alloc Page Count = 0, Alloc MMU Page Count = 0
+10458:T0-RTD> Load Freelist 0xc0045500 type: 1 (0:local,1:global) for PMDM0: FL Total Pages 448 (max=9216,grow size=256), FL-addr = 0x000000800252c900, stacktop = 0x00000000000001bf, Alloc Page Count = 0, Alloc MMU Page Count = 0
+10480:T0-RTD> CONTEXT_PB_BASE set to 0x3, FL different between TA/3D: local: 1, global: 1
+10515:T0-RTD> TA RTData 0xc0504a40 loaded on HW context 0
+10526:T0-RTD> TA Buffers: FWCtx 0xc0045040, RTData 0xc0504a40, VHeap 0x0000008002170000, TPC 0x0000008002172000 (MemCtx 0xc0045000)
+10557:T0-RTD> TE Region headers base 0x000000800216f000 (RGNHDR Init: 1)
+10582:T0-PM> Is TA: 1, finished: 0 on HW 0 (HWRTData = 0xc0504a40, MemCtx = 0xc0045000). FL different between TA/3D: global:1, local:2
+10593:T0-PM> UFL-TA-Base: 0x000000800252c900 (SP = 447, 4PB = 0, 4PT = 0), FL-TA-Base: 0x0000008002167010 (SP = 25, 4PB = 0, 4PT = 0)
+10604:T0-PM> ALIST0 SP = 0, MLIST0 SP = 0 (VCE 0x00000001b038e001, TE 0x00000001a9738001, ALIST 0x0000000174b6e001)
+10618:T0-MAIN> Kick TA: FWCtx 0xc0045040 @ 4592, RTD 0xc0504a40, First kick:1, Last kick:1, CSW resume:0. (PID:15703, prio:1, frame:16435, ext:0x00004163, int:0x00006f28)
+10757:T0-MTS> Irq Task complete.
+10789:T0-MTS> Irq Task (EVENT_STATUS=0x00000020)
+10820:T0-MAIN> TA finished
+10839:T0-PM> Is TA: 1, finished: 1 on HW 0 (HWRTData = 0xc0504a40, MemCtx = 0xc0045000). FL different between TA/3D: global:1, local:2
+10853:T0-PM> UFL-TA-Base: 0x000000800252c900 (SP = 447, 4PB = 0, 4PT = 0), FL-TA-Base: 0x0000008002167010 (SP = 10, 4PB = 6, 4PT = 9)
+10865:T0-PM> ALIST0 SP = 2, MLIST0 SP = 9 (VCE 0x0000000174b6e001, TE 0x00000001b2934001, ALIST 0x00000001b038d001)
+10874:T0-RTD> TA RTData 0xc0504a40 finished on HW context 0
+10888:T0-MAIN> Perform TPC flush.
+10929:T0-MAIN> UFO Updates for FWCtx 0xc0045040 @ 4672
+10951:T0-MAIN> UFO Update: [0xc00971a0] = 0x0000000d
+10958:T0-MAIN> UFO Update: [0xc0042058] = 0x00000519
+11007:T0-BIF> Deactivate MemCtx=0xc0045000, ungrab reg set 4 refcount now 0
+11069:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 14384
+11090:T0-MAIN> UFO PR-Check: [0xc00971a0] is 0x0000000d requires >= 0x0000000d
+11140:T0-MTS> Ready-to-run debug Driver ID = 0, DM = 3, item = 0xc0045118
+11160:T0-MTS> Client command header DM = 3, client CCB = 0xc0046000, cmd = 0xc0049848
+11198:T0-PM> PM running primary config (Core 0)
+11218:T0-BIF> Activate MemCtx=0xc0045000 DM=3 secure=0
+11228:T0-BIF> Setup register set=4 DM=3, PC address=0x000000014ffb1000, OSid=0, NewPCRegRequired=0
+11241:T0-BIF> Grab reg set 4 refcount now 1
+11308:T0-PM> PM running primary config (Core 0)
+11331:T0-RTD> Store Freelist 0xc04b38c0 type: 0 (0:local,1:global) for PMDM1: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x00000080070da010, stacktop = 0x0000000000000019, Alloc Page Count = 0, Alloc MMU Page Count = 0
+11342:T0-PM> PM reverting to previous config (Core 0)
+11349:T0-PM> PM running primary config (Core 0)
+11358:T0-RTD> Store Freelist 0xc05042c0 type: 0 (0:local,1:global) for PMDM0: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x0000008002167010, stacktop = 0x000000000000000a, Alloc Page Count = 6, Alloc MMU Page Count = 9
+11365:T0-PM> PM reverting to previous config (Core 0)
+11386:T0-RTD> Load Freelist 0xc05042c0 type: 0 (0:local,1:global) for PMDM1: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x0000008002167010, stacktop = 0x000000000000000a, Alloc Page Count = 6, Alloc MMU Page Count = 9
+11408:T0-PM> PM running primary config (Core 0)
+11421:T0-RTD> Store Freelist 0xc024fc80 type: 1 (0:local,1:global) for PMDM1: FL Total Pages 448 (max=65536,grow size=256), FL-addr = 0x0000008000051900, stacktop = 0x00000000000001bf, Alloc Page Count = 0, Alloc MMU Page Count = 0
+11429:T0-PM> PM reverting to previous config (Core 0)
+11435:T0-PM> PM running primary config (Core 0)
+11442:T0-RTD> Store Freelist 0xc0045500 type: 1 (0:local,1:global) for PMDM0: FL Total Pages 448 (max=9216,grow size=256), FL-addr = 0x000000800252c900, stacktop = 0x00000000000001bf, Alloc Page Count = 0, Alloc MMU Page Count = 0
+11449:T0-PM> PM reverting to previous config (Core 0)
+11461:T0-RTD> Load Freelist 0xc0045500 type: 1 (0:local,1:global) for PMDM1: FL Total Pages 448 (max=9216,grow size=256), FL-addr = 0x000000800252c900, stacktop = 0x00000000000001bf, Alloc Page Count = 0, Alloc MMU Page Count = 0
+11478:T0-RTD> CONTEXT_PB_BASE set to 0x0, FL different between TA/3D: local: 0, global: 0
+11507:T0-RTD> Loading stack-pointers for 1 (0:MidTA,1:3D) on context 1, MLIST = 0x00000009, ALIST = 0x0000000000000002
+11529:T0-RTD> 3D Buffers: FWCtx 0xc0045118, RTData 0xc0504a40 on ctx 1, (MemCtx 0xc0045000)
+11539:T0-RTD> 3D RTData 0xc0504a40 ready on HW context 1
+11580:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x8001500f)
+11590:T0-MAIN>   Phantom 0: USCTiles=6
+11608:T0-PM> Is TA: 0, finished: 0 on HW 1 (HWRTData = 0xc0504a40, MemCtx = 0xc0045000). FL different between TA/3D: global:0, local:0
+11624:T0-PM> UFL-3D-Base: 0x000000800252c900 (SP = 447, 4PB = 0, 4PT = 0), FL-3D-Base: 0x0000008002167010 (SP = 10, 4PB = 6, 4PT = 9)
+11634:T0-PM> ALIST1 SP = 2, MLIST1 SP = 9 (VCE 0x0000000174b6e001, TE 0x00000001b2934001, ALIST 0x00000001b038d001)
+11655:T0-MAIN> Kick 3D: FWCtx 0xc0045118 @ 14408, RTD 0xc0504a40, Partial render:0, CSW resume:0. (PID:15703, prio:1, frame:16435, ext:0x00004163, int:0x00006f28)
+11829:T0-MTS> Irq Task complete.
+11942:T0-MTS> Irq Task (EVENT_STATUS=0x00000118)
+11979:T0-PM> PM running primary config (Core 0)
+11993:T0-MAIN> 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+12027:T0-PM> Is TA: 0, finished: 1 on HW 1 (HWRTData = 0xc0504a40, MemCtx = 0xc0045000). FL different between TA/3D: global:0, local:0
+12047:T0-PM> UFL-3D-Base: 0x000000800252c900 (SP = 447, 4PB = 0, 4PT = 0), FL-3D-Base: 0x0000008002167010 (SP = 25, 4PB = 0, 4PT = 0)
+12059:T0-PM> ALIST1 SP = 2, MLIST1 SP = 9 (VCE 0x0000000174b6e001, TE 0x00000001b2934001, ALIST 0x00000001b038d001)
+12067:T0-RTD> 3D RTData 0xc0504a40 finished on HW context 1
+12129:T0-MAIN> UFO Updates for FWCtx 0xc0045118 @ 14744
+12144:T0-MAIN> UFO Update: [0xc00971a0] = 0x0000000e
+12152:T0-MAIN> UFO Update: [0xc00427b8] = 0x00000519
+12160:T0-MAIN> UFO Update: [0xc00421d0] = 0x00000519
+12206:T0-BIF> Deactivate MemCtx=0xc0045000, ungrab reg set 4 refcount now 0
+12311:T0-MTS> Irq Task complete.
+12330:T0-MTS> Bg Task complete DM Bitfield: 1
+12338:T0-MTS> Kick MTS Irq task DM=0
+12348:T0-MTS> Irq Task (EVENT_STATUS=0x00000000)
+12386:T0-MTS> Irq Task complete.
+12407:T0-MTS> Bg Task Driver ID = 0
+12437:T0-MTS> Bg Task complete DM Bitfield: 0
+12447:T0-MTS> Kick MTS Irq task DM=0
+12459:T0-MTS> Irq Task (EVENT_STATUS=0x00000000)
+12506:T0-MTS> Irq Task complete.
+18528:T0-MTS> Bg Task Driver ID = 0
+18547:T0-MTS> KCCB Slot 697: Cmd=0x2abc0071, Driver ID=0
+18572:T0-MAIN> cCCB Woff update = 4816, DM = 2, FWCtx = 0xc0045040
+18615:T0-MTS> Kick MTS Irq task DM=0
+18633:T0-MAIN> cCCB Woff update = 15184, DM = 3, FWCtx = 0xc0045118
+18660:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 14784
+18679:T0-MAIN> UFO PR-Check: [0xc0097028] is 0x00000704 requires >= 0x00000705
+18712:T0-MTS> Irq Task (EVENT_STATUS=0x00000000)
+18775:T0-MTS> Ready-to-run debug Driver ID = 0, DM = 2, item = 0xc0045040
+18798:T0-MTS> Client command header DM = 2, client CCB = 0xc0067000, cmd = 0xc0068260
+18811:T0-PM> PM running primary config (Core 0)
+18835:T0-BIF> Activate MemCtx=0xc0045000 DM=2 secure=0
+18847:T0-BIF> Setup register set=4 DM=2, PC address=0x000000014ffb1000, OSid=0, NewPCRegRequired=0
+18863:T0-BIF> Grab reg set 4 refcount now 1
+18929:T0-RTD> Load Freelist 0xc02d18c0 type: 0 (0:local,1:global) for PMDM0: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x000000800273f010, stacktop = 0x0000000000000019, Alloc Page Count = 0, Alloc MMU Page Count = 0
+18951:T0-RTD> CONTEXT_PB_BASE set to 0x2, FL different between TA/3D: local: 1, global: 0
+18994:T0-RTD> TA RTData 0xc02d1bc0 loaded on HW context 0
+19006:T0-RTD> TA Buffers: FWCtx 0xc0045040, RTData 0xc02d1bc0, VHeap 0x0000008002c20c00, TPC 0x0000008002c32000 (MemCtx 0xc0045000)
+19036:T0-RTD> TE Region headers base 0x0000008002c1bc00 (RGNHDR Init: 1)
+19082:T0-PM> Is TA: 1, finished: 0 on HW 0 (HWRTData = 0xc02d1bc0, MemCtx = 0xc0045000). FL different between TA/3D: global:0, local:2
+19094:T0-PM> UFL-TA-Base: 0x000000800252c900 (SP = 447, 4PB = 0, 4PT = 0), FL-TA-Base: 0x000000800273f010 (SP = 25, 4PB = 0, 4PT = 0)
+19104:T0-PM> ALIST0 SP = 0, MLIST0 SP = 0 (VCE 0x000000015dbd4001, TE 0x00000001a7368001, ALIST 0x00000001044db001)
+19119:T0-MAIN> Kick TA: FWCtx 0xc0045040 @ 4704, RTD 0xc02d1bc0, First kick:1, Last kick:1, CSW resume:0. (PID:15703, prio:1, frame:16435, ext:0x00004164, int:0x00006f29)
+19269:T0-MTS> Irq Task complete.
+19302:T0-MTS> Irq Task (EVENT_STATUS=0x00000020)
+19336:T0-MAIN> TA finished
+19356:T0-PM> Is TA: 1, finished: 1 on HW 0 (HWRTData = 0xc02d1bc0, MemCtx = 0xc0045000). FL different between TA/3D: global:0, local:2
+19378:T0-PM> UFL-TA-Base: 0x000000800252c900 (SP = 447, 4PB = 0, 4PT = 0), FL-TA-Base: 0x000000800273f010 (SP = 10, 4PB = 6, 4PT = 9)
+19388:T0-PM> ALIST0 SP = 2, MLIST0 SP = 9 (VCE 0x00000001044db001, TE 0x000000014d0c5001, ALIST 0x00000001b0fe4001)
+19398:T0-RTD> TA RTData 0xc02d1bc0 finished on HW context 0
+19406:T0-MAIN> Perform TPC flush.
+19462:T0-MAIN> UFO Updates for FWCtx 0xc0045040 @ 4784
+19475:T0-MAIN> UFO Update: [0xc0097028] = 0x00000705
+19484:T0-MAIN> UFO Update: [0xc00424a0] = 0x00000519
+19533:T0-BIF> Deactivate MemCtx=0xc0045000, ungrab reg set 4 refcount now 0
+19584:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 14784
+19601:T0-MAIN> UFO PR-Check: [0xc0097028] is 0x00000705 requires >= 0x00000705
+19641:T0-MTS> Ready-to-run debug Driver ID = 0, DM = 3, item = 0xc0045118
+19664:T0-MTS> Client command header DM = 3, client CCB = 0xc0046000, cmd = 0xc00499d8
+19694:T0-PM> PM running primary config (Core 0)
+19715:T0-BIF> Activate MemCtx=0xc0045000 DM=3 secure=0
+19724:T0-BIF> Setup register set=4 DM=3, PC address=0x000000014ffb1000, OSid=0, NewPCRegRequired=0
+19737:T0-BIF> Grab reg set 4 refcount now 1
+19802:T0-PM> PM running primary config (Core 0)
+19828:T0-RTD> Store Freelist 0xc05042c0 type: 0 (0:local,1:global) for PMDM1: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x0000008002167010, stacktop = 0x0000000000000019, Alloc Page Count = 0, Alloc MMU Page Count = 0
+19838:T0-PM> PM reverting to previous config (Core 0)
+19847:T0-PM> PM running primary config (Core 0)
+19858:T0-RTD> Store Freelist 0xc02d18c0 type: 0 (0:local,1:global) for PMDM0: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x000000800273f010, stacktop = 0x000000000000000a, Alloc Page Count = 6, Alloc MMU Page Count = 9
+19865:T0-PM> PM reverting to previous config (Core 0)
+19882:T0-RTD> Load Freelist 0xc02d18c0 type: 0 (0:local,1:global) for PMDM1: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x000000800273f010, stacktop = 0x000000000000000a, Alloc Page Count = 6, Alloc MMU Page Count = 9
+19903:T0-RTD> CONTEXT_PB_BASE set to 0x0, FL different between TA/3D: local: 0, global: 0
+19936:T0-RTD> Loading stack-pointers for 1 (0:MidTA,1:3D) on context 1, MLIST = 0x00000009, ALIST = 0x0000000000000002
+19963:T0-RTD> 3D Buffers: FWCtx 0xc0045118, RTData 0xc02d1bc0 on ctx 1, (MemCtx 0xc0045000)
+19976:T0-RTD> 3D RTData 0xc02d1bc0 ready on HW context 1
+20029:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x8001500f)
+20039:T0-MAIN>   Phantom 0: USCTiles=6
+20055:T0-PM> Is TA: 0, finished: 0 on HW 1 (HWRTData = 0xc02d1bc0, MemCtx = 0xc0045000). FL different between TA/3D: global:0, local:0
+20071:T0-PM> UFL-3D-Base: 0x000000800252c900 (SP = 447, 4PB = 0, 4PT = 0), FL-3D-Base: 0x000000800273f010 (SP = 10, 4PB = 6, 4PT = 9)
+20083:T0-PM> ALIST1 SP = 2, MLIST1 SP = 9 (VCE 0x00000001044db001, TE 0x000000014d0c5001, ALIST 0x00000001b0fe4001)
+20104:T0-MAIN> Kick 3D: FWCtx 0xc0045118 @ 14808, RTD 0xc02d1bc0, Partial render:0, CSW resume:0. (PID:15703, prio:1, frame:16435, ext:0x00004164, int:0x00006f29)
+20238:T0-MTS> Irq Task complete.
+20281:T0-MTS> KCCB Slot 698: Cmd=0x2abc0071, Driver ID=0
+20312:T0-MAIN> cCCB Woff update = 4952, DM = 2, FWCtx = 0xc0045040
+20349:T0-MAIN> UFO Checks for FWCtx 0xc0045040 @ 4816
+20369:T0-MAIN> UFO Check: [0xc0042488] is 0x00000ac1 requires 0x00000519
+20398:T0-MAIN> cCCB Woff update = 15584, DM = 3, FWCtx = 0xc0045118
+20429:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 15184
+20448:T0-MAIN> UFO PR-Check: [0xc0097030] is 0x00000704 requires >= 0x00000705
+20511:T0-MTS> Bg Task complete DM Bitfield: 1
+20524:T0-MTS> Kick MTS Irq task DM=0
+20534:T0-MTS> Irq Task (EVENT_STATUS=0x00000010)
+20614:T0-MTS> Irq Task complete.
+20637:T0-MTS> Bg Task Driver ID = 0
+20728:T0-MTS> Bg Task complete DM Bitfield: 0
+20867:T0-MTS> Irq Task (EVENT_STATUS=0x00000118)
+20902:T0-PM> PM running primary config (Core 0)
+20918:T0-MAIN> 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+20952:T0-PM> Is TA: 0, finished: 1 on HW 1 (HWRTData = 0xc02d1bc0, MemCtx = 0xc0045000). FL different between TA/3D: global:0, local:0
+20968:T0-PM> UFL-3D-Base: 0x000000800252c900 (SP = 447, 4PB = 0, 4PT = 0), FL-3D-Base: 0x000000800273f010 (SP = 25, 4PB = 0, 4PT = 0)
+20980:T0-PM> ALIST1 SP = 2, MLIST1 SP = 9 (VCE 0x00000001044db001, TE 0x000000014d0c5001, ALIST 0x00000001b0fe4001)
+20989:T0-RTD> 3D RTData 0xc02d1bc0 finished on HW context 1
+21039:T0-MAIN> UFO Updates for FWCtx 0xc0045118 @ 15144
+21054:T0-MAIN> UFO Update: [0xc0097028] = 0x00000706
+21062:T0-MAIN> UFO Update: [0xc0042488] = 0x00000519
+21069:T0-MAIN> UFO Update: [0xc0042640] = 0x00000519
+21133:T0-BIF> Deactivate MemCtx=0xc0045000, ungrab reg set 4 refcount now 0
+21186:T0-MAIN> UFO Checks for FWCtx 0xc0045040 @ 4816
+21203:T0-MAIN> UFO Check: [0xc0042488] is 0x00000519 requires 0x00000519
+21255:T0-MTS> Ready-to-run debug Driver ID = 0, DM = 2, item = 0xc0045040
+21275:T0-MTS> Client command header DM = 2, client CCB = 0xc0067000, cmd = 0xc00682e8
+21288:T0-PM> PM running primary config (Core 0)
+21315:T0-BIF> Activate MemCtx=0xc0045000 DM=2 secure=0
+21325:T0-BIF> Setup register set=4 DM=2, PC address=0x000000014ffb1000, OSid=0, NewPCRegRequired=0
+21339:T0-BIF> Grab reg set 4 refcount now 1
+21394:T0-RTD> Load Freelist 0xc03d6f40 type: 0 (0:local,1:global) for PMDM0: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x0000008002741010, stacktop = 0x0000000000000019, Alloc Page Count = 0, Alloc MMU Page Count = 0
+21417:T0-RTD> CONTEXT_PB_BASE set to 0x2, FL different between TA/3D: local: 1, global: 0
+21455:T0-RTD> TA RTData 0xc03d74c0 loaded on HW context 0
+21469:T0-RTD> TA Buffers: FWCtx 0xc0045040, RTData 0xc03d74c0, VHeap 0x00000080014b9000, TPC 0x00000080014bb000 (MemCtx 0xc0045000)
+21496:T0-RTD> TE Region headers base 0x00000080014b1000 (RGNHDR Init: 1)
+21543:T0-PM> Is TA: 1, finished: 0 on HW 0 (HWRTData = 0xc03d74c0, MemCtx = 0xc0045000). FL different between TA/3D: global:0, local:2
+21555:T0-PM> UFL-TA-Base: 0x000000800252c900 (SP = 447, 4PB = 0, 4PT = 0), FL-TA-Base: 0x0000008002741010 (SP = 25, 4PB = 0, 4PT = 0)
+21567:T0-PM> ALIST0 SP = 0, MLIST0 SP = 0 (VCE 0x0000000068318001, TE 0x000000006830d001, ALIST 0x0000000068312001)
+21585:T0-MAIN> Kick TA: FWCtx 0xc0045040 @ 4840, RTD 0xc03d74c0, First kick:1, Last kick:1, CSW resume:0. (PID:15703, prio:1, frame:16436, ext:0x00004167, int:0x00006f2a)
+21723:T0-MTS> Irq Task complete.
+21752:T0-MTS> Irq Task (EVENT_STATUS=0x00000020)
+21782:T0-MAIN> TA finished
+21798:T0-PM> Is TA: 1, finished: 1 on HW 0 (HWRTData = 0xc03d74c0, MemCtx = 0xc0045000). FL different between TA/3D: global:0, local:2
+21810:T0-PM> UFL-TA-Base: 0x000000800252c900 (SP = 447, 4PB = 0, 4PT = 0), FL-TA-Base: 0x0000008002741010 (SP = 10, 4PB = 6, 4PT = 9)
+21820:T0-PM> ALIST0 SP = 2, MLIST0 SP = 9 (VCE 0x0000000068312001, TE 0x000000006830b001, ALIST 0x0000000068315001)
+21830:T0-RTD> TA RTData 0xc03d74c0 finished on HW context 0
+21839:T0-MAIN> Perform TPC flush.
+21885:T0-MAIN> UFO Updates for FWCtx 0xc0045040 @ 4920
+21899:T0-MAIN> UFO Update: [0xc0097030] = 0x00000705
+21906:T0-MAIN> UFO Update: [0xc0042830] = 0x00000519
+21954:T0-BIF> Deactivate MemCtx=0xc0045000, ungrab reg set 4 refcount now 0
+22010:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 15184
+22024:T0-MAIN> UFO PR-Check: [0xc0097030] is 0x00000705 requires >= 0x00000705
+22067:T0-MTS> Ready-to-run debug Driver ID = 0, DM = 3, item = 0xc0045118
+22091:T0-MTS> Client command header DM = 3, client CCB = 0xc0046000, cmd = 0xc0049b68
+22124:T0-PM> PM running primary config (Core 0)
+22147:T0-BIF> Activate MemCtx=0xc0045000 DM=3 secure=0
+22158:T0-BIF> Setup register set=4 DM=3, PC address=0x000000014ffb1000, OSid=0, NewPCRegRequired=0
+22171:T0-BIF> Grab reg set 4 refcount now 1
+22229:T0-PM> PM running primary config (Core 0)
+22251:T0-RTD> Store Freelist 0xc02d18c0 type: 0 (0:local,1:global) for PMDM1: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x000000800273f010, stacktop = 0x0000000000000019, Alloc Page Count = 0, Alloc MMU Page Count = 0
+22260:T0-PM> PM reverting to previous config (Core 0)
+22268:T0-PM> PM running primary config (Core 0)
+22276:T0-RTD> Store Freelist 0xc03d6f40 type: 0 (0:local,1:global) for PMDM0: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x0000008002741010, stacktop = 0x000000000000000a, Alloc Page Count = 6, Alloc MMU Page Count = 9
+22286:T0-PM> PM reverting to previous config (Core 0)
+22303:T0-RTD> Load Freelist 0xc03d6f40 type: 0 (0:local,1:global) for PMDM1: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x0000008002741010, stacktop = 0x000000000000000a, Alloc Page Count = 6, Alloc MMU Page Count = 9
+22324:T0-RTD> CONTEXT_PB_BASE set to 0x0, FL different between TA/3D: local: 0, global: 0
+22351:T0-RTD> Loading stack-pointers for 1 (0:MidTA,1:3D) on context 1, MLIST = 0x00000009, ALIST = 0x0000000000000002
+22377:T0-RTD> 3D Buffers: FWCtx 0xc0045118, RTData 0xc03d74c0 on ctx 1, (MemCtx 0xc0045000)
+22388:T0-RTD> 3D RTData 0xc03d74c0 ready on HW context 1
+22436:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x8001500f)
+22445:T0-MAIN>   Phantom 0: USCTiles=6
+22462:T0-PM> Is TA: 0, finished: 0 on HW 1 (HWRTData = 0xc03d74c0, MemCtx = 0xc0045000). FL different between TA/3D: global:0, local:0
+22479:T0-PM> UFL-3D-Base: 0x000000800252c900 (SP = 447, 4PB = 0, 4PT = 0), FL-3D-Base: 0x0000008002741010 (SP = 10, 4PB = 6, 4PT = 9)
+22490:T0-PM> ALIST1 SP = 2, MLIST1 SP = 9 (VCE 0x0000000068312001, TE 0x000000006830b001, ALIST 0x0000000068315001)
+22509:T0-MAIN> Kick 3D: FWCtx 0xc0045118 @ 15208, RTD 0xc03d74c0, Partial render:0, CSW resume:0. (PID:15703, prio:1, frame:16436, ext:0x00004167, int:0x00006f2a)
+22624:T0-MTS> Irq Task complete.
+22661:T0-MTS> Bg Task Driver ID = 0
+22772:T0-MTS> Bg Task complete DM Bitfield: 0
+22796:T0-MTS> Bg Task Driver ID = 0
+22810:T0-MTS> Bg Task complete DM Bitfield: 0
+22972:T0-MTS> Irq Task (EVENT_STATUS=0x00000118)
+23011:T0-PM> PM running primary config (Core 0)
+23024:T0-MAIN> 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+23056:T0-PM> Is TA: 0, finished: 1 on HW 1 (HWRTData = 0xc03d74c0, MemCtx = 0xc0045000). FL different between TA/3D: global:0, local:0
+23073:T0-PM> UFL-3D-Base: 0x000000800252c900 (SP = 447, 4PB = 0, 4PT = 0), FL-3D-Base: 0x0000008002741010 (SP = 25, 4PB = 0, 4PT = 0)
+23083:T0-PM> ALIST1 SP = 2, MLIST1 SP = 9 (VCE 0x0000000068312001, TE 0x000000006830b001, ALIST 0x0000000068315001)
+23094:T0-RTD> 3D RTData 0xc03d74c0 finished on HW context 1
+23138:T0-MAIN> UFO Updates for FWCtx 0xc0045118 @ 15544
+23153:T0-MAIN> UFO Update: [0xc0097030] = 0x00000706
+23163:T0-MAIN> UFO Update: [0xc0042578] = 0x00000519
+23171:T0-MAIN> UFO Update: [0xc00422a8] = 0x00000519
+23213:T0-BIF> Deactivate MemCtx=0xc0045000, ungrab reg set 4 refcount now 0
+23323:T0-MTS> Irq Task complete.
+23351:T0-MTS> Bg Task Driver ID = 0
+23392:T0-MTS> Bg Task complete DM Bitfield: 0
+23402:T0-MTS> Kick MTS Irq task DM=0
+23415:T0-MTS> Irq Task (EVENT_STATUS=0x00000000)
+23463:T0-MTS> Irq Task complete.
+23487:T0-MTS> Bg Task Driver ID = 0
+23501:T0-MTS> Bg Task complete DM Bitfield: 0
+23507:T0-MTS> Kick MTS Irq task DM=0
+23517:T0-MTS> Irq Task (EVENT_STATUS=0x00000000)
+23554:T0-MTS> Irq Task complete.
+47296:T0-MTS> Bg Task Driver ID = 0
+47328:T0-MTS> Bg Task complete DM Bitfield: 0
+47336:T0-MTS> Kick MTS Irq task DM=0
+47346:T0-MTS> Irq Task (EVENT_STATUS=0x00000000)
+47389:T0-MTS> Irq Task complete.
+66580:T0-MTS> Bg Task Driver ID = 0
+66620:T0-MTS> Bg Task complete DM Bitfield: 0
+66633:T0-MTS> Kick MTS Irq task DM=0
+66646:T0-MTS> Irq Task (EVENT_STATUS=0x00000000)
+66699:T0-MTS> Irq Task complete.
+66788:T0-MTS> Bg Task Driver ID = 0
+66814:T0-MTS> KCCB Slot 699: Cmd=0x2abc00c8, Driver ID=0
+66846:T0-MTS> Bg Task complete DM Bitfield: 1
+66855:T0-MTS> Kick MTS Irq task DM=0
+66866:T0-MTS> Irq Task (EVENT_STATUS=0x00000000)
+66905:T0-MTS> Irq Task complete.
+66926:T0-MTS> Bg Task Driver ID = 0
+66938:T0-MTS> Bg Task complete DM Bitfield: 0
+66947:T0-MTS> Kick MTS Irq task DM=0
+66956:T0-MTS> Irq Task (EVENT_STATUS=0x00000000)
+66996:T0-MTS> Irq Task complete.
+67006:T0-MAIN> GPU units deinit
+67025:T0-PM> PM running primary config (Core 0)
+67040:T0-RTD> Store Freelist 0xc03d6f40 type: 0 (0:local,1:global) for PMDM0: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x0000008002741010, stacktop = 0x0000000000000019, Alloc Page Count = 0, Alloc MMU Page Count = 0
+67048:T0-PM> PM reverting to previous config (Core 0)
+67061:T0-PM> PM running primary config (Core 0)
+67071:T0-RTD> Store Freelist 0xc0045500 type: 1 (0:local,1:global) for PMDM0: FL Total Pages 448 (max=9216,grow size=256), FL-addr = 0x000000800252c900, stacktop = 0x00000000000001bf, Alloc Page Count = 0, Alloc MMU Page Count = 0
+67079:T0-PM> PM reverting to previous config (Core 0)
+67089:T0-PM> PM running primary config (Core 0)
+67106:T0-PM> PM running primary config (Core 0)
+67114:T0-RTD> Store Freelist 0xc03d6f40 type: 0 (0:local,1:global) for PMDM1: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x0000008002741010, stacktop = 0x0000000000000019, Alloc Page Count = 0, Alloc MMU Page Count = 0
+67122:T0-PM> PM reverting to previous config (Core 0)
+67131:T0-PM> PM running primary config (Core 0)
+67142:T0-RTD> Store Freelist 0xc0045500 type: 1 (0:local,1:global) for PMDM1: FL Total Pages 448 (max=9216,grow size=256), FL-addr = 0x000000800252c900, stacktop = 0x00000000000001bf, Alloc Page Count = 0, Alloc MMU Page Count = 0
+67153:T0-PM> PM reverting to previous config (Core 0)
+67176:T0-MAIN> GPU deinit
+441:T0-MAIN> State of firmware's private data at boot time: 1 (0 = uninitialised, 1 = initialised); Fw State Flags = 0x00000001
+457:T0-MAIN> State of firmware's private data at boot time: 1 (0 = uninitialised, 1 = initialised); Fw State Flags = 0x00000001
+474:T0-MAIN> Core clock set to 1104000000 Hz
+495:T0-MAIN> GPU init
+525:T0-MAIN> Host Sync Partition marker: 102
+815:T0-MTS> Bg Task Driver ID = 0
+843:T0-MTS> KCCB Slot 700: Cmd=0x2abc0066, Driver ID=0
+919:T0-MTS> KCCB Slot 701: Cmd=0x2abc0065, Driver ID=0
+946:T0-MAIN> cCCB Woff update = 78992, DM = 3, FWCtx = 0xc024f400
+1001:T0-MTS> Kick MTS Irq task DM=0
+1022:T0-MTS> Irq Task (EVENT_STATUS=0x00000000)
+1086:T0-MTS> Ready-to-run debug Driver ID = 0, DM = 3, item = 0xc024f400
+1109:T0-MTS> Client command header DM = 3, client CCB = 0xc0250000, cmd = 0xc02633c8
+1190:T0-MAIN> GPU Units init (# mask: 0x1)
+1240:T0-BIF> Activate MemCtx=0xc01edf40 DM=3 secure=0
+1257:T0-BIF> Setup register set=3 DM=3, PC address=0x00000001a25a5000, OSid=0, NewPCRegRequired=1
+1268:T0-BIF> Alloc PC set 5 as register range [6 - 6]
+1292:T0-BIF> Grab reg set 5 refcount now 1
+1311:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x00025000)
+1318:T0-MAIN>   Phantom 0: USCTiles=6
+1340:T0-MAIN> Kick 3D TQ: FWCtx 0xc024f400 @ 78792, CSW resume:0. (PID:15935, prio:1, frame:44, ext:0x00000cd0, int:0x00006f2b)
+1405:T0-MAIN> 3D Transfer finished
+1448:T0-MAIN> UFO Updates for FWCtx 0xc024f400 @ 78968
+1463:T0-MAIN> UFO Update: [0xc0042770] = 0x00000519
+1505:T0-BIF> Deactivate MemCtx=0xc01edf40, ungrab reg set 5 refcount now 0
+1598:T0-MTS> Irq Task complete.
+1625:T0-MTS> Irq Task (EVENT_STATUS=0x00000000)
+1663:T0-MTS> Irq Task complete.
+1693:T0-MTS> KCCB Slot 702: Cmd=0x2abc0071, Driver ID=0
+1721:T0-MAIN> cCCB Woff update = 10640, DM = 2, FWCtx = 0xc024f900
+1774:T0-MTS> Kick MTS Irq task DM=0
+1795:T0-MAIN> cCCB Woff update = 38200, DM = 3, FWCtx = 0xc024f9d8
+1825:T0-MAIN> UFO Checks for FWCtx 0xc024f9d8 @ 37776
+1841:T0-MAIN> UFO Check: [0xc0042770] is 0x00000519 requires 0x00000519
+1861:T0-MAIN> UFO Checks for FWCtx 0xc024f9d8 @ 37800
+1874:T0-MAIN> UFO PR-Check: [0xc02d0050] is 0x0000000a requires >= 0x0000000b
+1900:T0-MTS> Irq Task (EVENT_STATUS=0x00000000)
+1960:T0-MTS> Ready-to-run debug Driver ID = 0, DM = 2, item = 0xc024f900
+1981:T0-MTS> Client command header DM = 2, client CCB = 0xc02c0000, cmd = 0xc02c2920
+1997:T0-PM> PM running primary config (Core 0)
+2026:T0-BIF> Activate MemCtx=0xc01edf40 DM=2 secure=0
+2037:T0-BIF> Setup register set=5 DM=2, PC address=0x00000001a25a5000, OSid=0, NewPCRegRequired=0
+2051:T0-BIF> Grab reg set 5 refcount now 1
+2113:T0-RTD> Load Freelist 0xc04b3800 type: 0 (0:local,1:global) for PMDM0: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x00000080070d7010, stacktop = 0x0000000000000019, Alloc Page Count = 0, Alloc MMU Page Count = 0
+2142:T0-RTD> Load Freelist 0xc024fc80 type: 1 (0:local,1:global) for PMDM0: FL Total Pages 448 (max=65536,grow size=256), FL-addr = 0x0000008000051900, stacktop = 0x00000000000001bf, Alloc Page Count = 0, Alloc MMU Page Count = 0
+2166:T0-RTD> CONTEXT_PB_BASE set to 0x3, FL different between TA/3D: local: 1, global: 1
+2202:T0-RTD> TA RTData 0xc04b3980 loaded on HW context 0
+2214:T0-RTD> TA Buffers: FWCtx 0xc024f900, RTData 0xc04b3980, VHeap 0x00000080070e0000, TPC 0x00000080070e2000 (MemCtx 0xc01edf40)
+2247:T0-RTD> TE Region headers base 0x00000080070df000 (RGNHDR Init: 1)
+2278:T0-PM> Is TA: 1, finished: 0 on HW 0 (HWRTData = 0xc04b3980, MemCtx = 0xc01edf40). FL different between TA/3D: global:1, local:2
+2290:T0-PM> UFL-TA-Base: 0x0000008000051900 (SP = 447, 4PB = 0, 4PT = 0), FL-TA-Base: 0x00000080070d7010 (SP = 25, 4PB = 0, 4PT = 0)
+2302:T0-PM> ALIST0 SP = 0, MLIST0 SP = 0 (VCE 0x00000000eb849001, TE 0x0000000043f3e001, ALIST 0x00000000eb844001)
+2321:T0-MAIN> Kick TA: FWCtx 0xc024f900 @ 10528, RTD 0xc04b3980, First kick:1, Last kick:1, CSW resume:0. (PID:15935, prio:1, frame:44, ext:0x00000cd3, int:0x00006f2c)
+2462:T0-MTS> Irq Task complete.
+2493:T0-MTS> Irq Task (EVENT_STATUS=0x00000020)
+2525:T0-MAIN> TA finished
+2546:T0-PM> Is TA: 1, finished: 1 on HW 0 (HWRTData = 0xc04b3980, MemCtx = 0xc01edf40). FL different between TA/3D: global:1, local:2
+2560:T0-PM> UFL-TA-Base: 0x0000008000051900 (SP = 447, 4PB = 0, 4PT = 0), FL-TA-Base: 0x00000080070d7010 (SP = 10, 4PB = 6, 4PT = 9)
+2570:T0-PM> ALIST0 SP = 2, MLIST0 SP = 9 (VCE 0x00000000eb844001, TE 0x00000000eb848001, ALIST 0x00000000eb84a001)
+2579:T0-RTD> TA RTData 0xc04b3980 finished on HW context 0
+2590:T0-MAIN> Perform TPC flush.
+2634:T0-MAIN> UFO Updates for FWCtx 0xc024f900 @ 10608
+2652:T0-MAIN> UFO Update: [0xc02d0050] = 0x0000000b
+2665:T0-MAIN> UFO Update: [0xc00423d0] = 0x00000519
+2714:T0-BIF> Deactivate MemCtx=0xc01edf40, ungrab reg set 5 refcount now 0
+2764:T0-MAIN> UFO Checks for FWCtx 0xc024f9d8 @ 37800
+2779:T0-MAIN> UFO PR-Check: [0xc02d0050] is 0x0000000b requires >= 0x0000000b
+2824:T0-MTS> Ready-to-run debug Driver ID = 0, DM = 3, item = 0xc024f9d8
+2846:T0-MTS> Client command header DM = 3, client CCB = 0xc02a0000, cmd = 0xc02a93c0
+2876:T0-PM> PM running primary config (Core 0)
+2895:T0-BIF> Activate MemCtx=0xc01edf40 DM=3 secure=0
+2906:T0-BIF> Setup register set=5 DM=3, PC address=0x00000001a25a5000, OSid=0, NewPCRegRequired=0
+2921:T0-BIF> Grab reg set 5 refcount now 1
+2976:T0-PM> PM running primary config (Core 0)
+2999:T0-RTD> Store Freelist 0xc04b3800 type: 0 (0:local,1:global) for PMDM0: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x00000080070d7010, stacktop = 0x000000000000000a, Alloc Page Count = 6, Alloc MMU Page Count = 9
+3009:T0-PM> PM reverting to previous config (Core 0)
+3026:T0-RTD> Load Freelist 0xc04b3800 type: 0 (0:local,1:global) for PMDM1: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x00000080070d7010, stacktop = 0x000000000000000a, Alloc Page Count = 6, Alloc MMU Page Count = 9
+3042:T0-PM> PM running primary config (Core 0)
+3053:T0-RTD> Store Freelist 0xc024fc80 type: 1 (0:local,1:global) for PMDM0: FL Total Pages 448 (max=65536,grow size=256), FL-addr = 0x0000008000051900, stacktop = 0x00000000000001bf, Alloc Page Count = 0, Alloc MMU Page Count = 0
+3060:T0-PM> PM reverting to previous config (Core 0)
+3070:T0-RTD> Load Freelist 0xc024fc80 type: 1 (0:local,1:global) for PMDM1: FL Total Pages 448 (max=65536,grow size=256), FL-addr = 0x0000008000051900, stacktop = 0x00000000000001bf, Alloc Page Count = 0, Alloc MMU Page Count = 0
+3088:T0-RTD> CONTEXT_PB_BASE set to 0x0, FL different between TA/3D: local: 0, global: 0
+3113:T0-RTD> Loading stack-pointers for 1 (0:MidTA,1:3D) on context 1, MLIST = 0x00000009, ALIST = 0x0000000000000002
+3134:T0-RTD> 3D Buffers: FWCtx 0xc024f9d8, RTData 0xc04b3980 on ctx 1, (MemCtx 0xc01edf40)
+3140:T0-RTD> 3D RTData 0xc04b3980 ready on HW context 1
+3182:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x80135000)
+3191:T0-MAIN>   Phantom 0: USCTiles=6
+3208:T0-PM> Is TA: 0, finished: 0 on HW 1 (HWRTData = 0xc04b3980, MemCtx = 0xc01edf40). FL different between TA/3D: global:0, local:0
+3223:T0-PM> UFL-3D-Base: 0x0000008000051900 (SP = 447, 4PB = 0, 4PT = 0), FL-3D-Base: 0x00000080070d7010 (SP = 10, 4PB = 6, 4PT = 9)
+3233:T0-PM> ALIST1 SP = 2, MLIST1 SP = 9 (VCE 0x00000000eb844001, TE 0x00000000eb848001, ALIST 0x00000000eb84a001)
+3245:T0-MAIN> Kick 3D: FWCtx 0xc024f9d8 @ 37824, RTD 0xc04b3980, Partial render:0, CSW resume:0. (PID:15935, prio:1, frame:44, ext:0x00000cd3, int:0x00006f2c)
+3411:T0-MTS> Irq Task complete.
+3499:T0-MTS> Bg Task complete DM Bitfield: 1
+3521:T0-MTS> Kick MTS Irq task DM=0
+3538:T0-MTS> Irq Task (EVENT_STATUS=0x00000010)
+3595:T0-MTS> Irq Task complete.
+3624:T0-MTS> Irq Task (EVENT_STATUS=0x00000018)
+3656:T0-PM> PM running primary config (Core 0)
+3668:T0-MAIN> 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+3699:T0-PM> Is TA: 0, finished: 1 on HW 1 (HWRTData = 0xc04b3980, MemCtx = 0xc01edf40). FL different between TA/3D: global:0, local:0
+3719:T0-PM> UFL-3D-Base: 0x0000008000051900 (SP = 447, 4PB = 0, 4PT = 0), FL-3D-Base: 0x00000080070d7010 (SP = 25, 4PB = 0, 4PT = 0)
+3728:T0-PM> ALIST1 SP = 2, MLIST1 SP = 9 (VCE 0x00000000eb844001, TE 0x00000000eb848001, ALIST 0x00000000eb84a001)
+3736:T0-RTD> 3D RTData 0xc04b3980 finished on HW context 1
+3795:T0-MAIN> UFO Updates for FWCtx 0xc024f9d8 @ 38160
+3810:T0-MAIN> UFO Update: [0xc02d0050] = 0x0000000c
+3820:T0-MAIN> UFO Update: [0xc0042628] = 0x00000519
+3829:T0-MAIN> UFO Update: [0xc0042548] = 0x00000519
+3875:T0-BIF> Deactivate MemCtx=0xc01edf40, ungrab reg set 5 refcount now 0
+3965:T0-MTS> Irq Task complete.
+3999:T0-MTS> Bg Task Driver ID = 0
+4033:T0-MTS> Bg Task complete DM Bitfield: 0
+4042:T0-MTS> Kick MTS Irq task DM=0
+4054:T0-MTS> Irq Task (EVENT_STATUS=0x00000000)
+4104:T0-MTS> Irq Task complete.
+4123:T0-MTS> Bg Task Driver ID = 0
+4158:T0-MTS> Bg Task complete DM Bitfield: 0
+4164:T0-MTS> Kick MTS Irq task DM=0
+4177:T0-MTS> Irq Task (EVENT_STATUS=0x00000000)
+4222:T0-MTS> Irq Task complete.
+4244:T0-MTS> Bg Task Driver ID = 0
+4255:T0-MTS> Bg Task complete DM Bitfield: 0
+4260:T0-MTS> Kick MTS Irq task DM=0
+4269:T0-MTS> Irq Task (EVENT_STATUS=0x00000000)
+4310:T0-MTS> Irq Task complete.
+6570:T0-MTS> Bg Task Driver ID = 0
+6595:T0-MTS> KCCB Slot 703: Cmd=0x2abc0066, Driver ID=0
+6662:T0-MTS> KCCB Slot 704: Cmd=0x2abc0071, Driver ID=0
+6693:T0-MAIN> cCCB Woff update = 5064, DM = 2, FWCtx = 0xc0045040
+6750:T0-MTS> Kick MTS Irq task DM=0
+6770:T0-MAIN> cCCB Woff update = 15984, DM = 3, FWCtx = 0xc0045118
+6798:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 15584
+6815:T0-MAIN> UFO PR-Check: [0xc00971a4] is 0x0000000c requires >= 0x0000000d
+6849:T0-MTS> Irq Task (EVENT_STATUS=0x00000000)
+6923:T0-MTS> Ready-to-run debug Driver ID = 0, DM = 2, item = 0xc0045040
+6944:T0-MTS> Client command header DM = 2, client CCB = 0xc0067000, cmd = 0xc0068358
+6957:T0-PM> PM running primary config (Core 0)
+6980:T0-BIF> Activate MemCtx=0xc0045000 DM=2 secure=0
+6993:T0-BIF> Setup register set=4 DM=2, PC address=0x000000014ffb1000, OSid=0, NewPCRegRequired=1
+7003:T0-BIF> Alloc PC set 6 as register range [7 - 7]
+7029:T0-BIF> Grab reg set 6 refcount now 1
+7091:T0-RTD> Load Freelist 0xc0504300 type: 0 (0:local,1:global) for PMDM0: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x0000008002168010, stacktop = 0x0000000000000019, Alloc Page Count = 0, Alloc MMU Page Count = 0
+7117:T0-RTD> Load Freelist 0xc0045500 type: 1 (0:local,1:global) for PMDM0: FL Total Pages 448 (max=9216,grow size=256), FL-addr = 0x000000800252c900, stacktop = 0x00000000000001bf, Alloc Page Count = 0, Alloc MMU Page Count = 0
+7138:T0-RTD> CONTEXT_PB_BASE set to 0x3, FL different between TA/3D: local: 1, global: 1
+7174:T0-RTD> TA RTData 0xc0504b40 loaded on HW context 0
+7191:T0-RTD> TA Buffers: FWCtx 0xc0045040, RTData 0xc0504b40, VHeap 0x0000008002170600, TPC 0x000000800217a000 (MemCtx 0xc0045000)
+7221:T0-RTD> TE Region headers base 0x000000800216f3c0 (RGNHDR Init: 1)
+7248:T0-PM> Is TA: 1, finished: 0 on HW 0 (HWRTData = 0xc0504b40, MemCtx = 0xc0045000). FL different between TA/3D: global:1, local:2
+7259:T0-PM> UFL-TA-Base: 0x000000800252c900 (SP = 447, 4PB = 0, 4PT = 0), FL-TA-Base: 0x0000008002168010 (SP = 25, 4PB = 0, 4PT = 0)
+7272:T0-PM> ALIST0 SP = 0, MLIST0 SP = 0 (VCE 0x00000001b0f14001, TE 0x0000000122a28001, ALIST 0x0000000122a2a001)
+7287:T0-MAIN> Kick TA: FWCtx 0xc0045040 @ 4952, RTD 0xc0504b40, First kick:1, Last kick:1, CSW resume:0. (PID:15703, prio:1, frame:17637, ext:0x00004168, int:0x00006f2d)
+7418:T0-MTS> Irq Task complete.
+7446:T0-MTS> Irq Task (EVENT_STATUS=0x00000020)
+7476:T0-MAIN> TA finished
+7497:T0-PM> Is TA: 1, finished: 1 on HW 0 (HWRTData = 0xc0504b40, MemCtx = 0xc0045000). FL different between TA/3D: global:1, local:2
+7510:T0-PM> UFL-TA-Base: 0x000000800252c900 (SP = 447, 4PB = 0, 4PT = 0), FL-TA-Base: 0x0000008002168010 (SP = 10, 4PB = 6, 4PT = 9)
+7522:T0-PM> ALIST0 SP = 2, MLIST0 SP = 9 (VCE 0x0000000122a2a001, TE 0x000000012940a001, ALIST 0x00000001b0f13001)
+7531:T0-RTD> TA RTData 0xc0504b40 finished on HW context 0
+7542:T0-MAIN> Perform TPC flush.
+7586:T0-MAIN> UFO Updates for FWCtx 0xc0045040 @ 5032
+7601:T0-MAIN> UFO Update: [0xc00971a4] = 0x0000000d
+7608:T0-MAIN> UFO Update: [0xc00422d8] = 0x00000519
+7654:T0-BIF> Deactivate MemCtx=0xc0045000, ungrab reg set 6 refcount now 0
+7710:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 15584
+7727:T0-MAIN> UFO PR-Check: [0xc00971a4] is 0x0000000d requires >= 0x0000000d
+7777:T0-MTS> Ready-to-run debug Driver ID = 0, DM = 3, item = 0xc0045118
+7799:T0-MTS> Client command header DM = 3, client CCB = 0xc0046000, cmd = 0xc0049cf8
+7829:T0-PM> PM running primary config (Core 0)
+7851:T0-BIF> Activate MemCtx=0xc0045000 DM=3 secure=0
+7860:T0-BIF> Setup register set=6 DM=3, PC address=0x000000014ffb1000, OSid=0, NewPCRegRequired=0
+7871:T0-BIF> Grab reg set 6 refcount now 1
+7928:T0-PM> PM running primary config (Core 0)
+7952:T0-RTD> Store Freelist 0xc04b3800 type: 0 (0:local,1:global) for PMDM1: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x00000080070d7010, stacktop = 0x0000000000000019, Alloc Page Count = 0, Alloc MMU Page Count = 0
+7960:T0-PM> PM reverting to previous config (Core 0)
+7973:T0-PM> PM running primary config (Core 0)
+7985:T0-RTD> Store Freelist 0xc0504300 type: 0 (0:local,1:global) for PMDM0: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x0000008002168010, stacktop = 0x000000000000000a, Alloc Page Count = 6, Alloc MMU Page Count = 9
+7992:T0-PM> PM reverting to previous config (Core 0)
+8013:T0-RTD> Load Freelist 0xc0504300 type: 0 (0:local,1:global) for PMDM1: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x0000008002168010, stacktop = 0x000000000000000a, Alloc Page Count = 6, Alloc MMU Page Count = 9
+8039:T0-PM> PM running primary config (Core 0)
+8054:T0-RTD> Store Freelist 0xc024fc80 type: 1 (0:local,1:global) for PMDM1: FL Total Pages 448 (max=65536,grow size=256), FL-addr = 0x0000008000051900, stacktop = 0x00000000000001bf, Alloc Page Count = 0, Alloc MMU Page Count = 0
+8062:T0-PM> PM reverting to previous config (Core 0)
+8070:T0-PM> PM running primary config (Core 0)
+8079:T0-RTD> Store Freelist 0xc0045500 type: 1 (0:local,1:global) for PMDM0: FL Total Pages 448 (max=9216,grow size=256), FL-addr = 0x000000800252c900, stacktop = 0x00000000000001bf, Alloc Page Count = 0, Alloc MMU Page Count = 0
+8089:T0-PM> PM reverting to previous config (Core 0)
+8098:T0-RTD> Load Freelist 0xc0045500 type: 1 (0:local,1:global) for PMDM1: FL Total Pages 448 (max=9216,grow size=256), FL-addr = 0x000000800252c900, stacktop = 0x00000000000001bf, Alloc Page Count = 0, Alloc MMU Page Count = 0
+8118:T0-RTD> CONTEXT_PB_BASE set to 0x0, FL different between TA/3D: local: 0, global: 0
+8146:T0-RTD> Loading stack-pointers for 1 (0:MidTA,1:3D) on context 1, MLIST = 0x00000009, ALIST = 0x0000000000000002
+8171:T0-RTD> 3D Buffers: FWCtx 0xc0045118, RTData 0xc0504b40 on ctx 1, (MemCtx 0xc0045000)
+8180:T0-RTD> 3D RTData 0xc0504b40 ready on HW context 1
+8228:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x8001500f)
+8240:T0-MAIN>   Phantom 0: USCTiles=6
+8256:T0-PM> Is TA: 0, finished: 0 on HW 1 (HWRTData = 0xc0504b40, MemCtx = 0xc0045000). FL different between TA/3D: global:0, local:0
+8273:T0-PM> UFL-3D-Base: 0x000000800252c900 (SP = 447, 4PB = 0, 4PT = 0), FL-3D-Base: 0x0000008002168010 (SP = 10, 4PB = 6, 4PT = 9)
+8283:T0-PM> ALIST1 SP = 2, MLIST1 SP = 9 (VCE 0x0000000122a2a001, TE 0x000000012940a001, ALIST 0x00000001b0f13001)
+8307:T0-MAIN> Kick 3D: FWCtx 0xc0045118 @ 15608, RTD 0xc0504b40, Partial render:0, CSW resume:0. (PID:15703, prio:1, frame:17637, ext:0x00004168, int:0x00006f2d)
+8478:T0-MTS> Irq Task complete.
+8577:T0-MTS> Irq Task (EVENT_STATUS=0x00000118)
+8608:T0-PM> PM running primary config (Core 0)
+8623:T0-MAIN> 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+8655:T0-PM> Is TA: 0, finished: 1 on HW 1 (HWRTData = 0xc0504b40, MemCtx = 0xc0045000). FL different between TA/3D: global:0, local:0
+8672:T0-PM> UFL-3D-Base: 0x000000800252c900 (SP = 447, 4PB = 0, 4PT = 0), FL-3D-Base: 0x0000008002168010 (SP = 25, 4PB = 0, 4PT = 0)
+8682:T0-PM> ALIST1 SP = 2, MLIST1 SP = 9 (VCE 0x0000000122a2a001, TE 0x000000012940a001, ALIST 0x00000001b0f13001)
+8692:T0-RTD> 3D RTData 0xc0504b40 finished on HW context 1
+8749:T0-MAIN> UFO Updates for FWCtx 0xc0045118 @ 15944
+8763:T0-MAIN> UFO Update: [0xc00971a4] = 0x0000000e
+8774:T0-MAIN> UFO Update: [0xc0042038] = 0x00000519
+8783:T0-MAIN> UFO Update: [0xc0042690] = 0x00000519
+8831:T0-BIF> Deactivate MemCtx=0xc0045000, ungrab reg set 6 refcount now 0
+8928:T0-MTS> Irq Task complete.
+8954:T0-MTS> Bg Task complete DM Bitfield: 1
+8963:T0-MTS> Kick MTS Irq task DM=0
+8971:T0-MTS> Irq Task (EVENT_STATUS=0x00000000)
+9013:T0-MTS> Irq Task complete.
+9034:T0-MTS> Bg Task Driver ID = 0
+9064:T0-MTS> Bg Task complete DM Bitfield: 0
+9071:T0-MTS> Kick MTS Irq task DM=0
+9083:T0-MTS> Irq Task (EVENT_STATUS=0x00000000)
+9131:T0-MTS> Irq Task complete.
+14625:T0-MTS> Bg Task Driver ID = 0
+14651:T0-MTS> KCCB Slot 705: Cmd=0x2abc0071, Driver ID=0
+14675:T0-MAIN> cCCB Woff update = 5176, DM = 2, FWCtx = 0xc0045040
+14725:T0-MTS> Kick MTS Irq task DM=0
+14743:T0-MAIN> cCCB Woff update = 16384, DM = 3, FWCtx = 0xc0045118
+14772:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 15984
+14791:T0-MAIN> UFO PR-Check: [0xc009702c] is 0x00000704 requires >= 0x00000705
+14823:T0-MTS> Irq Task (EVENT_STATUS=0x00000000)
+14888:T0-MTS> Ready-to-run debug Driver ID = 0, DM = 2, item = 0xc0045040
+14909:T0-MTS> Client command header DM = 2, client CCB = 0xc0067000, cmd = 0xc00683c8
+14925:T0-PM> PM running primary config (Core 0)
+14954:T0-BIF> Activate MemCtx=0xc0045000 DM=2 secure=0
+14965:T0-BIF> Setup register set=6 DM=2, PC address=0x000000014ffb1000, OSid=0, NewPCRegRequired=0
+14978:T0-BIF> Grab reg set 6 refcount now 1
+15039:T0-RTD> Load Freelist 0xc02d1900 type: 0 (0:local,1:global) for PMDM0: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x0000008002740010, stacktop = 0x0000000000000019, Alloc Page Count = 0, Alloc MMU Page Count = 0
+15069:T0-RTD> CONTEXT_PB_BASE set to 0x2, FL different between TA/3D: local: 1, global: 0
+15108:T0-RTD> TA RTData 0xc02d1cc0 loaded on HW context 0
+15122:T0-RTD> TA Buffers: FWCtx 0xc0045040, RTData 0xc02d1cc0, VHeap 0x0000008002c21200, TPC 0x0000008002c3a000 (MemCtx 0xc0045000)
+15147:T0-RTD> TE Region headers base 0x0000008002c1da00 (RGNHDR Init: 1)
+15192:T0-PM> Is TA: 1, finished: 0 on HW 0 (HWRTData = 0xc02d1cc0, MemCtx = 0xc0045000). FL different between TA/3D: global:0, local:2
+15206:T0-PM> UFL-TA-Base: 0x000000800252c900 (SP = 447, 4PB = 0, 4PT = 0), FL-TA-Base: 0x0000008002740010 (SP = 25, 4PB = 0, 4PT = 0)
+15215:T0-PM> ALIST0 SP = 0, MLIST0 SP = 0 (VCE 0x0000000169689001, TE 0x0000000104de2001, ALIST 0x0000000122b07001)
+15232:T0-MAIN> Kick TA: FWCtx 0xc0045040 @ 5064, RTD 0xc02d1cc0, First kick:1, Last kick:1, CSW resume:0. (PID:15703, prio:1, frame:17637, ext:0x00004169, int:0x00006f2e)
+15364:T0-MTS> Irq Task complete.
+15429:T0-MTS> Irq Task (EVENT_STATUS=0x00000020)
+15464:T0-MAIN> TA finished
+15482:T0-PM> Is TA: 1, finished: 1 on HW 0 (HWRTData = 0xc02d1cc0, MemCtx = 0xc0045000). FL different between TA/3D: global:0, local:2
+15498:T0-PM> UFL-TA-Base: 0x000000800252c900 (SP = 447, 4PB = 0, 4PT = 0), FL-TA-Base: 0x0000008002740010 (SP = 10, 4PB = 6, 4PT = 9)
+15507:T0-PM> ALIST0 SP = 2, MLIST0 SP = 9 (VCE 0x0000000122b07001, TE 0x000000014ade4001, ALIST 0x00000001a2522001)
+15516:T0-RTD> TA RTData 0xc02d1cc0 finished on HW context 0
+15527:T0-MAIN> Perform TPC flush.
+15573:T0-MAIN> UFO Updates for FWCtx 0xc0045040 @ 5144
+15586:T0-MAIN> UFO Update: [0xc009702c] = 0x00000705
+15593:T0-MAIN> UFO Update: [0xc00425c0] = 0x00000519
+15634:T0-BIF> Deactivate MemCtx=0xc0045000, ungrab reg set 6 refcount now 0
+15686:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 15984
+15701:T0-MAIN> UFO PR-Check: [0xc009702c] is 0x00000705 requires >= 0x00000705
+15749:T0-MTS> Ready-to-run debug Driver ID = 0, DM = 3, item = 0xc0045118
+15772:T0-MTS> Client command header DM = 3, client CCB = 0xc0046000, cmd = 0xc0049e88
+15802:T0-PM> PM running primary config (Core 0)
+15822:T0-BIF> Activate MemCtx=0xc0045000 DM=3 secure=0
+15837:T0-BIF> Setup register set=6 DM=3, PC address=0x000000014ffb1000, OSid=0, NewPCRegRequired=0
+15853:T0-BIF> Grab reg set 6 refcount now 1
+15906:T0-PM> PM running primary config (Core 0)
+15926:T0-RTD> Store Freelist 0xc0504300 type: 0 (0:local,1:global) for PMDM1: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x0000008002168010, stacktop = 0x0000000000000019, Alloc Page Count = 0, Alloc MMU Page Count = 0
+15935:T0-PM> PM reverting to previous config (Core 0)
+15942:T0-PM> PM running primary config (Core 0)
+15948:T0-RTD> Store Freelist 0xc02d1900 type: 0 (0:local,1:global) for PMDM0: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x0000008002740010, stacktop = 0x000000000000000a, Alloc Page Count = 6, Alloc MMU Page Count = 9
+15956:T0-PM> PM reverting to previous config (Core 0)
+15973:T0-RTD> Load Freelist 0xc02d1900 type: 0 (0:local,1:global) for PMDM1: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x0000008002740010, stacktop = 0x000000000000000a, Alloc Page Count = 6, Alloc MMU Page Count = 9
+15997:T0-RTD> CONTEXT_PB_BASE set to 0x0, FL different between TA/3D: local: 0, global: 0
+16028:T0-RTD> Loading stack-pointers for 1 (0:MidTA,1:3D) on context 1, MLIST = 0x00000009, ALIST = 0x0000000000000002
+16053:T0-RTD> 3D Buffers: FWCtx 0xc0045118, RTData 0xc02d1cc0 on ctx 1, (MemCtx 0xc0045000)
+16065:T0-RTD> 3D RTData 0xc02d1cc0 ready on HW context 1
+16111:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x8001500f)
+16120:T0-MAIN>   Phantom 0: USCTiles=6
+16135:T0-PM> Is TA: 0, finished: 0 on HW 1 (HWRTData = 0xc02d1cc0, MemCtx = 0xc0045000). FL different between TA/3D: global:0, local:0
+16149:T0-PM> UFL-3D-Base: 0x000000800252c900 (SP = 447, 4PB = 0, 4PT = 0), FL-3D-Base: 0x0000008002740010 (SP = 10, 4PB = 6, 4PT = 9)
+16158:T0-PM> ALIST1 SP = 2, MLIST1 SP = 9 (VCE 0x0000000122b07001, TE 0x000000014ade4001, ALIST 0x00000001a2522001)
+16177:T0-MAIN> Kick 3D: FWCtx 0xc0045118 @ 16008, RTD 0xc02d1cc0, Partial render:0, CSW resume:0. (PID:15703, prio:1, frame:17637, ext:0x00004169, int:0x00006f2e)
+16285:T0-MTS> Irq Task complete.
+16320:T0-MTS> Bg Task complete DM Bitfield: 1
+16329:T0-MTS> Kick MTS Irq task DM=0
+16338:T0-MTS> Irq Task (EVENT_STATUS=0x00000010)
+16389:T0-MTS> Irq Task complete.
+16412:T0-MTS> Bg Task Driver ID = 0
+16469:T0-MTS> KCCB Slot 706: Cmd=0x2abc0071, Driver ID=0
+16498:T0-MAIN> cCCB Woff update = 5312, DM = 2, FWCtx = 0xc0045040
+16522:T0-MAIN> UFO Checks for FWCtx 0xc0045040 @ 5176
+16539:T0-MAIN> UFO Check: [0xc00427a8] is 0x00000ac1 requires 0x00000519
+16570:T0-MAIN> cCCB Woff update = 16784, DM = 3, FWCtx = 0xc0045118
+16600:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 16384
+16618:T0-MAIN> UFO PR-Check: [0xc0097034] is 0x00000704 requires >= 0x00000705
+16673:T0-MTS> Bg Task complete DM Bitfield: 0
+16913:T0-MTS> Irq Task (EVENT_STATUS=0x00000118)
+16945:T0-PM> PM running primary config (Core 0)
+16961:T0-MAIN> 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+16991:T0-PM> Is TA: 0, finished: 1 on HW 1 (HWRTData = 0xc02d1cc0, MemCtx = 0xc0045000). FL different between TA/3D: global:0, local:0
+17005:T0-PM> UFL-3D-Base: 0x000000800252c900 (SP = 447, 4PB = 0, 4PT = 0), FL-3D-Base: 0x0000008002740010 (SP = 25, 4PB = 0, 4PT = 0)
+17015:T0-PM> ALIST1 SP = 2, MLIST1 SP = 9 (VCE 0x0000000122b07001, TE 0x000000014ade4001, ALIST 0x00000001a2522001)
+17032:T0-MAIN> Host Sync Partition repeat: 102
+17040:T0-RTD> 3D RTData 0xc02d1cc0 finished on HW context 1
+17091:T0-MAIN> UFO Updates for FWCtx 0xc0045118 @ 16344
+17110:T0-MAIN> UFO Update: [0xc009702c] = 0x00000706
+17120:T0-MAIN> UFO Update: [0xc00427a8] = 0x00000519
+17128:T0-MAIN> UFO Update: [0xc00426b8] = 0x00000519
+17187:T0-BIF> Deactivate MemCtx=0xc0045000, ungrab reg set 6 refcount now 0
+17237:T0-MAIN> UFO Checks for FWCtx 0xc0045040 @ 5176
+17252:T0-MAIN> UFO Check: [0xc00427a8] is 0x00000519 requires 0x00000519
+17309:T0-MTS> Ready-to-run debug Driver ID = 0, DM = 2, item = 0xc0045040
+17330:T0-MTS> Client command header DM = 2, client CCB = 0xc0067000, cmd = 0xc0068450
+17344:T0-PM> PM running primary config (Core 0)
+17365:T0-BIF> Activate MemCtx=0xc0045000 DM=2 secure=0
+17376:T0-BIF> Setup register set=6 DM=2, PC address=0x000000014ffb1000, OSid=0, NewPCRegRequired=0
+17389:T0-BIF> Grab reg set 6 refcount now 1
+17442:T0-RTD> Load Freelist 0xc03d6f80 type: 0 (0:local,1:global) for PMDM0: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x0000008002742010, stacktop = 0x0000000000000019, Alloc Page Count = 0, Alloc MMU Page Count = 0
+17465:T0-RTD> CONTEXT_PB_BASE set to 0x2, FL different between TA/3D: local: 1, global: 0
+17499:T0-RTD> TA RTData 0xc03d75c0 loaded on HW context 0
+17510:T0-RTD> TA Buffers: FWCtx 0xc0045040, RTData 0xc03d75c0, VHeap 0x00000080014b9600, TPC 0x00000080014c3000 (MemCtx 0xc0045000)
+17541:T0-RTD> TE Region headers base 0x00000080014b2e00 (RGNHDR Init: 1)
+17582:T0-PM> Is TA: 1, finished: 0 on HW 0 (HWRTData = 0xc03d75c0, MemCtx = 0xc0045000). FL different between TA/3D: global:0, local:2
+17594:T0-PM> UFL-TA-Base: 0x000000800252c900 (SP = 447, 4PB = 0, 4PT = 0), FL-TA-Base: 0x0000008002742010 (SP = 25, 4PB = 0, 4PT = 0)
+17604:T0-PM> ALIST0 SP = 0, MLIST0 SP = 0 (VCE 0x0000000068333001, TE 0x0000000068336001, ALIST 0x000000006832b001)
+17619:T0-MAIN> Kick TA: FWCtx 0xc0045040 @ 5200, RTD 0xc03d75c0, First kick:1, Last kick:1, CSW resume:0. (PID:15703, prio:1, frame:17638, ext:0x0000416a, int:0x00006f2f)
+17741:T0-MTS> Irq Task complete.
+17774:T0-MTS> Bg Task Driver ID = 0
+17783:T0-MTS> Irq Task (EVENT_STATUS=0x00000020)
+17810:T0-MAIN> TA finished
+17827:T0-PM> Is TA: 1, finished: 1 on HW 0 (HWRTData = 0xc03d75c0, MemCtx = 0xc0045000). FL different between TA/3D: global:0, local:2
+17842:T0-PM> UFL-TA-Base: 0x000000800252c900 (SP = 447, 4PB = 0, 4PT = 0), FL-TA-Base: 0x0000008002742010 (SP = 10, 4PB = 6, 4PT = 9)
+17852:T0-PM> ALIST0 SP = 2, MLIST0 SP = 9 (VCE 0x000000006832b001, TE 0x0000000068335001, ALIST 0x0000000068330001)
+17864:T0-RTD> TA RTData 0xc03d75c0 finished on HW context 0
+17873:T0-MAIN> Perform TPC flush.
+17913:T0-MAIN> UFO Updates for FWCtx 0xc0045040 @ 5280
+17926:T0-MAIN> UFO Update: [0xc0097034] = 0x00000705
+17935:T0-MAIN> UFO Update: [0xc0042228] = 0x00000519
+17981:T0-BIF> Deactivate MemCtx=0xc0045000, ungrab reg set 6 refcount now 0
+18039:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 16384
+18057:T0-MAIN> UFO PR-Check: [0xc0097034] is 0x00000705 requires >= 0x00000705
+18106:T0-MTS> Ready-to-run debug Driver ID = 0, DM = 3, item = 0xc0045118
+18127:T0-MTS> Client command header DM = 3, client CCB = 0xc0046000, cmd = 0xc004a018
+18156:T0-PM> PM running primary config (Core 0)
+18175:T0-BIF> Activate MemCtx=0xc0045000 DM=3 secure=0
+18184:T0-BIF> Setup register set=6 DM=3, PC address=0x000000014ffb1000, OSid=0, NewPCRegRequired=0
+18197:T0-BIF> Grab reg set 6 refcount now 1
+18252:T0-PM> PM running primary config (Core 0)
+18273:T0-RTD> Store Freelist 0xc02d1900 type: 0 (0:local,1:global) for PMDM1: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x0000008002740010, stacktop = 0x0000000000000019, Alloc Page Count = 0, Alloc MMU Page Count = 0
+18281:T0-PM> PM reverting to previous config (Core 0)
+18287:T0-PM> PM running primary config (Core 0)
+18297:T0-RTD> Store Freelist 0xc03d6f80 type: 0 (0:local,1:global) for PMDM0: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x0000008002742010, stacktop = 0x000000000000000a, Alloc Page Count = 6, Alloc MMU Page Count = 9
+18304:T0-PM> PM reverting to previous config (Core 0)
+18320:T0-RTD> Load Freelist 0xc03d6f80 type: 0 (0:local,1:global) for PMDM1: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x0000008002742010, stacktop = 0x000000000000000a, Alloc Page Count = 6, Alloc MMU Page Count = 9
+18338:T0-RTD> CONTEXT_PB_BASE set to 0x0, FL different between TA/3D: local: 0, global: 0
+18364:T0-RTD> Loading stack-pointers for 1 (0:MidTA,1:3D) on context 1, MLIST = 0x00000009, ALIST = 0x0000000000000002
+18387:T0-RTD> 3D Buffers: FWCtx 0xc0045118, RTData 0xc03d75c0 on ctx 1, (MemCtx 0xc0045000)
+18396:T0-RTD> 3D RTData 0xc03d75c0 ready on HW context 1
+18444:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x8001500f)
+18454:T0-MAIN>   Phantom 0: USCTiles=6
+18469:T0-PM> Is TA: 0, finished: 0 on HW 1 (HWRTData = 0xc03d75c0, MemCtx = 0xc0045000). FL different between TA/3D: global:0, local:0
+18482:T0-PM> UFL-3D-Base: 0x000000800252c900 (SP = 447, 4PB = 0, 4PT = 0), FL-3D-Base: 0x0000008002742010 (SP = 10, 4PB = 6, 4PT = 9)
+18492:T0-PM> ALIST1 SP = 2, MLIST1 SP = 9 (VCE 0x000000006832b001, TE 0x0000000068335001, ALIST 0x0000000068330001)
+18511:T0-MAIN> Kick 3D: FWCtx 0xc0045118 @ 16408, RTD 0xc03d75c0, Partial render:0, CSW resume:0. (PID:15703, prio:1, frame:17638, ext:0x0000416a, int:0x00006f2f)
+18633:T0-MTS> Irq Task complete.
+18767:T0-MTS> Bg Task complete DM Bitfield: 1
+18789:T0-MTS> Kick MTS Irq task DM=0
+18808:T0-MTS> Irq Task (EVENT_STATUS=0x00000010)
+18892:T0-MTS> Irq Task complete.
+18932:T0-MTS> Bg Task Driver ID = 0
+18962:T0-MTS> Bg Task complete DM Bitfield: 0
+18990:T0-MTS> Irq Task (EVENT_STATUS=0x00000018)
+19029:T0-PM> PM running primary config (Core 0)
+19042:T0-MAIN> 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+19073:T0-PM> Is TA: 0, finished: 1 on HW 1 (HWRTData = 0xc03d75c0, MemCtx = 0xc0045000). FL different between TA/3D: global:0, local:0
+19089:T0-PM> UFL-3D-Base: 0x000000800252c900 (SP = 447, 4PB = 0, 4PT = 0), FL-3D-Base: 0x0000008002742010 (SP = 25, 4PB = 0, 4PT = 0)
+19099:T0-PM> ALIST1 SP = 2, MLIST1 SP = 9 (VCE 0x000000006832b001, TE 0x0000000068335001, ALIST 0x0000000068330001)
+19109:T0-RTD> 3D RTData 0xc03d75c0 finished on HW context 1
+19161:T0-MAIN> UFO Updates for FWCtx 0xc0045118 @ 16744
+19185:T0-MAIN> UFO Update: [0xc0097034] = 0x00000706
+19193:T0-MAIN> UFO Update: [0xc00425b8] = 0x00000519
+19202:T0-MAIN> UFO Update: [0xc0042420] = 0x00000519
+19252:T0-BIF> Deactivate MemCtx=0xc0045000, ungrab reg set 6 refcount now 0
+19353:T0-MTS> Irq Task complete.
+19378:T0-MTS> Bg Task Driver ID = 0
+19424:T0-MTS> Bg Task complete DM Bitfield: 0
+19436:T0-MTS> Kick MTS Irq task DM=0
+19448:T0-MTS> Irq Task (EVENT_STATUS=0x00000000)
+19501:T0-MTS> Irq Task complete.
+19525:T0-MTS> Bg Task Driver ID = 0
+19538:T0-MTS> Bg Task complete DM Bitfield: 0
+19543:T0-MTS> Kick MTS Irq task DM=0
+19555:T0-MTS> Irq Task (EVENT_STATUS=0x00000000)
+19594:T0-MTS> Irq Task complete.
+47227:T0-MTS> Bg Task Driver ID = 0
+47261:T0-MTS> Bg Task complete DM Bitfield: 0
+47267:T0-MTS> Kick MTS Irq task DM=0
+47280:T0-MTS> Irq Task (EVENT_STATUS=0x00000000)
+47319:T0-MTS> Irq Task complete.
+62618:T0-MTS> Bg Task Driver ID = 0
+62660:T0-MTS> Bg Task complete DM Bitfield: 0
+62670:T0-MTS> Kick MTS Irq task DM=0
+62680:T0-MTS> Irq Task (EVENT_STATUS=0x00000000)
+62733:T0-MTS> Irq Task complete.
+62917:T0-MTS> Bg Task Driver ID = 0
+62944:T0-MTS> KCCB Slot 707: Cmd=0x2abc00c8, Driver ID=0
+62979:T0-MTS> Bg Task complete DM Bitfield: 1
+62988:T0-MTS> Kick MTS Irq task DM=0
+62998:T0-MTS> Irq Task (EVENT_STATUS=0x00000000)
+63044:T0-MTS> Irq Task complete.
+63067:T0-MTS> Bg Task Driver ID = 0
+63081:T0-MTS> Bg Task complete DM Bitfield: 0
+63088:T0-MTS> Kick MTS Irq task DM=0
+63099:T0-MTS> Irq Task (EVENT_STATUS=0x00000000)
+63145:T0-MTS> Irq Task complete.
+63156:T0-MAIN> GPU units deinit
+63175:T0-PM> PM running primary config (Core 0)
+63190:T0-RTD> Store Freelist 0xc03d6f80 type: 0 (0:local,1:global) for PMDM0: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x0000008002742010, stacktop = 0x0000000000000019, Alloc Page Count = 0, Alloc MMU Page Count = 0
+63197:T0-PM> PM reverting to previous config (Core 0)
+63213:T0-PM> PM running primary config (Core 0)
+63225:T0-RTD> Store Freelist 0xc0045500 type: 1 (0:local,1:global) for PMDM0: FL Total Pages 448 (max=9216,grow size=256), FL-addr = 0x000000800252c900, stacktop = 0x00000000000001bf, Alloc Page Count = 0, Alloc MMU Page Count = 0
+63231:T0-PM> PM reverting to previous config (Core 0)
+63239:T0-PM> PM running primary config (Core 0)
+63248:T0-PM> PM running primary config (Core 0)
+63253:T0-RTD> Store Freelist 0xc03d6f80 type: 0 (0:local,1:global) for PMDM1: FL Total Pages 26 (max=32,grow size=0), FL-addr = 0x0000008002742010, stacktop = 0x0000000000000019, Alloc Page Count = 0, Alloc MMU Page Count = 0
+63264:T0-PM> PM reverting to previous config (Core 0)
+63268:T0-PM> PM running primary config (Core 0)
+63276:T0-RTD> Store Freelist 0xc0045500 type: 1 (0:local,1:global) for PMDM1: FL Total Pages 448 (max=9216,grow size=256), FL-addr = 0x000000800252c900, stacktop = 0x00000000000001bf, Alloc Page Count = 0, Alloc MMU Page Count = 0
+63283:T0-PM> PM reverting to previous config (Core 0)
+63308:T0-MAIN> GPU deinit

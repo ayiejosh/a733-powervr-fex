@@ -1,0 +1,91 @@
+From 3c72ad2fae7aaf3db4d1347351422048a0f762a2 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sat, 24 Oct 2026 01:25:13 +0800
+Subject: [PATCH 193/269] gallium/pvr: INDEX_LIST block - the control stream
+ can now describe vertex indices
+
+The TA's control stream is built from blocks, and the driver already had emitters for most of them
+(TA state header, region clip, wclamp, output select, PDS base/sizeinfo, PPP state, VDM state, PDS
+state update, PBE target, samplers, textures, stream terminate - 16 in all). The one that says "these
+are the vertices to draw" was missing.
+
+Adds pvr_csb_emit_index_list(): INDEX_LIST0 carries the block type and the flags saying which of the
+following packets are present (address, count, instance count), INDEX_LIST1 the base address,
+INDEX_LIST2 the index count, INDEX_LIST3 the instance count. The length is computed from the same
+flags that decide which packets are written, so the stream cannot be a different size than what is
+emitted - the same pairing the VDM state emitter uses.
+
+With this the control stream can describe a draw. What it still cannot do is shade one: the vertex and
+fragment USC programs, their PDS programs and the descriptor state those reference are the remaining
+piece, and without them the TA would be told to draw vertices it has no program to run.
+---
+ src/gallium/drivers/pvr_native/pvr_csb.c | 39 ++++++++++++++++++++++++
+ src/gallium/drivers/pvr_native/pvr_csb.h |  2 ++
+ 2 files changed, 41 insertions(+)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_csb.c b/src/gallium/drivers/pvr_native/pvr_csb.c
+index 46303648..b6ad827e 100644
+--- a/src/gallium/drivers/pvr_native/pvr_csb.c
++++ b/src/gallium/drivers/pvr_native/pvr_csb.c
+@@ -169,6 +169,45 @@ pvr_csb_emit_ppp_state(struct pvr_csb *csb, uint64_t state_addr, uint32_t word_c
+    return true;
+ }
+ 
++/* An INDEX_LIST block tells the TA where the vertex indices are and how many there are. The flags in
++ * INDEX_LIST0 say which of the following packets are present; the length is computed from the same
++ * flags, so the stream cannot be a different size than what is written - the same pairing the VDM
++ * state emitter uses. */
++bool
++pvr_csb_emit_index_list(struct pvr_csb *csb, uint64_t index_addr, uint32_t index_count,
++                        uint32_t instance_count, enum ROGUE_VDMCTRL_INDEX_SIZE index_size)
++{
++   struct ROGUE_VDMCTRL_INDEX_LIST0 list0 = {
++      .block_type = ROGUE_VDMCTRL_BLOCK_TYPE_INDEX_LIST,
++      .index_addr_present = true,
++      .index_count_present = true,
++      .index_instance_count_present = true,
++      .degen_cull_enable = true,
++      .index_size = index_size,
++   };
++   struct ROGUE_VDMCTRL_INDEX_LIST1 list1 = { .index_base_addrlsb = index_addr };
++   struct ROGUE_VDMCTRL_INDEX_LIST2 list2 = { .index_count = index_count };
++   struct ROGUE_VDMCTRL_INDEX_LIST3 list3 = { .instance_count = instance_count };
++   const uint32_t words = ROGUE_VDMCTRL_INDEX_LIST0_length +
++                          ROGUE_VDMCTRL_INDEX_LIST1_length +
++                          ROGUE_VDMCTRL_INDEX_LIST2_length +
++                          ROGUE_VDMCTRL_INDEX_LIST3_length;
++   uint32_t *dw = pvr_csb_emit(csb, words);
++   uint32_t at = ROGUE_VDMCTRL_INDEX_LIST0_length;
++
++   if (dw == NULL)
++      return false;
++
++   ROGUE_VDMCTRL_INDEX_LIST0_pack(dw, &list0);
++   ROGUE_VDMCTRL_INDEX_LIST1_pack(dw + at, &list1);
++   at += ROGUE_VDMCTRL_INDEX_LIST1_length;
++   ROGUE_VDMCTRL_INDEX_LIST2_pack(dw + at, &list2);
++   at += ROGUE_VDMCTRL_INDEX_LIST2_length;
++   ROGUE_VDMCTRL_INDEX_LIST3_pack(dw + at, &list3);
++
++   return true;
++}
++
+ bool
+ pvr_csb_emit_vdm_state(struct pvr_csb *csb, bool cut_index_enable,
+                        uint32_t cut_index, bool have_vs_data_addr,
+diff --git a/src/gallium/drivers/pvr_native/pvr_csb.h b/src/gallium/drivers/pvr_native/pvr_csb.h
+index 224829f5..2a14dc95 100644
+--- a/src/gallium/drivers/pvr_native/pvr_csb.h
++++ b/src/gallium/drivers/pvr_native/pvr_csb.h
+@@ -629,6 +629,8 @@ void pvr_csb_reset(struct pvr_csb *csb);
+  * fit - in which case nothing is reserved and the CSB is marked overflowed. */
+ uint32_t *pvr_csb_emit(struct pvr_csb *csb, uint32_t words);
+ bool pvr_csb_emit_stream_terminate(struct pvr_csb *csb);
++bool pvr_csb_emit_index_list(struct pvr_csb *csb, uint64_t index_addr, uint32_t index_count,
++                             uint32_t instance_count, enum ROGUE_VDMCTRL_INDEX_SIZE index_size);
+ 
+ uint32_t pvr_csb_size(const struct pvr_csb *csb);
+ bool pvr_csb_overflowed(const struct pvr_csb *csb);
+-- 
+2.47.3
+

@@ -1,0 +1,893 @@
+From e2189952870517e31e4c8c5913cf0ccb2effc362 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sun, 11 Oct 2026 04:11:20 +0800
+Subject: [PATCH 75/98] pco, pvr: test descriptors once instead of guarding
+ every access
+
+zink enables robustBufferAccess and nullDescriptor for every GL context,
+so every UBO load got a bounds check and every texture or image access a
+branch on its descriptor being null. pco_nir_version_descriptor_checks()
+tests once, at the start of the shader, whether any texture or image
+descriptor it uses is null and whether any UBO is smaller than the
+constant offsets read from it (a null UBO has size 0). If neither, a copy
+of the shader without those checks runs; otherwise the original, fully
+checked one. This is done only when every descriptor reference can be
+rebuilt at the start and all outputs are stored at the top level, and not
+for shaders over 3000 NIR instructions. Buffer null checks stay: the
+robust clamp of a load from a null buffer still reads address 0.
+
+UBO offsets are still "descriptor offset + constant" (unfolded) at this
+point, so they are matched with nir_scalar_resolved() after constant
+folding.
+
+The two copies can push a shader over the register limit, and spilling
+does not work (the shared registers holding the spill buffer address are
+only reserved when spilled_temps is already known). So the pipeline
+compile keeps each stage's NIR from before lowering and compiles a stage
+again without versioning if it spilled (robustness2 storage_image
+no_fmt_qual null_descriptor fragment cases did).
+
+glmark2-es2 through zink, off-screen 800x600, FPS of two runs each,
+before -> after: build 303/298 -> 368/360, phong 154/149 -> 206/209,
+jellyfish 101/98 -> 136/139, terrain 8/8 -> 11/10; texture 589/555 ->
+537/544 and effect2d 239/227 -> 232/240 within run-to-run noise.
+
+CTS: robustness list (4025) 648 pass / 2 crash as before, 5062 list,
+loops/indexing/graphicsfuzz list (6428), compute.pipeline (1235), TFBC
+list (9170), synchronization (1718), dynamic_rendering sample (6745):
+identical to before.
+---
+ src/imagination/pco/pco_data.h                |   4 +
+ src/imagination/pco/pco_internal.h            |  11 +-
+ src/imagination/pco/pco_nir.c                 |  58 ++-
+ .../pco/pco_nir_lower_null_descriptors.c      | 456 +++++++++++++++++-
+ src/imagination/vulkan/pvr_arch_pipeline.c    | 189 +++++---
+ 5 files changed, 642 insertions(+), 76 deletions(-)
+
+diff --git a/src/imagination/pco/pco_data.h b/src/imagination/pco/pco_data.h
+index 5ba86f1..e37d9d5 100644
+--- a/src/imagination/pco/pco_data.h
++++ b/src/imagination/pco/pco_data.h
+@@ -260,6 +260,10 @@ typedef struct _pco_common_data {
+ 
+    bool robust_buffer_access;
+    bool null_descriptor;
++   /** Set by the driver to compile without versioned descriptor checks. */
++   bool no_check_versioning;
++   /** Whether pco_lower_nir() versioned the descriptor checks. */
++   bool checks_versioned;
+    bool image_2d_view_of_3d;
+    bool multiview;
+ } pco_common_data;
+diff --git a/src/imagination/pco/pco_internal.h b/src/imagination/pco/pco_internal.h
+index 4c541c7..428f88a 100644
+--- a/src/imagination/pco/pco_internal.h
++++ b/src/imagination/pco/pco_internal.h
+@@ -1856,9 +1856,18 @@ typedef enum {
+    pco_nir_lower_null_descriptor_all = BITFIELD_MASK(4),
+ } pco_nir_lower_null_descriptor_options;
+ 
++struct set;
+ bool pco_nir_lower_null_descriptors(
+    nir_shader *shader,
+-   pco_nir_lower_null_descriptor_options options);
++   pco_nir_lower_null_descriptor_options options,
++   struct set *skip);
++
++bool pco_nir_version_descriptor_checks(
++   nir_shader *shader,
++   pco_nir_lower_null_descriptor_options null_opts,
++   bool (*robust_filter)(const nir_intrinsic_instr *, const void *),
++   const void *robust_data,
++   struct set *skip);
+ 
+ /**
+  * \brief Returns the PCO bits for a bit size.
+diff --git a/src/imagination/pco/pco_nir.c b/src/imagination/pco/pco_nir.c
+index 1f3043b..4201d4d 100644
+--- a/src/imagination/pco/pco_nir.c
++++ b/src/imagination/pco/pco_nir.c
+@@ -14,6 +14,7 @@
+ #include "nir/nir_lower_blend.h"
+ #include "pco.h"
+ #include "pco_internal.h"
++#include "util/set.h"
+ #include "pvr_limits.h"
+ 
+ #include <stdio.h>
+@@ -886,6 +887,20 @@ static bool robustness_filter(const nir_intrinsic_instr *intr, const void *data)
+    return false;
+ }
+ 
++struct robustness_filter_data {
++   const pco_common_data *common;
++   struct set *skip; /** Loads already proven in bounds. */
++};
++
++static bool robustness_filter_skip(const nir_intrinsic_instr *intr,
++                                   const void *data)
++{
++   const struct robustness_filter_data *filter_data = data;
++   if (_mesa_set_search(filter_data->skip, intr))
++      return false;
++   return robustness_filter(intr, filter_data->common);
++}
++
+ /**
+  * \brief Returns if shared memory should be spilled according to the threshold.
+  *
+@@ -1059,14 +1074,6 @@ void pco_lower_nir(pco_ctx *ctx, nir_shader *nir, pco_data *data)
+             &push_const_access_options);
+ 
+ 
+-   if (data->common.robust_buffer_access) {
+-      NIR_PASS(_,
+-               nir,
+-               nir_lower_robust_access,
+-               robustness_filter,
+-               &data->common);
+-   }
+-
+    if (nir->info.stage == MESA_SHADER_COMPUTE &&
+        (PCO_DEBUG(GLOBAL_SHMEM) ||
+         should_spill_shmem(ctx, nir->info.shared_size))) {
+@@ -1075,13 +1082,42 @@ void pco_lower_nir(pco_ctx *ctx, nir_shader *nir, pco_data *data)
+       data->cs.global_shmem = true;
+    }
+ 
+-   if (data->common.null_descriptor) {
++   pco_nir_lower_null_descriptor_options null_opts =
++      data->common.null_descriptor ? pco_nir_lower_null_descriptor_all : 0;
++
++   /* Accesses proven to need neither robust access nor null checks. */
++   struct set *check_skip = _mesa_pointer_set_create(NULL);
++   if ((data->common.robust_buffer_access || null_opts) &&
++       !data->common.no_check_versioning) {
++      /* Folds the constant parts of UBO offsets left by explicit IO. */
++      NIR_PASS(_, nir, nir_opt_constant_folding);
++      data->common.checks_versioned =
++         pco_nir_version_descriptor_checks(nir,
++                                        null_opts,
++                                        data->common.robust_buffer_access
++                                           ? robustness_filter
++                                           : NULL,
++                                        &data->common,
++                                        check_skip);
++   }
++
++   if (data->common.robust_buffer_access) {
++      struct robustness_filter_data filter_data = {
++         .common = &data->common,
++         .skip = check_skip,
++      };
+       NIR_PASS(_,
+                nir,
+-               pco_nir_lower_null_descriptors,
+-               pco_nir_lower_null_descriptor_all);
++               nir_lower_robust_access,
++               robustness_filter_skip,
++               &filter_data);
+    }
+ 
++   if (null_opts)
++      NIR_PASS(_, nir, pco_nir_lower_null_descriptors, null_opts, check_skip);
++
++   _mesa_set_destroy(check_skip, NULL);
++
+    NIR_PASS(_, nir, pco_nir_lower_vk, data);
+    NIR_PASS(_, nir, pco_nir_lower_io, data);
+ 
+diff --git a/src/imagination/pco/pco_nir_lower_null_descriptors.c b/src/imagination/pco/pco_nir_lower_null_descriptors.c
+index 0b0a3d1..dc587d5 100644
+--- a/src/imagination/pco/pco_nir_lower_null_descriptors.c
++++ b/src/imagination/pco/pco_nir_lower_null_descriptors.c
+@@ -9,6 +9,7 @@
+ #include "compiler/nir/nir.h"
+ #include "compiler/nir/nir_builder.h"
+ #include "pco_internal.h"
++#include "util/u_dynarray.h"
+ 
+ static nir_def *get_is_null(nir_builder *b,
+                             nir_instr *instr,
+@@ -120,12 +121,457 @@ static bool lower(nir_builder *b, nir_instr *instr, void *data)
+    return true;
+ }
+ 
++/* Shaders above this many instructions are not duplicated. */
++#define VERSION_MAX_INSTRS 3000
++#define VERSION_MAX_DESCS 16
++#define VERSION_MAX_UBOS 16
++
++/* Texture/image deref of an access the pass would guard, or NULL. */
++static nir_deref_instr *
++checked_deref(nir_instr *instr, pco_nir_lower_null_descriptor_options options)
++{
++   if (instr->type == nir_instr_type_tex) {
++      if (!(options & pco_nir_lower_null_descriptor_texture))
++         return NULL;
++      nir_def *deref =
++         nir_get_tex_src(nir_instr_as_tex(instr), nir_tex_src_texture_deref);
++      return deref ? nir_def_as_deref(deref) : NULL;
++   }
++
++   if (instr->type != nir_instr_type_intrinsic)
++      return NULL;
++
++   nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
++   switch (intr->intrinsic) {
++   case nir_intrinsic_image_deref_size:
++   case nir_intrinsic_image_deref_levels:
++   case nir_intrinsic_image_deref_samples:
++   case nir_intrinsic_image_deref_load:
++   case nir_intrinsic_image_deref_store:
++   case nir_intrinsic_image_deref_atomic:
++   case nir_intrinsic_image_deref_atomic_swap:
++      if (!(options & pco_nir_lower_null_descriptor_image))
++         return NULL;
++      return nir_src_as_deref(intr->src[0]);
++   default:
++      return NULL;
++   }
++}
++
++/* A variable deref with only constant array indices can be rebuilt anywhere. */
++static bool deref_is_static(nir_deref_instr *deref)
++{
++   for (; deref; deref = nir_deref_instr_parent(deref)) {
++      if (deref->deref_type == nir_deref_type_var)
++         return true;
++      if (deref->deref_type != nir_deref_type_array ||
++          !nir_src_is_const(deref->arr.index))
++         return false;
++   }
++   return false;
++}
++
++static bool derefs_match(nir_deref_instr *a, nir_deref_instr *b)
++{
++   for (; a && b; a = nir_deref_instr_parent(a), b = nir_deref_instr_parent(b)) {
++      if (a->deref_type != b->deref_type)
++         return false;
++      if (a->deref_type == nir_deref_type_var)
++         return a->var == b->var;
++      if (nir_src_as_uint(a->arr.index) != nir_src_as_uint(b->arr.index))
++         return false;
++   }
++   return false;
++}
++
++static nir_deref_instr *remat_deref(nir_builder *b, nir_deref_instr *deref)
++{
++   if (deref->deref_type == nir_deref_type_var)
++      return nir_build_deref_var(b, deref->var);
++
++   nir_deref_instr *parent = remat_deref(b, nir_deref_instr_parent(deref));
++   return nir_build_deref_array_imm(b, parent, nir_src_as_int(deref->arr.index));
++}
++
++/* Buffer descriptor index computations that can be rebuilt anywhere. */
++static bool def_is_remat(nir_def *def, unsigned depth)
++{
++   if (depth > 4)
++      return false;
++
++   nir_instr *instr = nir_def_instr(def);
++   switch (instr->type) {
++   case nir_instr_type_load_const:
++      return true;
++
++   case nir_instr_type_alu: {
++      nir_alu_instr *alu = nir_instr_as_alu(instr);
++      for (unsigned i = 0; i < nir_op_infos[alu->op].num_inputs; i++) {
++         if (!def_is_remat(alu->src[i].src.ssa, depth + 1))
++            return false;
++      }
++      return true;
++   }
++
++   case nir_instr_type_intrinsic: {
++      nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
++      if (intr->intrinsic != nir_intrinsic_vulkan_resource_index &&
++          intr->intrinsic != nir_intrinsic_vulkan_resource_reindex &&
++          intr->intrinsic != nir_intrinsic_load_vulkan_descriptor)
++         return false;
++      for (unsigned i = 0; i < nir_intrinsic_infos[intr->intrinsic].num_srcs;
++           i++) {
++         if (!def_is_remat(intr->src[i].ssa, depth + 1))
++            return false;
++      }
++      return true;
++   }
++
++   default:
++      return false;
++   }
++}
++
++static nir_def *remat_def(nir_builder *b, nir_def *def)
++{
++   nir_instr *instr = nir_def_instr(def);
++   nir_instr *clone = nir_instr_clone(b->shader, instr);
++
++   switch (instr->type) {
++   case nir_instr_type_load_const:
++      nir_builder_instr_insert(b, clone);
++      return &nir_instr_as_load_const(clone)->def;
++
++   case nir_instr_type_alu: {
++      nir_alu_instr *alu = nir_instr_as_alu(instr);
++      nir_alu_instr *alu_clone = nir_instr_as_alu(clone);
++      for (unsigned i = 0; i < nir_op_infos[alu->op].num_inputs; i++)
++         alu_clone->src[i].src = nir_src_for_ssa(remat_def(b, alu->src[i].src.ssa));
++      nir_builder_instr_insert(b, clone);
++      return &alu_clone->def;
++   }
++
++   case nir_instr_type_intrinsic: {
++      nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
++      nir_intrinsic_instr *intr_clone = nir_instr_as_intrinsic(clone);
++      for (unsigned i = 0; i < nir_intrinsic_infos[intr->intrinsic].num_srcs;
++           i++)
++         intr_clone->src[i] = nir_src_for_ssa(remat_def(b, intr->src[i].ssa));
++      nir_builder_instr_insert(b, clone);
++      return &intr_clone->def;
++   }
++
++   default:
++      UNREACHABLE("not rematerializable");
++   }
++}
++
++static bool is_output_store(nir_instr *instr)
++{
++   if (instr->type != nir_instr_type_intrinsic)
++      return false;
++
++   nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
++   if (intr->intrinsic == nir_intrinsic_store_output)
++      return true;
++
++   return intr->intrinsic == nir_intrinsic_store_deref &&
++          nir_deref_mode_is(nir_src_as_deref(intr->src[0]), nir_var_shader_out);
++}
++
++/* Output stores directly in a list (not nested), in program order. */
++static void collect_stores(struct exec_list *list, struct util_dynarray *stores)
++{
++   foreach_list_typed (nir_cf_node, node, node, list) {
++      if (node->type != nir_cf_node_block)
++         continue;
++      nir_foreach_instr (instr, nir_cf_node_as_block(node)) {
++         if (is_output_store(instr))
++            util_dynarray_append_typed(stores, nir_intrinsic_instr *,
++                                       nir_instr_as_intrinsic(instr));
++      }
++   }
++}
++
++/* UBO read only below `end` bytes past its descriptor's offset (or past 0). */
++struct ubo_extent {
++   nir_def *desc;
++   bool has_base;
++   uint32_t end;
++};
++
++/*
++ * Matches a UBO load whose index is the first two components of a
++ * rebuildable descriptor and whose offset is a constant, optionally plus the
++ * descriptor's offset (its third component, which pco_nir_lower_vk makes 0).
++ * Returns the end of the bytes read.
++ */
++static bool ubo_load_extent(nir_intrinsic_instr *intr, struct ubo_extent *ext)
++{
++   nir_scalar x = nir_scalar_resolved(intr->src[0].ssa, 0);
++   nir_scalar y = nir_scalar_resolved(intr->src[0].ssa, 1);
++   if (x.def != y.def || x.comp != 0 || y.comp != 1 ||
++       x.def->num_components != 3 || !def_is_remat(x.def, 0))
++      return false;
++
++   uint64_t off = 0;
++   nir_scalar s = nir_scalar_resolved(intr->src[1].ssa, 0);
++   for (unsigned i = 0; i < 4 && nir_scalar_is_alu(s) &&
++                        nir_scalar_alu_op(s) == nir_op_iadd;
++        i++) {
++      nir_scalar a = nir_scalar_chase_movs(nir_scalar_chase_alu_src(s, 0));
++      nir_scalar c = nir_scalar_chase_movs(nir_scalar_chase_alu_src(s, 1));
++      if (nir_scalar_is_const(a)) {
++         off += nir_scalar_as_uint(a);
++         s = c;
++      } else if (nir_scalar_is_const(c)) {
++         off += nir_scalar_as_uint(c);
++         s = a;
++      } else {
++         return false;
++      }
++   }
++
++   bool has_base = false;
++   if (nir_scalar_is_const(s))
++      off += nir_scalar_as_uint(s);
++   else if (s.def == x.def && s.comp == 2)
++      has_base = true;
++   else
++      return false;
++
++   off += intr->num_components * intr->def.bit_size / 8;
++   if (off > UINT32_MAX)
++      return false;
++
++   *ext = (struct ubo_extent){ x.def, has_base, off };
++   return true;
++}
++
++/*
++ * Instead of guarding every texture/image access (a branch around each
++ * sample) and bounds-checking every UBO load, test once at the start whether
++ * any texture/image descriptor the shader uses is null and whether any UBO is
++ * smaller than the constant offsets read from it (a null UBO has size 0).
++ * When neither, a copy of the shader runs in which those accesses need no
++ * checks; otherwise the original, fully checked, copy runs.
++ *
++ * Done only when every descriptor reference can be rebuilt at the start of
++ * the shader and all outputs are stored at the top level. On success, the
++ * accesses of the unchecked copy that need neither null descriptor nor
++ * robust access checks are added to skip; the checks are lowered afterwards
++ * by the usual passes, which leave those out.
++ */
++bool pco_nir_version_descriptor_checks(
++   nir_shader *shader,
++   pco_nir_lower_null_descriptor_options null_opts,
++   bool (*robust_filter)(const nir_intrinsic_instr *, const void *),
++   const void *robust_data,
++   struct set *skip)
++{
++
++   nir_function_impl *impl = nir_shader_get_entrypoint(shader);
++   nir_deref_instr *descs[VERSION_MAX_DESCS];
++   struct ubo_extent ubos[VERSION_MAX_UBOS];
++   struct util_dynarray covered;
++   unsigned num_descs = 0;
++   unsigned num_ubos = 0;
++   unsigned num_checks = 0;
++   unsigned num_instrs = 0;
++   bool ok = true;
++
++   util_dynarray_init(&covered, NULL);
++
++   nir_foreach_block (block, impl) {
++      nir_foreach_instr (instr, block) {
++         num_instrs++;
++
++         if (is_output_store(instr)) {
++            nir_intrinsic_instr *store = nir_instr_as_intrinsic(instr);
++            if (block->cf_node.parent != &impl->cf_node ||
++                (store->intrinsic == nir_intrinsic_store_output
++                    ? !nir_src_is_const(store->src[1])
++                    : !deref_is_static(nir_src_as_deref(store->src[0])))) {
++               ok = false;
++               goto done_scan;
++            }
++         }
++
++         if ((robust_filter || (null_opts & pco_nir_lower_null_descriptor_ubo)) &&
++             instr->type == nir_instr_type_intrinsic) {
++            nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
++            struct ubo_extent ext;
++            if (intr->intrinsic == nir_intrinsic_load_ubo &&
++                (!robust_filter || robust_filter(intr, robust_data)) &&
++                ubo_load_extent(intr, &ext)) {
++               unsigned u;
++               for (u = 0; u < num_ubos; u++) {
++                  if (ubos[u].desc == ext.desc &&
++                      ubos[u].has_base == ext.has_base)
++                     break;
++               }
++               if (u == num_ubos) {
++                  if (num_ubos == VERSION_MAX_UBOS)
++                     continue;
++                  ubos[num_ubos++] = ext;
++               }
++               ubos[u].end = MAX2(ubos[u].end, ext.end);
++               util_dynarray_append_typed(&covered, nir_instr *, instr);
++               num_checks++;
++               continue;
++            }
++         }
++
++         nir_deref_instr *deref = checked_deref(instr, null_opts);
++         if (!deref)
++            continue;
++         if (!deref_is_static(deref)) {
++            ok = false;
++            goto done_scan;
++         }
++
++         num_checks++;
++         util_dynarray_append_typed(&covered, nir_instr *, instr);
++
++         bool seen = false;
++         for (unsigned i = 0; i < num_descs; i++)
++            seen |= derefs_match(descs[i], deref);
++         if (seen)
++            continue;
++         if (num_descs == VERSION_MAX_DESCS) {
++            ok = false;
++            goto done_scan;
++         }
++         descs[num_descs++] = deref;
++      }
++   }
++
++done_scan:
++   if (!ok || num_checks < 2 || num_instrs > VERSION_MAX_INSTRS) {
++      util_dynarray_fini(&covered);
++      return false;
++   }
++
++   nir_cf_list body;
++   nir_cf_extract(&body, nir_before_impl(impl), nir_after_impl(impl));
++
++   nir_builder b = nir_builder_at(nir_before_impl(impl));
++   nir_def *slow = nir_imm_false(&b);
++   for (unsigned i = 0; i < num_descs; i++) {
++      nir_deref_instr *deref = remat_deref(&b, descs[i]);
++      slow = nir_ior(&b, slow, nir_is_null_descriptor(&b, &deref->def));
++   }
++   for (unsigned u = 0; u < num_ubos; u++) {
++      nir_def *desc = remat_def(&b, ubos[u].desc);
++      nir_def *size = nir_get_ubo_size(&b, 32, nir_trim_vector(&b, desc, 2));
++      nir_def *end = nir_imm_int(&b, ubos[u].end);
++      if (ubos[u].has_base)
++         end = nir_iadd(&b, nir_channel(&b, desc, 2), end);
++      slow = nir_ior(&b, slow, nir_ult(&b, size, end));
++   }
++
++   nir_if *nif = nir_push_if(&b, slow);
++   nir_cf_list_clone_and_reinsert(&body, &nif->cf_node, b.cursor, NULL);
++   nir_push_else(&b, nif);
++   nir_cf_reinsert(&body, b.cursor);
++   nir_pop_if(&b, nif);
++
++   /* The original instructions now form the unchecked copy. */
++   util_dynarray_foreach (&covered, nir_instr *, instr)
++      _mesa_set_add(skip, *instr);
++   util_dynarray_fini(&covered);
++
++   /* Later passes sink every output store to the end of the shader, so store
++    * each output once after the if, from a phi of the two copies' values.
++    */
++   struct util_dynarray then_stores, else_stores;
++   util_dynarray_init(&then_stores, NULL);
++   util_dynarray_init(&else_stores, NULL);
++   collect_stores(&nif->then_list, &then_stores);
++   collect_stores(&nif->else_list, &else_stores);
++   assert(then_stores.size == else_stores.size);
++
++   unsigned num_stores =
++      util_dynarray_num_elements(&else_stores, nir_intrinsic_instr *);
++   nir_def **phis = ralloc_array(NULL, nir_def *, MAX2(num_stores, 1));
++   for (unsigned i = 0; i < num_stores; i++) {
++      nir_intrinsic_instr *copy =
++         *util_dynarray_element(&then_stores, nir_intrinsic_instr *, i);
++      nir_intrinsic_instr *orig =
++         *util_dynarray_element(&else_stores, nir_intrinsic_instr *, i);
++      unsigned data = orig->intrinsic == nir_intrinsic_store_output ? 0 : 1;
++      phis[i] = nir_if_phi(&b, copy->src[data].ssa, orig->src[data].ssa);
++   }
++   for (unsigned i = 0; i < num_stores; i++) {
++      nir_intrinsic_instr *copy =
++         *util_dynarray_element(&then_stores, nir_intrinsic_instr *, i);
++      nir_intrinsic_instr *orig =
++         *util_dynarray_element(&else_stores, nir_intrinsic_instr *, i);
++      if (orig->intrinsic == nir_intrinsic_store_output) {
++         nir_def *offset = nir_imm_int(&b, nir_src_as_uint(orig->src[1]));
++         nir_instr_remove(&orig->instr);
++         nir_builder_instr_insert(&b, &orig->instr);
++         nir_src_rewrite(&orig->src[0], phis[i]);
++         nir_src_rewrite(&orig->src[1], offset);
++      } else {
++         nir_deref_instr *deref =
++            remat_deref(&b, nir_src_as_deref(orig->src[0]));
++         nir_instr_remove(&orig->instr);
++         nir_builder_instr_insert(&b, &orig->instr);
++         nir_src_rewrite(&orig->src[0], &deref->def);
++         nir_src_rewrite(&orig->src[1], phis[i]);
++      }
++      nir_instr_remove(&copy->instr);
++   }
++   ralloc_free(phis);
++   util_dynarray_fini(&then_stores);
++   util_dynarray_fini(&else_stores);
++
++   nir_progress(true, impl, nir_metadata_none);
++   return true;
++}
++
++struct lower_state {
++   pco_nir_lower_null_descriptor_options options;
++   struct set *skip;
++};
++
++static bool lower_unskipped(nir_builder *b, nir_instr *instr, void *data)
++{
++   struct lower_state *state = data;
++   if (state->skip && _mesa_set_search(state->skip, instr))
++      return false;
++   return lower(b, instr, &state->options);
++}
++
+ bool pco_nir_lower_null_descriptors(
+    nir_shader *shader,
+-   pco_nir_lower_null_descriptor_options options)
++   pco_nir_lower_null_descriptor_options options,
++   struct set *skip)
+ {
+-   return nir_shader_instructions_pass(shader,
+-                                       lower,
+-                                       nir_metadata_none,
+-                                       &options);
++   struct lower_state state = { .options = options, .skip = skip };
++
++   /* Instructions are collected first: lowering adds control flow. */
++   struct util_dynarray instrs;
++   util_dynarray_init(&instrs, NULL);
++   nir_foreach_function_impl (impl, shader) {
++      nir_foreach_block (block, impl) {
++         nir_foreach_instr (instr, block)
++            util_dynarray_append_typed(&instrs, nir_instr *, instr);
++      }
++   }
++
++   bool progress = false;
++   util_dynarray_foreach (&instrs, nir_instr *, instr) {
++      nir_function_impl *impl =
++         nir_cf_node_get_function(&(*instr)->block->cf_node);
++      nir_builder b = nir_builder_create(impl);
++      progress |= lower_unskipped(&b, *instr, &state);
++   }
++   util_dynarray_fini(&instrs);
++
++   nir_foreach_function_impl (impl, shader)
++      nir_progress(progress, impl, nir_metadata_none);
++
++   return progress;
+ }
+diff --git a/src/imagination/vulkan/pvr_arch_pipeline.c b/src/imagination/vulkan/pvr_arch_pipeline.c
+index d92d9e6..f393253 100644
+--- a/src/imagination/vulkan/pvr_arch_pipeline.c
++++ b/src/imagination/vulkan/pvr_arch_pipeline.c
+@@ -1042,33 +1042,61 @@ static VkResult pvr_compute_pipeline_compile(
+ 
+    pvr_early_init_shader_data(&shader_data, nir, pCreateInfo, device);
+    pco_preprocess_nir(pco_ctx, nir, &shader_data);
+-   pvr_preprocess_shader_data(&shader_data,
+-                              nir,
+-                              pCreateInfo,
+-                              layout,
+-                              NULL,
+-                              NULL);
++   /* The shader before lowering, in case it has to be lowered again without
++    * versioned descriptor checks (see below).
++    */
++   nir_shader *unversioned_nir = NULL;
++   pco_data *unversioned_data = NULL;
++   if (shader_data.common.robust_buffer_access ||
++       shader_data.common.null_descriptor) {
++      unversioned_nir = nir_shader_clone(shader_mem_ctx, nir);
++      unversioned_data = ralloc(shader_mem_ctx, pco_data);
++      *unversioned_data = shader_data;
++   }
++
++   for (;;) {
++      pvr_preprocess_shader_data(&shader_data,
++                                 nir,
++                                 pCreateInfo,
++                                 layout,
++                                 NULL,
++                                 NULL);
+ 
+-   const struct lower_ycbcr_state ycbcr_state = {
+-      .set_layout_count = layout->set_count,
+-      .set_layouts = layout->set_layouts,
+-   };
+-   NIR_PASS(_,
+-            nir,
+-            nir_pvr_lower_ycbcr_tex,
+-            lookup_ycbcr_conversion,
+-            &ycbcr_state);
+-   pco_lower_nir(pco_ctx, nir, &shader_data);
+-   pco_postprocess_nir(pco_ctx, nir, &shader_data);
+-   pvr_postprocess_shader_data(&shader_data, nir, pCreateInfo, layout, NULL);
+-
+-   cs = pco_trans_nir(pco_ctx, nir, &shader_data, shader_mem_ctx);
+-   if (!cs) {
+-      result = VK_ERROR_INITIALIZATION_FAILED;
+-      goto err_free_build_context;
++      const struct lower_ycbcr_state ycbcr_state = {
++         .set_layout_count = layout->set_count,
++         .set_layouts = layout->set_layouts,
++      };
++      NIR_PASS(_,
++               nir,
++               nir_pvr_lower_ycbcr_tex,
++               lookup_ycbcr_conversion,
++               &ycbcr_state);
++      pco_lower_nir(pco_ctx, nir, &shader_data);
++      pco_postprocess_nir(pco_ctx, nir, &shader_data);
++      pvr_postprocess_shader_data(&shader_data, nir, pCreateInfo, layout, NULL);
++
++      cs = pco_trans_nir(pco_ctx, nir, &shader_data, shader_mem_ctx);
++      if (!cs) {
++         result = VK_ERROR_INITIALIZATION_FAILED;
++         goto err_free_build_context;
++      }
++
++      pco_process_ir(pco_ctx, cs);
++
++      /* Spilling does not work: the shared registers holding the spill buffer
++       * address are only reserved when spilled_temps is known beforehand. So
++       * if the versioned checks pushed the shader over the register limit,
++       * compile it again without them.
++       */
++      if (!pco_shader_data(cs)->common.spilled_temps ||
++          !shader_data.common.checks_versioned)
++         break;
++
++      nir = unversioned_nir;
++      shader_data = *unversioned_data;
++      shader_data.common.no_check_versioning = true;
+    }
+ 
+-   pco_process_ir(pco_ctx, cs);
+    pco_encode_ir(pco_ctx, cs);
+ 
+    pvr_compute_state_save(compute_pipeline, cs);
+@@ -2957,6 +2985,30 @@ static bool pvr_build_fs_passthrough(bool no_fragment_shader,
+ }
+ 
+ /* Compiles and uploads shaders and PDS programs. */
++/* Lowers one graphics stage and fills in its shader data. */
++static void
++pvr_graphics_lower_stage(pco_ctx *pco_ctx,
++                         nir_shader *nir,
++                         pco_data *data,
++                         const VkGraphicsPipelineCreateInfo *pCreateInfo,
++                         struct vk_pipeline_layout *layout,
++                         const struct vk_graphics_pipeline_state *state,
++                         struct usc_mrt_setup *mrt_setup)
++{
++   pvr_preprocess_shader_data(data, nir, pCreateInfo, layout, state, mrt_setup);
++
++   const struct lower_ycbcr_state ycbcr_state = {
++      .set_layout_count = layout->set_count,
++      .set_layouts = layout->set_layouts,
++   };
++   NIR_PASS(_, nir, nir_pvr_lower_ycbcr_tex, lookup_ycbcr_conversion, &ycbcr_state);
++   pco_lower_nir(pco_ctx, nir, data);
++
++   pco_postprocess_nir(pco_ctx, nir, data);
++
++   pvr_postprocess_shader_data(data, nir, pCreateInfo, layout, mrt_setup);
++}
++
+ static VkResult
+ pvr_graphics_pipeline_compile(struct pvr_device *const device,
+                               struct vk_pipeline_cache *cache,
+@@ -3100,40 +3152,33 @@ pvr_graphics_pipeline_compile(struct pvr_device *const device,
+       nir_shaders[MESA_SHADER_FRAGMENT] = fs_pass;
+    }
+ 
++   /* Each stage before lowering, in case it has to be lowered again without
++    * versioned descriptor checks (see below).
++    */
++   nir_shader *unversioned_nir[MESA_SHADER_STAGES] = { 0 };
++   pco_data *unversioned_data[MESA_SHADER_STAGES] = { 0 };
++
+    for (mesa_shader_stage stage = 0; stage < MESA_SHADER_STAGES; ++stage) {
+       if (!nir_shaders[stage])
+          continue;
+ 
+-      pvr_preprocess_shader_data(&shader_data[stage],
+-                                 nir_shaders[stage],
+-                                 pCreateInfo,
+-                                 layout,
+-                                 state,
+-                                 &mrt_setup);
+-
+-      const struct lower_ycbcr_state ycbcr_state = {
+-         .set_layout_count = layout->set_count,
+-         .set_layouts = layout->set_layouts,
+-      };
+-      NIR_PASS(_,
+-               nir_shaders[stage],
+-               nir_pvr_lower_ycbcr_tex,
+-               lookup_ycbcr_conversion,
+-               &ycbcr_state);
+-      pco_lower_nir(pco_ctx, nir_shaders[stage], &shader_data[stage]);
+-
+-      pco_postprocess_nir(pco_ctx, nir_shaders[stage], &shader_data[stage]);
++      if (shader_data[stage].common.robust_buffer_access ||
++          shader_data[stage].common.null_descriptor) {
++         unversioned_nir[stage] =
++            nir_shader_clone(shader_mem_ctx, nir_shaders[stage]);
++         unversioned_data[stage] = ralloc(shader_mem_ctx, pco_data);
++         *unversioned_data[stage] = shader_data[stage];
++      }
+ 
+-      pvr_postprocess_shader_data(&shader_data[stage],
+-                                  nir_shaders[stage],
+-                                  pCreateInfo,
+-                                  layout,
+-                                  &mrt_setup);
++      pvr_graphics_lower_stage(pco_ctx,
++                               nir_shaders[stage],
++                               &shader_data[stage],
++                               pCreateInfo,
++                               layout,
++                               state,
++                               &mrt_setup);
+    }
+ 
+-   if (!pCreateInfo->renderPass)
+-      pvr_arch_destroy_mrt_setup(device, &mrt_setup);
+-
+    for (mesa_shader_stage stage = 0; stage < MESA_SHADER_STAGES; ++stage) {
+       pco_shader **pco = &pco_shaders[stage];
+ 
+@@ -3141,19 +3186,45 @@ pvr_graphics_pipeline_compile(struct pvr_device *const device,
+       if (!nir_shaders[stage])
+          continue;
+ 
+-      *pco = pco_trans_nir(pco_ctx,
+-                           nir_shaders[stage],
+-                           &shader_data[stage],
+-                           shader_mem_ctx);
+-      if (!*pco) {
+-         result = VK_ERROR_INITIALIZATION_FAILED;
+-         goto err_free_build_context;
++      for (;;) {
++         *pco = pco_trans_nir(pco_ctx,
++                              nir_shaders[stage],
++                              &shader_data[stage],
++                              shader_mem_ctx);
++         if (!*pco) {
++            result = VK_ERROR_INITIALIZATION_FAILED;
++            goto err_free_build_context;
++         }
++
++         pco_process_ir(pco_ctx, *pco);
++
++         /* Spilling does not work: the shared registers holding the spill
++          * buffer address are only reserved when spilled_temps is known
++          * beforehand. So if the versioned checks pushed the shader over the
++          * register limit, compile it again without them.
++          */
++         if (!pco_shader_data(*pco)->common.spilled_temps ||
++             !shader_data[stage].common.checks_versioned)
++            break;
++
++         nir_shaders[stage] = unversioned_nir[stage];
++         shader_data[stage] = *unversioned_data[stage];
++         shader_data[stage].common.no_check_versioning = true;
++         pvr_graphics_lower_stage(pco_ctx,
++                                  nir_shaders[stage],
++                                  &shader_data[stage],
++                                  pCreateInfo,
++                                  layout,
++                                  state,
++                                  &mrt_setup);
+       }
+ 
+-      pco_process_ir(pco_ctx, *pco);
+       pco_encode_ir(pco_ctx, *pco);
+    }
+ 
++   if (!pCreateInfo->renderPass)
++      pvr_arch_destroy_mrt_setup(device, &mrt_setup);
++
+    pvr_vertex_state_save(gfx_pipeline, *vs);
+ 
+    if (pCreateInfo->flags & VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR) {
+-- 
+2.47.3
+

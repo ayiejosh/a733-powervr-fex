@@ -1,0 +1,46 @@
+From 101f3bb9c993b2e2e8b32ebd80f33ec15c3733e5 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sun, 18 Oct 2026 14:12:12 +0800
+Subject: [PATCH 179/269] gallium: finish the pvr_native rename so the 26.3
+ tree builds again
+
+The native driver's code moved to drivers/pvr_native when the wrapper took the pvr slot; this fixes the
+two places that still named the old path: src/gallium/meson.build's subdir, and drm_helper.h's hardcoded
+"pvr/pvr_public.h" include.
+
+Full build clean (0 errors) and the native probe passes on the real open kernel. The wrapper lives
+separately at /home/radxa/mesa-pvr (Mesa 22.1.7), so the two do not collide.
+---
+ src/gallium/auxiliary/target-helpers/drm_helper.h | 2 +-
+ src/gallium/meson.build                           | 2 +-
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/src/gallium/auxiliary/target-helpers/drm_helper.h b/src/gallium/auxiliary/target-helpers/drm_helper.h
+index 7e526a1a..af550b48 100644
+--- a/src/gallium/auxiliary/target-helpers/drm_helper.h
++++ b/src/gallium/auxiliary/target-helpers/drm_helper.h
+@@ -483,7 +483,7 @@ DRM_DRIVER_DESCRIPTOR_STUB(ethosu)
+ #endif
+ 
+ #ifdef GALLIUM_PVR
+-#include "pvr/pvr_public.h"
++#include "pvr_native/pvr_public.h"
+ 
+ static struct pipe_screen *
+ pipe_pvr_create_screen(int fd, const struct pipe_screen_config *config)
+diff --git a/src/gallium/meson.build b/src/gallium/meson.build
+index cbb166db..e633fa70 100644
+--- a/src/gallium/meson.build
++++ b/src/gallium/meson.build
+@@ -197,7 +197,7 @@ else
+   driver_ethosu = declare_dependency()
+ endif
+ if with_gallium_pvr
+-  subdir('drivers/pvr')
++  subdir('drivers/pvr_native')
+ else
+   driver_pvr = declare_dependency()
+ endif
+-- 
+2.47.3
+

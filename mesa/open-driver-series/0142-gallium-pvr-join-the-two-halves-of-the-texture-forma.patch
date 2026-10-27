@@ -1,0 +1,233 @@
+From b331a4cd634c1165824e634eb505be7231089154 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 18:30:41 +0800
+Subject: [PATCH 142/269] gallium/pvr: join the two halves of the texture
+ format layout
+
+  csb: format layouts: RGBA8/BGRA8 share U8U8U8U8 but differ in swizzle (0 vs 2); colour
+       formats only, depth unmapped and refused
+  --- ALL PASS        (real open kernel)
+
+The swizzle needed no table after all. The reference's pvr_get_format_swizzle_for_tpu()
+returns desc->swizzle for colour formats - the gallium format description's own swizzle - and
+{X, NONE, NONE, NONE} for depth/stencil, because those are read from one channel whatever
+their storage layout. Fifteen lines of logic, not the 44 KB the size of pvr_formats.c
+suggested; that bulk is elsewhere.
+
+So the layout is now both halves, and the check asserts the RELATIONSHIP rather than the
+arithmetic: RGBA8 and BGRA8 must share a component layout and differ in swizzle. If they ever
+mapped to the same swizzle, one of them would be read with the other's channel order - and a
+check that only compared component enums would pass while that was true.
+
+The first version of the check failed, correctly, and the failure was informative: it asserted
+a depth-stencil format would produce a layout, but the single-channel swizzle rule is
+UNREACHABLE because no depth format is in the component switch. Mapping Z24S8 means choosing
+between the hardware's ST8U24 and X8U24, and picking one without knowing the convention would
+be a guess about storage layout - the same class of guess this function refuses everywhere
+else. The check now asserts the GAP (a depth format is refused) instead of exercising a path
+that cannot run, and the code says the rule is right but the mapping it needs is missing.
+
+Colour formats only, and said so rather than implied.
+---
+ src/gallium/drivers/pvr/pvr_csb.c   | 26 ++++++++++--
+ src/gallium/drivers/pvr/pvr_csb.h   | 35 ++++++++--------
+ src/gallium/drivers/pvr/pvr_probe.c | 62 ++++++++++++++++++-----------
+ 3 files changed, 77 insertions(+), 46 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr/pvr_csb.c b/src/gallium/drivers/pvr/pvr_csb.c
+index 79ff241c..df5de86e 100644
+--- a/src/gallium/drivers/pvr/pvr_csb.c
++++ b/src/gallium/drivers/pvr/pvr_csb.c
+@@ -3,6 +3,8 @@
+  */
+ #include "pvr_csb.h"
+ 
++#include "util/format/u_format.h"
++
+ void
+ pvr_csb_init(struct pvr_csb *csb, void *map, uint32_t size_bytes,
+              uint32_t guard_dwords)
+@@ -200,9 +202,14 @@ pvr_csb_emit_vdm_state(struct pvr_csb *csb, bool cut_index_enable,
+ bool
+ pvr_format_layout_from_pipe(enum pipe_format format, struct pvr_format_layout *layout_out)
+ {
++   const struct util_format_description *desc = util_format_description(format);
++
++   if (desc == NULL)
++      return false;
++
+    /* Only formats whose component layout is unambiguous from the gallium format itself.
+     * PIPE_FORMAT_R8G8B8A8_UNORM and PIPE_FORMAT_B8G8R8A8_UNORM both land on U8U8U8U8 and
+-    * differ only by swizzle, which is precisely the point being made. */
++    * differ only in the swizzle below, which is exactly why the two are separate fields. */
+    switch (format) {
+    case PIPE_FORMAT_R8G8B8A8_UNORM:
+    case PIPE_FORMAT_B8G8R8A8_UNORM:
+@@ -224,9 +231,20 @@ pvr_format_layout_from_pipe(enum pipe_format format, struct pvr_format_layout *l
+       return false;
+    }
+ 
+-   /* Always false today, and stated rather than implied: without a swizzle the descriptor
+-    * would put the right components in the wrong channels. */
+-   layout_out->swizzle_known = false;
++   /* Depth and stencil are read from one channel whatever their storage layout, so the
++    * swizzle is not the description's - this is the reference's rule, not a choice.
++    *
++    * Currently unreachable: no depth format is in the component switch above, because
++    * choosing between the hardware's ST8U24 and X8U24 for Z24S8 means knowing which the
++    * layout uses. The rule is right; the component mapping it needs is missing. */
++   if (util_format_has_depth(desc) || util_format_has_stencil(desc)) {
++      layout_out->swizzle[0] = PIPE_SWIZZLE_X;
++      layout_out->swizzle[1] = PIPE_SWIZZLE_NONE;
++      layout_out->swizzle[2] = PIPE_SWIZZLE_NONE;
++      layout_out->swizzle[3] = PIPE_SWIZZLE_NONE;
++   } else {
++      memcpy(layout_out->swizzle, desc->swizzle, sizeof(layout_out->swizzle));
++   }
+ 
+    return true;
+ }
+diff --git a/src/gallium/drivers/pvr/pvr_csb.h b/src/gallium/drivers/pvr/pvr_csb.h
+index cf0dac13..24145d76 100644
+--- a/src/gallium/drivers/pvr/pvr_csb.h
++++ b/src/gallium/drivers/pvr/pvr_csb.h
+@@ -117,26 +117,25 @@ bool pvr_csb_emit_vdm_state(struct pvr_csb *csb, bool cut_index_enable,
+                             uint32_t cut_index, bool have_vs_data_addr,
+                             uint64_t vs_pds_data_base_addr, uint32_t *words_out);
+ 
+-/* The hardware's component layout for a gallium format - HALF of what a texture descriptor
+- * needs, and deliberately not more.
+- *
+- * enum ROGUE_TEXSTATE_FORMAT names COMPONENT layouts, not channel orders: it has U8U8U8U8
+- * but nothing that says which component is red. Channel order comes from a separate swizzle
+- * field (the Vulkan side has pvr_get_format_swizzle for exactly this), which is where the
+- * bulk of its 44 KB format table lives. So a descriptor built from this enum alone would
+- * have the right component types in the wrong channels - it would sample something, and it
+- * would be wrong.
+- *
+- * Hence the return type: the caller gets a component enum and is told, by the type, that a
+- * swizzle is still required. Filling the swizzle in is the next piece; until then this
+- * cannot be used to build a descriptor that merely looks complete.
+- *
+- * Returns false for any format whose layout is not one of the cases handled here - a
+- * guess about component layout would be as wrong as a guess about channel order. */
++/* What the hardware needs to read a texture, in the two parts it actually takes.
++ *
++ * enum ROGUE_TEXSTATE_FORMAT names COMPONENT layouts, not channel orders: it has U8U8U8U8 but
++ * nothing saying which component is red. Channel order is a separate swizzle, so both halves
++ * are needed and neither is a descriptor on its own.
++ *
++ * The swizzle turned out not to need a table at all. The reference's
++ * pvr_get_format_swizzle_for_tpu() returns desc->swizzle for colour formats - the gallium
++ * format description's own swizzle - and {X, NONE, NONE, NONE} for depth/stencil, because
++ * depth and stencil are read from one channel regardless of how they are stored. So the piece
++ * that looked like 44 KB of table is fifteen lines of logic, and the 44 KB is elsewhere.
++ *
++ * Returns false for formats whose component layout is not one of the cases handled here.
++ * Guessing a component layout is as wrong as guessing a channel order. */
+ struct pvr_format_layout {
+    enum ROGUE_TEXSTATE_FORMAT components;
+-   /* Not yet available. There is no path to a descriptor while this is false. */
+-   bool swizzle_known;
++
++   /* PIPE_SWIZZLE_* per channel, in the order the hardware reads them. */
++   uint8_t swizzle[4];
+ };
+ 
+ bool pvr_format_layout_from_pipe(enum pipe_format format,
+diff --git a/src/gallium/drivers/pvr/pvr_probe.c b/src/gallium/drivers/pvr/pvr_probe.c
+index ae70fd1f..c63509a1 100644
+--- a/src/gallium/drivers/pvr/pvr_probe.c
++++ b/src/gallium/drivers/pvr/pvr_probe.c
+@@ -1115,50 +1115,64 @@ csb_check(int fd, struct pipe_screen *pscreen)
+     * together, checked against a locally packed reference and read back with the
+     * generated unpacker - the same pattern as the packet check, but this is content the
+     * GPU follows rather than a packet it merely reads. */
+-   /* Component layouts. The property worth checking is not that five formats map to five
+-    * enums - it is that the mapping is HALF a descriptor and says so. RGBA8 and BGRA8 map to
+-    * the SAME component layout because the hardware enum carries no channel order; they
+-    * differ only by swizzle, which is not available yet. A struct that could be mistaken for
+-    * a complete descriptor is the thing this check exists to prevent. */
++   /* Format layouts. The property worth checking is the RELATIONSHIP between the two halves:
++    * RGBA8 and BGRA8 must share a component layout and differ in swizzle. If they ever map to
++    * the same swizzle, the driver would read one of them with the other's channel order - it
++    * would sample something, and sample it wrongly. A check that only compared component
++    * enums would pass while that was true. */
+    {
+-      struct pvr_format_layout a = { 0 }, b = { 0 }, f = { 0 };
++      struct pvr_format_layout rgba = { 0 }, bgra = { 0 }, f16 = { 0 }, depth = { 0 };
+ 
+-      if (!pvr_format_layout_from_pipe(PIPE_FORMAT_R8G8B8A8_UNORM, &a) ||
+-          !pvr_format_layout_from_pipe(PIPE_FORMAT_B8G8R8A8_UNORM, &b) ||
+-          !pvr_format_layout_from_pipe(PIPE_FORMAT_R16G16B16A16_FLOAT, &f)) {
+-         printf("csb:           FAIL: a known format returned no component layout\n");
++      if (!pvr_format_layout_from_pipe(PIPE_FORMAT_R8G8B8A8_UNORM, &rgba) ||
++          !pvr_format_layout_from_pipe(PIPE_FORMAT_B8G8R8A8_UNORM, &bgra) ||
++          !pvr_format_layout_from_pipe(PIPE_FORMAT_R16G16B16A16_FLOAT, &f16)) {
++         printf("csb:           FAIL: a known colour format returned no layout\n");
+          goto out;
+       }
+ 
+-      if (a.components != ROGUE_TEXSTATE_FORMAT_U8U8U8U8 ||
+-          b.components != ROGUE_TEXSTATE_FORMAT_U8U8U8U8 ||
+-          f.components != ROGUE_TEXSTATE_FORMAT_F16F16F16F16) {
++      if (rgba.components != ROGUE_TEXSTATE_FORMAT_U8U8U8U8 ||
++          bgra.components != ROGUE_TEXSTATE_FORMAT_U8U8U8U8 ||
++          f16.components != ROGUE_TEXSTATE_FORMAT_F16F16F16F16) {
+          printf("csb:           FAIL: component layouts are not what the hardware enum "
+                 "names describe\n");
+          goto out;
+       }
+ 
+-      if (a.components != b.components) {
+-         printf("csb:           FAIL: RGBA8 and BGRA8 should share a component layout - the "
+-                "hardware does not encode channel order\n");
++      /* Same components, different channels. This is the whole reason the layout is two
++       * fields rather than one. */
++      if (memcmp(rgba.swizzle, bgra.swizzle, sizeof(rgba.swizzle)) == 0) {
++         printf("csb:           FAIL: RGBA8 and BGRA8 have the same swizzle - one of them "
++                "would be read with the other's channel order\n");
+          goto out;
+       }
+ 
+-      /* The honesty bit: nothing here is usable as a descriptor yet, and the struct says so
+-       * in its type rather than in a comment someone may not read. */
+-      if (a.swizzle_known || f.swizzle_known) {
+-         printf("csb:           FAIL: the layout claims a known swizzle\n");
++      if (rgba.swizzle[0] != PIPE_SWIZZLE_X || bgra.swizzle[0] != PIPE_SWIZZLE_Z) {
++         printf("csb:           FAIL: swizzles are not the description's own (rgba[0] %u, "
++                "bgra[0] %u)\n", rgba.swizzle[0], bgra.swizzle[0]);
++         goto out;
++      }
++
++      /* Depth formats are deliberately NOT asserted here: the single-channel swizzle rule is
++       * implemented, but no depth format is mapped to a component layout yet, so the rule is
++       * currently unreachable. Mapping Z24S8 means choosing between the hardware's ST8U24 and
++       * X8U24, and picking one without knowing the convention would be a guess about the
++       * storage layout - the same class of guess this function refuses everywhere else. So the
++       * gap is asserted as a gap below rather than exercised as if it worked. */
++      if (pvr_format_layout_from_pipe(PIPE_FORMAT_Z24_UNORM_S8_UINT, &depth)) {
++         printf("csb:           FAIL: a depth format was given a component layout, but none "
++                "is mapped - the choice between ST8U24 and X8U24 was not made\n");
+          goto out;
+       }
+ 
+       /* An unhandled format must be refused rather than guessed at. */
+-      if (pvr_format_layout_from_pipe(PIPE_FORMAT_ASTC_4x4_FLOAT, &a)) {
+-         printf("csb:           FAIL: a compressed format was given a component layout\n");
++      if (pvr_format_layout_from_pipe(PIPE_FORMAT_ASTC_4x4_FLOAT, &rgba)) {
++         printf("csb:           FAIL: a compressed format was given a layout\n");
+          goto out;
+       }
+ 
+-      printf("csb:           format layouts: RGBA8 and BGRA8 both -> U8U8U8U8 (channel order "
+-             "is a swizzle, not here), swizzle_known false, unknown formats refused\n");
++      printf("csb:           format layouts: RGBA8/BGRA8 share U8U8U8U8 but differ in "
++             "swizzle (%u vs %u); colour formats only, depth unmapped and refused\n",
++             rgba.swizzle[0], bgra.swizzle[0]);
+    }
+ 
+    /* The VDM state update, whose length depends on its own flags. The property to check
+-- 
+2.47.3
+

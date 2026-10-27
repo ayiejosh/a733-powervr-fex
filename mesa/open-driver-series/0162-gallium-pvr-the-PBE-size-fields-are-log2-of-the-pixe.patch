@@ -1,0 +1,107 @@
+From ad590e1701163a89c3a4747e50d12a7b2e058501 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sat, 17 Oct 2026 10:19:58 +0800
+Subject: [PATCH 162/269] gallium/pvr: the PBE size fields are log2 of the
+ pixel dimension
+
+  csb: PBE encodings: linestride (stride-1)/2 -> 0/1/2 for strides 2/4/6, memlayout LINEAR, size as
+       round-up log2 (100 px -> 128)
+  --- ALL PASS        (real open kernel)
+
+  reg.size_x = util_logbase2_ceil(surface_params->width);
+
+so the field holds the LOG2 of the pixel count, rounded up - a 100-pixel target is described as 128.
+Sixth member of the units family here (after pds_data_size in units, PPP counts in words, smpcnt as
+log2, lod as fixed-point, PDS/USC units) and the SECOND time a field's value is the log2 of the
+quantity its name suggests. Storing the dimension itself would overstate the size by a factor of
+2^(n-1); rounding down would understate it by one step, and the hardware would process fewer tiles
+than the surface has, leaving the remainder undrawn.
+
+Above 16384 pixels there is no encoding; refused rather than saturated, since saturation would claim
+a smaller target than exists - the same silent-missing-pixels failure as rounding down.
+
+The check uses the enum's own named values against concrete pixel counts (1, 16, 100, 128, 129), so a
+version storing pixels or rounding down fails on the first case rather than looking plausible.
+---
+ src/gallium/drivers/pvr/pvr_csb.c   | 14 ++++++++++++++
+ src/gallium/drivers/pvr/pvr_csb.h   | 11 +++++++++++
+ src/gallium/drivers/pvr/pvr_probe.c | 15 ++++++++++++++-
+ 3 files changed, 39 insertions(+), 1 deletion(-)
+
+diff --git a/src/gallium/drivers/pvr/pvr_csb.c b/src/gallium/drivers/pvr/pvr_csb.c
+index a9f7a2f5..5de38449 100644
+--- a/src/gallium/drivers/pvr/pvr_csb.c
++++ b/src/gallium/drivers/pvr/pvr_csb.c
+@@ -383,6 +383,20 @@ pvr_pbe_linestride(uint32_t stride_bytes)
+    return (stride_bytes - 1) / ROGUE_PBESTATE_REG_WORD0_LINESTRIDE_UNIT_SIZE;
+ }
+ 
++enum ROGUE_PBESTATE_SIZE
++pvr_pbe_size_from_pixels(uint32_t pixels)
++{
++   /* 16384 is the largest the enum names. Beyond that there is no encoding, and saturating would
++    * claim a smaller target than exists - the hardware would then process fewer tiles than the
++    * surface has, and the remainder would simply never be drawn. */
++   if (pixels == 0 || pixels > 16384) {
++      mesa_loge("pvr: PBE size from %u pixels, outside the encodable 1..16384", pixels);
++      return ROGUE_PBESTATE_SIZE_16K_PIXEL;
++   }
++
++   return (enum ROGUE_PBESTATE_SIZE)util_logbase2_ceil(pixels);
++}
++
+ enum ROGUE_PBESTATE_MEMLAYOUT
+ pvr_pbe_memlayout_linear(void)
+ {
+diff --git a/src/gallium/drivers/pvr/pvr_csb.h b/src/gallium/drivers/pvr/pvr_csb.h
+index 5a4fa24a..453cfa0a 100644
+--- a/src/gallium/drivers/pvr/pvr_csb.h
++++ b/src/gallium/drivers/pvr/pvr_csb.h
+@@ -454,6 +454,17 @@ bool pvr_csb_emit_pbe_target(struct pvr_csb *csb, const struct pvr_pbe_target *t
+  * described as twiddled while its memory is linear would be read with the wrong addressing, and
+  * that is the kind of wrong that produces a picture rather than an error. */
+ uint32_t pvr_pbe_linestride(uint32_t stride_bytes);
++
++/* The PBE's size fields are the LOG2 of the pixel dimension, not the dimension:
++ *   reg.size_x = util_logbase2_ceil(surface_params->width);
++ * and rounding is UP, so a 100-pixel target is described as 128. That is the sixth member of the
++ * units family in this driver (after pds_data_size in units, PPP counts in words, smpcnt as log2,
++ * lod as fixed-point, and PDS/USC units) - and the second time a field's value turned out to be the
++ * log2 of the quantity its name suggests.
++ *
++ * The largest size the enum names is 16384 pixels; anything larger has no encoding and is refused
++ * rather than mapped to the largest, which would describe a target as smaller than it is. */
++enum ROGUE_PBESTATE_SIZE pvr_pbe_size_from_pixels(uint32_t pixels);
+ enum ROGUE_PBESTATE_MEMLAYOUT pvr_pbe_memlayout_linear(void);
+ 
+ /* Dwords a stream link occupies - what the guard must be at minimum. */
+diff --git a/src/gallium/drivers/pvr/pvr_probe.c b/src/gallium/drivers/pvr/pvr_probe.c
+index 460fd3ac..69eaa0b7 100644
+--- a/src/gallium/drivers/pvr/pvr_probe.c
++++ b/src/gallium/drivers/pvr/pvr_probe.c
+@@ -1842,8 +1842,21 @@ csb_check(int fd, struct pipe_screen *pscreen)
+             goto out;
+          }
+ 
++         /* Concrete pixel counts against the enum's own named values - log2, rounded UP, so 100
++          * pixels is described as 128. A version that stored the dimension itself, or rounded
++          * down, fails on the very first case. */
++         if (pvr_pbe_size_from_pixels(1) != ROGUE_PBESTATE_SIZE_1_PIXEL ||
++             pvr_pbe_size_from_pixels(16) != ROGUE_PBESTATE_SIZE_16_PIXEL ||
++             pvr_pbe_size_from_pixels(100) != ROGUE_PBESTATE_SIZE_128_PIXEL ||
++             pvr_pbe_size_from_pixels(128) != ROGUE_PBESTATE_SIZE_128_PIXEL ||
++             pvr_pbe_size_from_pixels(129) != ROGUE_PBESTATE_SIZE_256_PIXEL) {
++            printf("csb:           FAIL: PBE size is not round-up log2 (100 -> %u, 129 -> %u)\n",
++                   pvr_pbe_size_from_pixels(100), pvr_pbe_size_from_pixels(129));
++            goto out;
++         }
++
+          printf("csb:           PBE encodings: linestride (stride-1)/%u -> 0/1/2 for strides "
+-                "2/4/6, memlayout LINEAR\n", unit);
++                "2/4/6, memlayout LINEAR, size as round-up log2 (100 px -> 128)\n", unit);
+       }
+ 
+       printf("csb:           PBE target: bits [0:31]+[34:39]; a real 2^39 heap address "
+-- 
+2.47.3
+

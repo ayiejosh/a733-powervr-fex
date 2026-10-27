@@ -1,0 +1,174 @@
+From 87159cd720fa11b345142f5d162d52c01bcf1550 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 23 Oct 2026 20:01:57 +0800
+Subject: [PATCH 187/269] gallium/pvr: the stream is NOT what the kernel is
+ rejecting
+
+Three experiments against the real kernel, each narrowing the failure:
+
+ 1. cmd_stream is a USERSPACE pointer (kernel: copy_from_user(stream, u64_to_user_ptr(...)); UAPI:
+    "Pointer to command stream ... must be u64-aligned"). Fixed - the probe now passes the CPU
+    mapping. The submit error moved EFAULT -> EINVAL.
+
+ 2. Length scan: the same stream submitted at 40/44/48/52/56/60/64 bytes. ALL rejected identically,
+    so it is not the length, and the feature-conditional fields (drawindirect / object-level LLS /
+    tessellation) are not the cause either. This device also reports quirk 49927 = 0, so the
+    brn49927 ext stream is not required (the builder supports it anyway, off by default).
+
+ 3. CONTROL EXPERIMENT, the decisive one: submit the CAPTURED 40 bytes verbatim - the exact stream
+    the working Vulkan driver sent. It is refused too.
+
+So the stream CONTENT is not the problem. The kernel's create_job() checks, in order:
+cmd_stream/len non-zero, type, pvr_context_lookup(context_handle), pvr_hwrt_data_lookup(set_handle,
+data_index), then the parse. Since the parse is exonerated by (3), the EINVAL is one of the two
+lookups - or the jobs-array stride check, which returns EINVAL when the userspace stride is smaller
+than the kernel's struct (structs compared: identical, so less likely).
+
+Next probe: instrument which lookup fails rather than continue guessing - a fragment-type job (which
+needs no hwrt) distinguishes "hwrt lookup" from "context lookup" in one run.
+---
+ src/gallium/drivers/pvr_native/pvr_csb.c   | 21 ++++++++++---
+ src/gallium/drivers/pvr_native/pvr_csb.h   |  2 +-
+ src/gallium/drivers/pvr_native/pvr_probe.c | 35 ++++++++++++++++++----
+ 3 files changed, 47 insertions(+), 11 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_csb.c b/src/gallium/drivers/pvr_native/pvr_csb.c
+index 5f59a109..ef2ab3d2 100644
+--- a/src/gallium/drivers/pvr_native/pvr_csb.c
++++ b/src/gallium/drivers/pvr_native/pvr_csb.c
+@@ -973,7 +973,8 @@ uint32_t
+ pvr_geom_static_stream(void *stream, uint32_t stream_size,
+                        uint64_t ctrl_stream_addr, uint64_t border_colour_addr,
+                        bool geometry_terminate, uint32_t region_stride,
+-                       bool forcenewstate, uint32_t usc_common_size, uint32_t view_idx)
++                       bool forcenewstate, uint32_t usc_common_size, uint32_t view_idx,
++                       bool brn49927)
+ {
+    const uint32_t used_dwords =
+       PVR_CMD_DW(KMD_STREAM_HDR) +
+@@ -983,9 +984,14 @@ pvr_geom_static_stream(void *stream, uint32_t stream_size,
+       PVR_CMD_DW(CR_TE_PSG) +
+       PVR_CMD_DW(VDMCTRL_PDS_STATE0) +
+       PVR_CMD_DW(KMD_STREAM_VIEW_IDX);
+-   const uint32_t total_bytes = PVR_DW_TO_BYTES(used_dwords);
++   /* Quirk 49927 requires an ext stream: a u32 ext header (type 0, data BIT(0)) followed by
++    * rogue_fwif_cmd_geom.regs.tpu. Without it the kernel's parser rejects the stream outright -
++    * it checks the device's "must have" quirk mask after the main stream. main_stream_len stays at
++    * the main stream's own length; the ext stream follows it. */
++   const uint32_t main_bytes = PVR_DW_TO_BYTES(used_dwords);
++   const uint32_t total_bytes = main_bytes + (brn49927 ? 8u : 0u);
+    uint8_t *p = (uint8_t *)stream + PVR_DW_TO_BYTES(PVR_CMD_DW(KMD_STREAM_HDR));
+-   struct ROGUE_KMD_STREAM_HDR hdr = { .length = total_bytes };
++   struct ROGUE_KMD_STREAM_HDR hdr = { .length = main_bytes };
+ 
+    if (total_bytes > stream_size)
+       return 0;
+@@ -1031,7 +1037,14 @@ pvr_geom_static_stream(void *stream, uint32_t stream_size,
+ 
+    /* The packet sizes must account for exactly the length the header advertises - the same class of
+     * off-by-one that cost this driver two rounds on the fragment stream. */
+-   assert((uint32_t)(p - (uint8_t *)stream) == total_bytes);
++   assert((uint32_t)(p - (uint8_t *)stream) == main_bytes);
++
++   if (brn49927) {
++      uint32_t ext_header = 1u; /* type 0 << 29 | PVR_STREAM_EXTHDR_GEOM0_BRN49927 */
++      uint32_t tpu = 0;
++      memcpy(p, &ext_header, 4); p += 4;
++      memcpy(p, &tpu, 4); p += 4;
++   }
+ 
+    ROGUE_KMD_STREAM_HDR_pack((uint32_t *)stream, &hdr);
+ 
+diff --git a/src/gallium/drivers/pvr_native/pvr_csb.h b/src/gallium/drivers/pvr_native/pvr_csb.h
+index 8cbb0057..f4007d67 100644
+--- a/src/gallium/drivers/pvr_native/pvr_csb.h
++++ b/src/gallium/drivers/pvr_native/pvr_csb.h
+@@ -614,7 +614,7 @@ uint32_t pvr_geom_static_stream(void *stream, uint32_t stream_size,
+                                 uint64_t ctrl_stream_addr, uint64_t border_colour_addr,
+                                 bool geometry_terminate, uint32_t region_stride,
+                                 bool forcenewstate, uint32_t usc_common_size,
+-                                uint32_t view_idx);
++                                uint32_t view_idx, bool brn49927);
+ 
+ uint32_t pvr_frag_static_stream(void *stream, uint32_t stream_size,
+                                 const uint64_t *pbe_words, unsigned nr_attachments,
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index 90ffe481..8bbdb733 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -594,7 +594,30 @@ vm_roundtrip(int fd, const struct pvr_device_info *dev_info)
+                printf("vm:            real job: CPU mapping of the command stream failed\n");
+             } else {
+                const uint32_t gl = pvr_geom_static_stream(rcsb.map, rcsb.size, ctl_addr, bct_addr,
+-                                                          false, 0, false, 0, 0);
++                                                          false, 0, false, 0, 0, PVR_HAS_QUIRK(dev_info, 49927));
++               /* The kernel's stream parser is strict about length: probe which size it accepts. The main
++                * stream keeps its own length in dw0; only the submitted size varies. */
++               for (uint32_t try_len = 40; try_len <= 64; try_len += 4) {
++                  if (pvr_job_submit(&vm, gpu_ctx.handle, DRM_PVR_JOB_TYPE_GEOMETRY, rcsb.map,
++                                     try_len, dset_handle, 0))
++                     printf("vm:            SUBMIT_JOBS ACCEPTED the geometry stream at %u bytes\n",
++                            try_len);
++               }
++               /* Control experiment: submit the CAPTURED bytes verbatim - exactly what the working
++                * driver sent for this job. If this is rejected too, the stream is not the problem and
++                * the failure is the context or hwrt lookup. */
++               {
++                  static const uint32_t cap40[10] = {
++                     0x00000028u, 0x00000000u, 0x003bf000u, 0x00000080u, 0x0001c400u,
++                     0x00000020u, 0x00000202u, 0x00020000u, 0x20010000u, 0x00000000u,
++                  };
++                  if (pvr_job_submit(&vm, gpu_ctx.handle, DRM_PVR_JOB_TYPE_GEOMETRY, cap40, 40,
++                                     dset_handle, 0))
++                     printf("vm:            the CAPTURED 40-byte stream was ACCEPTED\n");
++                  else
++                     printf("vm:            the CAPTURED 40-byte stream was refused too - so the "
++                            "stream content is not the problem\n");
++               }
+                if (pvr_job_submit(&vm, gpu_ctx.handle, DRM_PVR_JOB_TYPE_GEOMETRY, rcsb.map, gl, dset_handle, 0)) {
+                   printf("vm:            SUBMIT_JOBS ACCEPTED a real %u-byte geometry job at "
+                          "0x%" PRIx64 " (ctrl 0x%" PRIx64 ", border table 0x%" PRIx64 ") - the "
+@@ -2315,7 +2338,7 @@ csb_check(int fd, struct pipe_screen *pscreen)
+          uint8_t gstream[256];
+          const uint64_t gctrl = 0x12345000ull, gborder = 0x67890000ull;
+          const uint32_t ggot = pvr_geom_static_stream(gstream, sizeof(gstream), gctrl, gborder,
+-                                                      false, 7, false, 3, 2);
++                                                      false, 7, false, 3, 2, PVR_HAS_QUIRK(&pvr_screen(pscreen)->dev_info, 49927));
+          const uint32_t gwant_dw =
+             ROGUE_KMD_STREAM_HDR_length + ROGUE_CR_VDM_CTRL_STREAM_BASE_length +
+             ROGUE_CR_TPU_BORDER_COLOUR_TABLE_VDM_length + ROGUE_CR_PPP_CTRL_length +
+@@ -2327,11 +2350,11 @@ csb_check(int fd, struct pipe_screen *pscreen)
+                    ggot, gwant_dw * 4u, ((uint32_t *)gstream)[0]);
+             goto out;
+          }
+-         if (pvr_geom_static_stream(gstream, 8, gctrl, gborder, false, 7, false, 3, 2) != 0) {
++         if (pvr_geom_static_stream(gstream, 8, gctrl, gborder, false, 7, false, 3, 2, PVR_HAS_QUIRK(&pvr_screen(pscreen)->dev_info, 49927)) != 0) {
+             printf("csb:           FAIL: geometry stream overran a buffer too small for it\n");
+             goto out;
+          }
+-         printf("csb:           geometry static stream: %u bytes (%u dw), header carries it, "
++      printf("csb:           geometry static stream: %u bytes (%u dw), header carries it, "
+                 "overflow refused; packets: vdmbase tpu pppctrl tepsg pdsstate0 viewidx\n",
+                 ggot, gwant_dw);
+       }
+@@ -2349,7 +2372,7 @@ csb_check(int fd, struct pipe_screen *pscreen)
+          };
+          uint8_t gs[256];
+          const uint32_t g = pvr_geom_static_stream(gs, sizeof(gs), 0x80003bf000ull, 0x8000071000ull,
+-                                                   false, 0, false, 0, 0);
++                                                   false, 0, false, 0, 0, PVR_HAS_QUIRK(&pvr_screen(pscreen)->dev_info, 49927));
+          const uint32_t *gd = (const uint32_t *)gs;
+          static const unsigned det[] = { 0, 1, 2, 3, 4, 5, 6, 9 };
+          bool ok = (g == 40);
+@@ -2379,7 +2402,7 @@ csb_check(int fd, struct pipe_screen *pscreen)
+          _Alignas(8) uint8_t gjob[256], fjob[1024];
+          static const uint64_t pbe1[3] = { 0x0200003c68800000ull, 0x0000001f0000001full, 0 };
+          const uint32_t gl = pvr_geom_static_stream(gjob, sizeof(gjob), 0x80003bf000ull,
+-                                                    0x8000071000ull, false, 0, false, 0, 0);
++                                                    0x8000071000ull, false, 0, false, 0, 0, PVR_HAS_QUIRK(&pvr_screen(pscreen)->dev_info, 49927));
+          const uint32_t fl = pvr_frag_static_stream(fjob, sizeof(fjob), pbe1, 1, 0x2780, false);
+ 
+          if (gl != 40 || fl != 384 || ((uint32_t *)gjob)[0] != gl || ((uint32_t *)fjob)[0] != fl) {
+-- 
+2.47.3
+

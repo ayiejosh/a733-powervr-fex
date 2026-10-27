@@ -1,0 +1,160 @@
+From 81ee7138df86e03c41160a40426a24b3c070e0e1 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sun, 25 Oct 2026 20:23:20 +0800
+Subject: [PATCH 251/269] gallium/pvr: compile the milestone-2 vertex shader
+ from SPIR-V through spirv_to_nir
+
+The probe's vertex shader now comes from a SPIR-V module (an Input vec3 at location 0 and a plain
+Output vec4 decorated BuiltIn Position, assembled with spirv-as) parsed by spirv_to_nir with
+pco_spirv_options()/pco_nir_options() - the same path the Vulkan driver uses - instead of NIR built by
+hand. pco compiles it to a 56-byte USC program with temps=0, vtxins=3 and vtxouts=5: the attribute load
+survives and the register allocator no longer aborts, and the byte-identical-to-constant-shader check
+still passes. The glslang form that wraps gl_Position in the gl_PerVertex interface block trips
+nir_split_per_member_structs() in this pco build (segfault inside build_member_deref), so the module uses
+a plain Output variable - the shape pco's own lowering produces.
+
+Also link idep_vtn for the probe and make its stdout unbuffered (crash reports stay readable).
+pvr-probe --- ALL PASS (shim), and the same path runs on the real driver.
+---
+ src/gallium/drivers/pvr_native/meson.build |  2 +-
+ src/gallium/drivers/pvr_native/pvr_probe.c | 78 ++++++++++++----------
+ 2 files changed, 45 insertions(+), 35 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/meson.build b/src/gallium/drivers/pvr_native/meson.build
+index fc9e1b9f..3fce7d04 100644
+--- a/src/gallium/drivers/pvr_native/meson.build
++++ b/src/gallium/drivers/pvr_native/meson.build
+@@ -50,6 +50,6 @@ executable(
+                          libpowervr_pds_includes],
+   link_with : [libpvr, libgallium],
+   dependencies : [idep_mesautil, idep_nir_headers, dep_libdrm, idep_pco_usclib,
+-                  idep_pco_uscgen_programs_headers],
++                  idep_pco_uscgen_programs_headers, idep_vtn],
+   install : false,
+ )
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index a4410d75..5568cf61 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -31,6 +31,7 @@
+ #include "pvr_screen.h"
+ #include "pvr_shader.h"
+ 
++#include "compiler/spirv/nir_spirv.h"
+ #include "nir_builder.h"
+ 
+ #include "pco/pco_data.h"
+@@ -1825,6 +1826,32 @@ probe_heap_usable_page(const struct pvr_heap *heap)
+ /* Run the linked compiler over a shader and check it produces code. This is the whole
+  * point of having linked pco rather than written one: the driver must be able to get
+  * a NIR shader through it and out as an encoded binary. */
++
++/* Generated with spirv-as from vs_pos_plain.spvasm:
++ *     OpEntryPoint Vertex %main "main" %in_pos %out_pos
++ *     in_pos: Input vec3, Location 0;  out_pos: Output vec4, BuiltIn Position
++ *     main: gl_Position = vec4(pos, 1.0)
++ * A plain Output variable instead of a gl_PerVertex interface block - the shape pco's own
++ * lowering produces (and the shape the native driver's TA state expects). The glslang form with
++ * the gl_PerVertex block trips nir_split_per_member_structs in this pco build. */
++static const uint32_t pvr_spirv_vs_pos[] = {
++   0x07230203u, 0x00010000u, 0x00070000u, 0x0000000fu, 0x00000000u, 0x00020011u,
++   0x00000001u, 0x0003000eu, 0x00000000u, 0x00000001u, 0x0007000fu, 0x00000000u,
++   0x00000001u, 0x6e69616du, 0x00000000u, 0x00000002u, 0x00000003u, 0x00030005u,
++   0x00000002u, 0x00736f70u, 0x00050005u, 0x00000003u, 0x505f6c67u, 0x7469736fu,
++   0x006e6f69u, 0x00040047u, 0x00000002u, 0x0000001eu, 0x00000000u, 0x00040047u,
++   0x00000003u, 0x0000000bu, 0x00000000u, 0x00020013u, 0x00000004u, 0x00030021u,
++   0x00000005u, 0x00000004u, 0x00030016u, 0x00000006u, 0x00000020u, 0x00040017u,
++   0x00000007u, 0x00000006u, 0x00000003u, 0x00040017u, 0x00000008u, 0x00000006u,
++   0x00000004u, 0x00040020u, 0x00000009u, 0x00000001u, 0x00000007u, 0x00040020u,
++   0x0000000au, 0x00000003u, 0x00000008u, 0x0004003bu, 0x00000009u, 0x00000002u,
++   0x00000001u, 0x0004003bu, 0x0000000au, 0x00000003u, 0x00000003u, 0x0004002bu,
++   0x00000006u, 0x0000000bu, 0x3f800000u, 0x00050036u, 0x00000004u, 0x00000001u,
++   0x00000000u, 0x00000005u, 0x000200f8u, 0x0000000cu, 0x0004003du, 0x00000007u,
++   0x0000000du, 0x00000002u, 0x00050050u, 0x00000008u, 0x0000000eu, 0x0000000du,
++   0x0000000bu, 0x0003003eu, 0x00000003u, 0x0000000eu, 0x000100fdu, 0x00010038u,
++};
++
+ static bool
+ shader_compile_check(struct pipe_screen *pscreen)
+ {
+@@ -1875,41 +1902,25 @@ shader_compile_check(struct pipe_screen *pscreen)
+           "temps=%u, TA PDS sizes: usc_varyings %u, usc_shareds %u\n", size, g_fs_shader->temps,
+           g_fs_shader->coeffs, g_fs_shader->shareds);
+ 
+-   /* The vertex shader reads the position attribute - the point of milestone 2. Two facts are
+-    * needed for pco's per-vertex-input pass to lower it, and neither is discoverable from the load
+-    * alone: the shader_in variable (the pass takes the attribute's type from it) and the
+-    * driver-filled formats/ranges in pco_data (see pvr_shader_init_vs_formats/alloc). This is the
+-    * shape the Vulkan driver's spirv-to-nir output ends up with, reached without a SPIR-V detour. */
++   /* The vertex shader comes from a SPIR-V module through spirv_to_nir - the path the Vulkan
++    * driver uses - not from NIR assembled by hand. It reads the position attribute (the point of
++    * milestone 2), writes gl_Position, and must keep the attribute as vtxin registers through pco. */
+    {
+-      nir_builder vb = nir_builder_init_simple_shader(MESA_SHADER_VERTEX, pco_nir_options(),
+-                                                      "vs_probe");
+-      {
+-         nir_variable *in = nir_variable_create(vb.shader, nir_var_shader_in,
+-                                                glsl_vec_type(3), "position");
+-         in->data.location = VERT_ATTRIB_GENERIC0;
+-         vb.shader->info.inputs_read |= BITFIELD64_BIT(VERT_ATTRIB_GENERIC0);
+-      }
+-      nir_def *attrib = nir_load_input(&vb, 3, 32, nir_imm_int(&vb, 0),
+-                                       .io_semantics = (nir_io_semantics){
+-                                          .location = VERT_ATTRIB_GENERIC0,
+-                                          .num_slots = 1,
+-                                       });
+-      nir_def *pos = nir_vec4(&vb, nir_channel(&vb, attrib, 0), nir_channel(&vb, attrib, 1),
+-                              nir_channel(&vb, attrib, 2), nir_imm_float(&vb, 1.0f));
+-      {
+-         nir_variable *outv = nir_variable_create(vb.shader, nir_var_shader_out,
+-                                                  glsl_vec4_type(), "gl_Position");
+-         outv->data.location = VARYING_SLOT_POS;
+-         nir_store_var(&vb, outv, pos, 0xf);
+-      }
+-      vb.shader->info.internal = false;
++      nir_shader *nir = spirv_to_nir(pvr_spirv_vs_pos, ARRAY_SIZE(pvr_spirv_vs_pos), NULL,
++                                     MESA_SHADER_VERTEX, "main", pco_spirv_options(),
++                                     pco_nir_options());
+ 
+-      g_vs_shader = pvr_shader_create(vb.shader, screen->pco_ctx);
+-      if (g_vs_shader != NULL) {
++      if (nir == NULL) {
++         printf("shader:        FAIL: spirv_to_nir produced no NIR for the vertex shader\n");
++         ok = false;
++      } else if ((g_vs_shader = pvr_shader_create(nir, screen->pco_ctx)) == NULL) {
++         printf("shader:        FAIL: pco failed on the SPIR-V vertex shader\n");
++         ok = false;
++      } else {
+          g_vs_temps = g_vs_shader->temps;
+          g_vs_vtxins = g_vs_shader->vtxins;
+          g_vs_vtxouts = g_vs_shader->vtxouts;
+-         printf("shader:        pco encoded %u bytes of USC for a VERTEX shader; PDS kick needs "
++         printf("shader:        SPIR-V -> spirv_to_nir -> pco vertex shader: %u bytes USC, "
+                 "temps=%u vtxins=%u vtxouts=%u\n", g_vs_shader->binary_size, g_vs_shader->temps,
+                 g_vs_shader->vtxins, g_vs_shader->vtxouts);
+ 
+@@ -1953,11 +1964,8 @@ shader_compile_check(struct pipe_screen *pscreen)
+             }
+             /* The compiled shader owns its NIR; see above. */
+          }
+-      } else {
+-         printf("shader:        FAIL: pco produced no vertex code\n");
+-         ok = false;
+       }
+-      /* The compiled shader owns its NIR; see above. */
++      /* The compiled shader owns its NIR. */
+    }
+ 
+    /* A single non-zero number could be a constant. Compile a shader that does strictly
+@@ -4264,6 +4272,8 @@ int
+ main(int argc, char **argv)
+ {
+    const char *path = argc > 1 ? argv[1] : "/dev/dri/renderD128";
++
++   setvbuf(stdout, NULL, _IONBF, 0);
+    const char *expect = argc > 2 ? argv[2] : "BXM-4-64";
+    int fd = open(path, O_RDWR | O_CLOEXEC);
+ 
+-- 
+2.47.3
+

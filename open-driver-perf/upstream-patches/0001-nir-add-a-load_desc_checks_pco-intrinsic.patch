@@ -1,0 +1,31 @@
+From 8ef13f20500bc72f43fa3d0e3329181ab0822aca Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Mon, 19 Oct 2026 09:02:47 +0800
+Subject: [PATCH 1/2] nir: add a load_desc_checks_pco intrinsic
+
+Describes whether any descriptor check the driver made for a draw failed,
+so the PowerVR compiler can branch on it instead of guarding every access.
+
+Generated-by: LLM
+---
+ src/compiler/nir/nir_intrinsics.py | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/src/compiler/nir/nir_intrinsics.py b/src/compiler/nir/nir_intrinsics.py
+index c80a232..e4c23c2 100644
+--- a/src/compiler/nir/nir_intrinsics.py
++++ b/src/compiler/nir/nir_intrinsics.py
+@@ -3224,6 +3224,10 @@ intrinsic("alphatst_pco", src_comp=[1, 1, 1], dest_comp=1, flags=[CAN_ELIMINATE,
+ # Load the current instance's number/id within its slot.
+ intrinsic("load_instance_num_pco", dest_comp=1, flags=[CAN_ELIMINATE, CAN_REORDER], bit_sizes=[32])
+ 
++# Whether any of the shader's descriptor checks the driver made for the draw
++# failed (non-zero), see pco_desc_check.
++intrinsic("load_desc_checks_pco", dest_comp=1, flags=[CAN_ELIMINATE, CAN_REORDER], bit_sizes=[32])
++
+ # Load the current slot's number/id.
+ intrinsic("load_slot_num_pco", dest_comp=1, flags=[CAN_ELIMINATE, CAN_REORDER], bit_sizes=[32])
+ 
+-- 
+2.47.3
+

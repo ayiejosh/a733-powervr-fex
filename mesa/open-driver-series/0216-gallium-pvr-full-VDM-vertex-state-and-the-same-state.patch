@@ -1,0 +1,883 @@
+From 9e3a1d9295f7a98b784d8b8e5c6f746b82c27af8 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sat, 24 Oct 2026 22:22:16 +0800
+Subject: [PATCH 216/269] gallium/pvr: full VDM vertex state, and the same
+ state reproduces a captured draw
+
+Captured the working Vulkan driver's geometry control stream for one draw (PVR_DEBUG=cs, open
+kernel driver bound, offscreen vkrender triangle; the decoded dump is in
+open-driver-perf/captures/). It settles several things the driver was guessing at:
+
+- A draw stream is PPP state block -> VDM state -> index list -> terminate, where the TA state
+  lives in a memory block named by VDMCTRL_PPP_STATE_UPDATE, not inline packets.
+- The VDM state carries the whole vertex half: VS data address (STATE2), code address (STATE3),
+  output size (STATE4) and allocation sizes (STATE5), all behind vs_data_addr_present +
+  vs_other_present. A stream with only the data address runs the attribute fetch and never starts
+  a vertex shader.
+- Those PDS addresses are offsets within the PDS heap, not general-heap device addresses.
+- The captured draw's 5 output dwords are gl_Position + the gl_PointSize write pco adds, matching
+  what this driver's VS now allocates.
+
+So: pvr_csb_emit_vdm_state() takes the whole vertex state, computes STATE1..5 from the same
+presence flags that set the header bits, and includes a port of the reference's
+pvr_arch_calculate_vertex_cam_size() (copied: it is feature-value thresholds, not a rule to
+re-derive; a wrong cam_size changes how much vertex data the hardware keeps, silently).
+
+The probe now checks this against the capture instead of against itself: packing the captured
+draw's field values must reproduce the captured dwords exactly (4c000f80 00002880 000027c0
+00000005 20000441). It does. The probe's own draw stream carries the same STATE0 for its own
+values, and the vertex shader reports the captured 5 varying dwords.
+
+Vertex map work that fell out of the same comparison:
+- alloc after lowering, not before: pco's lowering adds the gl_PointSize output, so a map built
+  from pre-lowering NIR misses it and the translator writes it to register 0;
+- ported the reference's ordering (attributes, sysvals, position, generic varyings grouped by
+  interpolation mode, then the special slots) instead of the previous position-only map;
+- attribute program PDS temps/data sizes are exported for STATE5.
+
+Verification: probe exits 0, ALL PASS under the DRM noop shim; VDM capture conformance passes.
+Not yet done, from the same capture: PPP/TA state block assembly, TA PDS bases with a fragment
+PDS kick program, the terminate sequence, and moving the attribute program into the PDS heap so
+STATE2/3 carry heap offsets. Those are first-draw work.
+---
+ src/gallium/drivers/pvr_native/pvr_csb.c    | 135 ++++++++++--
+ src/gallium/drivers/pvr_native/pvr_csb.h    |  53 +++--
+ src/gallium/drivers/pvr_native/pvr_probe.c  | 140 +++++++++++--
+ src/gallium/drivers/pvr_native/pvr_shader.c | 221 +++++++++++++++++---
+ src/gallium/drivers/pvr_native/pvr_shader.h |  14 +-
+ 5 files changed, 476 insertions(+), 87 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_csb.c b/src/gallium/drivers/pvr_native/pvr_csb.c
+index a323008c..e4653a39 100644
+--- a/src/gallium/drivers/pvr_native/pvr_csb.c
++++ b/src/gallium/drivers/pvr_native/pvr_csb.c
+@@ -9,6 +9,7 @@
+ 
+ #include "pipe/p_defines.h"
+ #include "util/format/u_format.h"
++#include "common/pvr_device_info.h"
+ #include "hwdef/rogue_hw_defs.h"
+ #include "util/log.h"
+ #include "util/u_math.h"
+@@ -211,36 +212,122 @@ pvr_csb_emit_index_list(struct pvr_csb *csb, uint64_t index_addr, uint32_t index
+    return true;
+ }
+ 
++/* Port of the reference's pvr_arch_calculate_vertex_cam_size(). COPIED, thresholds and all: the
++ * comparisons are against device feature values (vdm_cam_size, uvs_vtx_entries) and the branches
++ * chosen for this part are not derivable from the field names - the comments in the reference say
++ * "this is a proxy for 8XE". A re-derived rule would be a guess, and a wrong cam_size changes how
++ * much vertex data the hardware keeps, i.e. it fails silently. */
++void
++pvr_vdm_cam_size(const struct pvr_device_info *dev_info, uint32_t vs_output_size,
++                 bool raster_enable, uint32_t *cam_size_out,
++                 uint32_t *max_instances_out)
++{
++   const uint32_t uvs_vertex_vector_size_in_dwords =
++      (vs_output_size + 1U + raster_enable * 4U) * 4U;
++   const uint32_t vdm_cam_size = PVR_GET_FEATURE_VALUE(dev_info, vdm_cam_size, 32U);
++
++   /* This is a proxy for 8XE. */
++   if (PVR_HAS_FEATURE(dev_info, simple_internal_parameter_format) && vdm_cam_size < 96U) {
++      if (uvs_vertex_vector_size_in_dwords < (14U * 4U)) {
++         *cam_size_out = MIN2(31U, vdm_cam_size - 1U);
++         *max_instances_out = 16U;
++      } else if (uvs_vertex_vector_size_in_dwords < (20U * 4U)) {
++         *cam_size_out = 15U;
++         *max_instances_out = 16U;
++      } else if (uvs_vertex_vector_size_in_dwords < (28U * 4U)) {
++         *cam_size_out = 11U;
++         *max_instances_out = 12U;
++      } else if (uvs_vertex_vector_size_in_dwords < (44U * 4U)) {
++         *cam_size_out = 7U;
++         *max_instances_out = 8U;
++      } else if (PVR_HAS_FEATURE(dev_info, simple_internal_parameter_format_v2) ||
++                 uvs_vertex_vector_size_in_dwords < (64U * 4U)) {
++         *cam_size_out = 7U;
++         *max_instances_out = 4U;
++      } else {
++         *cam_size_out = 3U;
++         *max_instances_out = 2U;
++      }
++   } else {
++      if (uvs_vertex_vector_size_in_dwords <= (32U * 4U)) {
++         *cam_size_out = MIN2(95U, vdm_cam_size - 1U);
++         *max_instances_out = 0U;
++      } else if (uvs_vertex_vector_size_in_dwords <= 48U * 4U) {
++         *cam_size_out = 63U;
++         *max_instances_out =
++            PVR_GET_FEATURE_VALUE(dev_info, uvs_vtx_entries, 144U) < 288U ? 16U : 0U;
++      } else if (uvs_vertex_vector_size_in_dwords <= 64U * 4U) {
++         *cam_size_out = 31U;
++         *max_instances_out =
++            PVR_GET_FEATURE_VALUE(dev_info, uvs_vtx_entries, 144U) < 288U ? 16U : 0U;
++      } else {
++         *cam_size_out = 15U;
++         *max_instances_out = 16U;
++      }
++   }
++}
++
++/* The VDM state update: a conditionally variable-length group. VDMCTRL_VDM_STATE0's presence flags
++ * say which of STATE1..5 follow, so the length and the packets must be computed from the same
++ * flags - a mismatch is state the hardware reads wrongly and nothing reports.
++ *
++ * The shape is taken from a capture of a working Vulkan draw (see
++ * open-driver-perf/captures/vkrender_draw_stream_decoded.txt): a draw whose vertex program is
++ * executed sets vs_data_addr_present and vs_other_present, and then carries STATE2 (PDS data
++ * address), STATE3 (PDS code address), STATE4 (output size) and STATE5 (allocation sizes). A
++ * stream with only STATE2 is a fetch program that never starts a vertex shader. */
+ bool
+ pvr_csb_emit_vdm_state(struct pvr_csb *csb, bool cut_index_enable,
+-                       uint32_t cut_index, bool have_vs_data_addr,
+-                       uint64_t vs_pds_data_base_addr, uint32_t *words_out)
++                       uint32_t cut_index, const struct pvr_vdm_vs *vs,
++                       uint32_t *words_out)
+ {
++   const bool have_vs_data = vs != NULL && vs->pds_data_addr != 0;
++   const bool have_vs_other = vs != NULL && vs->pds_code_addr != 0;
+    struct ROGUE_VDMCTRL_VDM_STATE0 state0 = {
+       ROGUE_VDMCTRL_VDM_STATE0_header,
+       .cut_index_enable = cut_index_enable,
+       .cut_index_present = cut_index_enable,
+-      .vs_data_addr_present = have_vs_data_addr,
+-
+-      /* Which vertex provides flat-shaded values. VERTEX_0 is the reference's fallback -
+-       * its else branch, taken whenever the provoking vertex is not explicitly the last
+-       * one and the topology is not a triangle fan. Setting it explicitly is better than
+-       * leaving it zero: zero is a real value here rather than "unset", so a zero would
+-       * mean something specific about flat shading rather than nothing at all. These are
+-       * GL's defaults, so a driver that has not been told otherwise should say so.
+-       *
+-       * cam_size and uvs_scratch_size_select remain unset: both depend on vertex-buffer
+-       * and draw state the driver does not have, and their zero values would be
+-       * indistinguishable from a deliberate choice. */
++      .vs_data_addr_present = have_vs_data,
++      .vs_other_present = have_vs_other,
++      .cam_size = vs != NULL ? vs->cam_size : 0,
++      /* 0 means "5 extra dwords", which is what rasterisation needs (the enum's names are the
++       * inverse of their values; the capture carries 0 for a rasterising draw). */
++      .uvs_scratch_size_select = ROGUE_VDMCTRL_UVS_SCRATCH_SIZE_SELECT_FIVE,
+       .flatshade_control = ROGUE_VDMCTRL_FLATSHADE_CONTROL_VERTEX_0,
+    };
+    struct ROGUE_VDMCTRL_VDM_STATE1 state1 = { .cut_index = cut_index };
+    struct ROGUE_VDMCTRL_VDM_STATE2 state2 = {
+-      .vs_pds_data_base_addr = vs_pds_data_base_addr,
++      .vs_pds_data_base_addr = vs != NULL ? vs->pds_data_addr : 0,
++   };
++   struct ROGUE_VDMCTRL_VDM_STATE3 state3 = {
++      .vs_pds_code_base_addr = vs != NULL ? vs->pds_code_addr : 0,
+    };
++   struct ROGUE_VDMCTRL_VDM_STATE4 state4 = {
++      .vs_output_size = vs != NULL ? vs->output_size : 0,
++   };
++   struct ROGUE_VDMCTRL_VDM_STATE5 state5 = { 0 };
++
++   if (vs != NULL) {
++      state5.vs_max_instances = vs->max_instances;
++      state5.vs_usc_common_size = 0;
++      state5.vs_usc_unified_size =
++         DIV_ROUND_UP(vs->usc_unified_bytes,
++                      ROGUE_VDMCTRL_VDM_STATE5_VS_USC_UNIFIED_SIZE_UNIT_SIZE);
++      state5.vs_pds_temp_size =
++         DIV_ROUND_UP(vs->pds_temp_dwords * 4,
++                      ROGUE_VDMCTRL_VDM_STATE5_VS_PDS_TEMP_SIZE_UNIT_SIZE);
++      state5.vs_pds_data_size =
++         DIV_ROUND_UP(vs->pds_data_dwords * 4,
++                      ROGUE_VDMCTRL_VDM_STATE5_VS_PDS_DATA_SIZE_UNIT_SIZE);
++   }
++
+    const uint32_t words = ROGUE_VDMCTRL_VDM_STATE0_length +
+                           (cut_index_enable ? ROGUE_VDMCTRL_VDM_STATE1_length : 0) +
+-                          (have_vs_data_addr ? ROGUE_VDMCTRL_VDM_STATE2_length : 0);
++                          (have_vs_data ? ROGUE_VDMCTRL_VDM_STATE2_length : 0) +
++                          (have_vs_other ? ROGUE_VDMCTRL_VDM_STATE3_length +
++                                              ROGUE_VDMCTRL_VDM_STATE4_length +
++                                              ROGUE_VDMCTRL_VDM_STATE5_length
++                                        : 0);
+    uint32_t *dw = pvr_csb_emit(csb, words);
+    uint32_t at = ROGUE_VDMCTRL_VDM_STATE0_length;
+ 
+@@ -249,17 +336,23 @@ pvr_csb_emit_vdm_state(struct pvr_csb *csb, bool cut_index_enable,
+ 
+    ROGUE_VDMCTRL_VDM_STATE0_pack(dw, &state0);
+ 
+-   /* Only the flagged packets, and in the order the flags imply. The length was computed
+-    * from the same flags, so the stream cannot be a different size than what was written -
+-    * that pairing is the whole reason this is one function rather than three emissions at
+-    * the call site. */
+    if (cut_index_enable) {
+       ROGUE_VDMCTRL_VDM_STATE1_pack(dw + at, &state1);
+       at += ROGUE_VDMCTRL_VDM_STATE1_length;
+    }
+ 
+-   if (have_vs_data_addr)
++   if (have_vs_data) {
+       ROGUE_VDMCTRL_VDM_STATE2_pack(dw + at, &state2);
++      at += ROGUE_VDMCTRL_VDM_STATE2_length;
++   }
++
++   if (have_vs_other) {
++      ROGUE_VDMCTRL_VDM_STATE3_pack(dw + at, &state3);
++      at += ROGUE_VDMCTRL_VDM_STATE3_length;
++      ROGUE_VDMCTRL_VDM_STATE4_pack(dw + at, &state4);
++      at += ROGUE_VDMCTRL_VDM_STATE4_length;
++      ROGUE_VDMCTRL_VDM_STATE5_pack(dw + at, &state5);
++   }
+ 
+    if (words_out != NULL)
+       *words_out = words;
+diff --git a/src/gallium/drivers/pvr_native/pvr_csb.h b/src/gallium/drivers/pvr_native/pvr_csb.h
+index cc7195a1..e57d138a 100644
+--- a/src/gallium/drivers/pvr_native/pvr_csb.h
++++ b/src/gallium/drivers/pvr_native/pvr_csb.h
+@@ -42,6 +42,8 @@
+ #include "csbgen/rogue/texstate.h"
+ #include "csbgen/rogue/vdm.h"
+ 
++struct pvr_device_info;
++
+ struct pvr_csb {
+    uint32_t *start;
+    uint32_t *cur;
+@@ -107,23 +109,48 @@ bool pvr_csb_emit_pds_state_update(struct pvr_csb *csb, uint64_t program_addr,
+ bool pvr_csb_emit_ppp_state(struct pvr_csb *csb, uint64_t state_addr,
+                             uint32_t word_count);
+ 
++/* The vertex half of the VDM state. All of it comes from a capture of a working draw
++ * (open-driver-perf/captures/vkrender_draw_stream_decoded.txt): a draw that executes its vertex
++ * program sets BOTH presence flags and then carries the code address, the output size and the
++ * allocation sizes. A stream that only names the PDS data address runs an attribute fetch and never
++ * starts a shader - which looks exactly like a correct stream until no pixel changes. */
++struct pvr_vdm_vs {
++   /* STATE2: the attribute program's DATA segment (the patched const map, not the vertex buffer). */
++   uint64_t pds_data_addr;
++   /* STATE3: the attribute program's CODE segment. Non-zero means the VS info packets are sent. */
++   uint64_t pds_code_addr;
++   /* STATE4: varying registers written per vertex (pco_data.vs.vtxouts). */
++   uint32_t output_size;
++   /* STATE5: vtxin registers * 4 (pco_data.common.vtxins << 2). */
++   uint32_t usc_unified_bytes;
++   /* STATE5: the attribute program's PDS temp count and data segment size, in dwords. */
++   uint32_t pds_temp_dwords;
++   uint32_t pds_data_dwords;
++   /* STATE5: from pvr_vdm_cam_size(). */
++   uint32_t max_instances;
++   /* STATE0: from pvr_vdm_cam_size(); this is the field value (31 for cam_size 32). */
++   uint32_t cam_size;
++};
++
+ /* The VDM state update, which is a CONDITIONALLY VARIABLE-LENGTH group rather than a fixed
+- * shape: VDMCTRL_VDM_STATE0 carries flags saying which of STATE1..N follow it, and the
++ * shape: VDMCTRL_VDM_STATE0 carries flags saying which of STATE1..5 follow it, and the
+  * presence packs are only emitted for the flags that are set. VDM_STATE1 appears when a
+- * cut index is needed, VDM_STATE2 when the vertex-shader PDS data address changes.
+- *
+- * This is the shape nearly all of the remaining state emission uses - one flag packet, then
+- * whichever data packets the flags called for - so getting the pattern right here is worth
+- * more than the two packets themselves. Emitting a fixed sequence instead would write data
+- * packets the hardware is not expecting, and omitting a flagged one writes state that never
+- * arrives; both are silent.
++ * cut index is needed, VDM_STATE2 when the vertex-shader PDS data address changes, and
++ * VDM_STATE3..5 when the vertex program's code location/sizes are (re)supplied.
+  *
+- * STATE0's remaining fields (cam_size, flatshade_control, uvs_scratch_size_select) are not
+- * set yet: they belong to draw-state handling that does not exist. They are zero, which is
+- * wrong-but-visible in the stream, rather than guessed at. */
++ * `vs` may be NULL (no vertex state at all) or carry only pds_data_addr (data address without the
++ * code half). The lengths and the packets are derived from the same presence flags, so the stream
++ * cannot claim packets it does not carry. */
+ bool pvr_csb_emit_vdm_state(struct pvr_csb *csb, bool cut_index_enable,
+-                            uint32_t cut_index, bool have_vs_data_addr,
+-                            uint64_t vs_pds_data_base_addr, uint32_t *words_out);
++                            uint32_t cut_index, const struct pvr_vdm_vs *vs,
++                            uint32_t *words_out);
++
++/* cam_size and max_instances from the vertex output size. A port of the reference's
++ * pvr_arch_calculate_vertex_cam_size(); see the definition for why it is copied instead of
++ * re-derived. */
++void pvr_vdm_cam_size(const struct pvr_device_info *dev_info, uint32_t vs_output_size,
++                      bool raster_enable, uint32_t *cam_size_out,
++                      uint32_t *max_instances_out);
+ 
+ /* What the hardware needs to read a texture, in the two parts it actually takes.
+  *
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index 6a84f147..de787db7 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -133,6 +133,10 @@ static unsigned g_vs_temps;
+ static unsigned g_vs_vtxins;
+ /* The VS binary's offset within the USC heap, which is the address its DOUTU takes. */
+ static uint32_t g_vs_usc_offset;
++/* The varying registers the VS writes per vertex, and the attribute program's PDS sizes: the VDM
++ * state's STATE4/STATE5 and the TA's output-select vtxsize all take these. */
++static unsigned g_vs_vtxouts;
++static struct pvr_shader_vertex_program_info g_vertex_prog_info;
+ 
+ static bool
+ 
+@@ -821,9 +825,29 @@ real_job_done:
+                            printf("hwrt:          could not emit the region clip\n");
+                      }
+ 
++                     /* The VDM state's vertex half, with the shape the captured working draw
++                      * carries. ponytail: the PDS addresses here are still device addresses from the
++                      * general heap, while the hardware takes the PDS program's offset within the
++                      * PDS heap (the capture's raw values are heap-relative; the dump tool adds the
++                      * heap base back when it prints). Moving the attribute program into the PDS
++                      * heap is part of first-draw work, not part of the encoder. */
++                     struct pvr_vdm_vs vdm_vs = { 0 };
++                     if (g_vertex_pds_data_addr != 0) {
++                        vdm_vs.pds_data_addr = g_vertex_pds_data_addr;
++                        vdm_vs.pds_code_addr = g_vertex_prog_addr;
++                        vdm_vs.output_size = g_vs_vtxouts;
++                        vdm_vs.usc_unified_bytes = g_vs_vtxins * 4;
++                        vdm_vs.pds_temp_dwords = g_vertex_prog_info.temp_dwords;
++                        vdm_vs.pds_data_dwords = g_vertex_prog_info.data_dwords;
++                        pvr_vdm_cam_size(dev_info, g_vs_vtxouts, true, &vdm_vs.cam_size,
++                                         &vdm_vs.max_instances);
++                     }
++
+                      if (!pvr_csb_emit_pds_state_update(&ctl_csb, laddr, 0, 0, false) ||
+                          !pvr_csb_emit_pds_state_update(&ctl_csb, faddr, 0, 0, true) ||
+-                         !pvr_csb_emit_vdm_state(&ctl_csb, false, 0, g_vertex_pds_data_addr != 0, g_vertex_pds_data_addr, &vdm_words) ||
++                         !pvr_csb_emit_vdm_state(&ctl_csb, false, 0,
++                                                 g_vertex_pds_data_addr != 0 ? &vdm_vs : NULL,
++                                                 &vdm_words) ||
+                          !pvr_csb_emit_index_list(&ctl_csb, iaddr, 3, 1,
+                                                   ROGUE_VDMCTRL_INDEX_SIZE_B16) ||
+                          !pvr_csb_emit_stream_terminate(&ctl_csb))
+@@ -1264,13 +1288,14 @@ shader_compile_check(struct pipe_screen *pscreen)
+          struct pvr_screen *scr = pvr_screen(pscreen);
+          uint8_t vprog[1024];
+          const uint32_t vlen = pvr_shader_vertex_program(&scr->dev_info, vprog, sizeof(vprog),
+-                                                         12, 12, 0);
++                                                         12, 12, 0, &g_vertex_prog_info);
+          if (vlen > 0) {
+             struct pvr_bo vbo = { 0 };
+             uint64_t vaddr = 0;
+ 
+             printf("shader:        vertex attribute program: %u bytes (1 attribute: 3 floats, "
+-                   "stride 12)\n", vlen);
++                   "stride 12), PDS temps %u dw, data %u dw\n", vlen,
++                   g_vertex_prog_info.temp_dwords, g_vertex_prog_info.data_dwords);
+ 
+             /* The program needs a device address before it can be named by a PDS state update; keep it
+              * in the same general heap as the other stream buffers. */
+@@ -1313,6 +1338,7 @@ shader_compile_check(struct pipe_screen *pscreen)
+       if (vobj != NULL) {
+          g_vs_temps = vobj->temps;
+          g_vs_vtxins = vobj->vtxins;
++         g_vs_vtxouts = vobj->vtxouts;
+          printf("shader:        pco encoded %u bytes of USC for a VERTEX shader; PDS kick needs "
+                 "temps=%u vtxins=%u\n", vobj->binary_size, vobj->temps, vobj->vtxins);
+ 
+@@ -1325,6 +1351,15 @@ shader_compile_check(struct pipe_screen *pscreen)
+             ok = false;
+          }
+ 
++         /* 5 = gl_Position (4) + the gl_PointSize write pco's lowering adds to every vertex
++          * shader. The captured working draw carries the same 5 (vkrender's VS also writes only
++          * position), so this is the number the VDM state and TA must be given. */
++         if (vobj->vtxouts != 5) {
++            printf("shader:        FAIL: the VS allocated %u varying registers, expected 5 "
++                   "(position + point size)\n", vobj->vtxouts);
++            ok = false;
++         }
++
+          /* The failure mode that cost two rounds was silent: the attribute load was dropped and
+           * the binary was byte-identical to a shader that reads no attributes. Require the two to
+           * differ, not just to compile. */
+@@ -2944,38 +2979,65 @@ csb_check(int fd, struct pipe_screen *pscreen)
+    /* The VDM state update, whose length depends on its own flags. The property to check
+     * is not that three packets can be packed - it is that the sequence emitted matches what
+     * the flags said, in length and in order. A fixed-length emission with a flag packet
+-    * saying otherwise is state the hardware reads wrongly and nothing reports. */
++    * saying otherwise is state the hardware reads wrongly and nothing reports.
++    *
++    * The last part of this block is a conformance check against a capture of a working Vulkan
++    * draw (open-driver-perf/captures/vkrender_draw_stream_decoded.txt): given that draw's field
++    * values, the emitted dwords must equal the captured dwords, not merely unpack to the same
++    * fields. The capture carries STATE0, STATE2..STATE5 (5 dwords, no cut index):
++    *
++    *   4c000f80  STATE0: vs_data + vs_other present, cam_size 31 (32 dwords), 5-dword scratch
++    *   00002880  STATE2: PDS data offset within the PDS heap
++    *   000027c0  STATE3: PDS code offset
++    *   00000005  STATE4: output size, 5 varying dwords (position + point size)
++    *   20000441  STATE5: max instances 16, USC unified 16 B, PDS temps 16 B, PDS data 16 B
++    */
+    {
+       struct {
+          bool cut_index_enable;
+-         bool have_vs_data_addr;
++         bool have_vs_data;
++         bool have_vs_other;
+          uint32_t expect_words;
+       } cases[] = {
+-         { false, false, 1 },
+-         { true, false, 2 },
+-         { false, true, 2 },
+-         { true, true, 3 },
++         { false, false, false, 1 },
++         { true, false, false, 2 },
++         { false, true, false, 2 },
++         { true, true, false, 3 },
++         { false, true, true, 5 },
++         { true, true, true, 6 },
+       };
+       const uint32_t cut_index = 7;
+-      const uint64_t vs_addr = 0x9ff0200000ULL;
+ 
+       for (unsigned c = 0; c < ARRAY_SIZE(cases); c++) {
+          struct ROGUE_VDMCTRL_VDM_STATE0 s0 = { 0 };
++         struct pvr_vdm_vs vs = {
++            .pds_data_addr = cases[c].have_vs_data ? 0x2880 : 0,
++            .pds_code_addr = cases[c].have_vs_other ? 0x27c0 : 0,
++            .output_size = 5,
++            .usc_unified_bytes = 16,
++            .pds_temp_dwords = 4,
++            .pds_data_dwords = 4,
++            .max_instances = 16,
++            .cam_size = 31,
++         };
+          uint32_t words = 0;
+ 
+          pvr_csb_reset(&csb);
+ 
+          if (!pvr_csb_emit_vdm_state(&csb, cases[c].cut_index_enable, cut_index,
+-                                     cases[c].have_vs_data_addr, vs_addr, &words)) {
++                                     (cases[c].have_vs_data || cases[c].have_vs_other) ? &vs
++                                                                                     : NULL,
++                                     &words)) {
+             printf("csb:           FAIL: VDM state case %u did not emit\n", c);
+             goto out;
+          }
+ 
+          if (words != cases[c].expect_words ||
+              pvr_csb_size(&csb) != words * 4) {
+-            printf("csb:           FAIL: VDM state case %u (cut %u, vs %u) emitted %u "
+-                   "dwords, expected %u\n", c, cases[c].cut_index_enable,
+-                   cases[c].have_vs_data_addr, words, cases[c].expect_words);
++            printf("csb:           FAIL: VDM state case %u (cut %u, data %u, other %u) emitted "
++                   "%u dwords, expected %u\n", c, cases[c].cut_index_enable,
++                   cases[c].have_vs_data, cases[c].have_vs_other, words,
++                   cases[c].expect_words);
+             goto out;
+          }
+ 
+@@ -2984,13 +3046,15 @@ csb_check(int fd, struct pipe_screen *pscreen)
+          /* The flags in the first packet must agree with the packets that followed,
+           * or the hardware reads a sequence the driver did not write. */
+          if (s0.cut_index_present != cases[c].cut_index_enable ||
+-             s0.vs_data_addr_present != cases[c].have_vs_data_addr ||
++             s0.vs_data_addr_present != cases[c].have_vs_data ||
++             s0.vs_other_present != cases[c].have_vs_other ||
+              s0.flatshade_control != ROGUE_VDMCTRL_FLATSHADE_CONTROL_VERTEX_0 ||
++             s0.uvs_scratch_size_select != ROGUE_VDMCTRL_UVS_SCRATCH_SIZE_SELECT_FIVE ||
+              s0.block_type != ROGUE_VDMCTRL_BLOCK_TYPE_VDM_STATE_UPDATE) {
+-            printf("csb:           FAIL: VDM state case %u has flags cut %u vs %u, "
+-                   "emitted cut %u vs %u\n", c, cases[c].cut_index_enable,
+-                   cases[c].have_vs_data_addr, s0.cut_index_present,
+-                   s0.vs_data_addr_present);
++            printf("csb:           FAIL: VDM state case %u has flags cut %u data %u other %u, "
++                   "emitted cut %u data %u other %u\n", c, cases[c].cut_index_enable,
++                   cases[c].have_vs_data, cases[c].have_vs_other, s0.cut_index_present,
++                   s0.vs_data_addr_present, s0.vs_other_present);
+             goto out;
+          }
+ 
+@@ -3008,8 +3072,42 @@ csb_check(int fd, struct pipe_screen *pscreen)
+          }
+       }
+ 
+-      printf("csb:           VDM state: length follows its own flags (1/2/2/3 dwords for "
+-             "the four flag combinations), fields verified in place\n");
++      /* The captured working draw, field for field and dword for dword. */
++      {
++         struct pvr_vdm_vs vs = {
++            .pds_data_addr = 0x2880,
++            .pds_code_addr = 0x27c0,
++            .output_size = 5,
++            .usc_unified_bytes = 16,
++            .pds_temp_dwords = 4,
++            .pds_data_dwords = 4,
++            .max_instances = 16,
++            .cam_size = 31,
++         };
++         static const uint32_t captured[5] = {
++            0x4c000f80, 0x00002880, 0x000027c0, 0x00000005, 0x20000441,
++         };
++         uint32_t words = 0;
++
++         pvr_csb_reset(&csb);
++         if (!pvr_csb_emit_vdm_state(&csb, false, 0, &vs, &words) || words != 5) {
++            printf("csb:           FAIL: VDM state could not reproduce the captured draw\n");
++            goto out;
++         }
++
++         for (unsigned i = 0; i < ARRAY_SIZE(captured); i++) {
++            const uint32_t got = ((const uint32_t *)bo.map)[i];
++
++            if (got != captured[i]) {
++               printf("csb:           FAIL: VDM state dword %u is 0x%08x, captured draw has "
++                      "0x%08x\n", i, got, captured[i]);
++               goto out;
++            }
++         }
++      }
++
++      printf("csb:           VDM state: length follows its own flags (1/2/2/3 and 5/6 dwords), "
++             "and a full vertex state reproduces the captured working draw dword for dword\n");
+    }
+ 
+    /* Pointing the hardware at a state block. The address is split across the two packets
+diff --git a/src/gallium/drivers/pvr_native/pvr_shader.c b/src/gallium/drivers/pvr_native/pvr_shader.c
+index 5d4c845d..e0b51158 100644
+--- a/src/gallium/drivers/pvr_native/pvr_shader.c
++++ b/src/gallium/drivers/pvr_native/pvr_shader.c
+@@ -19,9 +19,8 @@ static bool pvr_shader_compile_data(pco_ctx *ctx, struct nir_shader *nir,
+ /* Fills the driver half of pco's vertex-input interface. pco cannot discover either fact from the
+  * NIR alone: pco_nir_pvi() synthesises the fetch/convert instructions only for attribute locations
+  * whose attrib_formats[] entry is not NONE, and pco_trans_nir.c's trans_load_input_vs() names the
+- * vtxin registers through attribs[]. The Vulkan driver fills both from pipeline state
+- * (pvr_alloc_vs_attribs / pvr_init_vs_attribs); this is the same data from the same source, the
+- * shader's declared inputs.
++ * vtxin registers through attribs[]. The Vulkan driver fills both from pipeline state; this is the
++ * same data from the same source, the shader's declared inputs.
+  *
+  * ponytail: the format is derived from the declared type instead of taken from vertex element
+  * state, so only 32-bit float attributes are described. A GL vertex element can disagree (half,
+@@ -46,34 +45,187 @@ pvr_shader_attr_format(const struct glsl_type *type)
+ }
+ 
+ static void
+-pvr_shader_alloc_vs_range(pco_range *ranges, unsigned *counter, nir_variable *var)
++pvr_shader_alloc_range(pco_range *ranges, unsigned *counter, nir_variable *var,
++                       unsigned dwords_each)
+ {
+    unsigned slots = glsl_count_dword_slots(var->type, false);
+ 
+-   ranges[var->data.location] = (pco_range){ .start = *counter, .count = slots };
+-   *counter += slots;
++   ranges[var->data.location] =
++      (pco_range){ .start = *counter, .count = slots * dwords_each };
++   *counter += slots * dwords_each;
+ }
+ 
++/* Before pco_preprocess/lower: only the formats. pco_nir_pvi() runs inside lowering and decides
++ * which attributes to synthesise from attrib_formats[]; a location with no format is skipped and
++ * its loads stay unlowered, which is the silent failure this project paid two rounds for. */
+ static void
+-pvr_shader_init_vs_data(struct nir_shader *nir, pco_data *data)
++pvr_shader_init_vs_formats(struct nir_shader *nir, pco_data *data)
+ {
+    nir_foreach_shader_in_variable (var, nir) {
+-      /* The arrays are indexed by the GL attribute/varying enum, and NIR can carry a location
+-       * outside it (a driver bug or a malformed shader). Skip rather than write out of bounds. */
+       if (var->data.location < 0 || var->data.location >= VERT_ATTRIB_MAX)
+          continue;
+ 
+-      pvr_shader_alloc_vs_range(data->vs.attribs, &data->common.vtxins, var);
+       data->vs.attrib_formats[var->data.location] =
+          pvr_shader_attr_format(var->type);
+    }
++}
++
++/* After lowering, before translation: the register map the translator reads.
++ *
++ * This runs after pco_lower_nir() and not before it for the same reason the Vulkan driver allocates
++ * here: pco's lowering adds outputs the shader did not declare (a vertex shader gets a gl_PointSize
++ * write), so a map built from the pre-lowering NIR would miss them and the translator would write
++ * them to register 0. */
++static uint64_t
++pvr_shader_vs_outputs_written(struct nir_shader *nir)
++{
++   uint64_t outputs = 0;
++
++   nir_foreach_variable_with_modes (var, nir, nir_var_shader_out) {
++      if (var->data.location >= 0 && var->data.location < VARYING_SLOT_MAX)
++         outputs |= BITFIELD64_BIT(var->data.location);
++   }
++
++   return outputs;
++}
++
++static void
++pvr_shader_alloc_sysval(pco_range *ranges, unsigned *counter, unsigned location,
++                        unsigned count)
++{
++   ranges[location] = (pco_range){ .start = *counter, .count = count };
++   *counter += count;
++}
++
++/* The vertex-input and varying maps, ported from the Vulkan driver's
++ * pvr_alloc_vs_sysvals/pvr_alloc_vs_attribs/pvr_alloc_vs_varyings. The ordering there is
++ * load-bearing on this hardware - varyings are grouped by interpolation mode and the last slots
++ * come last - so this is a port, not a re-derivation. */
++static void
++pvr_shader_init_vs_alloc(struct nir_shader *nir, pco_data *data)
++{
++   pco_vs_data *vs = &data->vs;
++
++   /* Attributes: one contiguous vtxin range per declared input, in declaration order (the same
++    * order the attribute DMA is built in). */
++   nir_foreach_shader_in_variable (var, nir) {
++      if (var->data.location < 0 || var->data.location >= VERT_ATTRIB_MAX)
++         continue;
++
++      pvr_shader_alloc_range(vs->attribs, &data->common.vtxins, var, 1);
++   }
++
++   /* System values a vertex shader can read are pre-filled by the PDS program, also in vtxin
++    * registers, so they extend the same range. */
++   {
++      BITSET_DECLARE(system_values_read, SYSTEM_VALUE_MAX);
++      BITSET_COPY(system_values_read, nir->info.system_values_read);
++
++      const gl_system_value sys_vals[] = {
++         SYSTEM_VALUE_VERTEX_ID,   SYSTEM_VALUE_INSTANCE_ID,
++         SYSTEM_VALUE_BASE_INSTANCE, SYSTEM_VALUE_BASE_VERTEX,
++         SYSTEM_VALUE_DRAW_ID,     SYSTEM_VALUE_VIEW_INDEX,
++      };
++
++      for (unsigned u = 0; u < ARRAY_SIZE(sys_vals); ++u) {
++         if (!BITSET_TEST(system_values_read, sys_vals[u]))
++            continue;
+ 
+-   /* GL writes gl_Position; the other built-in outputs (point size, layer, clip distances) and
+-    * generic varyings get their ranges when the frontend links them - pco only needs the ranges of
+-    * the outputs the shader actually writes. */
+-   nir_foreach_shader_out_variable (var, nir) {
++         const unsigned dwords =
++            nir_intrinsic_infos[nir_intrinsic_from_system_value(sys_vals[u])].dest_components;
++
++         pvr_shader_alloc_sysval(data->common.sys_vals, &data->common.vtxins,
++                                 sys_vals[u], dwords);
++      }
++   }
++
++   /* Outputs: position first, then generic varyings grouped by interpolation mode, then the
++    * special slots. */
++   nir_foreach_variable_with_modes (var, nir, nir_var_shader_out) {
+       if (var->data.location == VARYING_SLOT_POS)
+-         pvr_shader_alloc_vs_range(data->vs.varyings, &data->vs.vtxouts, var);
++         pvr_shader_alloc_range(vs->varyings, &vs->vtxouts, var, 1);
++   }
++
++   uint64_t vars_mask = pvr_shader_vs_outputs_written(nir) &
++                        BITFIELD64_RANGE(VARYING_SLOT_VAR0, MAX_VARYING);
++
++   nir_foreach_variable_with_modes (var, nir, nir_var_shader_out) {
++      if (var->data.location < VARYING_SLOT_VAR0 ||
++          var->data.location >= VARYING_SLOT_VAR0 + MAX_VARYING)
++         continue;
++
++      ASSERTED bool f16 = glsl_type_is_16bit(glsl_without_array_or_matrix(var->type));
++      assert(!f16);
++      const unsigned components = glsl_get_components(var->type);
++
++      switch (var->data.interpolation) {
++      case INTERP_MODE_NONE:
++         /* pco's reverse-linking pass did not run; the reference overrides here too. */
++         var->data.interpolation = INTERP_MODE_SMOOTH;
++         FALLTHROUGH;
++      case INTERP_MODE_SMOOTH:
++         if (f16) vs->f16_smooth += components;
++         else vs->f32_smooth += components;
++         break;
++      case INTERP_MODE_FLAT:
++         if (f16) vs->f16_flat += components;
++         else vs->f32_flat += components;
++         break;
++      case INTERP_MODE_NOPERSPECTIVE:
++         if (f16) vs->f16_npc += components;
++         else vs->f32_npc += components;
++         break;
++      default:
++         UNREACHABLE("invalid interpolation mode");
++      }
++   }
++
++   for (unsigned f16 = 0; f16 <= 1; ++f16) {
++      for (enum glsl_interp_mode interp = INTERP_MODE_SMOOTH;
++           interp <= INTERP_MODE_NOPERSPECTIVE; ++interp) {
++         uint64_t skipped = 0;
++
++         while (vars_mask) {
++            const int location = u_bit_scan64(&vars_mask);
++            unsigned slots = 0;
++
++            nir_foreach_variable_with_modes (var, nir, nir_var_shader_out) {
++               if (var->data.location != location)
++                  continue;
++
++               if (glsl_type_is_16bit(glsl_without_array_or_matrix(var->type)) != f16 ||
++                   var->data.interpolation != interp) {
++                  /* Wrong group for this pass; retry after the current group. */
++                  skipped |= BITFIELD64_BIT(location);
++                  break;
++               }
++
++               slots = glsl_count_dword_slots(var->type, false);
++               break;
++            }
++
++            if (slots != 0)
++               pvr_shader_alloc_sysval(vs->varyings, &vs->vtxouts, location, slots);
++         }
++
++         vars_mask |= skipped;
++      }
++   }
++   assert(vars_mask == 0);
++
++   const gl_varying_slot last_slots[] = {
++      VARYING_SLOT_PSIZ,       VARYING_SLOT_VIEWPORT,   VARYING_SLOT_LAYER,
++      VARYING_SLOT_CLIP_DIST0, VARYING_SLOT_CLIP_DIST1,
++   };
++
++   for (unsigned u = 0; u < ARRAY_SIZE(last_slots); ++u) {
++      const uint64_t outputs = pvr_shader_vs_outputs_written(nir);
++      nir_variable *var = nir_find_variable_with_location(nir, nir_var_shader_out,
++                                                          last_slots[u]);
++      if (var == NULL || !(outputs & BITFIELD64_BIT(last_slots[u])))
++         continue;
++
++      pvr_shader_alloc_range(vs->varyings, &vs->vtxouts, var, 1);
+    }
+ }
+ 
+@@ -86,9 +238,6 @@ pvr_shader_create(struct nir_shader *nir, pco_ctx *ctx)
+    if (shader == NULL)
+       return NULL;
+ 
+-   if (nir->info.stage == MESA_SHADER_VERTEX)
+-      pvr_shader_init_vs_data(nir, &data);
+-
+    if (!pvr_shader_compile_data(ctx, nir, &data, &shader->pco, &shader->binary,
+                                 &shader->binary_size)) {
+       free(shader);
+@@ -96,16 +245,17 @@ pvr_shader_create(struct nir_shader *nir, pco_ctx *ctx)
+    }
+ 
+    /* The entry function is the first in the list; its temps are what the PDS kick program is built
+-    * from. The vtxin count is the driver-side attribute allocation above: pco's register allocator
+-    * currently allocates no vtxins of its own (pco_ra.c has a FIXME that disables it), because the
+-    * attribute loads read the vtxin registers directly - so the range count is the number the
+-    * hardware state needs, and the function-level count is always 0 for these shaders. */
++    * from. The vtxin count is the driver-side attribute allocation: pco's register allocator
++    * currently allocates no vtxins of its own (pco_ra.c has a FIXME that disables it) because the
++    * attribute loads read the vtxin registers directly - so the function-level count is always 0
++    * and the range count is what the hardware state needs. */
+    if (shader->pco != NULL && !list_is_empty(&shader->pco->funcs)) {
+       struct _pco_func *entry = list_first_entry(&shader->pco->funcs, struct _pco_func, link);
+ 
+       shader->temps = entry->temps;
+       shader->vtxins = data.common.vtxins;
+    }
++   shader->vtxouts = data.vs.vtxouts;
+ 
+    return shader;
+ }
+@@ -247,7 +397,8 @@ uint32_t
+ pvr_shader_vertex_program(const struct pvr_device_info *dev_info,
+                           void *dst, uint32_t dst_size,
+                           uint32_t stride, uint32_t attrib_bytes,
+-                          uint8_t destination)
++                          uint8_t destination,
++                          struct pvr_shader_vertex_program_info *info_out)
+ {
+    struct pvr_pds_vertex_dma dma;
+    struct pvr_pds_vertex_primary_program_input input;
+@@ -273,6 +424,11 @@ pvr_shader_vertex_program(const struct pvr_device_info *dev_info,
+    pvr_pds_generate_vertex_primary_program(&input, NULL, &info, false, dev_info);
+    size_bytes = info.code_size_in_dwords * sizeof(uint32_t);
+ 
++   if (info_out != NULL) {
++      info_out->temp_dwords = info.temps_required;
++      info_out->data_dwords = info.data_size_in_dwords;
++   }
++
+    if (size_bytes > 0 && size_bytes <= dst_size && dst != NULL) {
+       pvr_pds_generate_vertex_primary_program(&input, dst, &info, false, dev_info);
+    } else {
+@@ -328,12 +484,19 @@ pvr_shader_compile_data(pco_ctx *ctx, struct nir_shader *nir, pco_data *data,
+       return false;
+    }
+ 
+-   /* Order matters and is copied from the Vulkan driver's build_shader(). Getting it
+-    * wrong yields a plausible binary rather than an error. */
++   /* Order matters and is copied from the Vulkan driver's pipeline creation. Getting it
++    * wrong yields a plausible binary rather than an error. The vertex maps are split around
++    * lowering because pco's lowering both consumes the formats and adds outputs. */
++   if (nir->info.stage == MESA_SHADER_VERTEX)
++      pvr_shader_init_vs_formats(nir, data);
++
+    pco_preprocess_nir(ctx, nir, data);
+    pco_lower_nir(ctx, nir, data);
+    pco_postprocess_nir(ctx, nir, data);
+ 
++   if (nir->info.stage == MESA_SHADER_VERTEX)
++      pvr_shader_init_vs_alloc(nir, data);
++
+    shader = pco_trans_nir(ctx, nir, data, NULL);
+    if (shader == NULL) {
+       mesa_loge("pvr: pco failed to translate %s", nir->info.name);
+@@ -362,12 +525,8 @@ pvr_shader_compile(pco_ctx *ctx, struct nir_shader *nir, pco_shader **shader_out
+ {
+    pco_data data = { 0 };
+ 
+-   /* A zeroed pco_data is not enough for a vertex shader: without the attribute formats and
+-    * register ranges, pco's per-vertex-input pass finds nothing to lower, drops the loads, and
+-    * encodes a shader identical to one that reads no attributes. */
+-   if (nir->info.stage == MESA_SHADER_VERTEX)
+-      pvr_shader_init_vs_data(nir, &data);
+-
++   /* The vertex maps are filled inside pvr_shader_compile_data, at the points in the pipeline
++    * where pco needs them. */
+    return pvr_shader_compile_data(ctx, nir, &data, shader_out, data_out, size_out);
+ }
+ 
+diff --git a/src/gallium/drivers/pvr_native/pvr_shader.h b/src/gallium/drivers/pvr_native/pvr_shader.h
+index 84786e21..07574d89 100644
+--- a/src/gallium/drivers/pvr_native/pvr_shader.h
++++ b/src/gallium/drivers/pvr_native/pvr_shader.h
+@@ -32,6 +32,9 @@ struct pvr_shader {
+     * hardware state needs. */
+    unsigned temps;
+    unsigned vtxins;
++   /* Varying registers the vertex shader writes per vertex (pco_data.vs.vtxouts): the TA's
++    * output-select vtxsize and the VDM state's vs_output_size both take this number. */
++   unsigned vtxouts;
+ };
+ 
+ struct pvr_shader *pvr_shader_create(struct nir_shader *nir, pco_ctx *ctx);
+@@ -46,6 +49,14 @@ void pvr_shader_destroy(struct pvr_shader *shader);
+ uint32_t pvr_shader_pds_launcher(const struct pvr_shader *shader, uint32_t usc_offset,
+                                  void *dst, uint32_t dst_size);
+ 
++/* What the VDM state's STATE5 needs from the attribute program: how many PDS temps it uses and how
++ * big its data segment is, both in dwords. The hardware allocates those regions from these counts,
++ * so a wrong count is an allocation the shader runs off the end of. */
++struct pvr_shader_vertex_program_info {
++   uint32_t temp_dwords;
++   uint32_t data_dwords;
++};
++
+ /* Builds the PDS program that fetches vertex attributes into the USC registers, and the const-map
+  * entries that describe them. This is the piece that turns "the TA has a draw" into "the TA can read
+  * vertices". One attribute is all a triangle needs: a position as three floats at offset 0.
+@@ -54,7 +65,8 @@ uint32_t pvr_shader_pds_launcher(const struct pvr_shader *shader, uint32_t usc_o
+ uint32_t pvr_shader_vertex_program(const struct pvr_device_info *dev_info,
+                                    void *dst, uint32_t dst_size,
+                                    uint32_t stride, uint32_t attrib_bytes,
+-                                   uint8_t destination);
++                                   uint8_t destination,
++                                   struct pvr_shader_vertex_program_info *info_out);
+ 
+ /* Builds the PDS DATA the vertex program reads: the const-map entries generated alongside the program,
+  * with two things patched in at their const_offset:
+-- 
+2.47.3
+

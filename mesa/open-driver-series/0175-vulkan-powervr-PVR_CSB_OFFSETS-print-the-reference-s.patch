@@ -1,0 +1,31 @@
+From 5b9849828033190578373888fe2adfab5af72477 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sun, 18 Oct 2026 10:20:18 +0800
+Subject: [PATCH 175/269] vulkan/powervr: PVR_CSB_OFFSETS - print the
+ reference's own stream offsets
+
+Env-guarded print of pbe_reg_byte_offset and eot_data_addr_byte_offset from pvr_frag_state_stream_init, so
+the gallium driver's offsets can be diffed against the reference's arithmetic rather than against my
+transcription of its helper.
+---
+ src/imagination/vulkan/pvr_arch_job_render.c | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/src/imagination/vulkan/pvr_arch_job_render.c b/src/imagination/vulkan/pvr_arch_job_render.c
+index 0cf5183e..3d7bc80c 100644
+--- a/src/imagination/vulkan/pvr_arch_job_render.c
++++ b/src/imagination/vulkan/pvr_arch_job_render.c
+@@ -1413,6 +1413,10 @@ static void pvr_render_job_ws_fragment_pr_init_based_on_fragment_state(
+       pvr_frag_km_stream_pbe_reg_words_offset(dev_info);
+    const uint32_t eot_data_addr_byte_offset =
+       pvr_frag_km_stream_pds_eot_data_addr_offset(dev_info);
++   /* ponytail: PVR_CSB_OFFSETS - the reference's own offset arithmetic, so the gallium driver's numbers
++    * can be diffed against it instead of against my transcription of the helper. */
++   if (getenv("PVR_CSB_OFFSETS"))
++      fprintf(stderr, "[off] pbe=%u eot=%u\n", pbe_reg_byte_offset, eot_data_addr_byte_offset);
+    const uint32_t view_index =
+       job->view_state.force_pds_pixel_event_data_offset_zero
+          ? 0
+-- 
+2.47.3
+

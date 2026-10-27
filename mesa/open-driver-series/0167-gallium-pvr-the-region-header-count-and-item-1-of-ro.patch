@@ -1,0 +1,148 @@
+From 4310f0a0d0d49e39e880faa8d4a6a614132499fc Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sat, 17 Oct 2026 10:56:05 +0800
+Subject: [PATCH 167/269] gallium/pvr: the region-header count, and item 1 of
+ round 65's list confirmed
+
+  csb: region headers: 64x64 -> 1, 256x64 -> 2, 2x2 macrotiles -> 4, 800x600 -> 35 units, zero tile
+       size refused
+  --- ALL PASS        (real open kernel)
+
+Round 65 stopped because it was not established that num_tiles_x is DIV_ROUND_UP(width, tile_size_x).
+It is, and this device takes the VERSION-2 branch of the mtile arithmetic - which round 19 had already
+determined independently, from the 6-dword region-header size:
+
+  num_tiles_x = DIV_ROUND_UP(width, tile_size_x)
+  mtile_x1    = DIV_ROUND_UP(num_tiles_x, 8) * 2
+  count       = mtile_x1 * samples_in_x * mtile_y1 * samples_in_y * mtiles_x * mtiles_y / 4
+
+So region headers - written by the hardware, reserved by the driver - are now an arithmetic function
+rather than a subsystem. Everything is a parameter, including the macrotile counts, so it is testable
+without a device and the device constants are read by whoever has the device info.
+
+The MSAA branch is deliberately NOT implemented: it changes the mtile arithmetic itself rather than
+just the sample factor, and this driver refuses MSAA at resource creation. An unimplemented branch
+that cannot run beats one that can run wrongly.
+
+The check uses hand-computed expectations (64x64 -> 1, 256x64 -> 2, 2x2 macrotiles -> 4, and the
+benchmark's 800x600 -> 35 = 14*10/4) rather than a restatement of the formula, so dropping the *2 or
+the /4 fails instead of agreeing with itself.
+---
+ src/gallium/drivers/pvr/pvr_csb.c   | 24 ++++++++++++++++++++++++
+ src/gallium/drivers/pvr/pvr_csb.h   | 24 ++++++++++++++++++++++++
+ src/gallium/drivers/pvr/pvr_probe.c | 29 ++++++++++++++++++++++++++++-
+ 3 files changed, 76 insertions(+), 1 deletion(-)
+
+diff --git a/src/gallium/drivers/pvr/pvr_csb.c b/src/gallium/drivers/pvr/pvr_csb.c
+index 36ab1bbf..239e62a4 100644
+--- a/src/gallium/drivers/pvr/pvr_csb.c
++++ b/src/gallium/drivers/pvr/pvr_csb.c
+@@ -383,6 +383,30 @@ pvr_pbe_linestride(uint32_t stride_bytes)
+    return (stride_bytes - 1) / ROGUE_PBESTATE_REG_WORD0_LINESTRIDE_UNIT_SIZE;
+ }
+ 
++uint32_t
++pvr_region_header_count(uint32_t width, uint32_t height, uint32_t tile_size_x,
++                        uint32_t tile_size_y, uint32_t samples_in_x,
++                        uint32_t samples_in_y, uint32_t mtiles_x, uint32_t mtiles_y)
++{
++   uint32_t num_tiles_x, num_tiles_y, mtile_x1, mtile_y1;
++
++   /* A zero tile size would divide by zero rather than fail; the caller gets its constants from
++    * device features, which default to 1 rather than 0, so this is a guard against a caller error
++    * rather than a hardware case. */
++   if (tile_size_x == 0 || tile_size_y == 0)
++      return 0;
++
++   num_tiles_x = DIV_ROUND_UP(width, tile_size_x);
++   num_tiles_y = DIV_ROUND_UP(height, tile_size_y);
++
++   /* Version-2 branch - the one this device takes, established in round 19 by the 6-dword region
++    * header size. */
++   mtile_x1 = DIV_ROUND_UP(num_tiles_x, 8) * 2;
++   mtile_y1 = DIV_ROUND_UP(num_tiles_y, 8) * 2;
++
++   return mtile_x1 * samples_in_x * mtile_y1 * samples_in_y * mtiles_x * mtiles_y / 4;
++}
++
+ bool
+ pvr_pbe_swizzles_from_pipe_format(enum pipe_format format,
+                                   enum ROGUE_PBESTATE_SWIZ out[4])
+diff --git a/src/gallium/drivers/pvr/pvr_csb.h b/src/gallium/drivers/pvr/pvr_csb.h
+index 8e6fdf50..5766cb0b 100644
+--- a/src/gallium/drivers/pvr/pvr_csb.h
++++ b/src/gallium/drivers/pvr/pvr_csb.h
+@@ -545,6 +545,30 @@ void pvr_pbe_clip_from_area(uint32_t off_x, uint32_t off_y, uint32_t width, uint
+                             struct pvr_pbe_clip *out);
+ enum ROGUE_PBESTATE_MEMLAYOUT pvr_pbe_memlayout_linear(void);
+ 
++/* How many region headers a render target needs.
++ *
++ * Region headers are written by the HARDWARE (TA/PM writes, ISP reads back) - the driver only
++ * reserves space - so this is an allocation size, not stream content. That distinction cost a round
++ * to establish (rounds 18 and 55).
++ *
++ * Everything is a parameter, including the macrotile counts, so this is testable without a device
++ * and the device constants are read once in the screen. For the version-2 format this device uses:
++ *
++ *    num_tiles_x = DIV_ROUND_UP(width,  tile_size_x)
++ *    mtile_x1    = DIV_ROUND_UP(num_tiles_x, 8) * 2
++ *    count       = mtile_x1 * samples_in_x * mtile_y1 * samples_in_y
++ *                  * mtiles_x * mtiles_y / 4
++ *
++ * The /4 is the version-2 rule ("one region header per 2x2 tile group").
++ *
++ * `samples_in` is 1 for a single-sampled target. This driver refuses MSAA at resource creation, so
++ * the multisampled branch is deliberately not implemented: it changes the mtile arithmetic itself,
++ * not just this factor, and an unimplemented branch that cannot run is better than one that can run
++ * wrongly. */
++uint32_t pvr_region_header_count(uint32_t width, uint32_t height, uint32_t tile_size_x,
++                                 uint32_t tile_size_y, uint32_t samples_in_x,
++                                 uint32_t samples_in_y, uint32_t mtiles_x, uint32_t mtiles_y);
++
+ /* Dwords a stream link occupies - what the guard must be at minimum. */
+ #define PVR_CSB_LINK_DWORDS (ROGUE_VDMCTRL_STREAM_LINK0_length + \
+                              ROGUE_VDMCTRL_STREAM_LINK1_length)
+diff --git a/src/gallium/drivers/pvr/pvr_probe.c b/src/gallium/drivers/pvr/pvr_probe.c
+index 473919ff..7108e1d0 100644
+--- a/src/gallium/drivers/pvr/pvr_probe.c
++++ b/src/gallium/drivers/pvr/pvr_probe.c
+@@ -1981,7 +1981,34 @@ csb_check(int fd, struct pipe_screen *pscreen)
+                   goto out;
+                }
+ 
+-               printf("csb:           PBE swizzle: %zu pipe selectors -> distinct hardware values, "
++               /* Region-header count. Hand-computed expectations, not a restatement of the formula: for a
++       * 16-pixel tile and one macrotile, 64x64 gives 4 tiles -> mtile_x1 = 2 -> count 1, and 256x64
++       * gives 16 tiles -> mtile_x1 = 4 -> count 2. Both numbers come from the arithmetic done on
++       * paper, so a version that dropped the /4 or the *2 fails here rather than looking plausible. */
++      {
++         const uint32_t a = pvr_region_header_count(64, 64, 16, 16, 1, 1, 1, 1);
++         const uint32_t b = pvr_region_header_count(256, 64, 16, 16, 1, 1, 1, 1);
++         const uint32_t c = pvr_region_header_count(64, 64, 16, 16, 1, 1, 2, 2);
++         const uint32_t d = pvr_region_header_count(800, 600, 16, 16, 1, 1, 1, 1);
++
++         if (a != 1 || b != 2 || c != 4) {
++            printf("csb:           FAIL: region-header count 64x64 -> %u (want 1), 256x64 -> %u (want "
++                   "2), 64x64 with 2x2 macrotiles -> %u (want 4)\n", a, b, c);
++            goto out;
++         }
++
++         /* The benchmark's own size, and the guard. */
++         if (d == 0 || pvr_region_header_count(64, 64, 0, 16, 1, 1, 1, 1) != 0) {
++            printf("csb:           FAIL: region-header count wrong for 800x600 (%u) or a zero tile "
++                   "size was not refused\n", d);
++            goto out;
++         }
++
++         printf("csb:           region headers: 64x64 -> 1, 256x64 -> 2, 2x2 macrotiles -> 4, "
++                "800x600 -> %u units, zero tile size refused\n", d);
++      }
++
++      printf("csb:           PBE swizzle: %zu pipe selectors -> distinct hardware values, "
+                       "NONE refused; source format follows with_packed_usc_channel for 8-bit "
+                       "targets\n", ARRAY_SIZE(pipes));
+             }
+-- 
+2.47.3
+

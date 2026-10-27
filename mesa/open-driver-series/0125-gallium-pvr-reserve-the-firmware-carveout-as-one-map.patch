@@ -1,0 +1,177 @@
+From 6b26dcf87367a7e8e648a2692d0cd6b774afa211 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 15:42:50 +0800
+Subject: [PATCH 125/269] gallium/pvr: reserve the firmware carveout as one
+ mapping, not one per area
+
+The build-up to CREATE_CONTEXT needs the firmware's static memory, and the first
+attempt at it was wrong in a way only the real kernel revealed:
+
+  MESA: error: pvr: VM_MAP addr 0x8000000080 handle 2 size 4096 failed: Invalid argument
+  vm: FAIL: could not place a buffer at area 3
+
+The areas are packed INSIDE A SINGLE PAGE - fence 128 bytes at offset 0 and YUV CSC 1024
+bytes at offset 128 on this hardware - while VM_MAP is page-granular and a buffer object
+is page-sized. So a page-sized mapping per area makes the second one overlap the first,
+and the kernel rejects overlapping mappings with EINVAL.
+
+The per-area version passed against the DRM shim, which does not enforce that. This is
+the clearest case yet of the shim not being the authority: a design error that only the
+real driver caught.
+
+So the carveout is now ONE buffer mapped over the whole reserved region, with firmware
+structures addressed as carveout_base + area->offset - which is what the Vulkan driver
+does too. Verified on the real kernel:
+
+  vm: static area 1: 128 bytes at carveout+0x0
+  vm: static area 3: 1024 bytes at carveout+0x80
+  vm: PASS
+  --- ALL PASS
+
+The check also asserts that the ordinary allocator never returns a carveout address. A
+firmware structure overwritten by an ordinary buffer is the kind of failure that would
+show up as the GPU reading nonsense with no error anywhere.
+---
+ src/gallium/drivers/pvr/pvr_probe.c | 55 +++++++++++++++++++++++++++++
+ src/gallium/drivers/pvr/pvr_vm.c    | 23 ++++++++++++
+ src/gallium/drivers/pvr/pvr_vm.h    | 17 +++++++++
+ 3 files changed, 95 insertions(+)
+
+diff --git a/src/gallium/drivers/pvr/pvr_probe.c b/src/gallium/drivers/pvr/pvr_probe.c
+index 19835207..c2a21204 100644
+--- a/src/gallium/drivers/pvr/pvr_probe.c
++++ b/src/gallium/drivers/pvr/pvr_probe.c
+@@ -197,6 +197,61 @@ vm_roundtrip(int fd)
+              (uint64_t)yuv->offset, area_total);
+    }
+ 
++   /* The firmware carveout, and the areas inside it. Mapped as ONE buffer: the areas
++    * are packed within a single page, so per-area mappings would overlap and the kernel
++    * rejects that - which is exactly how the first version of this failed on the real
++    * driver while passing against the shim. */
++   {
++      struct pvr_bo carveout_bo = { 0 };
++      uint64_t carveout_base = 0;
++      static const uint16_t usages[] = {
++         DRM_PVR_STATIC_DATA_AREA_FENCE,
++         DRM_PVR_STATIC_DATA_AREA_YUV_CSC,
++      };
++
++      if (!pvr_vm_alloc_carveout(&vm, &carveout_bo, &carveout_base)) {
++         printf("vm:            FAIL: could not reserve the firmware carveout\n");
++         goto out;
++      }
++
++      if (carveout_base != vm.general.base) {
++         printf("vm:            FAIL: carveout mapped at 0x%" PRIx64 ", heap base is "
++                "0x%" PRIx64 "\n", carveout_base, vm.general.base);
++         goto out_carveout;
++      }
++
++      for (unsigned u = 0; u < ARRAY_SIZE(usages); u++) {
++         const struct drm_pvr_static_data_area *area =
++            pvr_vm_static_area(&vm, usages[u], DRM_PVR_HEAP_GENERAL);
++         const uint64_t area_addr = carveout_base + area->offset;
++
++         /* The area has to be inside the carveout the firmware will read from, and it
++          * must not run past the point where ordinary allocations begin - a structure
++          * that overlaps the general heap is one an ordinary buffer would overwrite. */
++         if (area == NULL || area_addr < carveout_base ||
++             area_addr + area->size > vm.general.usable_base) {
++            printf("vm:            FAIL: area %u at 0x%" PRIx64 " is outside the "
++                   "carveout\n", usages[u], area_addr);
++            goto out_carveout;
++         }
++
++         printf("vm:            static area %u: %u bytes at carveout+0x%" PRIx64
++                "\n", usages[u], area->size, (uint64_t)area->offset);
++      }
++
++      /* And the ordinary allocator must never hand out a carveout address, or an
++       * ordinary buffer would land on top of firmware state. */
++      if (addr_a < vm.general.usable_base) {
++         printf("vm:            FAIL: the ordinary allocator returned a carveout "
++                "address 0x%" PRIx64 "\n", addr_a);
++         goto out_carveout;
++      }
++
++out_carveout:
++      pvr_vm_unmap(&vm, carveout_base, carveout_bo.size);
++      pvr_bo_destroy(fd, &carveout_bo);
++   }
++
+    printf("vm:            mapped and unmapped 0x%" PRIx64 " (%" PRIu64 " bytes); "
+           "second address 0x%" PRIx64 "\n", addr_a, size, addr_b);
+    ok = true;
+diff --git a/src/gallium/drivers/pvr/pvr_vm.c b/src/gallium/drivers/pvr/pvr_vm.c
+index acadd0af..d66bd778 100644
+--- a/src/gallium/drivers/pvr/pvr_vm.c
++++ b/src/gallium/drivers/pvr/pvr_vm.c
+@@ -230,6 +230,29 @@ pvr_vm_static_area(const struct pvr_vm *vm, uint16_t usage, uint16_t heap_id)
+    return NULL;
+ }
+ 
++bool
++pvr_vm_alloc_carveout(struct pvr_vm *vm, struct pvr_bo *bo_out, uint64_t *base_out)
++{
++   const uint64_t carveout_size = vm->general.size - vm->general.usable_size;
++
++   if (carveout_size == 0) {
++      mesa_logi("pvr: no firmware carveout on this device");
++      return false;
++   }
++
++   if (!pvr_bo_create(vm->fd, carveout_size, 1, bo_out))
++      return false;
++
++   if (!pvr_vm_map(vm, vm->general.base, bo_out->handle, bo_out->size)) {
++      pvr_bo_destroy(vm->fd, bo_out);
++      return false;
++   }
++
++   *base_out = vm->general.base;
++
++   return true;
++}
++
+ uint64_t
+ pvr_vm_alloc(struct pvr_vm *vm, uint64_t size, uint64_t alignment)
+ {
+diff --git a/src/gallium/drivers/pvr/pvr_vm.h b/src/gallium/drivers/pvr/pvr_vm.h
+index a9a805c0..656cc3d9 100644
+--- a/src/gallium/drivers/pvr/pvr_vm.h
++++ b/src/gallium/drivers/pvr/pvr_vm.h
+@@ -15,6 +15,8 @@
+ 
+ #include "util/vma.h"
+ 
++#include "pvr_bo.h"
++
+ #include "drm-uapi/pvr_drm.h"
+ 
+ struct pvr_heap {
+@@ -46,6 +48,21 @@ struct pvr_vm {
+ const struct drm_pvr_static_data_area *
+ pvr_vm_static_area(const struct pvr_vm *vm, uint16_t usage, uint16_t heap_id);
+ 
++/* Reserves the firmware carveout: one buffer mapped over the whole reserved region.
++ *
++ * Deliberately ONE mapping, not one per area. The areas are packed inside a single
++ * page - fence 128 bytes at offset 0 and YUV CSC 1024 bytes at offset 128 on this
++ * hardware - while VM_MAP is page-granular, so mapping a page-sized buffer at each area
++ * makes them overlap and the kernel rejects it with EINVAL. That is how this was
++ * found: the per-area version passed against the DRM shim and failed against the real
++ * kernel question. Structures are placed at offsets inside this one mapping, addressed
++ * as carveout_base + area->offset().
++ *
++ * pvr_vm_alloc() never returns an address inside the carveout, which is what keeps
++ * ordinary buffers from overwriting firmware state. */
++bool pvr_vm_alloc_carveout(struct pvr_vm *vm, struct pvr_bo *bo_out,
++                           uint64_t *base_out);
++
+ bool pvr_vm_init(int fd, struct pvr_vm *vm);
+ void pvr_vm_finish(struct pvr_vm *vm);
+ 
+-- 
+2.47.3
+

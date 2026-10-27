@@ -1,0 +1,91 @@
+From 6bd1a1e28706c8d4d502141d5317ed395d827dbe Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sat, 24 Oct 2026 03:23:05 +0800
+Subject: [PATCH 196/269] gallium/pvr: expose the PDS kick inputs (temps,
+ vtxins) from the compiled shader
+
+The PDS kick program is built from two numbers that live in pco's per-function record: the temps the
+entry function allocates and the vertex input registers it reads. pvr_shader.c only included
+pco_data.h and could not reach them, so pvr_shader now carries copies and populates them from the first
+(pco_func) in the shader's function list.
+
+Two things learned doing it:
+ - the struct tag is _pco_func, not pco_func (pco_func is only the typedef name), which is why the
+   first version would not compile against the forward declaration;
+ - measured on this device: a position-only vertex shader reports temps=0 vtxins=0.
+
+The second is useful rather than incidental: the PDS program for a minimal triangle needs no temps and
+no attribute data, so it is the simplest possible kick - a doutu with zero temps and an empty data
+section, which is close to the shape the VDM sync program already uses.
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c  |  7 +++++--
+ src/gallium/drivers/pvr_native/pvr_shader.c | 10 ++++++++++
+ src/gallium/drivers/pvr_native/pvr_shader.h |  6 ++++++
+ 3 files changed, 21 insertions(+), 2 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index 2a36507f..3e9fd544 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -1134,8 +1134,11 @@ shader_compile_check(struct pipe_screen *pscreen)
+       }
+       vb.shader->info.internal = false;
+ 
+-      if (pvr_shader_compile(screen->pco_ctx, vb.shader, &vshader, &vbin, &vsize)) {
+-         printf("shader:        pco encoded %u bytes of USC for a VERTEX shader\n", vsize);
++      struct pvr_shader *vobj = pvr_shader_create(vb.shader, screen->pco_ctx);
++
++      if (vobj != NULL) {
++         printf("shader:        pco encoded %u bytes of USC for a VERTEX shader; PDS kick needs "
++                "temps=%u vtxins=%u\n", vobj->binary_size, vobj->temps, vobj->vtxins);
+       } else {
+          printf("shader:        FAIL: pco produced no vertex code\n");
+          ok = false;
+diff --git a/src/gallium/drivers/pvr_native/pvr_shader.c b/src/gallium/drivers/pvr_native/pvr_shader.c
+index 4a9c9d5e..56c29011 100644
+--- a/src/gallium/drivers/pvr_native/pvr_shader.c
++++ b/src/gallium/drivers/pvr_native/pvr_shader.c
+@@ -4,6 +4,7 @@
+ #include "pvr_shader.h"
+ 
+ #include "pco/pco_data.h"
++#include "pco/pco_internal.h"
+ 
+ #include "stdlib.h"
+ 
+@@ -23,6 +24,15 @@ pvr_shader_create(struct nir_shader *nir, pco_ctx *ctx)
+       return NULL;
+    }
+ 
++   /* The entry function is the first in the list; its temps and vertex-input counts are what the
++    * PDS kick program is built from. */
++   if (shader->pco != NULL && !list_is_empty(&shader->pco->funcs)) {
++      struct _pco_func *entry = list_first_entry(&shader->pco->funcs, struct _pco_func, link);
++
++      shader->temps = entry->temps;
++      shader->vtxins = entry->vtxins;
++   }
++
+    return shader;
+ }
+ 
+diff --git a/src/gallium/drivers/pvr_native/pvr_shader.h b/src/gallium/drivers/pvr_native/pvr_shader.h
+index 2d535889..189768d6 100644
+--- a/src/gallium/drivers/pvr_native/pvr_shader.h
++++ b/src/gallium/drivers/pvr_native/pvr_shader.h
+@@ -21,6 +21,12 @@ struct pvr_shader {
+    pco_shader *pco;
+    const void *binary;
+    unsigned binary_size;
++
++   /* What the PDS kick program needs: how many temps the entry function allocates and how many
++    * vertex input registers it reads. These live in pco's internal per-function record, so they are
++    * copied out here rather than reaching into pco from the callers. */
++   unsigned temps;
++   unsigned vtxins;
+ };
+ 
+ struct pvr_shader *pvr_shader_create(struct nir_shader *nir, pco_ctx *ctx);
+-- 
+2.47.3
+

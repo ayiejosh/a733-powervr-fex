@@ -1,0 +1,48 @@
+From b738448511178199d7d0fc26e07f133cd547e654 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sun, 25 Oct 2026 07:12:58 +0800
+Subject: [PATCH 245/269] gallium/pvr: free-list creation order experiment
+ (PVR_PROBE_FL_GLOBAL_FIRST, negative)
+
+The reference creates its device-wide (global) free list at device init, before the per-render-target
+(local) one; the probe created the local list first. The option creates the global list first (the
+HWRT dataset still receives the local handle first, as the UAPI requires). Hardware test: still
+`Kick TA` -> `DM2 timed out`, so the free-list firmware-id order is not the trigger either.
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c | 20 +++++++++++++++-----
+ 1 file changed, 15 insertions(+), 5 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index 3c63db64..15b3eca4 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -704,11 +704,21 @@ vm_roundtrip(int fd, struct pipe_screen *pscreen)
+                       "%u..%u grow %u, local %u\n", flmin, flmax, global_initial_pages,
+                       global_max_pages, global_grow_pages, local_pages);
+             /* UAPI: with grow_num_pages == 0 the initial count must equal the maximum (local). */
+-            okb = flmin && local_pages >= flmin &&
+-                  pvr_free_list_create(vm, fladdr[0], local_pages, local_pages, 0, 0,
+-                                       &flhandle[0]) &&
+-                  pvr_free_list_create(vm, fladdr[1], global_initial_pages, global_max_pages,
+-                                       global_grow_pages, 13, &flhandle[1]);
++            /* Round-44: the reference creates its device-wide (global) free list at device init,
++             * before the per-render-target (local) one; try that creation order too. */
++            if (getenv("PVR_PROBE_FL_GLOBAL_FIRST")) {
++               okb = flmin && local_pages >= flmin &&
++                     pvr_free_list_create(vm, fladdr[1], global_initial_pages, global_max_pages,
++                                          global_grow_pages, 13, &flhandle[1]) &&
++                     pvr_free_list_create(vm, fladdr[0], local_pages, local_pages, 0, 0,
++                                          &flhandle[0]);
++            } else {
++               okb = flmin && local_pages >= flmin &&
++                     pvr_free_list_create(vm, fladdr[0], local_pages, local_pages, 0, 0,
++                                          &flhandle[0]) &&
++                     pvr_free_list_create(vm, fladdr[1], global_initial_pages, global_max_pages,
++                                          global_grow_pages, 13, &flhandle[1]);
++            }
+             if (okb) {
+                struct pvr_hwrt_dataset_desc d = {
+                   .tpc_dev_addr = tpcaddr, .tpc_size = 2048, .tpc_stride = 0,
+-- 
+2.47.3
+

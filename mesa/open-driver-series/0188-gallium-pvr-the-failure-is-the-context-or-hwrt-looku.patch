@@ -1,0 +1,71 @@
+From 93353345c897331d5d18275184309cbd7a9ea2b2 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 23 Oct 2026 20:13:24 +0800
+Subject: [PATCH 188/269] gallium/pvr: the failure is the context or hwrt
+ lookup, not the stream
+
+Three discriminating experiments against the real kernel:
+
+ 1. length scan (40/44/48/52/56/60/64 B): all rejected identically -> not the length.
+ 2. control: the CAPTURED 40 bytes verbatim, i.e. exactly what the working Vulkan driver sent ->
+    refused too. The stream content is exonerated.
+ 3. same context, same hwrt, DIFFERENT job type: a FRAGMENT job (384 B, built by the verified
+    fragment builder) is refused as well.
+
+Since both job types fail identically while the dataset and free lists were created successfully, the
+EINVAL is one of the two lookups create_job() performs - pvr_context_lookup(context_handle) or
+pvr_hwrt_data_lookup(set_handle, data_index) - not anything about the command stream.
+
+Read the kernel to bound it: pvr_hwrt_data_lookup() = pvr_hwrt_dataset_lookup(pvr_file, handle) and
+then index < ARRAY_SIZE(dataset->data); create_job() rejects when either the context or the hwrt
+lookup returns NULL. The probe creates the context, the two free lists and the dataset on the SAME fd
+it submits on (pvm_fd_for_probe = fd = vm->fd), so a cross-file handle mix-up is ruled out too.
+
+Next: make the kernel name which lookup fails. The probe can do that without dynamic debug by creating
+a context and submitting against a deliberately wrong handle in the same run and comparing, or by
+checking whether the returned handles are non-zero on the real kernel (they are 1/2/1) and whether the
+dataset handle and the context handle sharing the value 1 means separate xarrays or one.
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c | 19 +++++++++++++++++++
+ 1 file changed, 19 insertions(+)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index 8bbdb733..406694e6 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -440,6 +440,9 @@ vm_roundtrip(int fd, const struct pvr_device_info *dev_info)
+          goto out;
+       }
+ 
++      printf("vm:            sizes: drm_pvr_job=%zu obj_array=%zu hwrt_ref=%zu\n",
++             sizeof(struct drm_pvr_job), sizeof(struct drm_pvr_obj_array),
++             sizeof(struct drm_pvr_hwrt_data_ref));
+       printf("vm:            GPU context %u created: render type, callstack at 0x%"
+              PRIx64 "\n", gpu_ctx.handle, gpu_ctx.callstack_addr);
+ 
+@@ -618,6 +621,22 @@ vm_roundtrip(int fd, const struct pvr_device_info *dev_info)
+                      printf("vm:            the CAPTURED 40-byte stream was refused too - so the "
+                             "stream content is not the problem\n");
+                }
++               /* Same context, same hwrt, different job type: a fragment job. If this is accepted
++                * the failure is geometry-specific; if it fails identically the problem is the context
++                * or hwrt lookup rather than anything about the stream. */
++               {
++                  _Alignas(8) uint8_t fbuf[1024];
++                  static const uint64_t pbe2[3] = { 0x0200003c68800000ull, 0x0000001f0000001full, 0 };
++                  const uint32_t fl2 = pvr_frag_static_stream(fbuf, sizeof(fbuf), pbe2, 1, 0x2780,
++                                                              false);
++                  if (pvr_job_submit(&vm, gpu_ctx.handle, DRM_PVR_JOB_TYPE_FRAGMENT, fbuf, fl2,
++                                     dset_handle, 0))
++                     printf("vm:            a FRAGMENT job was ACCEPTED (%u bytes) - the context and "
++                            "hwrt lookups work, so the geometry failure is geometry-specific\n", fl2);
++                  else
++                     printf("vm:            the FRAGMENT job was refused too - the failure is in the "
++                            "context or hwrt lookup, not in the stream\n");
++               }
+                if (pvr_job_submit(&vm, gpu_ctx.handle, DRM_PVR_JOB_TYPE_GEOMETRY, rcsb.map, gl, dset_handle, 0)) {
+                   printf("vm:            SUBMIT_JOBS ACCEPTED a real %u-byte geometry job at "
+                          "0x%" PRIx64 " (ctrl 0x%" PRIx64 ", border table 0x%" PRIx64 ") - the "
+-- 
+2.47.3
+

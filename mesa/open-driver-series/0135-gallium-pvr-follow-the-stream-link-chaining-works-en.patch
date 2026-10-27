@@ -1,0 +1,155 @@
+From 53286a7acea80dc3f75e86c4bfbae4a4f59772fb Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 17:27:33 +0800
+Subject: [PATCH 135/269] gallium/pvr: follow the stream link - chaining works
+ end to end
+
+  csb: chained: 4096 bytes in the first buffer, link followed into the second,
+       continuation verified at its start
+  --- ALL PASS        (real open kernel)
+
+Rounds 20 and 21 made a stream able to SAY it continues elsewhere (the link) and reserve
+room to say it (the guard). Neither made the builder actually continue there, so a link
+was expressible but not usable: everything written after it landed in the old buffer past
+the guard, meaning the stream would say one thing and contain another.
+
+pvr_csb_switch_buffer() finishes it. The caller emits the link, then switches; the size of
+the finished buffer is returned so a job's total stream length can be accumulated across
+the chain. The check verifies the continuation lands at the START of the second buffer -
+emitting a link without following it is exactly the failure it exists to catch.
+
+The check segfaulted on its first run, and the cause was worth a backtrace rather than a
+guess: it left the builder addressing the SECOND buffer and then destroyed it, so the NEXT
+block reset the builder and wrote into freed memory. The crash appeared one block away from
+the bug. Fixed by pointing the builder back at the first buffer before the destroy, with
+the reason recorded at the site.
+---
+ src/gallium/drivers/pvr/pvr_csb.c   | 11 +++++
+ src/gallium/drivers/pvr/pvr_csb.h   | 12 ++++++
+ src/gallium/drivers/pvr/pvr_probe.c | 65 +++++++++++++++++++++++++++++
+ 3 files changed, 88 insertions(+)
+
+diff --git a/src/gallium/drivers/pvr/pvr_csb.c b/src/gallium/drivers/pvr/pvr_csb.c
+index f0937567..01bc2b0b 100644
+--- a/src/gallium/drivers/pvr/pvr_csb.c
++++ b/src/gallium/drivers/pvr/pvr_csb.c
+@@ -78,6 +78,17 @@ pvr_csb_overflowed(const struct pvr_csb *csb)
+    return csb->overflowed;
+ }
+ 
++uint32_t
++pvr_csb_switch_buffer(struct pvr_csb *csb, void *map, uint32_t size_bytes,
++                      uint32_t guard_dwords)
++{
++   const uint32_t used = pvr_csb_size(csb);
++
++   pvr_csb_init(csb, map, size_bytes, guard_dwords);
++
++   return used;
++}
++
+ bool
+ pvr_csb_emit_link(struct pvr_csb *csb, uint64_t dev_addr, bool with_return)
+ {
+diff --git a/src/gallium/drivers/pvr/pvr_csb.h b/src/gallium/drivers/pvr/pvr_csb.h
+index ccfb4112..2e6bf608 100644
+--- a/src/gallium/drivers/pvr/pvr_csb.h
++++ b/src/gallium/drivers/pvr/pvr_csb.h
+@@ -56,6 +56,18 @@ struct pvr_csb {
+ void pvr_csb_init(struct pvr_csb *csb, void *map, uint32_t size_bytes,
+                   uint32_t guard_dwords);
+ 
++/* Continue the stream in another buffer, after a link to it has been emitted.
++ *
++ * Chaining is only half-expressed without this: emitting a link says where the GPU will
++ * go, but unless the builder follows it, everything written afterwards lands in the OLD
++ * buffer past the guard - i.e. the stream says one thing and contains another. Callers
++ * emit the link and then switch, in that order.
++ *
++ * The size of the buffer just finished is returned so the caller can accumulate the
++ * job's total stream length across the chain. */
++uint32_t pvr_csb_switch_buffer(struct pvr_csb *csb, void *map, uint32_t size_bytes,
++                              uint32_t guard_dwords);
++
+ /* Dwords a stream link occupies - what the guard must be at minimum. */
+ #define PVR_CSB_LINK_DWORDS (ROGUE_VDMCTRL_STREAM_LINK0_length + \
+                              ROGUE_VDMCTRL_STREAM_LINK1_length)
+diff --git a/src/gallium/drivers/pvr/pvr_probe.c b/src/gallium/drivers/pvr/pvr_probe.c
+index 73f2c438..35e3c82a 100644
+--- a/src/gallium/drivers/pvr/pvr_probe.c
++++ b/src/gallium/drivers/pvr/pvr_probe.c
+@@ -1115,6 +1115,71 @@ csb_check(int fd, struct pipe_screen *pscreen)
+     * together, checked against a locally packed reference and read back with the
+     * generated unpacker - the same pattern as the packet check, but this is content the
+     * GPU follows rather than a packet it merely reads. */
++   /* Chaining, end to end: fill the first buffer to its guard, link to a second, follow
++    * the link, and check the data written afterwards is at the START of the second buffer
++    * and not past the guard of the first. Emitting a link without following it would send
++    * the GPU to a buffer the driver never wrote into - the stream saying one thing and
++    * containing another, which is the failure this check exists to catch. */
++   {
++      struct pvr_bo second = { 0 };
++      /* The link target only has to be an address: what is being checked is that the
++       * BUILDER follows the link it emitted, not that the address is mapped. */
++      const uint64_t second_addr = 0x9ffffe0000ULL;
++      uint32_t finished;
++
++      if (!pvr_bo_create(fd, 4096, 4096, &second) || !pvr_bo_map(fd, &second)) {
++         printf("csb:           FAIL: could not set up a second stream buffer\n");
++         goto out;
++      }
++
++      pvr_csb_reset(&csb);
++      (void)pvr_csb_emit(&csb, bo.size / 4 - PVR_CSB_LINK_DWORDS);
++
++      if (!pvr_csb_emit_link(&csb, second_addr, false)) {
++         printf("csb:           FAIL: could not link to the second buffer\n");
++         goto out_second;
++      }
++
++      finished = pvr_csb_switch_buffer(&csb, second.map, second.size,
++                                       PVR_CSB_LINK_DWORDS);
++
++      if (finished != bo.size || pvr_csb_size(&csb) != 0) {
++         printf("csb:           FAIL: switch reported %u bytes finished (buffer is %u), "
++                "new stream at %u\n", finished, (unsigned)bo.size, pvr_csb_size(&csb));
++         goto out_second;
++      }
++
++      /* Something recognisable, written after the switch. */
++      {
++         struct ROGUE_PBESTATE_STATE_WORD0 words = { .address_low = 0xdead0000ULL };
++         uint32_t *dw2 = pvr_csb_emit(&csb, ROGUE_PBESTATE_STATE_WORD0_length);
++
++         if (dw2 == NULL) {
++            printf("csb:           FAIL: the second buffer refused the write\n");
++            goto out_second;
++         }
++         ROGUE_PBESTATE_STATE_WORD0_pack(dw2, &words);
++
++         if (((uint32_t *)second.map)[0] == 0) {
++            printf("csb:           FAIL: nothing landed at the start of the second "
++                   "buffer\n");
++            goto out_second;
++         }
++      }
++
++      printf("csb:           chained: %u bytes in the first buffer, link followed into "
++             "the second, continuation verified at its start\n", finished);
++
++out_second:
++      /* Point the builder back at the first buffer BEFORE destroying the second. A CSB
++       * left addressing a destroyed mapping is a write into freed memory the moment
++       * anything emits again - which is exactly what this check did the first time it
++       * ran, and it segfaulted in the NEXT block rather than this one, which is what
++       * made it worth a backtrace rather than a guess. */
++      pvr_csb_init(&csb, bo.map, bo.size, PVR_CSB_LINK_DWORDS);
++      pvr_bo_destroy(fd, &second);
++   }
++
+    {
+       const uint64_t target = 0x9ffffe0000ULL;
+       uint32_t reference[ROGUE_VDMCTRL_STREAM_LINK0_length +
+-- 
+2.47.3
+

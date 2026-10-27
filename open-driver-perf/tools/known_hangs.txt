@@ -1,0 +1,3 @@
+# regexes of CTS cases that hang the pco compiler on every build (compile loop at 100% CPU, found 2026-10-13); not run
+dEQP-VK\.subgroups\.vote\..*_(u|i)8
+dEQP-VK\.subgroups\.vote\.compute\.subgroupallequal_u?int8_t

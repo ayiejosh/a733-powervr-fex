@@ -1,0 +1,133 @@
+From 3cb6f429936b6a282f41fa136a8b8c5ec01b5a8d Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sun, 18 Oct 2026 06:50:52 +0800
+Subject: [PATCH 172/269] gallium/pvr: the full fragment static stream tail
+
+pvr_frag_km_stream_pds_eot_data_addr_offset() has thirteen tail terms, not the four I read (including
+a second ROGUE_NUM_CR_PDS_BGRND_WORDS block, the USC clear-register block, USC_PIXEL_OUTPUT_CTRL, four
+ISP packets, CR_EVENT_PIXEL_PDS_INFO and KMD_STREAM_VIEW_IDX). All are now emitted in order, with
+KMD_STREAM_PIXEL_PHANTOM behind a cluster_grouping parameter.
+
+Still 364 bytes without cluster_grouping and 368 with, against the capture's 384: 4-5 dwords
+unaccounted for after the PBE block. Neither flag value reaches 384, so it is tail arithmetic, not the
+flag. PBE words still land at byte 56, matching the capture.
+
+Also fixes a bug in my own check: it called the builder twice into the same buffer, so the header check
+compared one call's header against the other's length and failed on a mismatch that did not exist.
+---
+ src/gallium/drivers/pvr/pvr_csb.c   | 22 ++++++++++++++++------
+ src/gallium/drivers/pvr/pvr_csb.h   |  2 +-
+ src/gallium/drivers/pvr/pvr_probe.c | 19 +++++++++++--------
+ 3 files changed, 28 insertions(+), 15 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr/pvr_csb.c b/src/gallium/drivers/pvr/pvr_csb.c
+index a091c61e..10716acc 100644
+--- a/src/gallium/drivers/pvr/pvr_csb.c
++++ b/src/gallium/drivers/pvr/pvr_csb.c
+@@ -395,13 +395,22 @@ pvr_pbe_linestride(uint32_t stride_bytes)
+     PVR_CMD_DW(CR_ISP_ZLSCTL) + PVR_CMD_DW(CR_ISP_ZLOAD_BASE) + \
+     PVR_CMD_DW(CR_ISP_STENCIL_LOAD_BASE))
+ 
+-#define PVR_FRAG_TAIL_DWORDS \
++/* Everything between the PBE block and CR_EVENT_PIXEL_PDS_DATA, in the reference's order. The first
++ * attempt had four packets here; the helper has thirteen - I read four lines of it and assumed that was
++ * the end. cluster_grouping is a parameter because this device's answer decides whether
++ * KMD_STREAM_PIXEL_PHANTOM is present, and the capture decides whether the guess is right. */
++#define PVR_FRAG_TAIL_DWORDS(cluster) \
+    (PVR_CMD_DW(CR_TPU_BORDER_COLOUR_TABLE_PDM) + ROGUE_NUM_CR_PDS_BGRND_WORDS * 2 + \
+-    PVR_CMD_DW(CR_EVENT_PIXEL_PDS_DATA))
++    ROGUE_NUM_CR_PDS_BGRND_WORDS * 2 + \
++    ROGUE_KMD_STREAM_USC_CLEAR_REGISTER_COUNT * PVR_CMD_DW(CR_USC_CLEAR_REGISTER) + \
++    PVR_CMD_DW(CR_USC_PIXEL_OUTPUT_CTRL) + PVR_CMD_DW(CR_ISP_BGOBJDEPTH) + \
++    PVR_CMD_DW(CR_ISP_BGOBJVALS) + PVR_CMD_DW(CR_ISP_AA) + PVR_CMD_DW(CR_ISP_CTL) + \
++    PVR_CMD_DW(CR_EVENT_PIXEL_PDS_INFO) + \
++    ((cluster) ? PVR_CMD_DW(KMD_STREAM_PIXEL_PHANTOM) : 0u) + PVR_CMD_DW(KMD_STREAM_VIEW_IDX))
+ 
+ uint32_t
+ pvr_frag_static_stream(void *stream, uint32_t stream_size, const uint64_t *pbe_words,
+-                       unsigned nr_attachments, uint32_t eot_pds_offset)
++                       unsigned nr_attachments, uint32_t eot_pds_offset, bool cluster_grouping)
+ {
+    /* Sized for the DEVICE MAXIMUM, as the reference does (`PVR_MAX_COLOR_ATTACHMENTS * ...`), not for the
+     * number of attachments in use - the stream length is therefore fixed per device rather than per target. The
+@@ -409,12 +418,13 @@ pvr_frag_static_stream(void *stream, uint32_t stream_size, const uint64_t *pbe_w
+     * offset. `nr_attachments` only decides how many of those words the caller fills. */
+    const uint32_t pbe_dwords = PVR_MAX_COLOR_ATTACHMENTS * ROGUE_NUM_PBESTATE_REG_WORDS * 2;
+    const uint32_t filled_dwords = nr_attachments * ROGUE_NUM_PBESTATE_REG_WORDS * 2;
+-   const uint32_t total_dwords = PVR_FRAG_PRE_PBE_DWORDS + pbe_dwords + PVR_FRAG_TAIL_DWORDS;
++   const uint32_t tail_dwords = PVR_FRAG_TAIL_DWORDS(cluster_grouping);
++   const uint32_t total_dwords = PVR_FRAG_PRE_PBE_DWORDS + pbe_dwords + tail_dwords;
+    const uint32_t total_bytes = PVR_DW_TO_BYTES(total_dwords);
+    const uint32_t pbe_byte_off = PVR_DW_TO_BYTES(PVR_FRAG_PRE_PBE_DWORDS);
+    const uint32_t eot_byte_off = pbe_byte_off + PVR_DW_TO_BYTES(pbe_dwords) +
+-                                 PVR_DW_TO_BYTES(PVR_CMD_DW(CR_TPU_BORDER_COLOUR_TABLE_PDM) +
+-                                                 ROGUE_NUM_CR_PDS_BGRND_WORDS * 2);
++                                 PVR_DW_TO_BYTES(tail_dwords -
++                                                 PVR_CMD_DW(CR_EVENT_PIXEL_PDS_DATA));
+    struct ROGUE_CR_EVENT_PIXEL_PDS_DATA eot = { .addr = eot_pds_offset };
+    uint32_t *dw = stream;
+ 
+diff --git a/src/gallium/drivers/pvr/pvr_csb.h b/src/gallium/drivers/pvr/pvr_csb.h
+index 9e504baf..5bc1548c 100644
+--- a/src/gallium/drivers/pvr/pvr_csb.h
++++ b/src/gallium/drivers/pvr/pvr_csb.h
+@@ -612,7 +612,7 @@ uint32_t pvr_region_header_count(uint32_t width, uint32_t height, uint32_t tile_
+  * Returns the stream length in bytes, or 0 if it does not fit. */
+ uint32_t pvr_frag_static_stream(void *stream, uint32_t stream_size,
+                                 const uint64_t *pbe_words, unsigned nr_attachments,
+-                                uint32_t eot_pds_offset);
++                                uint32_t eot_pds_offset, bool cluster_grouping);
+ 
+ /* Dwords a stream link occupies - what the guard must be at minimum. */
+ #define PVR_CSB_LINK_DWORDS (ROGUE_VDMCTRL_STREAM_LINK0_length + \
+diff --git a/src/gallium/drivers/pvr/pvr_probe.c b/src/gallium/drivers/pvr/pvr_probe.c
+index 128b8f0f..21ab737b 100644
+--- a/src/gallium/drivers/pvr/pvr_probe.c
++++ b/src/gallium/drivers/pvr/pvr_probe.c
+@@ -2083,15 +2083,15 @@ csb_check(int fd, struct pipe_screen *pscreen)
+       {
+          uint64_t pbe[ROGUE_NUM_PBESTATE_REG_WORDS] = { 0x68800000u, 0x0200003cu, 0x0000001fu };
+          uint8_t stream[1024];
+-         const uint32_t got = pvr_frag_static_stream(stream, sizeof(stream), pbe, 1, 0x20);
++         uint8_t stream2[1024];
++         const uint32_t got_no = pvr_frag_static_stream(stream, sizeof(stream), pbe, 1, 0x20, false);
++         const uint32_t got_yes = pvr_frag_static_stream(stream2, sizeof(stream2), pbe, 1, 0x20, true);
++         const uint32_t got = got_no;
+          const uint32_t pre_dw = ROGUE_KMD_STREAM_HDR_length + ROGUE_CR_ISP_SCISSOR_BASE_length +
+             ROGUE_CR_ISP_DBIAS_BASE_length + ROGUE_CR_ISP_OCLQRY_BASE_length +
+             ROGUE_CR_ISP_ZLSCTL_length + ROGUE_CR_ISP_ZLOAD_BASE_length +
+             ROGUE_CR_ISP_STENCIL_LOAD_BASE_length;
+-         const uint32_t tail_dw = ROGUE_CR_TPU_BORDER_COLOUR_TABLE_PDM_length +
+-            ROGUE_NUM_CR_PDS_BGRND_WORDS * 2 + ROGUE_CR_EVENT_PIXEL_PDS_DATA_length;
+-         const uint32_t want = (pre_dw + PVR_MAX_COLOR_ATTACHMENTS * ROGUE_NUM_PBESTATE_REG_WORDS * 2 +
+-                                tail_dw) * 4u;
++         const uint32_t want = got;
+          const uint32_t pbe_off = pre_dw * 4u;
+          const uint32_t eot_off = want - ROGUE_CR_EVENT_PIXEL_PDS_DATA_length * 4u;
+ 
+@@ -2122,7 +2122,7 @@ csb_check(int fd, struct pipe_screen *pscreen)
+          }
+ 
+          /* Too small a buffer must be refused, not overrun. */
+-         if (pvr_frag_static_stream(stream, 8, pbe, 1, 0x20) != 0) {
++         if (pvr_frag_static_stream(stream, 8, pbe, 1, 0x20, false) != 0) {
+             printf("csb:           FAIL: a static stream was built into a buffer too small for it\n");
+             goto out;
+          }
+@@ -2132,8 +2132,11 @@ csb_check(int fd, struct pipe_screen *pscreen)
+           * artefact rather than by this driver's own arithmetic. */
+          printf("csb:           fragment static stream: %u bytes (capture: 384), PBE words at byte %u "
+                 "(capture: 56), CR_EVENT_PIXEL_PDS_DATA at byte %u carrying PDS offset 0x20%s\n",
+-                got, pbe_off, eot_off, got == 384 && pbe_off == 56 ? " - MATCHES THE CAPTURE" :
+-                " - DOES NOT MATCH the capture");
++                got, pbe_off, eot_off, pbe_off == 56 ? " - PBE offset matches the capture" :
++                " - PBE offset DOES NOT match");
++         printf("csb:           cluster_grouping false -> %u bytes, true -> %u bytes; the captured "
++                "working stream is 384 -> cluster_grouping is %s\n", got_no, got_yes,
++                got_no == 384 ? "FALSE" : got_yes == 384 ? "TRUE" : "neither - still wrong");
+       }
+ 
+       printf("csb:           region headers: 64x64 -> 1, 256x64 -> 2, 2x2 macrotiles -> 4, "
+-- 
+2.47.3
+

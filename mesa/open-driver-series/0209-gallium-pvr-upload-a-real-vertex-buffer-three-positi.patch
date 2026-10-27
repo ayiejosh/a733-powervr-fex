@@ -1,0 +1,66 @@
+From 828ad789f14aa0da569a9d0b26c518818a6abc4f Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sat, 24 Oct 2026 08:07:48 +0800
+Subject: [PATCH 209/269] gallium/pvr: upload a real vertex buffer (three
+ positions for a triangle)
+
+  shader: vertex buffer uploaded at 0x9fffffe000 (3 positions, 36 bytes)
+
+Three clip-space positions, 3 floats each, uploaded with the same BO/VM pattern as everything else. Along
+with the vertex program at 0x9ffffff000 the driver now has both halves of what a vertex fetch needs: code
+that reads attributes and data to read.
+
+The target is still unchanged because the VDM state still reports no vertex data base - the call that
+would set it was not applied this round (the edit's anchor did not match the current call text). That is
+the single remaining wire for milestone 2:
+
+  pvr_csb_emit_vdm_state(csb, cut_index_enable, cut_index, have_vs_data_addr, vs_pds_data_base_addr, ...)
+
+with have_vs_data_addr = true and the vertex buffer's address. Until then the TA is told "here is a fetcher,
+there is nothing to fetch", which is exactly what the unchanged target means.
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c | 21 +++++++++++++++++++++
+ 1 file changed, 21 insertions(+)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index c51c1685..59c17b0f 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -122,6 +122,8 @@ static uint32_t g_fs_doutu;
+ /* The vertex attribute program's device address, set by the shader check and named by the control
+  * stream's PDS state update. */
+ static uint64_t g_vertex_prog_addr;
++/* The vertex buffer's device address (three positions, 3 floats each). */
++static uint64_t g_vertex_data_addr;
+ 
+ static bool
+ 
+@@ -1242,6 +1244,25 @@ shader_compile_check(struct pipe_screen *pscreen)
+                 pvr_bo_map(scr->fd, &vbo)) {
+                memcpy(vbo.map, vprog, vlen);
+                g_vertex_prog_addr = vaddr;
++               {
++                  /* Three positions for a triangle, in clip space: 3 floats each. */
++                  static const float tri[9] = {
++                     -0.5f, -0.5f, 0.0f,
++                      0.5f, -0.5f, 0.0f,
++                      0.0f,  0.5f, 0.0f,
++                  };
++                  struct pvr_bo dbo = { 0 };
++                  uint64_t daddr = 0;
++
++                  if (pvr_bo_create(scr->fd, sizeof(tri), 1, &dbo) &&
++                      (daddr = pvr_vm_alloc(&scr->vm, dbo.size, scr->vm.general.page_size)) != 0 &&
++                      pvr_vm_map(&scr->vm, daddr, dbo.handle, dbo.size) &&
++                      pvr_bo_map(scr->fd, &dbo)) {
++                     memcpy(dbo.map, tri, sizeof(tri));
++                     g_vertex_data_addr = daddr;
++                     printf("shader:        vertex buffer uploaded at 0x%" PRIx64 " (3 positions, 36 bytes)\n", daddr);
++                  }
++               }
+                printf("shader:        vertex program uploaded at 0x%" PRIx64 "\n", vaddr);
+             } else {
+                printf("shader:        FAIL: could not upload the vertex program\n");
+-- 
+2.47.3
+

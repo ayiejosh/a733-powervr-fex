@@ -1,0 +1,185 @@
+From c45b3ea74d62500d5726d317f84d4f8522abea54 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sun, 25 Oct 2026 06:44:32 +0800
+Subject: [PATCH 243/269] gallium/pvr: fixed-address and extra-context
+ experiments (both negative)
+
+Two round-39 experiments on the persistent TA stall:
+
+- PVR_PROBE_FIXED_ADDRS maps the control stream and TA state block at Vulkan-like device addresses
+  (0x80000c4000 / 0x800004b000) instead of allocator-chosen ones, via a new pvr_vm_alloc_at() that
+  reserves an exact address in the VM heap. Still hangs, so the address values of those two buffers are
+  not the trigger. (A sub-page TA-block offset like the reference's 0x800004b140 is not possible with
+  this VM_MAP interface - mappings are page aligned - so the block was placed at the page base.)
+- PVR_PROBE_EXTRA_CTXS creates the extra transfer and compute contexts the reference client has
+  (compute context needs a 64-byte zeroed static state stream: header = 64 then seven 64-bit cdm
+  registers). Both contexts are created successfully and the geometry kick still hangs, so the mere
+  presence of the other context types is not what the firmware needs.
+
+Verification: probe ALL PASS under the shim.
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c | 54 +++++++++++++++++++---
+ src/gallium/drivers/pvr_native/pvr_vm.c    | 11 +++++
+ src/gallium/drivers/pvr_native/pvr_vm.h    |  4 ++
+ 3 files changed, 63 insertions(+), 6 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index 7c8142df..221966c5 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -14,6 +14,7 @@
+  * implement CREATE_BO/GET_BO_MMAP_OFFSET. There it just runs against
+  * /dev/dri/renderD128 in an X-free window.
+  */
++#include <xf86drm.h>
+ #include <inttypes.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+@@ -538,6 +539,37 @@ vm_roundtrip(int fd, struct pipe_screen *pscreen)
+       printf("vm:            sizes: drm_pvr_job=%zu obj_array=%zu hwrt_ref=%zu\n",
+              sizeof(struct drm_pvr_job), sizeof(struct drm_pvr_obj_array),
+              sizeof(struct drm_pvr_hwrt_data_ref));
++      /* Round-39: create the extra contexts the reference client has (compute/transfer), unused, to
++       * test whether their mere presence changes the firmware's behaviour. */
++      if (getenv("PVR_PROBE_EXTRA_CTXS")) {
++         struct drm_pvr_ioctl_create_context_args cargs = {
++            .type = DRM_PVR_CTX_TYPE_TRANSFER_FRAG,
++            .vm_context_handle = vm->context_handle,
++         };
++
++         if (drmIoctl(pvm_fd_for_probe, DRM_IOCTL_PVR_CREATE_CONTEXT, &cargs) == 0)
++            printf("vm:            extra transfer context %u created\n", cargs.handle);
++         else
++            printf("vm:            extra transfer context FAILED: %s\n", strerror(errno));
++
++         /* Compute context: zeroed 64-byte static state (7 u64 cdm registers + header), unused. */
++         {
++            static uint64_t cstate[8] = { 64 };
++            struct drm_pvr_ioctl_create_context_args ccargs = {
++               .type = DRM_PVR_CTX_TYPE_COMPUTE,
++               .static_context_state = (uint64_t)(uintptr_t)cstate,
++               .static_context_state_len = sizeof(cstate),
++               .vm_context_handle = vm->context_handle,
++            };
++
++            if (drmIoctl(pvm_fd_for_probe, DRM_IOCTL_PVR_CREATE_CONTEXT, &ccargs) == 0) {
++               printf("vm:            extra compute context %u created\n", ccargs.handle);
++            } else {
++               printf("vm:            extra compute context FAILED: %s\n", strerror(errno));
++            }
++         }
++      }
++
+       printf("vm:            GPU context %u created: render type, callstack at 0x%"
+              PRIx64 "\n", gpu_ctx.handle, gpu_ctx.callstack_addr);
+ 
+@@ -804,7 +836,9 @@ real_job_done:
+             rtaddr = pvr_vm_alloc(vm, rtbo.size,
+                                   getenv("PVR_PROBE_LOW_VA") ? vm->general.page_size
+                                                              : (1ULL << 34));
+-            rctladdr = pvr_vm_alloc(vm, rctl.size, vm->general.page_size);
++            rctladdr = getenv("PVR_PROBE_FIXED_ADDRS")
++                          ? pvr_vm_alloc_at(vm, 0x80000c4000, rctl.size)
++                          : pvr_vm_alloc(vm, rctl.size, vm->general.page_size);
+             rbctaddr = pvr_vm_alloc(vm, rbct.size, vm->general.page_size);
+             printf("hwrt:          heap usable base 0x%" PRIx64 " size 0x%" PRIx64 "; RT 0x%" PRIx64
+                    " ctrl 0x%" PRIx64 " bct 0x%" PRIx64 "\n", vm->general.usable_base,
+@@ -895,6 +929,7 @@ real_job_done:
+                {
+                   struct pvr_csb ctl_csb;
+                   struct pvr_bo ibo = { 0 }, pbo = { 0 }, tbo = { 0 };
++                  uint8_t *ta_map;
+                   uint64_t iaddr = 0, paddr = 0, taddr = 0;
+                   const uint16_t idx[3] = { 0, 1, 2 };
+                   uint32_t vdm_words = 0;
+@@ -910,7 +945,10 @@ real_job_done:
+ 
+                      /* --- The TA state block (general heap; the PPP packet names it) --- */
+                      if (!pvr_bo_create(pvm_fd_for_probe, 4096, 1, &pbo) ||
+-                         (paddr = pvr_vm_alloc(vm, pbo.size, vm->general.page_size)) == 0 ||
++                         (paddr = getenv("PVR_PROBE_FIXED_ADDRS")
++                                     ? (pvr_vm_alloc_at(vm, 0x800004b000, pbo.size) ?
++                                        0x800004b000 : 0)
++                                     : pvr_vm_alloc(vm, pbo.size, vm->general.page_size)) == 0 ||
+                          !pvr_vm_map(vm, paddr, pbo.handle, pbo.size) ||
+                          !pvr_bo_map(pvm_fd_for_probe, &pbo)) {
+                         printf("hwrt:          could not set up the TA state block\n");
+@@ -998,7 +1036,11 @@ real_job_done:
+                             * end of this block (see below). */
+                         }
+ 
+-                        pvr_csb_init(&block, pbo.map, pbo.size, 0);
++                        ta_map = (uint8_t *)pbo.map +
++                                 (getenv("PVR_PROBE_FIXED_ADDRS")
++                                     ? (paddr & (vm->general.page_size - 1))
++                                     : 0);
++                        pvr_csb_init(&block, ta_map, pbo.size, 0);
+                         built = pvr_csb_emit_ta_state_header(&block, &pres) &&
+                                 pvr_csb_emit_ta_ispctl(&block, NULL, true, &ispctl) &&
+                                 pvr_csb_emit_ta_isp_a(&block, &ispa) &&
+@@ -1048,7 +1090,7 @@ real_job_done:
+                                  0x00000000, 0x00000000, 0x00000000, 0x000006a0, 0x00000000,
+                               };
+                               static const unsigned program_words[] = { 5, 6, 7, 8, 9 };
+-                              const uint32_t *got = (const uint32_t *)pbo.map;
++                              const uint32_t *got = (const uint32_t *)ta_map;
+ 
+                               if (block_words == ARRAY_SIZE(captured)) {
+                                  for (unsigned i = 0; i < ARRAY_SIZE(captured); i++) {
+@@ -1150,14 +1192,14 @@ real_job_done:
+                                * are non-zero where ours are zero because our shader uses no
+                                * varyings; test whether the TA kick requires them. */
+                               if (getenv("PVR_PROBE_TA_SIZEINFO")) {
+-                                 uint32_t *aw = (uint32_t *)pbo.map;
++                                 uint32_t *aw = (uint32_t *)ta_map;
+ 
+                                  aw[7] = 0x01000000u;
+                                  aw[8] = 0x00804000u;
+                                  printf("hwrt:          TA SIZEINFO patched to reference values\n");
+                               }
+                               if (getenv("PVR_DUMP_TA")) {
+-                                 const uint32_t *aw = (const uint32_t *)pbo.map;
++                                 const uint32_t *aw = (const uint32_t *)ta_map;
+                                  printf("OURTA: TA block %u words:", pvr_csb_size(&block) / 4);
+                                  for (unsigned i = 0; i < pvr_csb_size(&block) / 4; i++)
+                                     printf(" %08x", aw[i]);
+diff --git a/src/gallium/drivers/pvr_native/pvr_vm.c b/src/gallium/drivers/pvr_native/pvr_vm.c
+index 2de214ac..fd4eb135 100644
+--- a/src/gallium/drivers/pvr_native/pvr_vm.c
++++ b/src/gallium/drivers/pvr_native/pvr_vm.c
+@@ -796,6 +796,17 @@ pvr_vm_alloc_carveout(struct pvr_vm *vm, uint16_t heap_id, struct pvr_bo *bo_out
+    return true;
+ }
+ 
++uint64_t
++pvr_vm_alloc_at(struct pvr_vm *vm, uint64_t addr, uint64_t size)
++{
++   const uint64_t aligned_size = ALIGN_POT(size, (uint64_t)vm->general.page_size);
++
++   if (!util_vma_heap_alloc_addr(&vm->vma, addr, aligned_size))
++      return 0;
++
++   return addr;
++}
++
+ uint64_t
+ pvr_vm_alloc(struct pvr_vm *vm, uint64_t size, uint64_t alignment)
+ {
+diff --git a/src/gallium/drivers/pvr_native/pvr_vm.h b/src/gallium/drivers/pvr_native/pvr_vm.h
+index 61e849ac..3e8e60dd 100644
+--- a/src/gallium/drivers/pvr_native/pvr_vm.h
++++ b/src/gallium/drivers/pvr_native/pvr_vm.h
+@@ -171,6 +171,10 @@ void pvr_vm_finish(struct pvr_vm *vm);
+ 
+ /* Returns an absolute device address, or 0 on failure. */
+ uint64_t pvr_vm_alloc(struct pvr_vm *vm, uint64_t size, uint64_t alignment);
++
++/* Reserve a specific device address in the VM heap (used to reproduce another client's address
++ * layout). Returns the address on success, 0 if the range is already taken. */
++uint64_t pvr_vm_alloc_at(struct pvr_vm *vm, uint64_t addr, uint64_t size);
+ /* size must be the same page-aligned size that was allocated. */
+ void pvr_vm_free(struct pvr_vm *vm, uint64_t dev_addr, uint64_t size);
+ 
+-- 
+2.47.3
+

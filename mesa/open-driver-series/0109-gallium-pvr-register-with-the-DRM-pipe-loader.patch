@@ -1,0 +1,128 @@
+From f05b41b3638bc73c56790ada70ccc284fece7cf7 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 04:54:53 +0800
+Subject: [PATCH 109/269] gallium/pvr: register with the DRM pipe loader
+
+Give the driver a drm_driver_descriptor, add it to the pipe loader's table and
+link it into the DRI megadriver, so "pvr" reaches pvr_screen_create() the same
+way every other DRM driver does.
+
+pipe_loader_drm.c had a hardcoded redirect - "powervr has no Gallium driver and
+relies on Zink" - which is why GL on the open driver goes through zink/Vulkan.
+That redirect is now gated: the native driver is still a skeleton with no
+context path, so selecting it by default would break every client on the open
+driver.  PVR_NATIVE_GL=1 opts in; dropping the getenv and keeping "pvr" is the
+one-line change that makes it the default once a context path exists.  Without
+the variable the resolved driver is "zink", byte-for-byte the previous
+behaviour.
+
+Verified with a real client and no GPU (drm-shim standing in for the kernel):
+
+  unset MESA_LOADER_DRIVER_OVERRIDE GALLIUM_DRIVER; es2_info        -> zink, no pvr
+  PVR_NATIVE_GL=1 es2_info -> "pvr: PowerVR B-Series BXM-4-64 (36.56.104.183)"
+
+The client then dies in st_init_extensions() on a NULL pipe_screen hook: that is
+the missing caps/context path, which is out of this milestone's scope.
+---
+ .../auxiliary/pipe-loader/pipe_loader_drm.c    | 12 ++++++++++--
+ .../auxiliary/target-helpers/drm_helper.h      | 18 ++++++++++++++++++
+ .../target-helpers/drm_helper_public.h         |  1 +
+ src/gallium/targets/dri/meson.build            |  2 +-
+ 4 files changed, 30 insertions(+), 3 deletions(-)
+
+diff --git a/src/gallium/auxiliary/pipe-loader/pipe_loader_drm.c b/src/gallium/auxiliary/pipe-loader/pipe_loader_drm.c
+index dc631b4c..60206f89 100644
+--- a/src/gallium/auxiliary/pipe-loader/pipe_loader_drm.c
++++ b/src/gallium/auxiliary/pipe-loader/pipe_loader_drm.c
+@@ -32,6 +32,7 @@
+ 
+ #include <fcntl.h>
+ #include <stdio.h>
++#include <stdlib.h>
+ #include <string.h>
+ #include <xf86drm.h>
+ #include <unistd.h>
+@@ -89,6 +90,7 @@ static const struct drm_driver_descriptor *driver_descriptors[] = {
+    &tegra_driver_descriptor,
+    &lima_driver_descriptor,
+    &zink_driver_descriptor,
++   &pvr_driver_descriptor,
+    &kmsro_driver_descriptor,
+ };
+ 
+@@ -150,10 +152,16 @@ pipe_loader_drm_probe_fd_nodup(struct pipe_loader_device **dev, int fd, bool zin
+       ddev->base.driver_name = strdup("radeonsi");
+    }
+ 
+-   /* powervr has no Gallium driver and relies on Zink */
++   /* powervr: native Gallium driver (gallium/pvr) or Zink.
++    *
++    * The native driver is currently a skeleton - it registers a screen and
++    * enumerates the device, but cannot create a context yet - so it stays
++    * opt-in behind PVR_NATIVE_GL. Once it can create a context, make this
++    * unconditional "pvr" and the open driver stops going through Zink.
++    */
+    if (strcmp(ddev->base.driver_name, "powervr") == 0) {
+       FREE(ddev->base.driver_name);
+-      ddev->base.driver_name = strdup("zink");
++      ddev->base.driver_name = strdup(getenv("PVR_NATIVE_GL") ? "pvr" : "zink");
+    }
+ 
+    if (strcmp(ddev->base.driver_name, "virtio_gpu") == 0) {
+diff --git a/src/gallium/auxiliary/target-helpers/drm_helper.h b/src/gallium/auxiliary/target-helpers/drm_helper.h
+index 867cba39..7e526a1a 100644
+--- a/src/gallium/auxiliary/target-helpers/drm_helper.h
++++ b/src/gallium/auxiliary/target-helpers/drm_helper.h
+@@ -482,6 +482,24 @@ DRM_DRIVER_DESCRIPTOR(ethosu, NULL, 0)
+ DRM_DRIVER_DESCRIPTOR_STUB(ethosu)
+ #endif
+ 
++#ifdef GALLIUM_PVR
++#include "pvr/pvr_public.h"
++
++static struct pipe_screen *
++pipe_pvr_create_screen(int fd, const struct pipe_screen_config *config)
++{
++   struct pipe_screen *screen;
++
++   screen = pvr_screen_create(fd, config, NULL);
++   return screen ? debug_screen_wrap(screen) : NULL;
++}
++
++DRM_DRIVER_DESCRIPTOR(pvr, NULL, 0)
++
++#else
++DRM_DRIVER_DESCRIPTOR_STUB(pvr)
++#endif
++
+ #ifdef GALLIUM_KMSRO
+ #include "kmsro/drm/kmsro_drm_public.h"
+ 
+diff --git a/src/gallium/auxiliary/target-helpers/drm_helper_public.h b/src/gallium/auxiliary/target-helpers/drm_helper_public.h
+index fe0e1228..812aafad 100644
+--- a/src/gallium/auxiliary/target-helpers/drm_helper_public.h
++++ b/src/gallium/auxiliary/target-helpers/drm_helper_public.h
+@@ -27,6 +27,7 @@ extern const struct drm_driver_descriptor ethosu_driver_descriptor;
+ extern const struct drm_driver_descriptor tegra_driver_descriptor;
+ extern const struct drm_driver_descriptor lima_driver_descriptor;
+ extern const struct drm_driver_descriptor zink_driver_descriptor;
++extern const struct drm_driver_descriptor pvr_driver_descriptor;
+ extern const struct drm_driver_descriptor kmsro_driver_descriptor;
+ 
+ #endif /* _DRM_HELPER_PUBLIC_H */
+diff --git a/src/gallium/targets/dri/meson.build b/src/gallium/targets/dri/meson.build
+index c526ffef..d56b76d4 100644
+--- a/src/gallium/targets/dri/meson.build
++++ b/src/gallium/targets/dri/meson.build
+@@ -61,7 +61,7 @@ libgallium_dri = shared_library(
+     driver_kmsro, driver_v3d, driver_vc4, driver_freedreno, driver_etnaviv,
+     driver_tegra, driver_i915, driver_svga, driver_virgl,
+     driver_panfrost, driver_iris, driver_lima, driver_zink, driver_d3d12,
+-    driver_asahi, driver_crocus, driver_rocket, driver_ethosu
++    driver_asahi, driver_crocus, driver_rocket, driver_ethosu, driver_pvr
+   ],
+   install : true,
+   name_suffix : libname_suffix,
+-- 
+2.47.3
+

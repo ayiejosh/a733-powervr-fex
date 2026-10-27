@@ -1,0 +1,13 @@
+#version 450
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(std430, set = 0, binding = 0) writeonly buffer Out { uint px[]; };
+void main() {
+   ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+   vec2 pf = vec2(p) + vec2(0.5);
+   vec2 a = vec2(64.0, 64.0), b = vec2(448.0, 64.0), c = vec2(256.0, 448.0);
+   float e0 = (b.x - a.x) * (pf.y - a.y) - (b.y - a.y) * (pf.x - a.x);
+   float e1 = (c.x - b.x) * (pf.y - b.y) - (c.y - b.y) * (pf.x - b.x);
+   float e2 = (a.x - c.x) * (pf.y - c.y) - (a.y - c.y) * (pf.x - c.x);
+   bool inside = (e0 >= 0.0 && e1 >= 0.0 && e2 >= 0.0) || (e0 <= 0.0 && e1 <= 0.0 && e2 <= 0.0);
+   px[p.y * 512 + p.x] = inside ? 0xFF0000FFu : 0xFFFF0000u;
+}

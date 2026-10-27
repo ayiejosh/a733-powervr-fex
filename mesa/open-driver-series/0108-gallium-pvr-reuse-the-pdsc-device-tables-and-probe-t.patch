@@ -1,0 +1,192 @@
+From e99a9e64d463d7514c16bf1dcbbef34d4f16ec69 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 04:54:53 +0800
+Subject: [PATCH 108/269] gallium/pvr: reuse the pdsc device tables and probe
+ the enumeration
+
+Replace the hand-rolled "B%d.%d.%d.%d" formatting with pvr_device_info_init()
+from src/imagination/common, which is generated from the .pdsc device
+descriptions - the same tables the Vulkan driver uses.  The screen now reports
+"PowerVR B-Series BXM-4-64 (36.56.104.183)", i.e. the identity the vendor GL
+driver reports, instead of a string this driver made up.
+
+src/imagination now builds common/csbgen/pco/pdsc for with_gallium_pvr as well
+as with_imagination_vk, so the gallium driver gets them from the same place.
+
+pvr-probe is the runnable check for the enumeration path.  It needs no GPU:
+
+  PVR_SHIM_DEVICE_BVNC=36.56.104.183 \
+  LD_PRELOAD=build/src/imagination/drm-shim/libpowervr_noop_drm_shim.so \
+    build/src/gallium/drivers/pvr/pvr-probe
+
+Skeleton only: no draw path, no rasterisation, no resource management.
+---
+ src/gallium/drivers/pvr/meson.build  | 16 +++++++++-
+ src/gallium/drivers/pvr/pvr_probe.c  | 46 ++++++++++++++++++++++++++++
+ src/gallium/drivers/pvr/pvr_screen.c | 25 ++++++++-------
+ src/gallium/drivers/pvr/pvr_screen.h |  7 ++++-
+ src/imagination/meson.build          |  2 +-
+ 5 files changed, 80 insertions(+), 16 deletions(-)
+ create mode 100644 src/gallium/drivers/pvr/pvr_probe.c
+
+diff --git a/src/gallium/drivers/pvr/meson.build b/src/gallium/drivers/pvr/meson.build
+index 8068dc1a..7a3dbac6 100644
+--- a/src/gallium/drivers/pvr/meson.build
++++ b/src/gallium/drivers/pvr/meson.build
+@@ -12,12 +12,26 @@ files_pvr = files(
+ libpvr = static_library(
+   'pvr',
+   files_pvr,
+-  include_directories : [inc_gallium_aux, inc_gallium, inc_include, inc_src],
++  include_directories : [inc_gallium_aux, inc_gallium, inc_include, inc_src, inc_imagination],
+   gnu_symbol_visibility : 'hidden',
++  # libpowervr_common is src/imagination/common: the .pdsc-generated device tables
++  # and helpers the Vulkan driver also uses.
+   dependencies : [idep_mesautil, dep_libdrm],
++  link_with : [libpowervr_common],
+ )
+ 
+ driver_pvr = declare_dependency(
+   compile_args : '-DGALLIUM_PVR',
+   link_with : [libpvr],
+ )
++
++# Runnable check for the enumeration path; needs no GPU (pairs with the drm-shim).
++# Not installed.
++executable(
++  'pvr-probe',
++  'pvr_probe.c',
++  include_directories : [inc_gallium_aux, inc_gallium, inc_include, inc_src],
++  link_with : [libpvr],
++  dependencies : [idep_mesautil, dep_libdrm],
++  install : false,
++)
+diff --git a/src/gallium/drivers/pvr/pvr_probe.c b/src/gallium/drivers/pvr/pvr_probe.c
+new file mode 100644
+index 00000000..d01f26b7
+--- /dev/null
++++ b/src/gallium/drivers/pvr/pvr_probe.c
+@@ -0,0 +1,46 @@
++/* Copyright 2026 The Mesa authors
++ * SPDX-License-Identifier: MIT
++ *
++ * The one runnable check for the skeleton: open the render node, create the
++ * screen, print what it reports. Run against the DRM shim so it needs no GPU:
++ *
++ *   PVR_SHIM_DEVICE_BVNC=36.56.104.183 \
++ *   LD_PRELOAD=build/src/imagination/drm-shim/libpowervr_noop_drm_shim.so \
++ *   build/src/gallium/drivers/pvr/pvr-probe
++ */
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <fcntl.h>
++
++#include "pvr_public.h"
++#include "pipe/p_screen.h"
++
++int
++main(int argc, char **argv)
++{
++   const char *path = argc > 1 ? argv[1] : "/dev/dri/renderD128";
++   const char *expect = argc > 2 ? argv[2] : "BXM-4-64";
++   int fd = open(path, O_RDWR | O_CLOEXEC);
++
++   if (fd < 0) {
++      fprintf(stderr, "pvr-probe: cannot open %s\n", path);
++      return 1;
++   }
++
++   struct pipe_screen *screen = pvr_screen_create(fd, NULL, NULL);
++   if (!screen) {
++      fprintf(stderr, "pvr-probe: pvr_screen_create() returned NULL\n");
++      return 1;
++   }
++
++   printf("name:          %s\n", screen->get_name(screen));
++   printf("vendor:        %s\n", screen->get_vendor(screen));
++   printf("device vendor: %s\n", screen->get_device_vendor(screen));
++
++   bool pass = strstr(screen->get_name(screen), expect) != NULL;
++   screen->destroy(screen); /* takes the fd with it */
++
++   printf("enumeration:   %s (expected substring %s)\n", pass ? "PASS" : "FAIL", expect);
++   return pass ? 0 : 1;
++}
+diff --git a/src/gallium/drivers/pvr/pvr_screen.c b/src/gallium/drivers/pvr/pvr_screen.c
+index 2bed94cf..ca1e5acf 100644
+--- a/src/gallium/drivers/pvr/pvr_screen.c
++++ b/src/gallium/drivers/pvr/pvr_screen.c
+@@ -71,21 +71,20 @@ pvr_screen_create(int fd, const struct pipe_screen_config *config,
+          .pointer = (__u64)&query,
+       };
+ 
+-      if (drmIoctl(fd, DRM_IOCTL_PVR_DEV_QUERY, &args) == 0) {
+-         const unsigned b = (query.gpu_id >> 48) & 0xffff;
+-         const unsigned v = (query.gpu_id >> 32) & 0xffff;
+-         const unsigned n = (query.gpu_id >> 16) & 0xffff;
+-         const unsigned c = query.gpu_id & 0xffff;
+-
+-         screen->gpu_id = v;
+-         snprintf(screen->name, sizeof(screen->name),
+-                  "PowerVR Rogue B%d.%d.%d.%d", b, v, n, c);
+-         mesa_logi("pvr: enumerated BVNC %u.%u.%u.%u (gpu_id 0x%llx)", b, v, n, c,
+-                   (unsigned long long)query.gpu_id);
++      if (drmIoctl(fd, DRM_IOCTL_PVR_DEV_QUERY, &args) == 0 &&
++          pvr_device_info_init(&screen->dev_info, query.gpu_id) == 0) {
++         const struct pvr_device_ident *ident = &screen->dev_info.ident;
++
++         screen->gpu_id = query.gpu_id;
++         snprintf(screen->name, sizeof(screen->name), "PowerVR %s %s (%u.%u.%u.%u)",
++                  ident->series_name, ident->public_name,
++                  ident->b, ident->v, ident->n, ident->c);
++         mesa_logi("pvr: %s, device_id 0x%08x, gpu_id 0x%llx", screen->name,
++                   ident->device_id, (unsigned long long)query.gpu_id);
+       } else {
+-         /* Not fatal for a skeleton: report that we could not query rather than pretend. */
++         /* Not fatal for a skeleton: say we could not identify it rather than pretend. */
+          snprintf(screen->name, sizeof(screen->name), "PowerVR Rogue (query failed)");
+-         mesa_logi("pvr: DRM_IOCTL_PVR_DEV_QUERY failed on fd=%d", fd);
++         mesa_logi("pvr: DRM_IOCTL_PVR_DEV_QUERY / device lookup failed on fd=%d", fd);
+       }
+    }
+    mesa_logi("pvr: pvr_screen_create fd=%d -> %s (skeleton: no draw path)", fd, screen->name);
+diff --git a/src/gallium/drivers/pvr/pvr_screen.h b/src/gallium/drivers/pvr/pvr_screen.h
+index ec236a4f..5b2874c2 100644
+--- a/src/gallium/drivers/pvr/pvr_screen.h
++++ b/src/gallium/drivers/pvr/pvr_screen.h
+@@ -6,12 +6,17 @@
+ 
+ #include "pipe/p_screen.h"
+ 
++#include "common/pvr_device_info.h"
++
+ struct pvr_screen {
+    struct pipe_screen base;
+ 
+    int fd;
+ 
+-   /* Device identity, from the kernel UAPI query. Populated by pvr_screen_create. */
++   /* Device identity, from the kernel UAPI query. Populated by pvr_screen_create.
++    * dev_info comes from src/imagination/common, which is generated from the .pdsc
++    * device descriptions - reused, not rewritten. */
++   struct pvr_device_info dev_info;
+    char name[64];
+    unsigned int gpu_id;
+ };
+diff --git a/src/imagination/meson.build b/src/imagination/meson.build
+index 278dcaa8..68228e35 100644
+--- a/src/imagination/meson.build
++++ b/src/imagination/meson.build
+@@ -11,7 +11,7 @@ inc_imagination = include_directories([
+   'include',
+ ])
+ 
+-if with_imagination_vk or with_tools.contains('imagination')
++if with_imagination_vk or with_gallium_pvr or with_tools.contains('imagination')
+   subdir('common')
+   subdir('csbgen')
+   subdir('pco')
+-- 
+2.47.3
+

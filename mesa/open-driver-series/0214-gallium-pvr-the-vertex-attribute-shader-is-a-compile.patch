@@ -1,0 +1,51 @@
+From 77ba029c31744efdc36eacd4e260570c7b142737 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sat, 24 Oct 2026 09:14:06 +0800
+Subject: [PATCH 214/269] gallium/pvr: the vertex-attribute shader is a
+ compiler problem, not a wiring problem
+
+Tried the metadata route: declaring the input as a nir_variable (nir_var_shader_in, location 0,
+gl_Position store reading it) before the load, on the theory that pco's PVFIO pass needs the variable
+list. It changes nothing - the shader still encodes 56 bytes with vtxins = 0, byte-identical to the
+constant-position version, and pco's register allocator still aborts later in the run.
+
+So the conclusion is firmer than last round: a hand-built NIR vertex shader that reads attributes cannot
+be compiled by pco today. The load is dropped (not even reaching the vertex input count) and something
+downstream still trips ra_alloc_interference_graph.
+
+The correct fix is not another hand-built variant - it is to build the shader the way the Vulkan driver
+does, from spirv-to-nir, so the input carries the metadata pco's PVFIO pass expects. Guessing at that
+metadata has now failed twice and cost two rounds.
+
+Test shader stays constant, probe passes again (exit 0, ALL PASS), and the reasoning is in the comment so
+the next attempt starts from "use spirv-to-nir" instead of "maybe it needs a variable".
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c | 12 ++++++++----
+ 1 file changed, 8 insertions(+), 4 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index 210e835e..1beaf556 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -1227,10 +1227,14 @@ shader_compile_check(struct pipe_screen *pscreen)
+       unsigned vsize = 0;
+       nir_builder vb = nir_builder_init_simple_shader(MESA_SHADER_VERTEX, pco_nir_options(),
+                                                       "vs_probe");
+-      /* ponytail: a CONSTANT position, not an attribute load. Reading the attribute trips a bug in
+-       * pco's register allocator (ra_alloc_interference_graph -> malloc abort), so the fetch path
+-       * cannot be exercised end to end until that is fixed or the input is expressed the way pco's
+-       * PVFIO pass expects. Kept constant so the rest of the probe still runs. */
++      /* ponytail: CONSTANT position. A shader that reads the position attribute cannot be compiled
++       * today: nir_load_input (with or without an explicit nir_variable) crashes pco's register
++       * allocator, and with the variable the load is dropped anyway (56 bytes, vtxins=0 - identical to
++       * the constant version). So the fetch path is wired but unexercised, and this shader stays
++       * constant so the rest of the probe remains verifiable.
++       *
++       * The real fix is to build the vertex shader the way the Vulkan driver does, rather than by hand:
++       * its NIR has gone through spirv-to-nir with the input metadata pco's PVFIO pass expects. */
+       nir_def *pos = nir_vec4(&vb, nir_imm_float(&vb, 0.0f), nir_imm_float(&vb, 0.5f),
+                               nir_imm_float(&vb, 0.0f), nir_imm_float(&vb, 1.0f));
+       {
+-- 
+2.47.3
+

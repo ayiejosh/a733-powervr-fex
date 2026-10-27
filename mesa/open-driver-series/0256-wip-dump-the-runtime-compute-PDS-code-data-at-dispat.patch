@@ -1,0 +1,73 @@
+From e81c3a1aacea97e8c296277fe1832e73c571cbe9 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Mon, 26 Oct 2026 02:08:43 +0800
+Subject: [PATCH 256/269] wip: dump the runtime compute PDS code/data at
+ dispatch
+
+PVR_DUMP_COMPUTE_PDS_RUNTIME dumps the compute pipeline's PDS code and data segments (and the descriptor
+code segment) as they are at dispatch time, addressing the suballocation through the PDS heap base. For the
+offsets-sweep shader the runtime PDS code/data are identical to the upload-time capture (the 0xaaaa words
+are part of the encoding, not dispatch-time patches), so the replay's installed PDS state matches
+Vulkan's; the constant-offset anomaly must come from elsewhere (the USC runtime helper code that pco emits
+for larger constant offsets).
+---
+ src/imagination/vulkan/pvr_arch_cmd_buffer.c | 43 ++++++++++++++++++++
+ 1 file changed, 43 insertions(+)
+
+diff --git a/src/imagination/vulkan/pvr_arch_cmd_buffer.c b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
+index ce61eeff..0e4bf293 100644
+--- a/src/imagination/vulkan/pvr_arch_cmd_buffer.c
++++ b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
+@@ -7322,6 +7322,49 @@ static void pvr_compute_update_kernel(
+       }
+    }
+ 
++   if (getenv("PVR_DUMP_COMPUTE_PDS_RUNTIME")) {
++      FILE *f = fopen(getenv("PVR_DUMP_COMPUTE_PDS_RUNTIME"), "ab");
++      uint32_t i;
++
++      if (f) {
++         struct {
++            const char *name;
++            struct pvr_suballoc_bo *bo;
++            uint32_t off, dwords;
++         } blobs[] = {
++            { "cs_code", pipeline->pds_cs_program.pvr_bo,
++              pipeline->pds_cs_program.code_offset, program_info->code_size_in_dwords },
++            { "cs_data", pipeline->pds_cs_program.pvr_bo,
++              pipeline->pds_cs_program.data_offset, program_info->data_size_in_dwords },
++            { "desc_code", pipeline->descriptor_state.pds_code.pvr_bo,
++              pipeline->descriptor_state.pds_code.code_offset,
++              pipeline->descriptor_state.pds_info.code_size_in_dwords },
++         };
++
++         for (i = 0; i < ARRAY_SIZE(blobs); i++) {
++            const uint32_t *dw;
++            uint32_t j;
++
++            if (blobs[i].bo == NULL)
++               continue;
++            const uint8_t *map = pvr_bo_suballoc_get_map_addr(blobs[i].bo);
++            uint64_t base = blobs[i].bo->dev_addr.addr;
++            uint64_t start = cmd_buffer->device->heaps.pds_heap->base_addr.addr + blobs[i].off;
++            uint32_t local;
++
++            if (map == NULL || start < base)
++               continue;
++            local = (uint32_t)(start - base);
++            dw = (const uint32_t *)(map + local);
++            fprintf(f, "PDSRT %s off=0x%x dw=%u:", blobs[i].name, blobs[i].off, blobs[i].dwords);
++            for (j = 0; j < blobs[i].dwords; j++)
++               fprintf(f, " %08x", dw[j]);
++            fprintf(f, "\n");
++         }
++         fclose(f);
++      }
++   }
++
+    struct pvr_compute_kernel_info info = {
+       .indirect_buffer_addr = indirect_addr,
+       .usc_target = ROGUE_CDMCTRL_USC_TARGET_ANY,
+-- 
+2.47.3
+

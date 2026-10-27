@@ -1,0 +1,47 @@
+From 6402931c74ed6724671d324362f76e65b20dc367 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sun, 25 Oct 2026 05:05:45 +0800
+Subject: [PATCH 237/269] gallium/pvr: UAPI A/B against the open Vulkan driver;
+ probe stops submitting a non-reference empty job
+
+Added a tiny LD_PRELOAD ioctl logger (captures/pvrioctl.c in the project repo) that dumps every
+DRM_IOCTL_PVR_* request plus the full decoded SUBMIT_JOBS array (job type/ctx/flags/cmd_stream_len/
+hwrt/sync ops), and used it on the probe and on a PVR_VK_GEOM_ONLY-patched vkrender_fif run.
+
+Result: the per-client UAPI arguments are identical where they matter -
+- CREATE_CONTEXT: type=RENDER, flags=0, priority=0, static_context_state_len=192, vm_context=1;
+- CREATE_FREE_LIST: local 32/32 pages, global 512/65536 pages grow 256;
+- CREATE_HWRT_DATASET: same shape (region headers, tpc/vheap/mlist/rtc addresses differ only by
+  allocation);
+- SUBMIT_JOBS geometry job: type=RENDER, flags=0x3, cmd_stream_len=40, hwrt set 1 index 0 - and the
+  kernel-side parsed commands were already byte-identical (rounds 16/21).
+The one ordering difference found: the probe submitted a zero-length, zero-HWRT geometry job first (a
+leftover plumbing self-check). That was tested on hardware (skipping it changes nothing), but the probe
+now skips it by default because the reference never does it; PVR_PROBE_EMPTY_SUBMIT re-enables it.
+
+Verification: probe ALL PASS under the shim (no hardware draw in this round).
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index af8f9db7..a314dd2f 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -552,7 +552,12 @@ vm_roundtrip(int fd, struct pipe_screen *pscreen)
+        *
+        * A real submission needs the CSB content, which is the 5700-line piece this path
+        * is still building toward. */
+-      {
++      /* Round-25: skipped by default. The reference clients never submit a zero-HWRT,
++       * zero-length job before real work, and this probe is meant to reproduce the reference
++       * submission as closely as possible. Set PVR_PROBE_EMPTY_SUBMIT to exercise it. */
++      if (!getenv("PVR_PROBE_EMPTY_SUBMIT")) {
++         printf("vm:            zero-length submission skipped (not what the reference does)\n");
++      } else {
+          struct pvr_bo csb_bo = { 0 };
+          uint64_t csb_addr = 0;
+ 
+-- 
+2.47.3
+

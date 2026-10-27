@@ -1,0 +1,176 @@
+From 0fc2f88ba59932d0550423b65f600724e22cc1ce Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Mon, 26 Oct 2026 17:42:11 +0800
+Subject: [PATCH 264/269] gallium/pvr: benchmark mode for the compute-fallback
+ draw path (PVR_PROBE_COMPUTE_BENCH)
+
+Adds a benchmark to the probe that renders through the driver's pipe_context API and measures the full
+synchronous draw round trip (encoding + submit + GPU execution + completion fence). Cases and measured
+numbers on the board (BXM-4-64, open driver, 200 frames after 5 warm-up frames):
+  512x512 default triangle       10.198 ms/frame,  98 fps, 25.7 Mpix/s, 73728 inside pixels
+  1366x768 full-screen (VB)      39.832 ms/frame,  25 fps, 26.3 Mpix/s, 1049088 inside pixels
+  1920x1080 full-screen (VB)     75.413 ms/frame,  13 fps, 27.5 Mpix/s, 2073600 inside pixels
+Pixel counts match the expected triangle coverage exactly in every case, so the number is a real
+end-to-end draw rate and not a cached/partial result. The benchmark joins the probe's ALL PASS gate when
+PVR_PROBE_COMPUTE_BENCH is set.
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c | 129 ++++++++++++++++++++-
+ 1 file changed, 128 insertions(+), 1 deletion(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index 973be882..f8ad814d 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -4573,6 +4573,130 @@ compute_draw_check(struct pipe_screen *screen)
+    return ok;
+ }
+ 
++
++/* Performance measurement for the driver's own draw path: render the compute-fallback triangle for N
++ * frames through the pipe_context API and report the synchronous per-frame time, frame rate and pixel
++ * fill rate. Each draw waits for its completion fence, so this is the full round trip an application
++ * sees (submit + GPU execution + completion), not just the CPU-side encoding. */
++static bool
++compute_bench_case(struct pipe_screen *screen, struct pipe_context *pctx, unsigned w, unsigned h,
++                   const float *vb_verts, unsigned expect_inside, const char *label)
++{
++   struct pvr_screen *scr = pvr_screen(screen);
++   const unsigned frames = 200, warmup = 5;
++   struct pipe_resource templ = { 0 };
++   struct pipe_resource *res = NULL, *vbres = NULL;
++   struct pvr_resource *rt, *vb;
++   struct pipe_framebuffer_state fb = { 0 };
++   struct pipe_draw_info info = { 0 };
++   struct pipe_draw_start_count_bias draw = { 0 };
++   struct pipe_vertex_buffer vbuf = { 0 };
++   struct timespec t0, t1;
++   uint32_t *px;
++   unsigned inside = 0, i;
++   double ms, fps, mpix;
++   bool ok = false;
++
++   templ.target = PIPE_TEXTURE_2D;
++   templ.format = PIPE_FORMAT_R8G8B8A8_UNORM;
++   templ.width0 = w;
++   templ.height0 = h;
++   templ.depth0 = 1;
++   templ.array_size = 1;
++   templ.bind = PIPE_BIND_RENDER_TARGET;
++   res = screen->resource_create(screen, &templ);
++   rt = res ? pvr_resource(res) : NULL;
++   if (rt == NULL || rt->dev_addr == 0 || !pvr_bo_map(scr->fd, &rt->bo)) {
++      printf("bench:         %s: render-target creation failed\n", label);
++      goto out;
++   }
++   memset(rt->bo.map, 0, rt->bo.size);
++
++   if (vb_verts != NULL) {
++      templ.target = PIPE_BUFFER;
++      templ.width0 = 9 * sizeof(float);
++      templ.height0 = 1;
++      templ.depth0 = 1;
++      templ.array_size = 1;
++      templ.bind = PIPE_BIND_VERTEX_BUFFER;
++      vbres = screen->resource_create(screen, &templ);
++      vb = vbres ? pvr_resource(vbres) : NULL;
++      if (vb == NULL || !pvr_bo_map(scr->fd, &vb->bo)) {
++         printf("bench:         %s: vertex buffer creation failed\n", label);
++         goto out;
++      }
++      memcpy(vb->bo.map, vb_verts, 9 * sizeof(float));
++      vbuf.buffer.resource = vbres;
++      vbuf.buffer_offset = 0;
++      pctx->set_vertex_buffers(pctx, 1, &vbuf);
++   }
++
++   fb.width = w;
++   fb.height = h;
++   fb.nr_cbufs = 1;
++   fb.cbufs[0].texture = res;
++   pctx->set_framebuffer_state(pctx, &fb);
++   info.mode = MESA_PRIM_TRIANGLES;
++   info.instance_count = 1;
++   draw.count = 3;
++
++   for (i = 0; i < warmup; i++)
++      pctx->draw_vbo(pctx, &info, 0, NULL, &draw, 1);
++   clock_gettime(CLOCK_MONOTONIC, &t0);
++   for (i = 0; i < frames; i++)
++      pctx->draw_vbo(pctx, &info, 0, NULL, &draw, 1);
++   clock_gettime(CLOCK_MONOTONIC, &t1);
++
++   px = rt->bo.map;
++   for (i = 0; i < w * h; i++)
++      if (px[i] == 0xFF0000FFu)
++         inside++;
++   ms = ((double)(t1.tv_sec - t0.tv_sec) * 1000.0 + (double)(t1.tv_nsec - t0.tv_nsec) / 1e6) /
++        frames;
++   fps = ms > 0.0 ? 1000.0 / ms : 0.0;
++   mpix = fps * (double)w * (double)h / 1e6;
++   printf("bench:         %-22s %ux%u: %.3f ms/frame, %.0f fps, %.1f Mpix/s, %u inside pixels\n",
++          label, w, h, ms, fps, mpix, inside);
++   ok = inside == expect_inside;
++   if (!ok)
++      printf("bench:         FAIL: expected %u inside pixels, got %u\n", expect_inside, inside);
++
++out:
++   pctx->set_framebuffer_state(pctx, &(struct pipe_framebuffer_state){ 0 });
++   pctx->set_vertex_buffers(pctx, 0, NULL);
++   if (vbres != NULL)
++      screen->resource_destroy(screen, vbres);
++   if (res != NULL)
++      screen->resource_destroy(screen, res);
++   return ok;
++}
++
++static bool
++compute_bench_check(struct pipe_screen *screen)
++{
++   struct pvr_screen *scr = pvr_screen(screen);
++   static const float fullscreen[9] = { -1.0f, -1.0f, 0.0f, 3.0f, -1.0f, 0.0f, -1.0f, 3.0f, 0.0f };
++   struct pipe_context *pctx;
++   bool ok;
++
++   if (!scr->vm_valid) {
++      printf("bench:         SKIP (no GPU VM; shim run)\n");
++      return true;
++   }
++   pctx = screen->context_create(screen, NULL, 0);
++   if (pctx == NULL) {
++      printf("bench:         FAIL: pipe_context creation\n");
++      return false;
++   }
++   ok = compute_bench_case(screen, pctx, 512, 512, NULL, 73728, "default triangle") &&
++        compute_bench_case(screen, pctx, 1366, 768, fullscreen, 1366u * 768u,
++                           "fullscreen triangle (VB)") &&
++        compute_bench_case(screen, pctx, 1920, 1080, fullscreen, 1920u * 1080u,
++                           "fullscreen triangle 1080p");
++   pctx->destroy(pctx);
++   return ok;
++}
++
+ static void *cdm_map_at(int fd, struct pvr_vm *vm, uint64_t addr, uint64_t size, struct pvr_bo *bo);
+ static uint8_t *cdm_read_capture(const char *dir, const char *name, uint32_t *size_out);
+ 
+@@ -5607,6 +5731,8 @@ main(int argc, char **argv)
+       cdm_native_draw_check(fd, screen);
+    const bool compute_draw_pass =
+       getenv("PVR_PROBE_COMPUTE_DRAW") ? compute_draw_check(screen) : true;
++   const bool compute_bench_pass =
++      getenv("PVR_PROBE_COMPUTE_BENCH") ? compute_bench_check(screen) : true;
+    const bool cdm_pass = getenv("PVR_PROBE_CDM_DIR") ? cdm_draw_check(fd, screen) : true;
+    const bool tq_pass = getenv("PVR_PROBE_TQ_STREAM") ? tq_fill_check(fd, screen) : true;
+ 
+@@ -5630,7 +5756,8 @@ main(int argc, char **argv)
+ 
+    const bool all = enum_pass && bo_pass && vm_pass && res_pass && ctx_pass &&
+                     shader_pass && state_pass && fb_pass && pipe_pass && csb_pass &&
+-                    clear_pass && tq_pass && cdm_pass && compute_draw_pass;
++                    clear_pass && tq_pass && cdm_pass && compute_draw_pass &&
++                    compute_bench_pass;
+    printf("--- %s\n", all ? "ALL PASS" : "FAILURES ABOVE");
+    return all ? 0 : 1;
+ }
+-- 
+2.47.3
+

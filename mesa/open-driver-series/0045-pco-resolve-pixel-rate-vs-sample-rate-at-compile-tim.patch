@@ -1,0 +1,83 @@
+From d49fe8e4205e2effa82a0feebf40a9799d47d04e Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sat, 10 Oct 2026 00:19:18 +0800
+Subject: [PATCH 45/98] pco: resolve pixel-rate vs sample-rate at compile time
+ when known
+
+Every non-internal fragment shader read the sample-shading bit from the
+fragment meta shared register at runtime, per pixel, to pick between the
+pixel and sample position registers for gl_FragCoord.xy and between the
+single- and multi-sampled coverage masks for tiled stores.
+
+pvr_arch_cmd_buffer.c only ever sets that bit for shaders whose
+data->fs.uses.sample_shading is true, so every other shader always takes
+the pixel-rate path. Emit that path directly for them.
+
+vkrender FS: 20 -> 12 instruction groups (34 before the ISP-feedback fix).
+BXM-4-64 (A733), median of 3, on top of the previous commit: vkrender 2048
+10.53 -> 9.26 ms/frame, vkrender 512 1.25 -> 1.13 ms/frame, vkheavy 2048
+247.4 -> 239.9 ms/frame. vkedge coverage gate and vkrender pixel checks pass.
+---
+ src/imagination/pco/pco_trans_nir.c | 32 +++++++++++++++++++++--------
+ 1 file changed, 24 insertions(+), 8 deletions(-)
+
+diff --git a/src/imagination/pco/pco_trans_nir.c b/src/imagination/pco/pco_trans_nir.c
+index fcedd27..6ca9203 100644
+--- a/src/imagination/pco/pco_trans_nir.c
++++ b/src/imagination/pco/pco_trans_nir.c
+@@ -466,6 +466,16 @@ static pco_ref fs_is_single_sampled(trans_ctx *tctx)
+                                     : fs_is_single_sampled_meta(tctx);
+ }
+ 
++/* The runtime sample-shading bit is only ever set for shaders that use sample
++ * shading (see pvr_arch_cmd_buffer.c), so any other non-internal shader is
++ * known to run at pixel rate and needs no runtime check.
++ */
++static bool fs_known_single_sampled(trans_ctx *tctx)
++{
++   return !tctx->shader->is_internal &&
++          !tctx->shader->data.fs.uses.sample_shading;
++}
++
+ /**
+  * \brief Translates a NIR fs load_input intrinsic into PCO.
+  *
+@@ -549,6 +559,9 @@ static pco_instr *trans_load_input_fs(trans_ctx *tctx,
+          pco_ref xy_p[] = { pco_ref_hwreg(PCO_SR_X_P, PCO_REG_CLASS_SPEC),
+                             pco_ref_hwreg(PCO_SR_Y_P, PCO_REG_CLASS_SPEC) };
+ 
++         if (fs_known_single_sampled(tctx))
++            return pco_mov(&tctx->b, dest, xy_p[component]);
++
+          return pco_csel(&tctx->b,
+                          dest,
+                          fs_is_single_sampled(tctx),
+@@ -762,14 +775,17 @@ trans_store_output_fs(trans_ctx *tctx, nir_intrinsic_instr *intr, pco_ref src)
+               pco_ref_null(),
+               .savmsk_mode = PCO_SAVMSK_MODE_ICM);
+ 
+-   pco_ref cov_mask = pco_ref_new_ssa32(tctx->func);
+-   pco_csel(&tctx->b,
+-            cov_mask,
+-            fs_is_single_sampled(tctx),
+-            cov_mask_ss,
+-            cov_mask_ms,
+-            .tst_op_main = PCO_TST_OP_MAIN_GZERO,
+-            .tst_type_main = PCO_TST_TYPE_MAIN_U32);
++   pco_ref cov_mask = cov_mask_ss;
++   if (!fs_known_single_sampled(tctx)) {
++      cov_mask = pco_ref_new_ssa32(tctx->func);
++      pco_csel(&tctx->b,
++               cov_mask,
++               fs_is_single_sampled(tctx),
++               cov_mask_ss,
++               cov_mask_ms,
++               .tst_op_main = PCO_TST_OP_MAIN_GZERO,
++               .tst_type_main = PCO_TST_TYPE_MAIN_U32);
++   }
+ 
+    return pco_st_tiled(&tctx->b,
+                        data_comp,
+-- 
+2.47.3
+

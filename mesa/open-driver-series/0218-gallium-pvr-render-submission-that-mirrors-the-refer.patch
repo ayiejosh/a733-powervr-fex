@@ -1,0 +1,477 @@
+From b1c775a23617ee179d257c748a7eee5109716174 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sat, 24 Oct 2026 23:16:52 +0800
+Subject: [PATCH 218/269] gallium/pvr: render submission that mirrors the
+ reference's, and what the GPU did with it
+
+Ran the assembled draw on the real open kernel driver (desktop down, one 512x512 draw, board
+restored to vendor afterwards; no faults). The jobs are accepted; they never complete - and neither
+does a render whose control stream is nothing but STREAM_TERMINATE, so this is submission setup, not
+draw state. The probe now measures that directly instead of only checking acceptance.
+
+Fixes found by the hardware run, all silent-failure shaped:
+
+- INDEX_LIST never set the primitive topology. Zero there is POINT_LIST, so triangle triples were
+  binned as points. It now takes a topology parameter and the probe's control stream reproduces the
+  captured draw's INDEX_LIST0 word exactly (0x68000600) - also non-indexed like the capture, with
+  the address/instance packets present only when they carry something.
+- The geometry firmware stream was being built into the same BO as the control stream it names, so
+  the CR_VDM_CTRL_STREAM_BASE pointer named a buffer whose contents had just been overwritten. It
+  now goes in its own buffer, with the capture's completeonterminate and usc_common_size values
+  (TE_PSG bit 17, PDS_STATE0 word 0x20010000).
+- Geometry and partial-render/fragment jobs are different types, so the kernel does not order them
+  against each other. The reference chains them with syncobjs and submits THREE jobs (geometry,
+  PARTIAL_RENDER fragment, fragment); pvr_job_submit_render is now that shape, and waits for the
+  fragment job's completion syncobj on the CPU instead of reading the target straight after submit.
+- New pvr_job_submit_geom_sync()/probe liveness check: prove whether the firmware completes a
+  submission at all before attributing a blank target to draw state. It does not, for us.
+
+Verification: probe still exits 0, ALL PASS under the DRM noop shim; on the real driver every
+SUBMIT_JOBS is accepted and the geometry/fragment jobs do not signal within 2 s. The working Vulkan
+driver renders through the same kernel and GPU at the same time (vkrender PASS), so this is our
+context/HWRT/firmware-stream setup, not the hardware. Next: capture the reference's firmware streams
+and context state and diff them field by field against ours; the control-stream side is already
+capture-conformant.
+---
+ src/gallium/drivers/pvr_native/pvr_csb.c   |  40 +++--
+ src/gallium/drivers/pvr_native/pvr_csb.h   |  12 +-
+ src/gallium/drivers/pvr_native/pvr_probe.c |  85 +++++++++--
+ src/gallium/drivers/pvr_native/pvr_vm.c    | 161 +++++++++++++++++----
+ src/gallium/drivers/pvr_native/pvr_vm.h    |   8 +
+ 5 files changed, 260 insertions(+), 46 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_csb.c b/src/gallium/drivers/pvr_native/pvr_csb.c
+index 1d3d1989..cb8d95a9 100644
+--- a/src/gallium/drivers/pvr_native/pvr_csb.c
++++ b/src/gallium/drivers/pvr_native/pvr_csb.c
+@@ -179,23 +179,34 @@ pvr_csb_emit_ppp_state(struct pvr_csb *csb, uint64_t state_addr, uint32_t word_c
+  * state emitter uses. */
+ bool
+ pvr_csb_emit_index_list(struct pvr_csb *csb, uint64_t index_addr, uint32_t index_count,
+-                        uint32_t instance_count, enum ROGUE_VDMCTRL_INDEX_SIZE index_size)
++                        uint32_t instance_count, enum ROGUE_VDMCTRL_INDEX_SIZE index_size,
++                        enum ROGUE_VDMCTRL_PRIMITIVE_TOPOLOGY topology)
+ {
++   /* The packets that follow the header are optional and their presence bits decide the length.
++    * index_addr == 0 means a NON-INDEXED draw (vkCmdDraw) - the hardware reads vertices
++    * sequentially, exactly what the captured working draw does; non-zero means the address and
++    * size packets are carried for an indexed draw. The instance-count packet is only worth its
++    * dword when it is not the default of one, as the capture shows. */
++   const bool have_addr = index_addr != 0;
++   const bool have_instances = instance_count > 1;
+    struct ROGUE_VDMCTRL_INDEX_LIST0 list0 = {
+       .block_type = ROGUE_VDMCTRL_BLOCK_TYPE_INDEX_LIST,
+-      .index_addr_present = true,
++      .index_addr_present = have_addr,
+       .index_count_present = true,
+-      .index_instance_count_present = true,
+-      .degen_cull_enable = true,
++      .index_instance_count_present = have_instances,
++      /* The capture leaves degenerate-culling and patch count at their defaults: this part has no
++       * degenerate-culling feature, and a non-patch topology uses a patch count of one (stored 0). */
++      .degen_cull_enable = false,
+       .index_size = index_size,
++      .primitive_topology = topology,
+    };
+    struct ROGUE_VDMCTRL_INDEX_LIST1 list1 = { .index_base_addrlsb = index_addr };
+    struct ROGUE_VDMCTRL_INDEX_LIST2 list2 = { .index_count = index_count };
+    struct ROGUE_VDMCTRL_INDEX_LIST3 list3 = { .instance_count = instance_count };
+    const uint32_t words = ROGUE_VDMCTRL_INDEX_LIST0_length +
+-                          ROGUE_VDMCTRL_INDEX_LIST1_length +
++                          (have_addr ? ROGUE_VDMCTRL_INDEX_LIST1_length : 0) +
+                           ROGUE_VDMCTRL_INDEX_LIST2_length +
+-                          ROGUE_VDMCTRL_INDEX_LIST3_length;
++                          (have_instances ? ROGUE_VDMCTRL_INDEX_LIST3_length : 0);
+    uint32_t *dw = pvr_csb_emit(csb, words);
+    uint32_t at = ROGUE_VDMCTRL_INDEX_LIST0_length;
+ 
+@@ -203,11 +214,17 @@ pvr_csb_emit_index_list(struct pvr_csb *csb, uint64_t index_addr, uint32_t index
+       return false;
+ 
+    ROGUE_VDMCTRL_INDEX_LIST0_pack(dw, &list0);
+-   ROGUE_VDMCTRL_INDEX_LIST1_pack(dw + at, &list1);
+-   at += ROGUE_VDMCTRL_INDEX_LIST1_length;
++
++   if (have_addr) {
++      ROGUE_VDMCTRL_INDEX_LIST1_pack(dw + at, &list1);
++      at += ROGUE_VDMCTRL_INDEX_LIST1_length;
++   }
++
+    ROGUE_VDMCTRL_INDEX_LIST2_pack(dw + at, &list2);
+    at += ROGUE_VDMCTRL_INDEX_LIST2_length;
+-   ROGUE_VDMCTRL_INDEX_LIST3_pack(dw + at, &list3);
++
++   if (have_instances)
++      ROGUE_VDMCTRL_INDEX_LIST3_pack(dw + at, &list3);
+ 
+    return true;
+ }
+@@ -1312,7 +1329,10 @@ pvr_geom_static_stream(void *stream, uint32_t stream_size,
+       p += PVR_DW_TO_BYTES(PVR_CMD_DW(CR_TE_PSG));
+    }
+    {
+-      struct ROGUE_VDMCTRL_PDS_STATE0 v = { .usc_common_size = usc_common_size };
++      struct ROGUE_VDMCTRL_PDS_STATE0 v = {
++         ROGUE_VDMCTRL_PDS_STATE0_header,
++         .usc_common_size = usc_common_size,
++      };
+       ROGUE_VDMCTRL_PDS_STATE0_pack((uint32_t *)p, &v);
+       p += PVR_DW_TO_BYTES(PVR_CMD_DW(VDMCTRL_PDS_STATE0));
+    }
+diff --git a/src/gallium/drivers/pvr_native/pvr_csb.h b/src/gallium/drivers/pvr_native/pvr_csb.h
+index 75acabbf..694919d9 100644
+--- a/src/gallium/drivers/pvr_native/pvr_csb.h
++++ b/src/gallium/drivers/pvr_native/pvr_csb.h
+@@ -716,8 +716,18 @@ void pvr_csb_reset(struct pvr_csb *csb);
+  * fit - in which case nothing is reserved and the CSB is marked overflowed. */
+ uint32_t *pvr_csb_emit(struct pvr_csb *csb, uint32_t words);
+ bool pvr_csb_emit_stream_terminate(struct pvr_csb *csb);
++/* An INDEX_LIST block tells the TA where the vertex indices are, how many there are, and - the
++ * part that is easy to leave at zero - WHICH PRIMITIVE TOPOLOGY to assemble. The topology field is
++ * not optional: a zero there is POINT_LIST, and the TA then treats triangle vertex triples as
++ * points, so the draw bins the wrong primitives and nothing reaches rasterisation.
++ *
++ * A zero index_addr means a non-indexed draw (vkCmdDraw): the index address packet is omitted and
++ * vertices are read sequentially, which is what the captured working draw does. The instance
++ * count packet is omitted for the default of one, also as the capture does. */
+ bool pvr_csb_emit_index_list(struct pvr_csb *csb, uint64_t index_addr, uint32_t index_count,
+-                             uint32_t instance_count, enum ROGUE_VDMCTRL_INDEX_SIZE index_size);
++                             uint32_t instance_count,
++                             enum ROGUE_VDMCTRL_INDEX_SIZE index_size,
++                             enum ROGUE_VDMCTRL_PRIMITIVE_TOPOLOGY topology);
+ 
+ uint32_t pvr_csb_size(const struct pvr_csb *csb);
+ bool pvr_csb_overflowed(const struct pvr_csb *csb);
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index 135171d0..f867be91 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -19,6 +19,7 @@
+ #include <stdlib.h>
+ #include <string.h>
+ #include <fcntl.h>
++#include <unistd.h>
+ 
+ #include "pvr_bo.h"
+ #include "pvr_csb.h"
+@@ -724,6 +725,43 @@ real_job_done:
+                printf("hwrt:          VM map or CPU map failed (rt 0x%" PRIx64 ")\n", rtaddr);
+          }
+ 
++         /* Firmware liveness check, before the draw: a geometry job whose control stream is only
++          * a STREAM_TERMINATE must complete. If it does not, the firmware is not completing our
++          * submissions at all and no draw state can render; if it does, the draw stream is what
++          * stalls it. */
++         if (ok2) {
++            struct pvr_bo dbo = { 0 }, dfw = { 0 };
++            uint64_t daddr = 0;
++            _Alignas(8) static uint8_t dfw_buf[1024];
++
++            (void)dfw;
++            if (pvr_bo_create(pvm_fd_for_probe, 4096, 1, &dbo) &&
++                (daddr = pvr_vm_alloc(&vm, dbo.size, vm.general.page_size)) != 0 &&
++                pvr_vm_map(&vm, daddr, dbo.handle, dbo.size) &&
++                pvr_bo_map(pvm_fd_for_probe, &dbo)) {
++               struct pvr_csb tcsb;
++               const uint32_t dlen =
++                  pvr_geom_static_stream(dfw_buf, sizeof(dfw_buf), daddr, rbctaddr, true, 0,
++                                         false, 1, 0, PVR_HAS_QUIRK(dev_info, 49927));
++               _Alignas(8) static uint8_t dfrag[1024];
++               static const uint64_t dpbe[3] = { 0x0200003c68800000ull, 0x0000001f0000001full, 0 };
++               const uint32_t dfrag_len = pvr_frag_static_stream(dfrag, sizeof(dfrag), dpbe, 1,
++                                                                 0x2780, false);
++               bool done;
++
++               pvr_csb_init(&tcsb, dbo.map, dbo.size, PVR_CSB_LINK_DWORDS);
++               pvr_csb_emit_stream_terminate(&tcsb);
++               done = dlen > 0 && dfrag_len > 0 &&
++                      pvr_job_submit_render(&vm, gpu_ctx.handle, dfw_buf, dlen, dfrag,
++                                            dfrag_len, dset_handle, 0);
++               printf("hwrt:          empty-control-stream render %s\n",
++                      done ? "COMPLETED" : "DID NOT complete in 2 s - the firmware is stalling "
++                                          "submissions, not the draw state");
++            } else {
++               printf("hwrt:          could not set up the liveness check\n");
++            }
++         }
++
+          if (ok2) {
+             struct pvr_pbe_target t = { 0 };
+             struct pvr_csb csb;
+@@ -964,8 +1002,13 @@ real_job_done:
+                                                        pvr_csb_size(&block) / 4) ||
+                                !pvr_csb_emit_vdm_state(&ctl_csb, false, 0, &vdm_vs,
+                                                        &vdm_words) ||
+-                               !pvr_csb_emit_index_list(&ctl_csb, iaddr, 3, 1,
+-                                                        ROGUE_VDMCTRL_INDEX_SIZE_B16) ||
++                               /* Non-indexed, like the captured working draw: the index buffer
++                                * exists but the draw does not name it. An indexed draw relies on the
++                                * index list's address encoding, which is not capture-verified yet;
++                                * this at least removes it as a variable. */
++                               !pvr_csb_emit_index_list(&ctl_csb, 0, 3, 1,
++                                                        ROGUE_VDMCTRL_INDEX_SIZE_B8,
++                                                        ROGUE_VDMCTRL_PRIMITIVE_TOPOLOGY_TRI_LIST) ||
+                                !pvr_csb_emit_ppp_state(&ctl_csb, taddr, 3) ||
+                                !pvr_csb_emit_stream_terminate(&ctl_csb)) {
+                               printf("hwrt:          could not emit the draw stream\n");
+@@ -984,8 +1027,15 @@ real_job_done:
+                   }
+                }
+ 
+-               const uint32_t glen = pvr_geom_static_stream(rctl.map, rctl.size, rctladdr,
+-                                                           rbctaddr, false, 0, false, 0, 0,
++               /* The geometry firmware stream goes in its OWN buffer: it is the job's cmd_stream,
++                * and it names the control stream by address (CR_VDM_CTRL_STREAM_BASE). Building it
++                * into the control stream's BO - which is what this did before - overwrites the
++                * stream the TA is then pointed at, so the pointer and the contents disagree and
++                * nothing is drawn. completeonterminate and usc_common_size are the capture's
++                * values (TE_PSG bit 17, PDS_STATE0 = 0x20010000). */
++               _Alignas(8) static uint8_t gstream[1024];
++               const uint32_t glen = pvr_geom_static_stream(gstream, sizeof(gstream), rctladdr,
++                                                           rbctaddr, true, 0, false, 1, 0,
+                                                            PVR_HAS_QUIRK(dev_info, 49927));
+                /* The fragment stream has to live in its own buffer, so rebuild it there. */
+                _Alignas(8) static uint8_t fstream[1024];
+@@ -993,14 +1043,31 @@ real_job_done:
+                                                          (const uint64_t *)rtcsb.map, 1, 0x2780,
+                                                          false);
+                (void)flen;
+-               if (pvr_job_submit_render(&vm, gpu_ctx.handle, rctl.map, glen, fstream, f2,
++               if (pvr_job_submit_render(&vm, gpu_ctx.handle, gstream, glen, fstream, f2,
+                                          dset_handle, 0)) {
+                   uint32_t changed = 0;
+-                  for (uint32_t i = 0; i < RTW * RTH; i++)
+-                     if (rt[i] != 0x5a) { changed = 1; break; }
++                  unsigned waited_us = 0;
++
++                  /* The submit is asynchronous: reading the target once straight after it races
++                   * the GPU and reports "unchanged" whether or not the draw happened. Poll for a
++                   * bounded time instead, and report how long the first write took (or that none
++                   * arrived). One small surface, so a couple of seconds is generous, not flaky. */
++                  while (waited_us < 2000000) {
++                     for (uint32_t i = 0; i < RTW * RTH; i++) {
++                        if (rt[i] != 0x5a) {
++                           changed = 1;
++                           break;
++                        }
++                     }
++                     if (changed)
++                        break;
++                     usleep(10000);
++                     waited_us += 10000;
++                  }
+                   printf("hwrt:          RENDER SUBMIT ACCEPTED (geom %u B + frag %u B) - target %s "
+-                         "(first word 0x%08x, was 0x%08x)\n", glen, f2,
+-                         changed ? "CHANGED BY THE GPU" : "unchanged", *(uint32_t *)rt, before);
++                         "after %u us (first word 0x%08x, was 0x%08x)\n", glen, f2,
++                         changed ? "CHANGED BY THE GPU" : "unchanged", waited_us,
++                         *(uint32_t *)rt, before);
+                } else {
+                   printf("hwrt:          the render submit was refused\n");
+                }
+diff --git a/src/gallium/drivers/pvr_native/pvr_vm.c b/src/gallium/drivers/pvr_native/pvr_vm.c
+index da3b4099..26ba17b4 100644
+--- a/src/gallium/drivers/pvr_native/pvr_vm.c
++++ b/src/gallium/drivers/pvr_native/pvr_vm.c
+@@ -383,44 +383,153 @@ pvr_job_submit(struct pvr_vm *vm, uint32_t context_handle, uint32_t job_type,
+ 
+ /* A render pass is TWO jobs - geometry then fragment - in ONE submit. The kernel validates each job
+  * (pvr_job.c:411: a non-zero cmd_stream AND cmd_stream_len), so both streams have to be real. */
++bool
++pvr_job_submit_geom_sync(struct pvr_vm *vm, uint32_t context_handle,
++                         const void *geom_stream, uint32_t geom_len,
++                         uint32_t hwrt_set_handle, uint32_t hwrt_data_index,
++                         uint32_t timeout_ms)
++{
++   struct drm_pvr_sync_op sync_ops[1];
++   struct drm_pvr_job job = {
++      .type = DRM_PVR_JOB_TYPE_GEOMETRY,
++      .context_handle = context_handle,
++      .cmd_stream = (uint64_t)(uintptr_t)geom_stream,
++      .cmd_stream_len = geom_len,
++      .flags = DRM_PVR_SUBMIT_JOB_GEOM_CMD_FIRST | DRM_PVR_SUBMIT_JOB_GEOM_CMD_LAST,
++      .sync_ops = { .stride = sizeof(sync_ops[0]), .count = 1,
++                    .array = (__u64)(uintptr_t)sync_ops },
++      .hwrt = { .set_handle = hwrt_set_handle, .data_index = hwrt_data_index },
++   };
++   struct drm_pvr_ioctl_submit_jobs_args args = {
++      .jobs = { .stride = sizeof(job), .count = 1,
++                .array = (__u64)(uintptr_t)&job },
++   };
++   uint32_t sync = 0;
++   bool completed;
++
++   if (drmSyncobjCreate(vm->fd, 0, &sync) != 0)
++      return false;
++
++   sync_ops[0] = (struct drm_pvr_sync_op){
++      .handle = sync,
++      .flags = DRM_PVR_SYNC_OP_FLAG_SIGNAL | DRM_PVR_SYNC_OP_FLAG_HANDLE_TYPE_SYNCOBJ,
++      .value = 0,
++   };
++
++   if (drmIoctl(vm->fd, DRM_IOCTL_PVR_SUBMIT_JOBS, &args) != 0) {
++      mesa_loge("pvr: geometry-only submit failed: %s", strerror(errno));
++      drmSyncobjDestroy(vm->fd, sync);
++      return false;
++   }
++
++   completed = drmSyncobjWait(vm->fd, &sync, 1, (int64_t)timeout_ms * 1000000LL, 0,
++                              NULL) == 0;
++   drmSyncobjDestroy(vm->fd, sync);
++   return completed;
++}
++
+ bool
+ pvr_job_submit_render(struct pvr_vm *vm, uint32_t context_handle,
+                       const void *geom_stream, uint32_t geom_len,
+                       const void *frag_stream, uint32_t frag_len,
+                       uint32_t hwrt_set_handle, uint32_t hwrt_data_index)
+ {
+-   struct drm_pvr_job jobs[2] = {
+-      {
+-         .type = DRM_PVR_JOB_TYPE_GEOMETRY,
+-         .context_handle = context_handle,
+-         .cmd_stream = (uint64_t)(uintptr_t)geom_stream,
+-         .cmd_stream_len = geom_len,
+-         .sync_ops = { .stride = sizeof(struct drm_pvr_sync_op), .count = 0 },
+-         .hwrt = { .set_handle = hwrt_set_handle, .data_index = hwrt_data_index },
+-      }, {
+-         .type = DRM_PVR_JOB_TYPE_FRAGMENT,
+-         .context_handle = context_handle,
+-         .cmd_stream = (uint64_t)(uintptr_t)frag_stream,
+-         .cmd_stream_len = frag_len,
+-         .sync_ops = { .stride = sizeof(struct drm_pvr_sync_op), .count = 0 },
+-         .hwrt = { .set_handle = hwrt_set_handle, .data_index = hwrt_data_index },
+-      },
+-   };
++   /* Geometry and fragment jobs are different job types, so the kernel does not order them against
++    * each other; the reference chains them with syncobjs and submits THREE jobs: geometry, a
++    * partial-render fragment job, then the fragment job. The geometry and PR jobs pair into one
++    * combined kick (the kernel pairs them when the fragment job waits on the geometry job's
++    * scheduled fence). Submitting fewer than that leaves the firmware with a render it never
++    * completes: accepted by the kernel, no pixels, no error. */
++   uint32_t geom_sync = 0, pr_sync = 0, done_sync = 0;
++   struct drm_pvr_sync_op geom_ops[1], pr_ops[2], frag_ops[1];
++   struct drm_pvr_job jobs[3];
+    struct drm_pvr_ioctl_submit_jobs_args args = {
+-      .jobs = {
+-         .stride = sizeof(jobs[0]),
+-         .count = ARRAY_SIZE(jobs),
+-         .array = (__u64)(uintptr_t)jobs,
+-      },
++      .jobs = { .stride = sizeof(jobs[0]), .count = ARRAY_SIZE(jobs),
++                .array = (__u64)(uintptr_t)jobs },
+    };
++   bool submitted, completed;
+ 
+-   if (drmIoctl(vm->fd, DRM_IOCTL_PVR_SUBMIT_JOBS, &args) != 0) {
+-      mesa_loge("pvr: SUBMIT_JOBS render (geom %u B at %p, frag %u B at %p) failed: %s",
+-                geom_len, geom_stream, frag_len, frag_stream, strerror(errno));
++   if (drmSyncobjCreate(vm->fd, 0, &geom_sync) != 0)
++      return false;
++   if (drmSyncobjCreate(vm->fd, 0, &pr_sync) != 0) {
++      drmSyncobjDestroy(vm->fd, geom_sync);
++      return false;
++   }
++   if (drmSyncobjCreate(vm->fd, 0, &done_sync) != 0) {
++      drmSyncobjDestroy(vm->fd, pr_sync);
++      drmSyncobjDestroy(vm->fd, geom_sync);
+       return false;
+    }
+ 
+-   return true;
++   geom_ops[0] = (struct drm_pvr_sync_op){
++      .handle = geom_sync,
++      .flags = DRM_PVR_SYNC_OP_FLAG_SIGNAL | DRM_PVR_SYNC_OP_FLAG_HANDLE_TYPE_SYNCOBJ,
++   };
++   pr_ops[0] = (struct drm_pvr_sync_op){
++      .handle = geom_sync,
++      .flags = DRM_PVR_SYNC_OP_FLAG_WAIT | DRM_PVR_SYNC_OP_FLAG_HANDLE_TYPE_SYNCOBJ,
++   };
++   pr_ops[1] = (struct drm_pvr_sync_op){
++      .handle = pr_sync,
++      .flags = DRM_PVR_SYNC_OP_FLAG_SIGNAL | DRM_PVR_SYNC_OP_FLAG_HANDLE_TYPE_SYNCOBJ,
++   };
++   frag_ops[0] = (struct drm_pvr_sync_op){
++      .handle = pr_sync,
++      .flags = DRM_PVR_SYNC_OP_FLAG_WAIT | DRM_PVR_SYNC_OP_FLAG_HANDLE_TYPE_SYNCOBJ,
++   };
++
++   jobs[0] = (struct drm_pvr_job){
++      .type = DRM_PVR_JOB_TYPE_GEOMETRY,
++      .context_handle = context_handle,
++      .cmd_stream = (uint64_t)(uintptr_t)geom_stream,
++      .cmd_stream_len = geom_len,
++      .flags = DRM_PVR_SUBMIT_JOB_GEOM_CMD_FIRST | DRM_PVR_SUBMIT_JOB_GEOM_CMD_LAST,
++      .sync_ops = { .stride = sizeof(geom_ops[0]), .count = 1,
++                    .array = (__u64)(uintptr_t)geom_ops },
++      .hwrt = { .set_handle = hwrt_set_handle, .data_index = hwrt_data_index },
++   };
++   jobs[1] = (struct drm_pvr_job){
++      .type = DRM_PVR_JOB_TYPE_FRAGMENT,
++      .context_handle = context_handle,
++      .cmd_stream = (uint64_t)(uintptr_t)frag_stream,
++      .cmd_stream_len = frag_len,
++      .flags = DRM_PVR_SUBMIT_JOB_FRAG_CMD_PARTIAL_RENDER,
++      .sync_ops = { .stride = sizeof(pr_ops[0]), .count = ARRAY_SIZE(pr_ops),
++                    .array = (__u64)(uintptr_t)pr_ops },
++      .hwrt = { .set_handle = hwrt_set_handle, .data_index = hwrt_data_index },
++   };
++   jobs[2] = (struct drm_pvr_job){
++      .type = DRM_PVR_JOB_TYPE_FRAGMENT,
++      .context_handle = context_handle,
++      .cmd_stream = (uint64_t)(uintptr_t)frag_stream,
++      .cmd_stream_len = frag_len,
++      .sync_ops = { .stride = sizeof(frag_ops[0]), .count = 1,
++                    .array = (__u64)(uintptr_t)frag_ops },
++      .hwrt = { .set_handle = hwrt_set_handle, .data_index = hwrt_data_index },
++   };
++
++   submitted = drmIoctl(vm->fd, DRM_IOCTL_PVR_SUBMIT_JOBS, &args) == 0;
++   if (!submitted)
++      mesa_loge("pvr: SUBMIT_JOBS render (geom %u B, frag %u B) failed: %s", geom_len,
++                frag_len, strerror(errno));
++
++   if (submitted && getenv("PVR_PROBE_TRACE_SYNC") != NULL && submitted) {
++      const bool geom_done =
++         drmSyncobjWait(vm->fd, &geom_sync, 1, 500000000LL, 0, NULL) == 0;
++
++      mesa_logi("pvr: geometry job %s", geom_done ? "COMPLETED" : "did not complete in 500 ms");
++   }
++
++   completed = submitted &&
++      drmSyncobjWait(vm->fd, &done_sync, 1, 2000000000LL, 0, NULL) == 0;
++   if (submitted && !completed)
++      mesa_loge("pvr: the render job did not signal completion within 2 s");
++
++   drmSyncobjDestroy(vm->fd, done_sync);
++   drmSyncobjDestroy(vm->fd, pr_sync);
++   drmSyncobjDestroy(vm->fd, geom_sync);
++
++   return completed;
+ }
+ 
+ /* Free lists and the HWRT data set are what a RENDER job needs beyond its command stream: the
+diff --git a/src/gallium/drivers/pvr_native/pvr_vm.h b/src/gallium/drivers/pvr_native/pvr_vm.h
+index 5534a09b..30aba8fb 100644
+--- a/src/gallium/drivers/pvr_native/pvr_vm.h
++++ b/src/gallium/drivers/pvr_native/pvr_vm.h
+@@ -126,6 +126,14 @@ bool pvr_free_list_create(struct pvr_vm *vm, uint64_t gpu_addr, uint32_t initial
+ bool pvr_hwrt_dataset_create(struct pvr_vm *vm, const struct pvr_hwrt_dataset_desc *desc,
+                              uint32_t *handle_out);
+ 
++/* Submit ONE geometry job and wait for it on the CPU. Used to find out whether the firmware
++ * accepts a stream at all: a job that never signals means the firmware stalled or rejected the
++ * command stream, and the kernel reports neither. */
++bool pvr_job_submit_geom_sync(struct pvr_vm *vm, uint32_t context_handle,
++                              const void *geom_stream, uint32_t geom_len,
++                              uint32_t hwrt_set_handle, uint32_t hwrt_data_index,
++                              uint32_t timeout_ms);
++
+ bool pvr_job_submit_render(struct pvr_vm *vm, uint32_t context_handle,
+                             const void *geom_stream, uint32_t geom_len,
+                             const void *frag_stream, uint32_t frag_len,
+-- 
+2.47.3
+

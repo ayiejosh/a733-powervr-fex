@@ -1,0 +1,199 @@
+From b67b05adbd615beb810546b3367b7d759d2915da Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sat, 10 Oct 2026 15:42:02 +0800
+Subject: [PATCH 67/98] pco: fold constant trailing channels of 8-bit UNORM
+ pixel outputs
+
+The pck that packs a pixel output issues once per packed channel, and
+the constants it packs need a mov into consecutive temps first. For
+four 8-bit linear UNORM channels, pack only the leading non-constant
+channels and insert them into the packed bits of the constant trailing
+ones (alpha = 1.0 is the common case); an output with only constant
+channels becomes an immediate. A pck of fewer than four channels leaves
+the other bytes undefined, hence the insert (one msk + logical group)
+rather than an OR, and the leading channels are rebuilt from their own
+sources (pco mistranslated a vec3 of another vec4's channels). Runs late in pco_postprocess_nir; a bcsel between two equal
+constants (what alpha-to-one leaves for alpha = 1.0) counts as constant.
+
+vkrender gradient shader, vec4(fract(x/64), fract(y/64), 0.25, 1.0) to
+RGBA8: mov + pck x4 (5 issues) -> pck x2 + insert (3 issues), 7 -> 5 issues
+in all. BXM-4-64, 2048x2048 render pass: 2.20 -> 1.75 ms batched, 2.31
+-> 1.98 ms with a fence wait per frame. Fragment shading here is bound
+by ALU issue rate (~0.24 ms per issue per 2048x2048 pass).
+A constant-colour shader goes from 9 issues (alpha-to-one select + mov +
+pck x4) to a single immediate write: 2.68 -> 1.48 ms batched.
+
+NaN constants are left to the hardware conversion; sRGB and SNORM
+formats are not folded. vkrender pixel-exact check passes at 512/2048.
+CTS (5062 + 9170 + 838 + 282 cases): identical to before; gate 44/44.
+---
+ src/imagination/pco/pco_internal.h  |   1 +
+ src/imagination/pco/pco_nir.c       |   7 ++
+ src/imagination/pco/pco_nir_pvfio.c | 113 ++++++++++++++++++++++++++++
+ 3 files changed, 121 insertions(+)
+
+diff --git a/src/imagination/pco/pco_internal.h b/src/imagination/pco/pco_internal.h
+index 87ed03c..4c541c7 100644
+--- a/src/imagination/pco/pco_internal.h
++++ b/src/imagination/pco/pco_internal.h
+@@ -1838,6 +1838,7 @@ bool pco_nir_lower_tex(nir_shader *shader, pco_data *data, pco_ctx *ctx);
+ bool pco_nir_lower_variables(nir_shader *shader, bool inputs, bool outputs);
+ bool pco_nir_lower_vk(nir_shader *shader, pco_data *data);
+ bool pco_nir_pfo(nir_shader *shader, pco_fs_data *fs);
++bool pco_nir_fold_pack_consts(nir_shader *shader);
+ bool pco_nir_point_size(nir_shader *shader);
+ bool pco_nir_prop_access(nir_shader *shader);
+ bool pco_nir_pvi(nir_shader *shader, pco_vs_data *vs);
+diff --git a/src/imagination/pco/pco_nir.c b/src/imagination/pco/pco_nir.c
+index 221cf65..afe6593 100644
+--- a/src/imagination/pco/pco_nir.c
++++ b/src/imagination/pco/pco_nir.c
+@@ -1309,6 +1309,13 @@ void pco_postprocess_nir(pco_ctx *ctx, nir_shader *nir, pco_data *data)
+ 
+    pco_nir_opt(ctx, nir, data, false);
+ 
++   if (nir->info.stage == MESA_SHADER_FRAGMENT) {
++      progress = false;
++      NIR_PASS(progress, nir, pco_nir_fold_pack_consts);
++      if (progress)
++         NIR_PASS(_, nir, nir_opt_dce);
++   }
++
+    NIR_PASS(_, nir, nir_lower_all_phis_to_scalar);
+ 
+    /* Temporary: lower phi undefs to zero because at this stage we don't want to
+diff --git a/src/imagination/pco/pco_nir_pvfio.c b/src/imagination/pco/pco_nir_pvfio.c
+index d6e21f0..90dff3e 100644
+--- a/src/imagination/pco/pco_nir_pvfio.c
++++ b/src/imagination/pco/pco_nir_pvfio.c
+@@ -19,10 +19,12 @@
+ #include "pco.h"
+ #include "pco_builder.h"
+ #include "pco_internal.h"
++#include "util/format/format_utils.h"
+ #include "util/macros.h"
+ #include "util/u_dynarray.h"
+ 
+ #include <assert.h>
++#include <math.h>
+ #include <stdbool.h>
+ #include <stdio.h>
+ 
+@@ -1544,3 +1546,114 @@ bool pco_nir_link_multiview(nir_shader *producer,
+ 
+    return true;
+ }
++
++/* Whether a format is four 8-bit linear UNORM channels packed in channel
++ * order, so a constant channel's packed bits are known at compile time.
++ */
++static bool unorm8_format_packs_bytes(enum pipe_format format)
++{
++   const struct util_format_description *desc = util_format_description(format);
++
++   if (!util_format_is_unorm(format) || util_format_is_srgb(format) ||
++       desc->block.bits != 32 || desc->nr_channels != 4)
++      return false;
++
++   for (unsigned c = 0; c < desc->nr_channels; c++) {
++      if (desc->channel[c].size != 8 || desc->channel[c].shift != 8 * c)
++         return false;
++   }
++
++   return true;
++}
++
++/* Resolves a scalar to a constant, also through a bcsel selecting between
++ * two equal constants (alpha-to-one leaves bcsel(enabled, 1.0, alpha)).
++ */
++static bool scalar_const_bits(nir_scalar s, uint32_t *bits)
++{
++   s = nir_scalar_chase_movs(s);
++   if (nir_scalar_is_const(s)) {
++      *bits = nir_scalar_as_uint(s);
++      return true;
++   }
++
++   uint32_t a, b;
++   if (nir_scalar_is_alu(s) && nir_scalar_alu_op(s) == nir_op_bcsel &&
++       scalar_const_bits(nir_scalar_chase_alu_src(s, 1), &a) &&
++       scalar_const_bits(nir_scalar_chase_alu_src(s, 2), &b) && a == b) {
++      *bits = a;
++      return true;
++   }
++
++   return false;
++}
++
++static bool fold_pack_consts(nir_builder *b,
++                             nir_intrinsic_instr *intr,
++                             UNUSED void *cb_data)
++{
++   if (intr->intrinsic != nir_intrinsic_pack_pco)
++      return false;
++
++   enum pipe_format format = nir_intrinsic_format(intr);
++   if (!unorm8_format_packs_bytes(format))
++      return false;
++
++   nir_def *src = intr->src[0].ssa;
++   unsigned dyn_chans = src->num_components;
++   uint32_t const_bits = 0;
++   while (dyn_chans > 0) {
++      uint32_t bits;
++      if (!scalar_const_bits(nir_get_scalar(src, dyn_chans - 1), &bits) ||
++          isnan(uif(bits)))
++         break;
++
++      const_bits |= (uint32_t)_mesa_float_to_unorm(uif(bits), 8)
++                    << (8 * (dyn_chans - 1));
++      --dyn_chans;
++   }
++
++   if (dyn_chans == src->num_components)
++      return false;
++
++   b->cursor = nir_before_instr(&intr->instr);
++   nir_def *packed = nir_imm_int(b, const_bits);
++   if (dyn_chans) {
++      /* A pck of fewer than four channels leaves the remaining bytes
++       * undefined, so insert its low bytes rather than ORing it.
++       */
++      /* Build the leading channels from their own sources rather than as
++       * channels of the original vector.
++       */
++      nir_scalar chans[4];
++      for (unsigned c = 0; c < dyn_chans; c++)
++         chans[c] = nir_scalar_chase_movs(nir_get_scalar(src, c));
++
++      packed = nir_bitfield_insert_imm(
++         b,
++         packed,
++         nir_pack_pco(b, nir_vec_scalars(b, chans, dyn_chans), .format = format),
++         0,
++         8 * dyn_chans);
++   }
++
++   nir_def_replace(&intr->def, packed);
++   return true;
++}
++
++/**
++ * \brief Packs only the non-constant leading channels of 8-bit UNORM pixel
++ * outputs and inserts them into the packed bits of the constant trailing ones
++ * (e.g. alpha = 1.0): every packed channel is one issue of the pck
++ * instruction, the insert is a single instruction group.
++ *
++ * \param[in,out] shader NIR shader.
++ * \return True if the pass made progress.
++ */
++bool pco_nir_fold_pack_consts(nir_shader *shader)
++{
++   return nir_shader_intrinsics_pass(shader,
++                                     fold_pack_consts,
++                                     nir_metadata_control_flow,
++                                     NULL);
++}
+-- 
+2.47.3
+

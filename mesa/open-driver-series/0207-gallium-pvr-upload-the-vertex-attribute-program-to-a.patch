@@ -1,0 +1,55 @@
+From 11339b9728a6ef01b43df72a13c870c490928e09 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sat, 24 Oct 2026 07:42:55 +0800
+Subject: [PATCH 207/269] gallium/pvr: upload the vertex attribute program to a
+ device address
+
+The 12-byte vertex-fetch program now has an address a PDS state update can name:
+
+  shader: vertex attribute program: 12 bytes (1 attribute: 3 floats, stride 12)
+  shader: vertex program uploaded at 0x9ffffff000
+
+Same pattern as the USC upload - create, allocate in the VM, map, copy - so the program is reachable by
+the hardware rather than only existing in local memory.
+
+Milestone 1 is now complete end to end: the driver can generate the vertex attribute program and place
+it where the GPU can read it. What is not yet done is naming it in the control stream (a PDS state
+update pointing at this address) and pointing the draw at actual vertex data - which is milestone 2.
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c | 18 +++++++++++++++++-
+ 1 file changed, 17 insertions(+), 1 deletion(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index 72ca61fe..d145a502 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -1222,9 +1222,25 @@ shader_compile_check(struct pipe_screen *pscreen)
+          uint8_t vprog[1024];
+          const uint32_t vlen = pvr_shader_vertex_program(&scr->dev_info, vprog, sizeof(vprog),
+                                                          12, 12, 0);
+-         if (vlen > 0)
++         if (vlen > 0) {
++            struct pvr_bo vbo = { 0 };
++            uint64_t vaddr = 0;
++
+             printf("shader:        vertex attribute program: %u bytes (1 attribute: 3 floats, "
+                    "stride 12)\n", vlen);
++
++            /* The program needs a device address before it can be named by a PDS state update; keep it
++             * in the same general heap as the other stream buffers. */
++            if (pvr_bo_create(scr->fd, vlen, 1, &vbo) &&
++                (vaddr = pvr_vm_alloc(&scr->vm, vbo.size, scr->vm.general.page_size)) != 0 &&
++                pvr_vm_map(&scr->vm, vaddr, vbo.handle, vbo.size) &&
++                pvr_bo_map(scr->fd, &vbo)) {
++               memcpy(vbo.map, vprog, vlen);
++               printf("shader:        vertex program uploaded at 0x%" PRIx64 "\n", vaddr);
++            } else {
++               printf("shader:        FAIL: could not upload the vertex program\n");
++            }
++         }
+          else
+             printf("shader:        FAIL: no vertex attribute program\n");
+       }
+-- 
+2.47.3
+

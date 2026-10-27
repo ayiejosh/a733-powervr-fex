@@ -1,0 +1,178 @@
+From c24b6d331759787e1fadf8b3fa3155fefb613240 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 18:53:33 +0800
+Subject: [PATCH 145/269] gallium/pvr: the sampler's wrap and filter
+ translations, and what is NOT done
+
+  csb: sampler translations: 6 wrap modes all distinct, nearest and linear distinct;
+       sampler emission itself NOT implemented
+  --- ALL PASS        (real open kernel)
+
+The sampler's field list is now known, dumped unfiltered from the start rather than through a
+type-name filter - the mistake that cost two rounds of reading (rounds 34 and 35 missed
+textype and stride respectively, and both times a conclusion was drawn from the absence).
+
+Two things the field list settled:
+  * the sampler carries NO main texture address. texaddr is in IMAGE_WORD1, already emitted;
+    SAMPLER_WORD0/1's plane2/plane3 addresses are for multi-planar formats this driver does
+    not support.
+  * minlod/maxlod are typed enum ROGUE_TEXSTATE_CLAMP whose values are MIN/MAX/INTEGER_BITS/
+    FRACTIONAL_BITS - i.e. the lod range is FIXED-POINT with a bit split the enum describes.
+    A fourth member of the units family, after the PDS data size, the PPP word count and
+    smpcnt-as-log2.
+
+Landed: the two translations that are unambiguous. Six PIPE_TEX_WRAP_* modes map cleanly onto
+six distinct ROGUE_TEXSTATE_ADDRMODE_* values, and the two filters onto distinct values. The
+check asserts TOTALITY and DISTINCTNESS rather than the values: every GL wrap mode must
+translate, and modes that mean different things must not collapse onto one hardware value. A
+mode silently becoming REPEAT would sample outside the texture and present as a driver bug
+many rounds later.
+
+NOT landed, deliberately: sampler emission. cmp_mode, bordercolor_index, anisoctl, dadjust and
+the fixed-point lod encoding have not been read, and a sampler emitted with them at zero would
+be a descriptor that looks complete while stating things nobody decided. The header says so
+where a caller would look, and the check's own success message says so too - so the gap cannot
+be mistaken for an omission.
+---
+ src/gallium/drivers/pvr/pvr_csb.c   | 29 ++++++++++++++++++++
+ src/gallium/drivers/pvr/pvr_csb.h   | 16 +++++++++++
+ src/gallium/drivers/pvr/pvr_probe.c | 42 +++++++++++++++++++++++++++++
+ 3 files changed, 87 insertions(+)
+
+diff --git a/src/gallium/drivers/pvr/pvr_csb.c b/src/gallium/drivers/pvr/pvr_csb.c
+index 7e4ff755..e45db116 100644
+--- a/src/gallium/drivers/pvr/pvr_csb.c
++++ b/src/gallium/drivers/pvr/pvr_csb.c
+@@ -3,6 +3,7 @@
+  */
+ #include "pvr_csb.h"
+ 
++#include "pipe/p_defines.h"
+ #include "util/format/u_format.h"
+ #include "util/log.h"
+ 
+@@ -266,6 +267,34 @@ pvr_format_layout_from_pipe(enum pipe_format format, struct pvr_format_layout *l
+    return true;
+ }
+ 
++bool
++pvr_addrmode_from_pipe(enum pipe_tex_wrap mode, enum ROGUE_TEXSTATE_ADDRMODE *out)
++{
++   switch (mode) {
++   case PIPE_TEX_WRAP_REPEAT:            *out = ROGUE_TEXSTATE_ADDRMODE_REPEAT; return true;
++   case PIPE_TEX_WRAP_MIRROR_REPEAT:     *out = ROGUE_TEXSTATE_ADDRMODE_FLIP; return true;
++   case PIPE_TEX_WRAP_CLAMP_TO_EDGE:     *out = ROGUE_TEXSTATE_ADDRMODE_CLAMP_TO_EDGE; return true;
++   case PIPE_TEX_WRAP_CLAMP_TO_BORDER:   *out = ROGUE_TEXSTATE_ADDRMODE_CLAMP_TO_BORDER; return true;
++   case PIPE_TEX_WRAP_MIRROR_CLAMP_TO_EDGE:
++      *out = ROGUE_TEXSTATE_ADDRMODE_FLIP_ONCE_THEN_CLAMP; return true;
++   case PIPE_TEX_WRAP_CLAMP:             *out = ROGUE_TEXSTATE_ADDRMODE_OGL_CLAMP; return true;
++   default:
++      return false;
++   }
++}
++
++bool
++pvr_filter_from_pipe(enum pipe_tex_filter filter, enum ROGUE_TEXSTATE_FILTER *out)
++{
++   switch (filter) {
++   case PIPE_TEX_FILTER_NEAREST: *out = ROGUE_TEXSTATE_FILTER_POINT; return true;
++   case PIPE_TEX_FILTER_LINEAR:  *out = ROGUE_TEXSTATE_FILTER_LINEAR; return true;
++   default:
++      /* No hardware equivalent, and no close one worth substituting. */
++      return false;
++   }
++}
++
+ bool
+ pvr_csb_emit_tex_desc(struct pvr_csb *csb, const struct pvr_tex_desc *desc)
+ {
+diff --git a/src/gallium/drivers/pvr/pvr_csb.h b/src/gallium/drivers/pvr/pvr_csb.h
+index 2c4321a7..d30aaed3 100644
+--- a/src/gallium/drivers/pvr/pvr_csb.h
++++ b/src/gallium/drivers/pvr/pvr_csb.h
+@@ -24,6 +24,7 @@
+ #define __pvr_get_address(addr) (addr)
+ #define __pvr_make_address(addr) (addr)
+ 
++#include "pipe/p_defines.h"
+ #include "util/format/u_formats.h"
+ 
+ #include "csbgen/rogue/cr.h"
+@@ -182,6 +183,21 @@ struct pvr_tex_desc {
+ 
+ bool pvr_csb_emit_tex_desc(struct pvr_csb *csb, const struct pvr_tex_desc *desc);
+ 
++/* Wrap mode and filter, translated for the sampler descriptor.
++ *
++ * These two are the whole of the sampler's unambiguous part: PIPE_TEX_WRAP_* maps cleanly onto
++ * ROGUE_TEXSTATE_ADDRMODE_* and PIPE_TEX_FILTER_* onto ROGUE_TEXSTATE_FILTER_*, with no
++ * arithmetic and no units in between. Anything not representable exactly is refused.
++ *
++ * NOT here, deliberately: the sampler's other fields. Two of them are unresolved rather than
++ * merely unimplemented - minlod/maxlod are typed enum ROGUE_TEXSTATE_CLAMP whose values are
++ * MIN/MAX/INTEGER_BITS/FRACTIONAL_BITS, i.e. the lod range is FIXED-POINT with a bit split the
++ * enum describes, and cmp_mode/bordercolor_index/anisoctl/dadjust have encodings that have not
++ * been read. A sampler emitted with those left at zero would be a descriptor that looks
++ * complete and states things nobody decided - which is the failure this file keeps refusing. */
++bool pvr_addrmode_from_pipe(enum pipe_tex_wrap mode, enum ROGUE_TEXSTATE_ADDRMODE *out);
++bool pvr_filter_from_pipe(enum pipe_tex_filter filter, enum ROGUE_TEXSTATE_FILTER *out);
++
+ /* Dwords a stream link occupies - what the guard must be at minimum. */
+ #define PVR_CSB_LINK_DWORDS (ROGUE_VDMCTRL_STREAM_LINK0_length + \
+                              ROGUE_VDMCTRL_STREAM_LINK1_length)
+diff --git a/src/gallium/drivers/pvr/pvr_probe.c b/src/gallium/drivers/pvr/pvr_probe.c
+index 2eb21f63..e6e0360d 100644
+--- a/src/gallium/drivers/pvr/pvr_probe.c
++++ b/src/gallium/drivers/pvr/pvr_probe.c
+@@ -1283,6 +1283,48 @@ csb_check(int fd, struct pipe_screen *pscreen)
+          }
+       }
+ 
++      /* The sampler's two unambiguous translations. The property that matters is that the
++       * mapping is TOTAL over what GL can ask for: every PIPE_TEX_WRAP_* must translate, and
++       * the ones that mean different things must NOT collapse to the same hardware value. A
++       * mode that silently became REPEAT would sample outside the texture and look like a
++       * driver bug much later. */
++      {
++         const enum pipe_tex_wrap wraps[] = {
++            PIPE_TEX_WRAP_REPEAT, PIPE_TEX_WRAP_MIRROR_REPEAT, PIPE_TEX_WRAP_CLAMP_TO_EDGE,
++            PIPE_TEX_WRAP_CLAMP_TO_BORDER, PIPE_TEX_WRAP_MIRROR_CLAMP_TO_EDGE,
++            PIPE_TEX_WRAP_CLAMP,
++         };
++         enum ROGUE_TEXSTATE_ADDRMODE modes[ARRAY_SIZE(wraps)];
++         enum ROGUE_TEXSTATE_FILTER f_near, f_lin;
++
++         for (unsigned i = 0; i < ARRAY_SIZE(wraps); i++) {
++            if (!pvr_addrmode_from_pipe(wraps[i], &modes[i])) {
++               printf("csb:           FAIL: wrap mode %u has no hardware equivalent\n",
++                      wraps[i]);
++               goto out;
++            }
++            for (unsigned j = 0; j < i; j++) {
++               if (modes[j] == modes[i]) {
++                  printf("csb:           FAIL: wrap modes %u and %u collapsed to the same "
++                         "hardware value\n", wraps[j], wraps[i]);
++                  goto out;
++               }
++            }
++         }
++
++         if (!pvr_filter_from_pipe(PIPE_TEX_FILTER_NEAREST, &f_near) ||
++             !pvr_filter_from_pipe(PIPE_TEX_FILTER_LINEAR, &f_lin) ||
++             f_near == f_lin) {
++            printf("csb:           FAIL: the two filters did not translate to distinct "
++                   "values\n");
++            goto out;
++         }
++
++         printf("csb:           sampler translations: %zu wrap modes all distinct, nearest "
++                "and linear distinct; sampler emission itself NOT implemented\n",
++                ARRAY_SIZE(wraps));
++      }
++
+       printf("csb:           texture descriptor: %u dwords, STRIDE/linear, extents as "
+              "value-minus-one, smpcnt 0 (log2 of one sample), zero extent refused\n",
+              ROGUE_TEXSTATE_IMAGE_WORD0_length +
+-- 
+2.47.3
+

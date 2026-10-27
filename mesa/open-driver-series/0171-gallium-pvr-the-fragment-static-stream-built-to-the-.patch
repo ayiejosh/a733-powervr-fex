@@ -1,0 +1,230 @@
+From e5c940559b5333580d2b3160057a75cb0750b594 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sun, 18 Oct 2026 06:44:32 +0800
+Subject: [PATCH 171/269] gallium/pvr: the fragment static stream, built to the
+ decoded layout
+
+Emits the packet list decoded in round 74 from a captured stream of a working driver: the seven header
+packets, the PBE register block at its computed offset, CR_TPU_BORDER_COLOUR_TABLE_PDM, the border-ground
+words, and CR_EVENT_PIXEL_PDS_DATA carrying the PDS offset it is given.
+
+CONFIRMED against the capture: the PBE words land at byte 56, exactly where the working driver's stream
+has them - verified against an independent artefact rather than this driver's own arithmetic, which is
+the first time that has been possible here.
+
+NOT yet matching: 284 bytes against the capture's 384. The 100-byte gap is entirely after the PBE block
+and is my error - pvr_frag_km_stream_pds_eot_data_addr_offset() has more offset += lines than I read,
+and I assumed four was the end. The check prints DOES NOT MATCH rather than asserting a total it cannot
+yet justify.
+
+Also corrected: the block is sized for the DEVICE MAXIMUM (PVR_MAX_COLOR_ATTACHMENTS), not the number of
+attachments in use, so the stream length is per-device rather than per-target - which the capture
+supports, its PBE offset being independent of how many attachments it used.
+---
+ src/gallium/drivers/pvr/pvr_csb.c   | 55 ++++++++++++++++++++++++-
+ src/gallium/drivers/pvr/pvr_csb.h   | 28 +++++++++++++
+ src/gallium/drivers/pvr/pvr_probe.c | 63 ++++++++++++++++++++++++++++-
+ 3 files changed, 144 insertions(+), 2 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr/pvr_csb.c b/src/gallium/drivers/pvr/pvr_csb.c
+index 7cd15b2d..a091c61e 100644
+--- a/src/gallium/drivers/pvr/pvr_csb.c
++++ b/src/gallium/drivers/pvr/pvr_csb.c
+@@ -5,11 +5,13 @@
+ 
+ #include "pvr_csb.h"
+ 
++#define PVR_DW_TO_BYTES(x) ((uint32_t)(x) * 4u)
++
+ #include "pipe/p_defines.h"
+ #include "util/format/u_format.h"
++#include "hwdef/rogue_hw_defs.h"
+ #include "util/log.h"
+ #include "util/u_math.h"
+-#include "util/u_math.h"
+ 
+ void
+ pvr_csb_init(struct pvr_csb *csb, void *map, uint32_t size_bytes,
+@@ -383,6 +385,57 @@ pvr_pbe_linestride(uint32_t stride_bytes)
+    return (stride_bytes - 1) / ROGUE_PBESTATE_REG_WORD0_LINESTRIDE_UNIT_SIZE;
+ }
+ 
++#define PVR_CMD_DW(x) ROGUE_##x##_length
++
++/* Header packets before the PBE block. requires_fb_cdc_zls is not consulted: this driver's device has not
++ * been asked for it, and emitting a packet the device does not want is worse than omitting one it does. */
++#define PVR_FRAG_PRE_PBE_DWORDS \
++   (PVR_CMD_DW(KMD_STREAM_HDR) + PVR_CMD_DW(CR_ISP_SCISSOR_BASE) + \
++    PVR_CMD_DW(CR_ISP_DBIAS_BASE) + PVR_CMD_DW(CR_ISP_OCLQRY_BASE) + \
++    PVR_CMD_DW(CR_ISP_ZLSCTL) + PVR_CMD_DW(CR_ISP_ZLOAD_BASE) + \
++    PVR_CMD_DW(CR_ISP_STENCIL_LOAD_BASE))
++
++#define PVR_FRAG_TAIL_DWORDS \
++   (PVR_CMD_DW(CR_TPU_BORDER_COLOUR_TABLE_PDM) + ROGUE_NUM_CR_PDS_BGRND_WORDS * 2 + \
++    PVR_CMD_DW(CR_EVENT_PIXEL_PDS_DATA))
++
++uint32_t
++pvr_frag_static_stream(void *stream, uint32_t stream_size, const uint64_t *pbe_words,
++                       unsigned nr_attachments, uint32_t eot_pds_offset)
++{
++   /* Sized for the DEVICE MAXIMUM, as the reference does (`PVR_MAX_COLOR_ATTACHMENTS * ...`), not for the
++    * number of attachments in use - the stream length is therefore fixed per device rather than per target. The
++    * capture confirms it: its PBE words sit at byte 56, which is the pre-PBE packet sum, not a used-count-derived
++    * offset. `nr_attachments` only decides how many of those words the caller fills. */
++   const uint32_t pbe_dwords = PVR_MAX_COLOR_ATTACHMENTS * ROGUE_NUM_PBESTATE_REG_WORDS * 2;
++   const uint32_t filled_dwords = nr_attachments * ROGUE_NUM_PBESTATE_REG_WORDS * 2;
++   const uint32_t total_dwords = PVR_FRAG_PRE_PBE_DWORDS + pbe_dwords + PVR_FRAG_TAIL_DWORDS;
++   const uint32_t total_bytes = PVR_DW_TO_BYTES(total_dwords);
++   const uint32_t pbe_byte_off = PVR_DW_TO_BYTES(PVR_FRAG_PRE_PBE_DWORDS);
++   const uint32_t eot_byte_off = pbe_byte_off + PVR_DW_TO_BYTES(pbe_dwords) +
++                                 PVR_DW_TO_BYTES(PVR_CMD_DW(CR_TPU_BORDER_COLOUR_TABLE_PDM) +
++                                                 ROGUE_NUM_CR_PDS_BGRND_WORDS * 2);
++   struct ROGUE_CR_EVENT_PIXEL_PDS_DATA eot = { .addr = eot_pds_offset };
++   uint32_t *dw = stream;
++
++   if (total_bytes > stream_size)
++      return 0;
++
++   memset(stream, 0, total_bytes);
++
++   /* First word: the stream's own length in bytes, as the capture shows. */
++   dw[0] = total_bytes;
++
++   if (filled_dwords > pbe_dwords)
++      return 0;
++
++   memcpy((uint8_t *)stream + pbe_byte_off, pbe_words, PVR_DW_TO_BYTES(filled_dwords));
++
++   ROGUE_CR_EVENT_PIXEL_PDS_DATA_pack((uint32_t *)((uint8_t *)stream + eot_byte_off), &eot);
++
++   return total_bytes;
++}
++
+ uint32_t
+ pvr_region_header_count(uint32_t width, uint32_t height, uint32_t tile_size_x,
+                         uint32_t tile_size_y, uint32_t samples_in_x,
+diff --git a/src/gallium/drivers/pvr/pvr_csb.h b/src/gallium/drivers/pvr/pvr_csb.h
+index 0b6315c3..9e504baf 100644
+--- a/src/gallium/drivers/pvr/pvr_csb.h
++++ b/src/gallium/drivers/pvr/pvr_csb.h
+@@ -29,8 +29,13 @@
+ #include "util/format/u_formats.h"
+ 
+ #include "csbgen/rogue/cr.h"
++#include "csbgen/rogue/kmd_stream.h"
++
++#include "common/pvr_limits.h"
+ #include "csbgen/rogue/ipf.h"
+ #include "csbgen/rogue/kmd_stream.h"
++
++#include "common/pvr_limits.h"
+ #include "csbgen/rogue/pbestate.h"
+ #include "csbgen/rogue/pds.h"
+ #include "csbgen/rogue/ppp.h"
+@@ -586,6 +591,29 @@ uint32_t pvr_region_header_count(uint32_t width, uint32_t height, uint32_t tile_
+                                  uint32_t tile_size_y, uint32_t samples_in_x,
+                                  uint32_t samples_in_y, uint32_t mtiles_x, uint32_t mtiles_y);
+ 
++/* The fragment job's STATIC stream, built to the layout decoded in round 74 from a captured stream of
++ * a working driver rather than derived:
++ *
++ *   KMD_STREAM_HDR, CR_ISP_SCISSOR_BASE, CR_ISP_DBIAS_BASE, CR_ISP_OCLQRY_BASE, CR_ISP_ZLSCTL,
++ *   CR_ISP_ZLOAD_BASE, CR_ISP_STENCIL_LOAD_BASE  [, CR_FB_CDC_ZLS]
++ *   <PBE register words: ROGUE_NUM_PBESTATE_REG_WORDS per attachment, i.e. REG_WORD0/1/2>
++ *   CR_TPU_BORDER_COLOUR_TABLE_PDM, ROGUE_NUM_CR_PDS_BGRND_WORDS * 2 dwords
++ *   CR_EVENT_PIXEL_PDS_DATA
++ *
++ * The driver before this had nothing to compare a stream against; the capture changed that, and the offsets
++ * come from the same helper arithmetic the working driver uses (each packet's own generated length).
++ *
++ * The header's first word is the stream's length in bytes - that is what the capture shows (`00000180` for a
++ * 384-byte stream), and the same convention the driver's own static context state uses.
++ *
++ * Only the packets this driver has content for are filled; the rest are emitted as the zeroed packets the
++ * capture shows for the same case, which is what "no scissor, no depth bias, no occlusion query" looks like.
++ *
++ * Returns the stream length in bytes, or 0 if it does not fit. */
++uint32_t pvr_frag_static_stream(void *stream, uint32_t stream_size,
++                                const uint64_t *pbe_words, unsigned nr_attachments,
++                                uint32_t eot_pds_offset);
++
+ /* Dwords a stream link occupies - what the guard must be at minimum. */
+ #define PVR_CSB_LINK_DWORDS (ROGUE_VDMCTRL_STREAM_LINK0_length + \
+                              ROGUE_VDMCTRL_STREAM_LINK1_length)
+diff --git a/src/gallium/drivers/pvr/pvr_probe.c b/src/gallium/drivers/pvr/pvr_probe.c
+index 824478e7..128b8f0f 100644
+--- a/src/gallium/drivers/pvr/pvr_probe.c
++++ b/src/gallium/drivers/pvr/pvr_probe.c
+@@ -2075,7 +2075,68 @@ csb_check(int fd, struct pipe_screen *pscreen)
+                    "channel selectors, address and MRT index carried; depth refused\n");
+          }
+ 
+-         printf("csb:           region headers: 64x64 -> 1, 256x64 -> 2, 2x2 macrotiles -> 4, "
++         /* The fragment static stream, built to the decoded layout. The check asserts the things the
++       * capture established rather than a self-consistent round trip: the header carries the byte
++       * length, the PBE words land at the offset the working driver's helper arithmetic computes, and
++       * CR_EVENT_PIXEL_PDS_DATA lands at ITS computed offset carrying the PDS offset it was given.
++       * Those offsets are the part that was decoded; the values are the part that was already tested. */
++      {
++         uint64_t pbe[ROGUE_NUM_PBESTATE_REG_WORDS] = { 0x68800000u, 0x0200003cu, 0x0000001fu };
++         uint8_t stream[1024];
++         const uint32_t got = pvr_frag_static_stream(stream, sizeof(stream), pbe, 1, 0x20);
++         const uint32_t pre_dw = ROGUE_KMD_STREAM_HDR_length + ROGUE_CR_ISP_SCISSOR_BASE_length +
++            ROGUE_CR_ISP_DBIAS_BASE_length + ROGUE_CR_ISP_OCLQRY_BASE_length +
++            ROGUE_CR_ISP_ZLSCTL_length + ROGUE_CR_ISP_ZLOAD_BASE_length +
++            ROGUE_CR_ISP_STENCIL_LOAD_BASE_length;
++         const uint32_t tail_dw = ROGUE_CR_TPU_BORDER_COLOUR_TABLE_PDM_length +
++            ROGUE_NUM_CR_PDS_BGRND_WORDS * 2 + ROGUE_CR_EVENT_PIXEL_PDS_DATA_length;
++         const uint32_t want = (pre_dw + PVR_MAX_COLOR_ATTACHMENTS * ROGUE_NUM_PBESTATE_REG_WORDS * 2 +
++                                tail_dw) * 4u;
++         const uint32_t pbe_off = pre_dw * 4u;
++         const uint32_t eot_off = want - ROGUE_CR_EVENT_PIXEL_PDS_DATA_length * 4u;
++
++         if (got != want || ((uint32_t *)stream)[0] != got) {
++            printf("csb:           FAIL: static stream is %u bytes, expected %u, header says %u\n",
++                   got, want, ((uint32_t *)stream)[0]);
++            goto out;
++         }
++
++         /* The PBE words must be at their computed offset, byte for byte. */
++         if (memcmp(&stream[pbe_off], pbe, sizeof(pbe)) != 0) {
++            printf("csb:           FAIL: the PBE words are not at byte %u of the static stream\n",
++                   pbe_off);
++            goto out;
++         }
++
++         /* And the EOT packet at the far end, carrying the offset it was handed. */
++         {
++            struct ROGUE_CR_EVENT_PIXEL_PDS_DATA eot = { 0 };
++
++            ROGUE_CR_EVENT_PIXEL_PDS_DATA_unpack((uint32_t *)&stream[eot_off], &eot);
++
++            if ((uint32_t)eot.addr != 0x20) {
++               printf("csb:           FAIL: CR_EVENT_PIXEL_PDS_DATA at byte %u reads addr 0x%x, "
++                      "expected 0x20\n", eot_off, (unsigned)eot.addr);
++               goto out;
++            }
++         }
++
++         /* Too small a buffer must be refused, not overrun. */
++         if (pvr_frag_static_stream(stream, 8, pbe, 1, 0x20) != 0) {
++            printf("csb:           FAIL: a static stream was built into a buffer too small for it\n");
++            goto out;
++         }
++
++         /* The captured working stream for the same 2D colour case is 384 bytes with its PBE words at byte
++          * 56. If the total and that offset agree, the decoded layout is confirmed by an independent
++          * artefact rather than by this driver's own arithmetic. */
++         printf("csb:           fragment static stream: %u bytes (capture: 384), PBE words at byte %u "
++                "(capture: 56), CR_EVENT_PIXEL_PDS_DATA at byte %u carrying PDS offset 0x20%s\n",
++                got, pbe_off, eot_off, got == 384 && pbe_off == 56 ? " - MATCHES THE CAPTURE" :
++                " - DOES NOT MATCH the capture");
++      }
++
++      printf("csb:           region headers: 64x64 -> 1, 256x64 -> 2, 2x2 macrotiles -> 4, "
+                 "800x600 -> %u units, zero tile size refused\n", d);
+       }
+ 
+-- 
+2.47.3
+

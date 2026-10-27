@@ -1,0 +1,48 @@
+From a3bd89a430cd78c9716b086108986343000df352 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sun, 18 Oct 2026 10:05:47 +0800
+Subject: [PATCH 173/269] gallium/pvr: report the static-stream component sizes
+
+Diagnostic print of pre/pbe/tail (and each tail packet) from the compiled constants, which surfaced that
+the builder returns 364 bytes while its own macros sum to 368 - a one-dword internal inconsistency inside
+pvr_frag_static_stream, not a decode error. Also confirms ROGUE_KMD_STREAM_USC_CLEAR_REGISTER_COUNT = 8,
+so round 77's suspect is not the cause.
+
+The remaining 4 dwords to the reference's 384 cannot be chased until the builder agrees with itself;
+next step is reading the function once and making total_dwords and the return the same expression.
+---
+ src/gallium/drivers/pvr/pvr_probe.c | 18 ++++++++++++++++++
+ 1 file changed, 18 insertions(+)
+
+diff --git a/src/gallium/drivers/pvr/pvr_probe.c b/src/gallium/drivers/pvr/pvr_probe.c
+index 21ab737b..6dda8a59 100644
+--- a/src/gallium/drivers/pvr/pvr_probe.c
++++ b/src/gallium/drivers/pvr/pvr_probe.c
+@@ -2134,6 +2134,24 @@ csb_check(int fd, struct pipe_screen *pscreen)
+                 "(capture: 56), CR_EVENT_PIXEL_PDS_DATA at byte %u carrying PDS offset 0x20%s\n",
+                 got, pbe_off, eot_off, pbe_off == 56 ? " - PBE offset matches the capture" :
+                 " - PBE offset DOES NOT match");
++         const uint32_t tail_dw = (got - pre_dw * 4u -
++            PVR_MAX_COLOR_ATTACHMENTS * ROGUE_NUM_PBESTATE_REG_WORDS * 2 * 4u) / 4u +
++            ROGUE_CR_EVENT_PIXEL_PDS_DATA_length;
++         printf("csb:           static-stream components: pre %u dw, pbe %u dw, tail %u dw "
++                "(tpu %u, bgrnd %u, usc_clear %u, px_ctrl %u, isp %u, pdsinfo %u, viewidx %u, "
++                "phantom %u, eot %u) = %u dw\n",
++                pre_dw, PVR_MAX_COLOR_ATTACHMENTS * ROGUE_NUM_PBESTATE_REG_WORDS * 2,
++                tail_dw - ROGUE_CR_EVENT_PIXEL_PDS_DATA_length,
++                ROGUE_CR_TPU_BORDER_COLOUR_TABLE_PDM_length,
++                2 * ROGUE_NUM_CR_PDS_BGRND_WORDS * 2,
++                ROGUE_KMD_STREAM_USC_CLEAR_REGISTER_COUNT * ROGUE_CR_USC_CLEAR_REGISTER_length,
++                ROGUE_CR_USC_PIXEL_OUTPUT_CTRL_length,
++                ROGUE_CR_ISP_BGOBJDEPTH_length + ROGUE_CR_ISP_BGOBJVALS_length +
++                   ROGUE_CR_ISP_AA_length + ROGUE_CR_ISP_CTL_length,
++                ROGUE_CR_EVENT_PIXEL_PDS_INFO_length, ROGUE_KMD_STREAM_VIEW_IDX_length,
++                ROGUE_KMD_STREAM_PIXEL_PHANTOM_length, ROGUE_CR_EVENT_PIXEL_PDS_DATA_length,
++                (pre_dw + PVR_MAX_COLOR_ATTACHMENTS * ROGUE_NUM_PBESTATE_REG_WORDS * 2 +
++                 tail_dw));
+          printf("csb:           cluster_grouping false -> %u bytes, true -> %u bytes; the captured "
+                 "working stream is 384 -> cluster_grouping is %s\n", got_no, got_yes,
+                 got_no == 384 ? "FALSE" : got_yes == 384 ? "TRUE" : "neither - still wrong");
+-- 
+2.47.3
+

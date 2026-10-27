@@ -1,0 +1,65 @@
+From fb6fade8af88eb9ad24e5e32a374f7b638432b24 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sun, 25 Oct 2026 03:57:33 +0800
+Subject: [PATCH 229/269] gallium/pvr: fresh-boot and low-address experiments -
+ the TA stall is not state residue or address range
+
+Two negative results that narrow the remaining stall:
+
+- After a reboot (first open-driver submission of the boot), the very first geometry kick still
+  hangs: firmware logs "Kick TA: ... First kick:1, Last kick:1", then DM2 times out with no TA
+  interrupt. So the stall is not accumulated firmware/hardware state from earlier lockups.
+- PVR_PROBE_LOW_VA restricts the general-heap VMA window to 256 MiB and drops the render target's
+  16 GiB alignment (anything below 4 GiB is PBE-encodable), so every device address in the job lands
+  in the 0x8000_xxxx_xxxx range the working Vulkan driver uses. Same hang. So the high device
+  addresses this driver happened to allocate are not the problem either.
+
+The firmware trace for both runs is archived (fresh boot: /tmp only, low-VA: captured). Verification:
+probe ALL PASS under the shim.
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c |  4 +++-
+ src/gallium/drivers/pvr_native/pvr_vm.c    | 13 ++++++++++++-
+ 2 files changed, 15 insertions(+), 2 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index fda91cd6..e6987cf9 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -782,7 +782,9 @@ real_job_done:
+             /* The PBE encodes the target address in bits [0:31] and [34:39]: bits 32 and 33 have no
+              * field, so a target whose address sets either cannot be described at all. A 16 GiB
+              * alignment guarantees both are clear. */
+-            rtaddr = pvr_vm_alloc(vm, rtbo.size, 1ULL << 34);
++            rtaddr = pvr_vm_alloc(vm, rtbo.size,
++                                  getenv("PVR_PROBE_LOW_VA") ? vm->general.page_size
++                                                             : (1ULL << 34));
+             rctladdr = pvr_vm_alloc(vm, rctl.size, vm->general.page_size);
+             rbctaddr = pvr_vm_alloc(vm, rbct.size, vm->general.page_size);
+             printf("hwrt:          heap usable base 0x%" PRIx64 " size 0x%" PRIx64 "; RT 0x%" PRIx64
+diff --git a/src/gallium/drivers/pvr_native/pvr_vm.c b/src/gallium/drivers/pvr_native/pvr_vm.c
+index c87f708f..edf3ad0c 100644
+--- a/src/gallium/drivers/pvr_native/pvr_vm.c
++++ b/src/gallium/drivers/pvr_native/pvr_vm.c
+@@ -241,7 +241,18 @@ pvr_vm_init(int fd, struct pvr_vm *vm)
+                 vm->general.page_size, host_page_size);
+    }
+ 
+-   util_vma_heap_init(&vm->vma, vm->general.usable_base, vm->general.usable_size);
++   /* Round-14 experiment: keep every device address low (like the working Vulkan driver's
++    * 0x8000_xxxx_xxxx allocations) instead of the VMA heap's top-down high addresses. Some of the
++    * hardware address fields the control stream carries have narrow bitfields, and a high address
++    * can be encodable but not usable. */
++   {
++      uint64_t vma_size = vm->general.usable_size;
++
++      if (getenv("PVR_PROBE_LOW_VA") != NULL)
++         vma_size = MIN2(vma_size, UINT64_C(256) << 20);
++
++      util_vma_heap_init(&vm->vma, vm->general.usable_base, vma_size);
++   }
+ 
+    /* Needed for VM_MAP only - buffer creation and CPU mapping do not require it. */
+    {
+-- 
+2.47.3
+

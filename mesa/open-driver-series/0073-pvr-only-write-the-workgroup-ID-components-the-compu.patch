@@ -1,0 +1,91 @@
+From d3e4d4d0008096a4bb1c51d03b2446b43d538742 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sat, 10 Oct 2026 21:20:17 +0800
+Subject: [PATCH 73/98] pvr: only write the workgroup ID components the compute
+ shader reads
+
+The compute PDS program wrote all three workgroup ID coefficients for
+every workgroup (a 64-bit DOUTW for X and Y and a 32-bit one for Z),
+although most shaders only read X. Record which components are read in
+pco_cs_data.workgroup_id_mask, rounded up to a prefix (X, XY or XYZ, so
+the PDS program only takes the paths it already used), and skip the
+others. The coefficients stay allocated, so the shader's three-component
+load still reads only registers it owns; the unread ones are left stale.
+
+BXM-4-64, cstp (64-invocation workgroups, a hash and one store):
+per-workgroup time 0.1625 -> 0.1283 us, 64 workgroups x 200 dispatches
+360 -> 447 M invocations/s (interleaved A/B x8, pinned to the A76
+cores). Sweeps showed a per-workgroup launch floor rather than shader
+time: the loop-length variants up to 8 iterations cost the same per
+workgroup as cstp.
+
+CTS: compute.pipeline (1235 cases), loops/indexing/graphicsfuzz/buffer
+list (6428), synchronization (1718), 5062 + 9170 + 838 + 282: identical
+to before; compute.pipeline.builtin_var + basic also identical with a
+warm shader cache. Gate 44/44.
+---
+ src/imagination/pco/pco_data.h             |  3 +++
+ src/imagination/vulkan/pvr_arch_pipeline.c | 26 +++++++++++++++++++++-
+ 2 files changed, 28 insertions(+), 1 deletion(-)
+
+diff --git a/src/imagination/pco/pco_data.h b/src/imagination/pco/pco_data.h
+index 5086033..5ba86f1 100644
+--- a/src/imagination/pco/pco_data.h
++++ b/src/imagination/pco/pco_data.h
+@@ -153,6 +153,9 @@ typedef struct _pco_cs_data {
+    pco_range shmem;
+    bool zero_shmem;
+    bool global_shmem;
++
++   /** Components of the workgroup ID the shader reads. */
++   uint8_t workgroup_id_mask;
+ } pco_cs_data;
+ 
+ /** PCO image descriptor metadata. */
+diff --git a/src/imagination/vulkan/pvr_arch_pipeline.c b/src/imagination/vulkan/pvr_arch_pipeline.c
+index 39e14fa..d92d9e6 100644
+--- a/src/imagination/vulkan/pvr_arch_pipeline.c
++++ b/src/imagination/vulkan/pvr_arch_pipeline.c
+@@ -749,7 +749,8 @@ static void pvr_pds_compute_program_setup(
+    }
+ 
+    for (unsigned u = 0; u < ARRAY_SIZE(program->work_group_input_regs); ++u) {
+-      if (sys_vals[SYSTEM_VALUE_WORKGROUP_ID].count > u) {
++      if (sys_vals[SYSTEM_VALUE_WORKGROUP_ID].count > u &&
++          (cs_data->cs.workgroup_id_mask & BITFIELD_BIT(u))) {
+          program->work_group_input_regs[u] =
+             sys_vals[SYSTEM_VALUE_WORKGROUP_ID].start + u;
+       }
+@@ -2487,6 +2488,29 @@ static void pvr_alloc_cs_sysvals(pco_data *data, nir_shader *nir)
+ 
+    check_unused_sysvals(system_values_read);
+    assert(BITSET_IS_EMPTY(system_values_read));
++
++   /* The PDS program only needs to write the workgroup ID components that
++    * are read; each one it skips saves work for every workgroup.
++    */
++   data->cs.workgroup_id_mask = 0;
++   nir_foreach_function_impl (impl, nir) {
++      nir_foreach_block (block, impl) {
++         nir_foreach_instr (instr, block) {
++            if (instr->type != nir_instr_type_intrinsic)
++               continue;
++
++            nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
++            if (intr->intrinsic == nir_intrinsic_load_workgroup_id)
++               data->cs.workgroup_id_mask |= nir_def_components_read(&intr->def);
++         }
++      }
++   }
++
++   /* Keep a prefix (X, XY or XYZ): the PDS paths for other subsets are
++    * untested. No visible read keeps all three.
++    */
++   const unsigned wg_id_comps = util_last_bit(data->cs.workgroup_id_mask);
++   data->cs.workgroup_id_mask = BITFIELD_MASK(wg_id_comps ? wg_id_comps : 3);
+ }
+ 
+ static void pvr_alloc_cs_shmem(pco_data *data, nir_shader *nir)
+-- 
+2.47.3
+

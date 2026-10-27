@@ -1,0 +1,177 @@
+From 553e5e6337731767c8c4b03a015530ed67324243 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 20:36:22 +0800
+Subject: [PATCH 149/269] gallium/pvr: the TA state presence bitmap, and a
+ derivation I refused to guess
+
+  csb: TA state header: presence bitmap matches all four requests exactly, no unannounced bits,
+       view_port_count follows the viewport bit
+  --- ALL PASS        (real open kernel)
+
+TA_STATE_HEADER is a PRESENCE BITMAP: it announces which state packets follow it, so the
+sequence is variable-length in exactly the way round 26's VDM group is. That pattern is now
+established twice, which is the reason to land the header before the packets it announces.
+
+Only the bits this driver can currently justify are represented (ispctl, viewport). The header
+has roughly two dozen; a bit set for a packet this driver cannot emit is WORSE than absent,
+because it makes the hardware read whatever follows as that state. The check asserts that
+direction explicitly: all four combinations verified, plus an assertion that no unannounced bit
+was set.
+
+Also records a derivation I deliberately did NOT copy. The reference computes:
+
+  ispctl.dbenable = !rasterizer_discard &&
+                    dynamic_state->rs.depth_bias.enable &&
+                    obj_type == ROGUE_TA_OBJTYPE_TRIANGLE;
+
+Depth ENABLE gated on a depth BIAS flag is not the obvious meaning, and it may well be
+deliberate (or a reference bug). Either way, inventing "dbenable = depth test enabled from the
+DSA state" would be the plausible-inference mistake this programme has now recorded three times
+(rounds 33, 34, 41). It needs understanding, not assumption, so ISPCTL itself is not emitted yet.
+---
+ src/gallium/drivers/pvr/pvr_csb.c   | 22 ++++++++++++
+ src/gallium/drivers/pvr/pvr_csb.h   | 24 +++++++++++++
+ src/gallium/drivers/pvr/pvr_probe.c | 52 +++++++++++++++++++++++++++++
+ 3 files changed, 98 insertions(+)
+
+diff --git a/src/gallium/drivers/pvr/pvr_csb.c b/src/gallium/drivers/pvr/pvr_csb.c
+index 02e5518b..bd95e2fc 100644
+--- a/src/gallium/drivers/pvr/pvr_csb.c
++++ b/src/gallium/drivers/pvr/pvr_csb.c
+@@ -296,6 +296,28 @@ pvr_filter_from_pipe(enum pipe_tex_filter filter, enum ROGUE_TEXSTATE_FILTER *ou
+    }
+ }
+ 
++bool
++pvr_csb_emit_ta_state_header(struct pvr_csb *csb, const struct pvr_ta_presence *pres)
++{
++   struct ROGUE_TA_STATE_HEADER header = {
++      .pres_ispctl = pres->ispctl,
++      .pres_viewport = pres->viewport,
++      /* Not the last block in the stream, and no context switch or terminate here. */
++      .not_final_term = false,
++      .pres_terminate = false,
++      .context_switch = false,
++      .view_port_count = pres->viewport ? 1 : 0,
++   };
++   uint32_t *dw = pvr_csb_emit(csb, ROGUE_TA_STATE_HEADER_length);
++
++   if (dw == NULL)
++      return false;
++
++   ROGUE_TA_STATE_HEADER_pack(dw, &header);
++
++   return true;
++}
++
+ bool
+ pvr_csb_emit_sampler_desc(struct pvr_csb *csb, const struct pvr_sampler_desc *desc)
+ {
+diff --git a/src/gallium/drivers/pvr/pvr_csb.h b/src/gallium/drivers/pvr/pvr_csb.h
+index ef1103ff..289dce5b 100644
+--- a/src/gallium/drivers/pvr/pvr_csb.h
++++ b/src/gallium/drivers/pvr/pvr_csb.h
+@@ -32,6 +32,7 @@
+ #include "csbgen/rogue/kmd_stream.h"
+ #include "csbgen/rogue/pbestate.h"
+ #include "csbgen/rogue/pds.h"
++#include "csbgen/rogue/ppp.h"
+ #include "csbgen/rogue/texstate.h"
+ #include "csbgen/rogue/vdm.h"
+ 
+@@ -234,6 +235,29 @@ struct pvr_sampler_desc {
+ bool pvr_csb_emit_sampler_desc(struct pvr_csb *csb,
+                                const struct pvr_sampler_desc *desc);
+ 
++/* What a TA (triangle-accumulation) state block will contain.
++ *
++ * TA_STATE_HEADER is a PRESENCE BITMAP: it announces which state packets follow it, so the
++ * sequence is variable-length in exactly the way round 26's VDM group is - one flag word, then
++ * whichever packets the flags called for. Emitting the packets without the matching bits writes
++ * state the hardware does not read; emitting the bits without the packets makes it read
++ * whatever follows as state.
++ *
++ * Only the presence bits this driver can currently justify are represented. The header has
++ * roughly two dozen (region clip, wclamp, varying words 0-2, outselects, PDS state pointers 0-3,
++ * stream out, PPP control, terminate, ...); a bit set for a packet this driver cannot yet emit is
++ * worse than absent, because it makes the hardware read the next packet as that state. */
++struct pvr_ta_presence {
++   bool ispctl;
++   bool viewport;
++};
++
++/* Emits only the header. The packets it announces are the caller's to emit, in the order the
++ * hardware expects, and a caller that sets a bit without emitting the packet is describing a
++ * stream that does not exist. */
++bool pvr_csb_emit_ta_state_header(struct pvr_csb *csb,
++                                  const struct pvr_ta_presence *pres);
++
+ /* Dwords a stream link occupies - what the guard must be at minimum. */
+ #define PVR_CSB_LINK_DWORDS (ROGUE_VDMCTRL_STREAM_LINK0_length + \
+                              ROGUE_VDMCTRL_STREAM_LINK1_length)
+diff --git a/src/gallium/drivers/pvr/pvr_probe.c b/src/gallium/drivers/pvr/pvr_probe.c
+index 946f14f4..fcad1c1b 100644
+--- a/src/gallium/drivers/pvr/pvr_probe.c
++++ b/src/gallium/drivers/pvr/pvr_probe.c
+@@ -1491,6 +1491,58 @@ csb_check(int fd, struct pipe_screen *pscreen)
+                 "lod fixed-point 6 bits (1.0 -> 64), wrap/filter fields verified\n");
+       }
+ 
++      /* The TA presence bitmap. The property that matters is not that a bool packs - it is that
++       * the bitmap says EXACTLY what the caller asked for. A bit set for a packet that is not
++       * emitted makes the hardware read whatever follows as that state; a bit missing hides
++       * state the caller did write. Both are silent, and both are checked here for all four
++       * combinations. */
++      {
++         const struct pvr_ta_presence cases[] = {
++            { false, false }, { true, false }, { false, true }, { true, true },
++         };
++
++         for (unsigned c = 0; c < ARRAY_SIZE(cases); c++) {
++            struct ROGUE_TA_STATE_HEADER h = { 0 };
++
++            pvr_csb_reset(&csb);
++
++            if (!pvr_csb_emit_ta_state_header(&csb, &cases[c]) ||
++                pvr_csb_size(&csb) != ROGUE_TA_STATE_HEADER_length * 4) {
++               printf("csb:           FAIL: the TA header did not emit\n");
++               goto out;
++            }
++
++            ROGUE_TA_STATE_HEADER_unpack(bo.map, &h);
++
++            if (h.pres_ispctl != cases[c].ispctl ||
++                h.pres_viewport != cases[c].viewport) {
++               printf("csb:           FAIL: TA header case %u announced ispctl %u viewport %u, "
++                      "asked for %u %u\n", c, h.pres_ispctl, h.pres_viewport,
++                      cases[c].ispctl, cases[c].viewport);
++               goto out;
++            }
++
++            /* A bit nobody asked for is the dangerous direction: it makes the hardware read the
++             * next packet as state that was never emitted. */
++            if (h.pres_terminate || h.pres_region_clip || h.pres_outselects ||
++                h.pres_pds_state_ptr0 || h.pres_varying_word0 ||
++                h.pres_stream_out_program || h.pres_ppp_ctrl) {
++               printf("csb:           FAIL: TA header case %u set a presence bit for a packet "
++                      "this driver cannot emit\n", c);
++               goto out;
++            }
++
++            if (h.view_port_count != (cases[c].viewport ? 1 : 0)) {
++               printf("csb:           FAIL: view_port_count is %u with viewport %u\n",
++                      h.view_port_count, cases[c].viewport);
++               goto out;
++            }
++         }
++
++         printf("csb:           TA state header: presence bitmap matches all four requests "
++                "exactly, no unannounced bits, view_port_count follows the viewport bit\n");
++      }
++
+       printf("csb:           texture descriptor: %u dwords, STRIDE/linear, extents as "
+              "value-minus-one, smpcnt 0 (log2 of one sample), zero extent refused\n",
+              ROGUE_TEXSTATE_IMAGE_WORD0_length +
+-- 
+2.47.3
+

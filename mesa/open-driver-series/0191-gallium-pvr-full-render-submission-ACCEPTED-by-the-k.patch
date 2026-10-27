@@ -1,0 +1,76 @@
+From b48e52a254af19af6e7e004cde4dcae483697334 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 23 Oct 2026 23:19:17 +0800
+Subject: [PATCH 191/269] gallium/pvr: full render submission ACCEPTED by the
+ kernel on the real GPU
+
+A complete render pass now goes through the kernel and is accepted:
+
+  hwrt: heap usable base 0x8000000480; RT 0x9800000000 ctrl 0x9ffffd3000 bct 0x9ffffd2000
+  hwrt: RENDER SUBMIT ACCEPTED (geom 40 B + frag 384 B) - target unchanged
+
+Geometry and fragment jobs in ONE submit, a real 512x512 RGBA8 target, a PBE description emitted by the
+driver's own pvr_pbe_target_from_format()/pvr_csb_emit_pbe_target(), and the hwrt reference on both jobs.
+
+Getting there took two real bugs:
+
+ 1. pvr_vm_alloc() computed an alignment and then passed page_size to util_vma_heap_alloc(), so every
+    caller's alignment request was silently dropped. The PBE encodes a target address in bits [0:31]
+    and [34:39] - bits 32 and 33 have no field - so an unaligned address cannot be described at all.
+    With the fix the target lands on 0x9800000000, which is 16 GiB aligned and therefore encodable.
+ 2. the render-target test mapped rtbo and rtcsb but not rctl, then handed rctl.map to the stream
+    builder, which memset() it - a NULL dereference I introduced. Found with gdb (the shim reproduced
+    it, so it was my code, not the kernel).
+
+The target is unchanged after the submit, which is the correct result for what was submitted: the
+geometry stream's control stream is empty, so the tiling accelerator has no primitives to tile and the
+fragment job has no tiles to shade. Writing a real control stream (the TA command stream carrying vertex
+data) is what turns this from an accepted submission into pixels.
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c | 6 +++++-
+ src/gallium/drivers/pvr_native/pvr_vm.c    | 5 ++++-
+ 2 files changed, 9 insertions(+), 2 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index e5c1818a..25dded2c 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -682,6 +682,9 @@ real_job_done:
+             rtaddr = pvr_vm_alloc(&vm, rtbo.size, 1ULL << 34);
+             rctladdr = pvr_vm_alloc(&vm, rctl.size, vm.general.page_size);
+             rbctaddr = pvr_vm_alloc(&vm, rbct.size, vm.general.page_size);
++            printf("hwrt:          heap usable base 0x%" PRIx64 " size 0x%" PRIx64 "; RT 0x%" PRIx64
++                   " ctrl 0x%" PRIx64 " bct 0x%" PRIx64 "\n", vm.general.usable_base,
++                   vm.general.usable_size, rtaddr, rctladdr, rbctaddr);
+             if (!rtaddr || !rctladdr || !rbctaddr)
+                printf("hwrt:          VM alloc failed (0x%" PRIx64 ", 0x%" PRIx64 ", 0x%" PRIx64 ")\n",
+                       rtaddr, rctladdr, rbctaddr);
+@@ -690,7 +693,8 @@ real_job_done:
+                   pvr_vm_map(&vm, rctladdr, rctl.handle, rctl.size) &&
+                   pvr_vm_map(&vm, rbctaddr, rbct.handle, rbct.size) &&
+                   pvr_bo_map(pvm_fd_for_probe, &rtbo) &&
+-                  pvr_bo_map(pvm_fd_for_probe, &rtcsb);
++                  pvr_bo_map(pvm_fd_for_probe, &rtcsb) &&
++                  pvr_bo_map(pvm_fd_for_probe, &rctl);
+             if (!ok2)
+                printf("hwrt:          VM map or CPU map failed (rt 0x%" PRIx64 ")\n", rtaddr);
+          }
+diff --git a/src/gallium/drivers/pvr_native/pvr_vm.c b/src/gallium/drivers/pvr_native/pvr_vm.c
+index 1f42fd06..da3b4099 100644
+--- a/src/gallium/drivers/pvr_native/pvr_vm.c
++++ b/src/gallium/drivers/pvr_native/pvr_vm.c
+@@ -588,7 +588,10 @@ pvr_vm_alloc(struct pvr_vm *vm, uint64_t size, uint64_t alignment)
+    /* The heap was seeded with an absolute address, so the value that comes back is an
+     * absolute device address and can be handed to VM_MAP as-is. 0 means failure, which
+     * is exactly why a heap must never start at 0. */
+-   return util_vma_heap_alloc(&vm->vma, aligned_size, vm->general.page_size);
++   /* `align` was computed and then ignored - the heap was always given page_size, so every
++      * caller's alignment request was silently dropped. The PBE render-target encoding depends on
++      * this: its address needs bits 32/33 clear, which a 16 GiB alignment guarantees. */
++     return util_vma_heap_alloc(&vm->vma, aligned_size, align);
+ }
+ 
+ void
+-- 
+2.47.3
+

@@ -1,0 +1,373 @@
+From 405abdcc575ceb7e26b21566f8a3728d23a0892a Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 23 Oct 2026 14:51:23 +0800
+Subject: [PATCH 184/269] gallium/pvr: HWRT sizing, free-list and data-set
+ ioctls
+
+The kernel refuses a geometry/fragment job without a hwrt reference, so a render job needs a HWRT data
+set, and the data set needs two free lists. Adds the three pieces:
+
+ - pvr_hwrt.c/h: the render-target sizing, ported arithmetically from the working driver
+   (pvr_arch_rt_mtile_info_init, pvr_rt_get_tail_ptr_stride_size, pvr_rt_get_isp_region_size). It lives
+   in its own translation unit because the hwdef helpers and the generated csbgen headers cannot both be
+   included in one file - hwdef makes __pvr_address_type a struct and the csbgen packets then will not
+   compile, which is a constraint the driver's own headers already document.
+ - pvr_free_list_create() and pvr_hwrt_dataset_create(): the two ioctls.
+ - a probe test that computes the sizes and attempts the creation.
+
+Measured on this device: 512x512 -> tiles 32x32, mtiles 4x4, 8x8 tiles per macrotile, TPC 4096 B,
+region headers 256 B, simple internal parameter format v2.
+
+Against the real kernel, CREATE_FREE_LIST is refused with EINVAL for a 1..64 page list - the page
+counts have to come from the device's free_list_min_pages/free_list_max_pages runtime info, which this
+probe path does not query yet. Next step, not a mystery: the same pattern as every other limit in this
+driver, where a guessed range is wrong and the kernel says so.
+
+Also reverted my own mess: repeated block insertions had landed test code inside a failure branch twice
+and left a duplicate label; pvr_probe.c was restored to its committed state and the block re-applied once.
+---
+ src/gallium/drivers/pvr_native/meson.build |  1 +
+ src/gallium/drivers/pvr_native/pvr_hwrt.c  | 81 ++++++++++++++++++++++
+ src/gallium/drivers/pvr_native/pvr_hwrt.h  | 25 +++++++
+ src/gallium/drivers/pvr_native/pvr_probe.c | 62 +++++++++++++++++
+ src/gallium/drivers/pvr_native/pvr_vm.c    | 75 ++++++++++++++++++++
+ src/gallium/drivers/pvr_native/pvr_vm.h    | 25 +++++++
+ 6 files changed, 269 insertions(+)
+ create mode 100644 src/gallium/drivers/pvr_native/pvr_hwrt.c
+ create mode 100644 src/gallium/drivers/pvr_native/pvr_hwrt.h
+
+diff --git a/src/gallium/drivers/pvr_native/meson.build b/src/gallium/drivers/pvr_native/meson.build
+index 264911b4..fc9e1b9f 100644
+--- a/src/gallium/drivers/pvr_native/meson.build
++++ b/src/gallium/drivers/pvr_native/meson.build
+@@ -12,6 +12,7 @@ files_pvr = files(
+   'pvr_shader.c',
+   'pvr_static.c',
+   'pvr_vm.c',
++  'pvr_hwrt.c',
+   'pvr_screen.c',
+ )
+ 
+diff --git a/src/gallium/drivers/pvr_native/pvr_hwrt.c b/src/gallium/drivers/pvr_native/pvr_hwrt.c
+new file mode 100644
+index 00000000..59d3527b
+--- /dev/null
++++ b/src/gallium/drivers/pvr_native/pvr_hwrt.c
+@@ -0,0 +1,81 @@
++/* Render-target sizing for a HWRT data set.
++ *
++ * This lives in its own translation unit on purpose: the hwdef helpers and the generated csbgen
++ * headers cannot both be included in one file - hwdef makes __pvr_address_type a struct and the
++ * generated packet code then fails to compile against it. pvr_vm.c reaches csbgen through pvr_static.h,
++ * so the device-description arithmetic has to sit where csbgen is absent.
++ */
++#include <stdbool.h>
++#include <stdint.h>
++
++#include "util/macros.h"
++#include "util/u_math.h"
++
++#include "common/pvr_device_info.h"
++#include "hwdef/rogue_hw_defs.h"
++#include "hwdef/rogue_hw_utils.h"
++
++#include "pvr_hwrt.h"
++
++/* The same formulas the working Vulkan driver uses: pvr_arch_rt_mtile_info_init,
++ * pvr_rt_get_tail_ptr_stride_size and pvr_rt_get_isp_region_size. Reused arithmetically rather than
++ * re-derived, because these numbers are what the hardware's tiling expects. */
++bool
++pvr_hwrt_sizes(const struct pvr_device_info *dev_info, uint32_t width, uint32_t height,
++               uint32_t samples, uint32_t layers, struct pvr_hwrt_sizes *out)
++{
++   const uint32_t tile_x = PVR_GET_FEATURE_VALUE(dev_info, tile_size_x, 1);
++   const uint32_t tile_y = PVR_GET_FEATURE_VALUE(dev_info, tile_size_y, 1);
++   const bool simple = PVR_HAS_FEATURE(dev_info, simple_internal_parameter_format);
++   const uint32_t spf_ver = PVR_GET_FEATURE_VALUE(dev_info, simple_parameter_format_version, 0);
++   uint32_t mtx = 0, mty = 0, mtile_x1, mtile_y1;
++   uint64_t rgn, tpc, max_mt;
++
++   (void)samples;
++
++   if (tile_x == 0 || tile_y == 0)
++      return false;
++
++   out->tile_size_x = tile_x;
++   out->tile_size_y = tile_y;
++   out->num_tiles_x = DIV_ROUND_UP(width, tile_x);
++   out->num_tiles_y = DIV_ROUND_UP(height, tile_y);
++
++   rogue_get_num_macrotiles_xy(dev_info, &mtx, &mty);
++   out->mtiles_x = mtx;
++   out->mtiles_y = mty;
++
++   if (simple) {
++      mtile_x1 = DIV_ROUND_UP(out->num_tiles_x, 8) * 2;
++      mtile_y1 = DIV_ROUND_UP(out->num_tiles_y, 8) * 2;
++   } else {
++      mtile_x1 = ALIGN_POT(DIV_ROUND_UP(out->num_tiles_x, 4), 4);
++      mtile_y1 = ALIGN_POT(DIV_ROUND_UP(out->num_tiles_y, 4), 4);
++   }
++   out->tiles_per_mtile_x = mtile_x1;
++   out->tiles_per_mtile_y = mtile_y1;
++
++   rgn = (uint64_t)mtile_x1 * mtile_y1;
++   if (simple) {
++      rgn *= (uint64_t)mtx * mty;
++      if (spf_ver == 2)
++         rgn /= 4;
++   } else {
++      rgn = DIV_ROUND_UP(rgn * rogue_get_region_header_size(dev_info), 4);
++   }
++   out->region_header_size = rgn;
++
++   max_mt = MAX2(util_next_power_of_two64((uint64_t)mtx * mtile_x1),
++                 util_next_power_of_two64((uint64_t)mty * mtile_y1));
++   tpc = max_mt * max_mt * ROGUE_TAIL_POINTER_SIZE;
++   if (simple && spf_ver == 2)
++      tpc /= 4;
++   tpc = ALIGN_POT(tpc, ROGUE_TE_TPC_CACHE_LINE_SIZE);
++   if (tpc < 4096)
++      tpc = 4096;
++   out->tpc_size = tpc;
++   out->tpc_stride = (layers > 1) ? (uint32_t)(tpc / ROGUE_BIF_PM_PHYSICAL_PAGE_SIZE) : 0;
++   out->simple_parameter_format = simple;
++   out->simple_parameter_format_version = spf_ver;
++   return true;
++}
+diff --git a/src/gallium/drivers/pvr_native/pvr_hwrt.h b/src/gallium/drivers/pvr_native/pvr_hwrt.h
+new file mode 100644
+index 00000000..716dbcb8
+--- /dev/null
++++ b/src/gallium/drivers/pvr_native/pvr_hwrt.h
+@@ -0,0 +1,25 @@
++#ifndef PVR_HWRT_H
++#define PVR_HWRT_H
++
++#include <stdbool.h>
++#include <stdint.h>
++
++struct pvr_device_info;
++
++/* Render-target sizes for a HWRT data set, computed from the device description. */
++struct pvr_hwrt_sizes {
++   uint32_t tile_size_x, tile_size_y;
++   uint32_t num_tiles_x, num_tiles_y;
++   uint32_t mtiles_x, mtiles_y;
++   uint32_t tiles_per_mtile_x, tiles_per_mtile_y;
++   uint64_t tpc_size;
++   uint32_t tpc_stride;
++   uint64_t region_header_size;
++   bool simple_parameter_format;
++   uint32_t simple_parameter_format_version;
++};
++
++bool pvr_hwrt_sizes(const struct pvr_device_info *dev_info, uint32_t width, uint32_t height,
++                    uint32_t samples, uint32_t layers, struct pvr_hwrt_sizes *out);
++
++#endif /* PVR_HWRT_H */
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index e622e07a..7d47f9ee 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -35,6 +35,7 @@
+ #include "pco_uscgen_programs.h"
+ #include "pvr_resource.h"
+ #include "pvr_vm.h"
++#include "pvr_hwrt.h"
+ #include "pvr_public.h"
+ #include "pipe/p_screen.h"
+ #include "util/format/u_formats.h"
+@@ -535,6 +536,67 @@ vm_roundtrip(int fd, const struct pvr_device_info *dev_info)
+          pvr_bo_destroy(pvm_fd_for_probe, &rcsb);
+       }
+ real_job_done:
++      /* Sizes for the HWRT data set the kernel requires before it will accept a render job.
++       * Computed from the device description with the same formulas the working Vulkan driver uses. */
++      {
++         struct pvr_hwrt_sizes sz;
++         if (pvr_hwrt_sizes(dev_info, 512, 512, 1, 1, &sz)) {
++            printf("hwrt:          512x512: tiles %ux%u, mtiles %ux%u, tiles/mtile %ux%u, "
++                   "tpc %" PRIu64 " B stride %u, region headers %" PRIu64 " B, simple=%d v%u\n",
++                   sz.num_tiles_x, sz.num_tiles_y, sz.mtiles_x, sz.mtiles_y,
++                   sz.tiles_per_mtile_x, sz.tiles_per_mtile_y, sz.tpc_size, sz.tpc_stride,
++                   sz.region_header_size, sz.simple_parameter_format,
++                   sz.simple_parameter_format_version);
++         } else {
++            printf("vm:            FAIL: could not compute HWRT sizes\n");
++         }
++      }
++
++      /* Create the two free lists and the HWRT data set the kernel demands before it will accept a
++       * render job. Sizes follow the working driver's formulas for a single-sample, single-layer
++       * 512x512 target: vheap 384 entries x 4 B, no RTC (layers == 1), mlist one 4 KiB page. */
++      {
++         struct pvr_bo flbo[2] = { {0}, {0} }, tpcbo = {0}, vhbo = {0}, mlibo = {0}, mtabo = {0}, rgnbo = {0};
++         uint64_t fladdr[2] = {0}, tpcaddr = 0, vhaddr = 0, mliaddr = 0, mtaaddr = 0, rgnaddr = 0;
++         uint32_t flhandle[2] = {0}, dset = 0;
++         bool okb = true;
++         const uint64_t sz[7] = { 4096, 4096, 4096, 1536, 4096, 4096, 256 };
++         struct pvr_bo *bos[7] = { &flbo[0], &flbo[1], &tpcbo, &vhbo, &mlibo, &mtabo, &rgnbo };
++         uint64_t *ads[7] = { &fladdr[0], &fladdr[1], &tpcaddr, &vhaddr, &mliaddr, &mtaaddr, &rgnaddr };
++
++         for (unsigned i = 0; i < 7; i++) {
++            if (!pvr_bo_create(pvm_fd_for_probe, sz[i], 1, bos[i])) { okb = false; break; }
++            *ads[i] = pvr_vm_alloc(&vm, bos[i]->size, vm.general.page_size);
++            if (!*ads[i] || !pvr_vm_map(&vm, *ads[i], bos[i]->handle, bos[i]->size)) { okb = false; break; }
++         }
++
++         if (okb) {
++            okb = pvr_free_list_create(&vm, fladdr[0], 1, 64, 1, 8, &flhandle[0]) &&
++                  pvr_free_list_create(&vm, fladdr[1], 1, 64, 1, 8, &flhandle[1]);
++            if (okb) {
++               struct pvr_hwrt_dataset_desc d = {
++                  .tpc_dev_addr = tpcaddr, .tpc_size = 4096, .tpc_stride = 0,
++                  .vheap_table_dev_addr = vhaddr, .rtc_dev_addr = 0,
++                  .pm_mlist_dev_addr = { mliaddr, 0 },
++                  .macrotile_array_dev_addr = { mtaaddr, 0 },
++                  .region_header_dev_addr = { rgnaddr, 0 },
++                  .free_list_handles = { flhandle[0], flhandle[1] },
++                  .width = 512, .height = 512, .samples = 1, .layers = 1,
++                  .isp_merge_lower_x = 0, .isp_merge_lower_y = 0,
++                  .isp_merge_scale_x = 0x3f800000u, .isp_merge_scale_y = 0x3f800000u,
++                  .isp_merge_upper_x = 0, .isp_merge_upper_y = 0,
++                  .region_header_size = 256,
++               };
++               okb = pvr_hwrt_dataset_create(&vm, &d, &dset);
++               if (okb)
++                  printf("hwrt:          free lists %u/%u and HWRT data set %u CREATED for 512x512 - the "
++                         "kernel accepted the descriptions\n", flhandle[0], flhandle[1], dset);
++            }
++         }
++         if (!okb)
++            printf("vm:            HWRT setup failed (the error above is the kernel's reason)\n");
++      }
++
+       pvr_gpu_context_destroy(&vm, &gpu_ctx);
+    }
+ 
+diff --git a/src/gallium/drivers/pvr_native/pvr_vm.c b/src/gallium/drivers/pvr_native/pvr_vm.c
+index 12d0f011..e92cc7ad 100644
+--- a/src/gallium/drivers/pvr_native/pvr_vm.c
++++ b/src/gallium/drivers/pvr_native/pvr_vm.c
+@@ -407,6 +407,81 @@ pvr_job_submit_render(struct pvr_vm *vm, uint32_t context_handle,
+    return true;
+ }
+ 
++/* Free lists and the HWRT data set are what a RENDER job needs beyond its command stream: the
++ * kernel refuses a geometry/fragment job without a hwrt reference (EINVAL), and the data set itself
++ * needs two free lists. Both are plain ioctls over addresses this driver allocates; the sizes are
++ * the caller's, because only the caller knows the target and the mtile layout. */
++bool
++pvr_free_list_create(struct pvr_vm *vm, uint64_t gpu_addr, uint32_t initial_num_pages,
++                     uint32_t max_num_pages, uint32_t grow_num_pages, uint32_t grow_threshold,
++                     uint32_t *handle_out)
++{
++   struct drm_pvr_ioctl_create_free_list_args args = {
++      .free_list_gpu_addr = gpu_addr,
++      .initial_num_pages = initial_num_pages,
++      .max_num_pages = max_num_pages,
++      .grow_num_pages = grow_num_pages,
++      .grow_threshold = grow_threshold,
++      .vm_context_handle = vm->context_handle,
++   };
++
++   if (drmIoctl(vm->fd, DRM_IOCTL_PVR_CREATE_FREE_LIST, &args) != 0) {
++      mesa_loge("pvr: CREATE_FREE_LIST (%u..%u pages at 0x%" PRIx64 ") failed: %s",
++                initial_num_pages, max_num_pages, gpu_addr, strerror(errno));
++      return false;
++   }
++
++   *handle_out = args.handle;
++   return true;
++}
++
++bool
++pvr_hwrt_dataset_create(struct pvr_vm *vm, const struct pvr_hwrt_dataset_desc *desc,
++                        uint32_t *handle_out)
++{
++   struct drm_pvr_ioctl_create_hwrt_dataset_args args = {
++      .geom_data_args = {
++         .tpc_dev_addr = desc->tpc_dev_addr,
++         .tpc_size = desc->tpc_size,
++         .tpc_stride = desc->tpc_stride,
++         .vheap_table_dev_addr = desc->vheap_table_dev_addr,
++         .rtc_dev_addr = desc->rtc_dev_addr,
++      },
++      .rt_data_args = {
++         {
++            .pm_mlist_dev_addr = desc->pm_mlist_dev_addr[0],
++            .macrotile_array_dev_addr = desc->macrotile_array_dev_addr[0],
++            .region_header_dev_addr = desc->region_header_dev_addr[0],
++         }, {
++            .pm_mlist_dev_addr = desc->pm_mlist_dev_addr[1],
++            .macrotile_array_dev_addr = desc->macrotile_array_dev_addr[1],
++            .region_header_dev_addr = desc->region_header_dev_addr[1],
++         },
++      },
++      .free_list_handles = { desc->free_list_handles[0], desc->free_list_handles[1] },
++      .width = desc->width,
++      .height = desc->height,
++      .samples = desc->samples,
++      .layers = desc->layers,
++      .isp_merge_lower_x = desc->isp_merge_lower_x,
++      .isp_merge_lower_y = desc->isp_merge_lower_y,
++      .isp_merge_scale_x = desc->isp_merge_scale_x,
++      .isp_merge_scale_y = desc->isp_merge_scale_y,
++      .isp_merge_upper_x = desc->isp_merge_upper_x,
++      .isp_merge_upper_y = desc->isp_merge_upper_y,
++      .region_header_size = desc->region_header_size,
++   };
++
++   if (drmIoctl(vm->fd, DRM_IOCTL_PVR_CREATE_HWRT_DATASET, &args) != 0) {
++      mesa_loge("pvr: CREATE_HWRT_DATASET (%ux%u, %u sample(s), %u layer(s)) failed: %s",
++                desc->width, desc->height, desc->samples, desc->layers, strerror(errno));
++      return false;
++   }
++
++   *handle_out = args.handle;
++   return true;
++}
++
+ void
+ pvr_vm_finish(struct pvr_vm *vm)
+ {
+diff --git a/src/gallium/drivers/pvr_native/pvr_vm.h b/src/gallium/drivers/pvr_native/pvr_vm.h
+index 921515a7..4f6ba0f0 100644
+--- a/src/gallium/drivers/pvr_native/pvr_vm.h
++++ b/src/gallium/drivers/pvr_native/pvr_vm.h
+@@ -100,6 +100,31 @@ void pvr_gpu_context_destroy(struct pvr_vm *vm, struct pvr_gpu_context *ctx);
+  * GPU sees. A job with no sync operations is submitted without any: the driver has no
+  * fences yet, and inventing a wait it cannot signal would be worse than submitting
+  * unsynchronised work it cannot yet produce. */
++/* Everything a render job needs besides its command stream: the kernel refuses a geometry or
++ * fragment job whose drm_pvr_job.hwrt does not reference a created data set. */
++struct pvr_hwrt_dataset_desc {
++   uint64_t tpc_dev_addr;
++   uint32_t tpc_size;
++   uint32_t tpc_stride;
++   uint64_t vheap_table_dev_addr;
++   uint64_t rtc_dev_addr;
++   uint64_t pm_mlist_dev_addr[2];
++   uint64_t macrotile_array_dev_addr[2];
++   uint64_t region_header_dev_addr[2];
++   uint32_t free_list_handles[2];
++   uint32_t width, height, samples, layers;
++   uint32_t isp_merge_lower_x, isp_merge_lower_y;
++   uint32_t isp_merge_scale_x, isp_merge_scale_y;
++   uint32_t isp_merge_upper_x, isp_merge_upper_y;
++   uint32_t region_header_size;
++};
++
++bool pvr_free_list_create(struct pvr_vm *vm, uint64_t gpu_addr, uint32_t initial_num_pages,
++                          uint32_t max_num_pages, uint32_t grow_num_pages,
++                          uint32_t grow_threshold, uint32_t *handle_out);
++bool pvr_hwrt_dataset_create(struct pvr_vm *vm, const struct pvr_hwrt_dataset_desc *desc,
++                             uint32_t *handle_out);
++
+ bool pvr_job_submit_render(struct pvr_vm *vm, uint32_t context_handle,
+                             uint64_t geom_stream, uint32_t geom_len,
+                             uint64_t frag_stream, uint32_t frag_len);
+-- 
+2.47.3
+

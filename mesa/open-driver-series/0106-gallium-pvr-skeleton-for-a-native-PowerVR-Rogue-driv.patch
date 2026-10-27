@@ -1,0 +1,257 @@
+From b0c0edc5eef65367b3e9eba9ce0328835d2ce3ce Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Thu, 15 Oct 2026 20:43:42 +0800
+Subject: [PATCH 106/269] gallium/pvr: skeleton for a native PowerVR Rogue
+ driver
+
+Milestone 1 of a native GL driver for Imagination PowerVR (BXM-4-64): a driver that builds
+in-tree and registers a pipe_screen. There is NO draw path, no rasterisation and no resource
+management, and none is claimed - a gallium driver of this class is 10k-30k lines (lima 9410,
+v3d 16164, vc4 22645, etnaviv 28589).
+
+Why this exists: Mesa has no PowerVR GL driver, so GL on the open stack is translated
+GL -> zink -> Vulkan -> powervr and reaches about 72% of the vendor's native GL (582 vs 809
+off-screen on glmark2-es2 at 800x600). zink configuration is exhausted and the Vulkan driver is
+at parity, so a native GL driver is the only remaining route.
+
+Wiring follows the ethosu pattern: added to the gallium-drivers list and its meson choices, a
+with_gallium_pvr flag, and a subdir block in src/gallium/meson.build.
+
+The reusable half already exists and is deliberately NOT rewritten: pco (25378 lines of NIR-based
+PowerVR compiler, confirmed to reference no Vulkan types), src/imagination/common, and the kernel
+UAPI. The next step is device enumeration via DRM_IOCTL_PVR_DEV_QUERY, which first needs the UAPI
+header moved out of src/imagination/vulkan/winsys/powervr/ into a shared location - a gallium
+driver should not include from inside the Vulkan driver.
+
+Builds as: ninja -C build src/gallium/drivers/pvr/libpvr.a
+---
+ meson.build                          |  3 +-
+ meson.options                        |  2 +-
+ src/gallium/drivers/pvr/meson.build  | 23 +++++++++
+ src/gallium/drivers/pvr/pvr_public.h | 22 +++++++++
+ src/gallium/drivers/pvr/pvr_screen.c | 70 ++++++++++++++++++++++++++++
+ src/gallium/drivers/pvr/pvr_screen.h | 25 ++++++++++
+ src/gallium/meson.build              |  5 ++
+ 7 files changed, 148 insertions(+), 2 deletions(-)
+ create mode 100644 src/gallium/drivers/pvr/meson.build
+ create mode 100644 src/gallium/drivers/pvr/pvr_public.h
+ create mode 100644 src/gallium/drivers/pvr/pvr_screen.c
+ create mode 100644 src/gallium/drivers/pvr/pvr_screen.h
+
+diff --git a/meson.build b/meson.build
+index 09f673ef..5bcfcb56 100644
+--- a/meson.build
++++ b/meson.build
+@@ -206,7 +206,7 @@ elif gallium_drivers.contains('all')
+    gallium_drivers = [
+      'r300', 'r600', 'radeonsi', 'crocus', 'v3d', 'vc4', 'freedreno', 'etnaviv', 'i915',
+      'nouveau', 'svga', 'tegra', 'virgl', 'lima', 'panfrost', 'llvmpipe', 'softpipe', 'iris',
+-     'zink', 'd3d12', 'asahi', 'rocket', 'ethosu'
++     'zink', 'd3d12', 'asahi', 'rocket', 'ethosu', 'pvr'
+    ]
+ endif
+ 
+@@ -235,6 +235,7 @@ with_gallium_d3d12 = gallium_drivers.contains('d3d12')
+ with_gallium_asahi = gallium_drivers.contains('asahi')
+ with_gallium_rocket = gallium_drivers.contains('rocket')
+ with_gallium_ethosu = gallium_drivers.contains('ethosu')
++with_gallium_pvr = gallium_drivers.contains('pvr')
+ foreach gallium_driver : gallium_drivers
+   pre_args += '-DHAVE_@0@'.format(gallium_driver.to_upper())
+ endforeach
+diff --git a/meson.options b/meson.options
+index 93a60e30..450646c2 100644
+--- a/meson.options
++++ b/meson.options
+@@ -87,7 +87,7 @@ option(
+     'all', 'auto',
+     'asahi', 'crocus', 'd3d12', 'ethosu', 'etnaviv', 'freedreno', 'i915', 'iris',
+     'lima', 'llvmpipe', 'nouveau', 'panfrost', 'r300', 'r600', 'radeonsi',
+-    'rocket', 'softpipe', 'svga', 'tegra', 'v3d', 'vc4', 'virgl', 'zink',
++    'rocket', 'softpipe', 'svga', 'tegra', 'v3d', 'vc4', 'virgl', 'zink', 'pvr',
+   ],
+   description : 'List of gallium drivers to build. If this is set to auto ' +
+                 'all drivers applicable to the target OS/architecture ' +
+diff --git a/src/gallium/drivers/pvr/meson.build b/src/gallium/drivers/pvr/meson.build
+new file mode 100644
+index 00000000..8068dc1a
+--- /dev/null
++++ b/src/gallium/drivers/pvr/meson.build
+@@ -0,0 +1,23 @@
++# Copyright 2026 The Mesa authors
++# SPDX-License-Identifier: MIT
++#
++# SKELETON: milestone 1 is that this builds in-tree, registers a pipe_screen and
++# enumerates the device. src/imagination/pco (the NIR-based PowerVR compiler, ~25k
++# lines) is the piece to link against next, not to rewrite.
++
++files_pvr = files(
++  'pvr_screen.c',
++)
++
++libpvr = static_library(
++  'pvr',
++  files_pvr,
++  include_directories : [inc_gallium_aux, inc_gallium, inc_include, inc_src],
++  gnu_symbol_visibility : 'hidden',
++  dependencies : [idep_mesautil, dep_libdrm],
++)
++
++driver_pvr = declare_dependency(
++  compile_args : '-DGALLIUM_PVR',
++  link_with : [libpvr],
++)
+diff --git a/src/gallium/drivers/pvr/pvr_public.h b/src/gallium/drivers/pvr/pvr_public.h
+new file mode 100644
+index 00000000..dab58714
+--- /dev/null
++++ b/src/gallium/drivers/pvr/pvr_public.h
+@@ -0,0 +1,22 @@
++/*
++ * Copyright 2026 The Mesa authors
++ * SPDX-License-Identifier: MIT
++ *
++ * Native PowerVR (Imagination Rogue) gallium driver - SKELETON.
++ *
++ * Milestone 1: register a pipe_screen and enumerate the device. There is no draw path,
++ * no rasterisation and no resource management yet, and none is claimed.
++ * See docs in the repository's Recovery log for the plan and the scale (10k-30k lines).
++ */
++#ifndef PVR_PUBLIC_H
++#define PVR_PUBLIC_H
++
++struct pipe_screen;
++struct pipe_screen_config;
++struct renderonly;
++
++struct pipe_screen *pvr_screen_create(int fd,
++                                      const struct pipe_screen_config *config,
++                                      struct renderonly *ro);
++
++#endif /* PVR_PUBLIC_H */
+diff --git a/src/gallium/drivers/pvr/pvr_screen.c b/src/gallium/drivers/pvr/pvr_screen.c
+new file mode 100644
+index 00000000..c6582a77
+--- /dev/null
++++ b/src/gallium/drivers/pvr/pvr_screen.c
+@@ -0,0 +1,70 @@
++/* Copyright 2026 The Mesa authors
++ * SPDX-License-Identifier: MIT
++ *
++ * SKELETON. Registers a pipe_screen and enumerates the device.
++ * No draw path, no rasterisation, no resource management - none is claimed.
++ */
++#include "pvr_screen.h"
++#include "pvr_public.h"
++
++#include <stdio.h>
++#include <string.h>
++#include <unistd.h>
++#include <sys/ioctl.h>
++
++#include "util/u_memory.h"
++#include "util/os_file.h"
++#include "util/log.h"
++
++static const char *
++pvr_get_name(struct pipe_screen *pscreen)
++{
++   return pvr_screen(pscreen)->name;
++}
++
++static const char *
++pvr_get_vendor(struct pipe_screen *pscreen)
++{
++   return "Imagination Technologies";
++}
++
++static const char *
++pvr_get_device_vendor(struct pipe_screen *pscreen)
++{
++   return "Imagination Technologies";
++}
++
++static void
++pvr_destroy_screen(struct pipe_screen *pscreen)
++{
++   struct pvr_screen *screen = pvr_screen(pscreen);
++
++   if (screen->fd >= 0)
++      close(screen->fd);
++   ralloc_free(screen);
++}
++
++struct pipe_screen *
++pvr_screen_create(int fd, const struct pipe_screen_config *config,
++                  struct renderonly *ro)
++{
++   struct pvr_screen *screen = rzalloc(NULL, struct pvr_screen);
++   if (!screen)
++      return NULL;
++
++   screen->fd = fd;
++   screen->gpu_id = 0;
++
++   /* Enumeration is deliberately minimal for the skeleton: confirm we were handed a
++    * usable device and say so. The kernel UAPI query (DRM_IOCTL_PVR_DEV_QUERY) is the
++    * next step, and it needs the UAPI header moved out of the Vulkan winsys first. */
++   snprintf(screen->name, sizeof(screen->name), "PowerVR Rogue (gallium skeleton)");
++   mesa_logi("pvr: pvr_screen_create fd=%d -> %s (skeleton: no draw path)", fd, screen->name);
++
++   screen->base.destroy = pvr_destroy_screen;
++   screen->base.get_name = pvr_get_name;
++   screen->base.get_vendor = pvr_get_vendor;
++   screen->base.get_device_vendor = pvr_get_device_vendor;
++
++   return &screen->base;
++}
+diff --git a/src/gallium/drivers/pvr/pvr_screen.h b/src/gallium/drivers/pvr/pvr_screen.h
+new file mode 100644
+index 00000000..ec236a4f
+--- /dev/null
++++ b/src/gallium/drivers/pvr/pvr_screen.h
+@@ -0,0 +1,25 @@
++/* Copyright 2026 The Mesa authors
++ * SPDX-License-Identifier: MIT
++ */
++#ifndef PVR_SCREEN_H
++#define PVR_SCREEN_H
++
++#include "pipe/p_screen.h"
++
++struct pvr_screen {
++   struct pipe_screen base;
++
++   int fd;
++
++   /* Device identity, from the kernel UAPI query. Populated by pvr_screen_create. */
++   char name[64];
++   unsigned int gpu_id;
++};
++
++static inline struct pvr_screen *
++pvr_screen(struct pipe_screen *pscreen)
++{
++   return (struct pvr_screen *)pscreen;
++}
++
++#endif /* PVR_SCREEN_H */
+diff --git a/src/gallium/meson.build b/src/gallium/meson.build
+index 67011f56..cbb166db 100644
+--- a/src/gallium/meson.build
++++ b/src/gallium/meson.build
+@@ -196,6 +196,11 @@ if with_gallium_ethosu
+ else
+   driver_ethosu = declare_dependency()
+ endif
++if with_gallium_pvr
++  subdir('drivers/pvr')
++else
++  driver_pvr = declare_dependency()
++endif
+ if with_gallium_zink
+   if not with_platform_windows
+     subdir('winsys/zink/drm')
+-- 
+2.47.3
+

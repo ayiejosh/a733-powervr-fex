@@ -1,0 +1,62 @@
+From 44d6ba8a2a11af60356b85b2250f5ea85af70fb5 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Tue, 27 Oct 2026 03:20:54 +0800
+Subject: [PATCH 267/269] gallium/pvr: probe hooks for fragment-only real
+ stream and explicit fragment job flags
+
+Two env-gated diagnostics used to find out whether the hardware 3D (DM3) path can be reached without the
+TA: PVR_PROBE_FRAG_ONLY_REAL submits the fully-populated fragment stream on its own (no geometry kick), and
+PVR_PROBE_FRAG_FLAGS lets the probe set explicit UAPI fragment job flags (e.g. 0x40 PARTIAL_RENDER). Default
+behaviour is unchanged.
+
+Findings on the board: a fragment-only job with the real stream is kicked by the firmware ("Kick 3D" with
+Partial render:0) and the GPU locks up after ~95 us because the 3D stage needs TA-produced tile/region data;
+a lone fragment job with PARTIAL_RENDER completes silently but the firmware does not kick 3D at all (a
+partial-render fragment job is only kicked when paired with a geometry job). So the 3D path cannot bypass the
+TA - the TA stall remains the single gate for all hardware rendering on this client.
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c | 11 ++++++++++-
+ src/gallium/drivers/pvr_native/pvr_vm.c    |  5 +++++
+ 2 files changed, 15 insertions(+), 1 deletion(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index 91bfb2c8..b6b5a84a 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -1372,7 +1372,16 @@ real_job_done:
+                          PRIx64 "\n", (unsigned)g_fs_pds_base_offset, rbctaddr);
+                }
+ 
+-               if (getenv("PVR_PROBE_QUEUE_TWO_GEOM")) {
++               if (getenv("PVR_PROBE_FRAG_ONLY_REAL")) {
++                  /* Submit the fully-populated fragment stream on its own: no geometry/TA kick,
++                   * just the 3D (DM3) stage. If the 3D DM runs, the background program clears the
++                   * tiles and the render target changes - i.e. the hardware 3D path is reachable
++                   * for this client without the TA. */
++                  const bool fdone = pvr_job_submit_frag_sync(vm, gpu_ctx.handle, fstream, f2,
++                                                              dset_handle, 0, 2000);
++                  printf("hwrt:          fragment-only (real stream) %s, target[0]=0x%08x\n",
++                         fdone ? "COMPLETED" : "did not complete in 2 s", *(uint32_t *)rt);
++               } else if (getenv("PVR_PROBE_QUEUE_TWO_GEOM")) {
+                   /* Queue two geometry jobs back to back before the first one times out: if the
+                    * firmware drops a context's first TA kick, the second one may start. */
+                   const bool s1 = pvr_job_submit(vm, gpu_ctx.handle, DRM_PVR_JOB_TYPE_GEOMETRY,
+diff --git a/src/gallium/drivers/pvr_native/pvr_vm.c b/src/gallium/drivers/pvr_native/pvr_vm.c
+index 8be39a81..0ebb6c60 100644
+--- a/src/gallium/drivers/pvr_native/pvr_vm.c
++++ b/src/gallium/drivers/pvr_native/pvr_vm.c
+@@ -523,6 +523,11 @@ pvr_job_submit_frag_sync(struct pvr_vm *vm, uint32_t context_handle,
+    job = (struct drm_pvr_job){
+       .type = DRM_PVR_JOB_TYPE_FRAGMENT,
+       .context_handle = context_handle,
++      /* Probe hook: submit fragment jobs with explicit UAPI flags (e.g. 0x40 = PARTIAL_RENDER). */
++      .flags = getenv("PVR_PROBE_FRAG_FLAGS")
++                  ? (uint32_t)strtoul(getenv("PVR_PROBE_FRAG_FLAGS"), NULL, 0) &
++                       DRM_PVR_SUBMIT_JOB_FRAG_CMD_FLAGS_MASK
++                  : 0,
+       .cmd_stream = (uint64_t)(uintptr_t)frag_stream,
+       .cmd_stream_len = frag_len,
+       .sync_ops = { .stride = sizeof(ops[0]), .count = 1, .array = (__u64)(uintptr_t)ops },
+-- 
+2.47.3
+

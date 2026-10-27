@@ -1,0 +1,54 @@
+From 12fd51c34ba7cd5ed7c02db4e8082b40e773949c Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sun, 25 Oct 2026 04:41:53 +0800
+Subject: [PATCH 235/269] gallium/pvr: TA SHADERBASE override experiment; TA
+ block values are not the blocker
+
+Round-22 negative: overriding the TA state block's PDS SHADERBASE (PVR_PROBE_TA_SHADER, tried 0 and
+the event-program offset) leaves the geometry kick timing out, so the TA block's PDS program
+pointers are not what keeps the TA from starting either.
+
+Context: the kernel-built firmware HWRT and render-context objects were dumped word by word for this
+driver and for a working Vulkan run and compared (see HANDOFF):
+- rogue_fwif_hwrtdata_common: identical, 0/22 words differ;
+- rogue_fwif_hwrtdata (both rt-data slots): 11/96 words differ and all of them are device or
+  firmware addresses (mlist, freelist fw addrs, vheap, tail-pointer table, region headers);
+- rogue_fwif_fwrendercontext: 25/112 words differ and all are addresses (context-state buffers,
+  CCBs, task words) plus two scheduler-sequence-looking u32s.
+So every firmware-visible data structure the kernel builds is semantically identical; the remaining
+difference is not in these objects.
+
+Verification: probe ALL PASS under the shim.
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index 2f1df387..acb12f83 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -970,6 +970,12 @@ real_job_done:
+                            .psprite_size_pres = true,
+                         };
+                         struct pvr_region_clip clip;
++                        /* Round-22: override the fragment PDS program pointer in the TA block, to
++                         * test whether the TA kick is validating/using it. */
++                        const uint64_t ta_shader_base =
++                           getenv("PVR_PROBE_TA_SHADER") ? strtoull(getenv("PVR_PROBE_TA_SHADER"),
++                                                                   NULL, 0)
++                                                         : g_fs_pds_base_offset;
+                         const uint64_t pds_tex_base =
+                            getenv("PVR_PROBE_PDS_TEX") ? strtoull(getenv("PVR_PROBE_PDS_TEX"),
+                                                                  NULL, 0)
+@@ -994,7 +1000,7 @@ real_job_done:
+                                 pvr_csb_emit_ta_isp_b(&block, &ispb) &&
+                                 pvr_csb_emit_ta_isp_dbsc(&block, &dbsc) &&
+                                 pvr_csb_emit_ta_pds_base(&block, PVR_PDS_BASE_SHADER,
+-                                                         g_fs_pds_base_offset) &&
++                                                         ta_shader_base) &&
+                                 /* The reference points these at real programs (texunicode/
+                                  * uniform descriptor state, or its nop program). Env-selectable so
+                                  * candidates can be tried without a rebuild. */
+-- 
+2.47.3
+

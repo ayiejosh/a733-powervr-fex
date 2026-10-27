@@ -1,0 +1,30 @@
+From ea5e5ce49c140c6ec3010351470a1e76d95f7901 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sun, 25 Oct 2026 13:56:15 +0800
+Subject: [PATCH 248/269] gallium/pvr: geometry FIRST/LAST flag override knob -
+ all variants negative
+
+PVR_PROBE_GEOM_FLAGS overrides the geometry job's kick flags. FIRST|LAST (default), 0, FIRST-only and
+LAST-only all give "Kick TA" -> "DM2 timed out"; the kernel-visible kick flags are not the trigger.
+---
+ src/gallium/drivers/pvr_native/pvr_vm.c | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_vm.c b/src/gallium/drivers/pvr_native/pvr_vm.c
+index b8d3a2f0..625c29fc 100644
+--- a/src/gallium/drivers/pvr_native/pvr_vm.c
++++ b/src/gallium/drivers/pvr_native/pvr_vm.c
+@@ -421,7 +421,9 @@ pvr_job_submit_geom_sync(struct pvr_vm *vm, uint32_t context_handle,
+       .context_handle = context_handle,
+       .cmd_stream = (uint64_t)(uintptr_t)geom_stream,
+       .cmd_stream_len = geom_len,
+-      .flags = DRM_PVR_SUBMIT_JOB_GEOM_CMD_FIRST | DRM_PVR_SUBMIT_JOB_GEOM_CMD_LAST,
++      .flags = getenv("PVR_PROBE_GEOM_FLAGS")
++                  ? (uint32_t)strtoul(getenv("PVR_PROBE_GEOM_FLAGS"), NULL, 0)
++                  : (DRM_PVR_SUBMIT_JOB_GEOM_CMD_FIRST | DRM_PVR_SUBMIT_JOB_GEOM_CMD_LAST),
+       .sync_ops = { .stride = sizeof(sync_ops[0]), .count = 1,
+                     .array = (__u64)(uintptr_t)sync_ops },
+       .hwrt = { .set_handle = hwrt_set_handle,
+-- 
+2.47.3
+

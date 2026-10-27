@@ -1,0 +1,391 @@
+From 821b53e22814d6451b8fd732a57f6ab8c6e7a352 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 23 Oct 2026 01:31:08 +0800
+Subject: [PATCH] system: the zram setup that gets 732 MiB back on a 5.8 GiB
+ board
+
+Captures the swap configuration as it actually runs, not as it was intended. The board shows 5.8 GiB of
+its 8 GiB, so swap is real pressure rather than a formality - but swapping to the SATA SSD is slow and
+wears it. zram keeps swap pages compressed in RAM instead.
+
+Measured on this board: 985.6 MiB of swapped data in 253.5 MiB of RAM, 3.9:1 with lz4, ~732 MiB of
+usable RAM reclaimed. pgsteal_kswapd 2,932,608 and compact_stall 0 confirm it is carrying load.
+An 8 GiB /swapfile stays behind it at priority -2 as the fallback.
+
+Three pieces that matter and are easy to get wrong:
+ - lz4 primary for the write path, zstd secondary only for pages that have gone cold (Nice=19 timer);
+ - writeback of incompressible pages to a 2 GiB backing image, so they do not waste a full 4 KiB each;
+ - hot_remove/hot_add rather than zramctl --reset, which on util-linux 2.41 hot-removes the device and
+   left the board with no zram swap; the prepare step swapoffs first because hot_remove refuses while
+   the block device is open.
+
+Kernel: 6.6.98-5-aw2511, cma=256M coherent_pool=4M. Recorded in the README, with a trap worth knowing:
+/proc/config.gz reports CONFIG_ZRAM_WRITEBACK, CONFIG_ZRAM_MULTI_COMP and
+CONFIG_ZRAM_TRACK_ENTRY_ACTIME as NOT SET, while the shipped zram.ko.xz (vermagic matches) has all
+three and live sysfs exposes them. Check sysfs or the module - and note the module is xz-compressed,
+so plain strings finds nothing and looks like a missing feature.
+---
+ system/README.md                              | 14 ++++
+ system/zram/README.md                         | 82 +++++++++++++++++++
+ system/zram/zram-multicomp-prepare.sh         | 70 ++++++++++++++++
+ system/zram/zram-recompress.service           | 11 +++
+ system/zram/zram-recompress.sh                | 57 +++++++++++++
+ system/zram/zram-recompress.timer             | 10 +++
+ system/zram/zram-writeback-loop.service       | 14 ++++
+ system/zram/zramswap.default                  | 22 +++++
+ system/zram/zramswap.service.d/10-recomp.conf |  6 ++
+ 9 files changed, 286 insertions(+)
+ create mode 100644 system/zram/README.md
+ create mode 100755 system/zram/zram-multicomp-prepare.sh
+ create mode 100644 system/zram/zram-recompress.service
+ create mode 100755 system/zram/zram-recompress.sh
+ create mode 100644 system/zram/zram-recompress.timer
+ create mode 100644 system/zram/zram-writeback-loop.service
+ create mode 100644 system/zram/zramswap.default
+ create mode 100644 system/zram/zramswap.service.d/10-recomp.conf
+
+diff --git a/system/README.md b/system/README.md
+index f200733..e223215 100644
+--- a/system/README.md
++++ b/system/README.md
+@@ -90,3 +90,17 @@ clean reboot from an abnormal power loss.)
+ Software-ejecting the SD card (or otherwise tearing down the `sunxi-mmc` controller while
+ mounted/active) triggers a kernel **Oops** in the sunxi-mmc teardown path. Avoid the
+ software eject; unmount cleanly and prefer a power-off before removing the card.
++
++## zram — compressed swap, `zram/`
++
++The board sees **5.8 GiB** of its 8 GiB. zram keeps swap pages compressed in RAM rather than
++writing them to the SSD: measured **985.6 MiB of data in 253.5 MiB of RAM (3.9:1)**, ~**732 MiB**
++of usable RAM reclaimed, with an 8 GiB `/swapfile` at priority −2 behind it as the fallback.
++
++lz4 primary for the write path, zstd secondary for pages that have gone cold, plus a 2 GiB
++writeback image for incompressible ones. Files and install steps: [`zram/`](zram/).
++
++> ⚠️ **`/proc/config.gz` lies about zram on this kernel** — it reports `CONFIG_ZRAM_WRITEBACK`,
++> `CONFIG_ZRAM_MULTI_COMP` and `CONFIG_ZRAM_TRACK_ENTRY_ACTIME` as not set, while the shipped
++> `zram.ko.xz` has all three and the live sysfs exposes them. Check sysfs or the module, and note
++> the module is xz-compressed (`plain strings` finds nothing). See [`zram/README.md`](zram/README.md).
+diff --git a/system/zram/README.md b/system/zram/README.md
+new file mode 100644
+index 0000000..3efb7aa
+--- /dev/null
++++ b/system/zram/README.md
+@@ -0,0 +1,82 @@
++# zram: compressed swap, tuned for a 5.8 GiB view of an 8 GiB board
++
++The A733 board shows **5.8 GiB** of its 8 GiB to Linux (~2.2 GiB is reserved for the GPU/firmware,
++plus `cma=256M`). Under a build or a browser that is tight, so swap matters — but swapping to the
++SATA SSD is both slow and wear. zram keeps swap pages **compressed in RAM** instead.
++
++## Measured effect on this board
++
++```
++985.6 MiB of swapped data  ->  253.5 MiB of RAM   (3.9 : 1, lz4)
++                            ~732 MiB of usable RAM reclaimed
++```
++
++`/proc/vmstat` confirms it is doing real work, not sitting idle: `pgsteal_kswapd 2,932,608`,
++`compact_stall 0`. Fallback layout is zram at priority **100** in front of an 8 GiB `/swapfile`
++on `/dev/sda3` at priority **−2**, so the SSD is only touched when zram fills.
++
++## How the pieces fit
++
++| file | goes to | role |
++|---|---|---|
++| `zramswap.default` | `/etc/default/zramswap` | `ALGO=lz4`, `PERCENT=100`, `PRIORITY=100` — 5.78 GiB device, 100% of RAM |
++| `zramswap.service.d/10-recomp.conf` | `/etc/systemd/system/zramswap.service.d/` | `ExecStartPre` hook — algorithm writes are only legal while `disksize=0` |
++| `zram-multicomp-prepare.sh` | `/usr/local/sbin/` | makes/recreates zram0, sets **lz4 primary + zstd secondary**, attaches writeback |
++| `zram-recompress.sh` | `/usr/local/sbin/` | ages cold pages, hands incompressible ones to writeback, recompresses the rest to zstd |
++| `zram-recompress.service` + `.timer` | `/etc/systemd/system/` | runs the above every 10 min at `Nice=19`, skipped under load ≥ 6 |
++| `zram-writeback-loop.service` | `/etc/systemd/system/` | loop-attaches `/home/radxa/zram-writeback.img` (2 GiB) before `zramswap` starts |
++
++Three design points that are not obvious:
++
++* **lz4 primary, zstd secondary.** lz4 is fast enough for the write path; zstd only ever sees pages
++  that have gone cold, so its cost competes for idle cycles rather than latency.
++* **`hot_remove`/`hot_add`, never `zramctl --reset`.** On util-linux 2.41 `--reset` hot-*removes* the
++  device and the board came back without zram swap. The prepare script also `swapoff`s first, because
++  `hot_remove` refuses while the block device is open.
++* **Writeback for incompressible pages.** A page that won't compress wastes a full 4 KiB; handing
++  those to the 2 GiB backing image is cheaper than storing them in RAM.
++
++## Install
++
++```sh
++sudo cp zramswap.default          /etc/default/zramswap
++sudo mkdir -p /etc/systemd/system/zramswap.service.d
++sudo cp zramswap.service.d/10-recomp.conf /etc/systemd/system/zramswap.service.d/
++sudo cp zram-multicomp-prepare.sh zram-recompress.sh /usr/local/sbin/
++sudo cp zram-recompress.service zram-recompress.timer zram-writeback-loop.service /etc/systemd/system/
++sudo chmod +x /usr/local/sbin/zram-multicomp-prepare.sh /usr/local/sbin/zram-recompress.sh
++truncate -s 2G /home/radxa/zram-writeback.img
++sudo systemctl daemon-reload
++sudo systemctl enable --now zram-writeback-loop zramswap zram-recompress.timer
++```
++
++## Kernel side, and one trap
++
++Running kernel: **`6.6.98-5-aw2511`** (`#5 SMP Sun Sep 20 04:35:45 UTC 2026`), arm64.
++Cmdline carries `cma=256M coherent_pool=4M`.
++
++**Do not trust `/proc/config.gz` for zram features on this kernel.** It reports:
++
++```
++# CONFIG_ZRAM_WRITEBACK is not set
++# CONFIG_ZRAM_MULTI_COMP is not set
++# CONFIG_ZRAM_TRACK_ENTRY_ACTIME is not set
++```
++
++…yet the shipped module **has all three**. Verified two independent ways:
++
++```sh
++xzcat /lib/modules/6.6.98-5-aw2511/kernel/drivers/block/zram/zram.ko.xz | strings |
++  grep -E '^(backing_dev|recomp_algorithm|idle|recompress)$'      # all four present
++ls /sys/block/zram0/{recompress,backing_dev,idle,recomp_algorithm} # all exist
++```
++
++The module (`vermagic 6.6.98-5-aw2511`, so it *is* the matching one) was built with options the
++exported config does not reflect. **Check sysfs or the module, not the config**, before concluding a
++feature is unavailable. Note the module is xz-compressed — plain `strings` on it returns nothing and
++looks like a missing feature.
++
++## What is *not* here
++
++`zswap` is not set in the config and is not used; zram is the whole strategy. THP is unavailable
++(`CONFIG_TRANSPARENT_HUGEPAGE` not set), so there is no hugepage interaction to tune.
+diff --git a/system/zram/zram-multicomp-prepare.sh b/system/zram/zram-multicomp-prepare.sh
+new file mode 100755
+index 0000000..4dc676b
+--- /dev/null
++++ b/system/zram/zram-multicomp-prepare.sh
+@@ -0,0 +1,70 @@
++#!/bin/sh
++# zram-multicomp-prepare.sh — run from zramswap.service's ExecStartPre.
++#
++# It guarantees the two things zramswap itself cannot do:
++#   1. a zram device exists (the module may already be loaded with none, e.g.
++#      after any tool that removed it);
++#   2. the algorithm writes happen while disksize is 0, which is the only state
++#      the kernel accepts them in (__comp_algorithm_store -> -EBUSY afterwards).
++#
++# It never removes a device and never uses zramctl --reset: on this util-linux
++# (2.41) --reset hot-removes the device, which is what left the board without
++# zram swap after the last attempt.
++set -u
++SYS=/sys/block/zram0
++SWAPDEV=/dev/zram0
++LOG=/home/radxa/zram-multicomp/recompress.log
++log() { printf '%s [prepare] %s\n' "$(date -Is)" "$*" >> "$LOG" 2>/dev/null; }
++
++modprobe zram 2>/dev/null || true
++
++if [ ! -e "$SYS/disksize" ]; then
++  log "no zram0, adding one via zram-control"
++  cat /sys/class/zram-control/hot_add >/dev/null 2>&1 || true
++  i=0
++  while [ ! -e "$SYS/disksize" ] && [ "$i" -lt 20 ]; do sleep 0.1; i=$((i+1)); done
++fi
++[ -e "$SYS/disksize" ] || { log "could not create zram0"; exit 1; }
++
++# A device that is already initialised cannot be reconfigured: disksize_store
++# rejects writes once init_done (verified in the module source), so the only
++# legal reset is to remove the device and add a fresh one. hot_remove() calls
++# zram_reset_device() itself and refuses only while the block device is open,
++# hence swapoff first.
++if [ "$(cat "$SYS/disksize" 2>/dev/null || echo 0)" != "0" ]; then
++  if awk 'NR>1 && $1=="/dev/zram0"{f=1} END{exit !f}' /proc/swaps; then
++    swapoff "$SWAPDEV" || { log "swapoff failed"; exit 1; }
++  fi
++  i=0
++  while [ "$i" -lt 20 ]; do
++    if echo 0 > /sys/class/zram-control/hot_remove 2>/dev/null; then break; fi
++    sleep 0.2; i=$((i+1))
++  done
++  [ ! -e "$SYS/disksize" ] || { log "hot_remove did not free zram0 (still open?)"; exit 1; }
++  cat /sys/class/zram-control/hot_add >/dev/null 2>&1 || true
++  i=0
++  while [ ! -e "$SYS/disksize" ] && [ "$i" -lt 20 ]; do sleep 0.1; i=$((i+1)); done
++  [ -e "$SYS/disksize" ] || { log "hot_add did not recreate zram0"; exit 1; }
++  log "device reset via hot_remove/hot_add"
++fi
++
++printf 'lz4' > "$SYS/comp_algorithm" || { log "primary algorithm write failed"; exit 1; }
++
++# Optional writeback backing device (also only settable before init_done).
++WB_IMG=/home/radxa/zram-writeback.img
++if [ -f "$WB_IMG" ]; then
++  LOOP=$(losetup -j "$WB_IMG" 2>/dev/null | cut -d: -f1 | head -1)
++  if [ -z "$LOOP" ]; then
++    LOOP=$(losetup --find --show "$WB_IMG" 2>/dev/null)
++    log "attached $WB_IMG as $LOOP"
++  fi
++  if [ -n "$LOOP" ] && [ -e "$SYS/backing_dev" ]; then
++    echo "$LOOP" > "$SYS/backing_dev" 2>/dev/null && log "backing_dev=$LOOP" || log "backing_dev write failed"
++  fi
++fi
++if echo "algo=zstd priority=1" > "$SYS/recomp_algorithm" 2>/dev/null; then
++  log "primary lz4, secondary zstd registered"
++else
++  log "secondary algorithm write failed (continuing with lz4 only)"
++fi
++exit 0
+diff --git a/system/zram/zram-recompress.service b/system/zram/zram-recompress.service
+new file mode 100644
+index 0000000..34d7b87
+--- /dev/null
++++ b/system/zram/zram-recompress.service
+@@ -0,0 +1,11 @@
++[Unit]
++Description=Recompress idle zram pages with the secondary algorithm
++After=zramswap.service
++ConditionPathExists=/sys/block/zram0/recompress
++
++[Service]
++Type=oneshot
++ExecStart=/usr/local/sbin/zram-recompress.sh
++Nice=19
++IOSchedulingClass=idle
++TimeoutStartSec=600
+diff --git a/system/zram/zram-recompress.sh b/system/zram/zram-recompress.sh
+new file mode 100755
+index 0000000..0aa1221
+--- /dev/null
++++ b/system/zram/zram-recompress.sh
+@@ -0,0 +1,57 @@
++#!/bin/sh
++# zram-recompress.sh — move cold pages to the denser secondary algorithm.
++#
++# The zram device is configured with lz4 as primary (fast writes) and zstd as
++# the recompression algorithm. This script marks pages that have not been
++# touched for a while as idle, then asks zram to recompress the idle pages that
++# are still larger than `threshold` bytes. Recompressed pages stop matching the
++# threshold, so each run does less work than the previous one.
++#
++# Runs from zram-recompress.timer via zram-recompress.service with Nice=19, so
++# the compression CPU it spends competes only for otherwise idle cycles.
++set -u
++
++DEV=/sys/block/zram0
++IDLE_SECONDS=${IDLE_SECONDS:-1800}
++THRESHOLD=${THRESHOLD:-1500}
++MAX_LOAD=${MAX_LOAD:-6}
++
++LOG=/home/radxa/zram-multicomp/recompress.log
++log() { printf '%s [zram-recompress] %s\n' "$(date -Is)" "$*" | tee -a "$LOG" 2>/dev/null; }
++
++# Stock module (or no device): nothing to do.
++[ -e "$DEV/recompress" ] || exit 0
++[ -e "$DEV/disksize" ] || exit 0
++[ "$(cat "$DEV/disksize" 2>/dev/null || echo 0)" -gt 0 ] || exit 0
++
++# The secondary algorithm can only be registered before the device is
++# initialised (the kernel returns -EBUSY afterwards), so it is set by
++# zramswap.service's ExecStartPre drop-in, not here. Warn if it is missing.
++if ! grep -q 'zstd' "$DEV/recomp_algorithm" 2>/dev/null; then
++  log "no secondary algorithm configured - check zramswap.service.d/10-recomp.conf"
++  exit 0
++fi
++
++# Skip when something else is already working the CPU.
++LOAD=$(awk '{print int($1)}' /proc/loadavg)
++[ "$LOAD" -ge "$MAX_LOAD" ] && { log "load $LOAD too high, skipping"; exit 0; }
++
++before_data=$(awk '{print $1}' "$DEV/mm_stat")
++before_compr=$(awk '{print $2}' "$DEV/mm_stat")
++
++# Incompressible pages waste a full 4 KB each; if a backing device is
++# configured, hand them to it before spending CPU on recompression.
++if [ -e "$DEV/backing_dev" ] && [ -n "$(cat "$DEV/backing_dev" 2>/dev/null)" ]; then
++  echo huge > "$DEV/writeback" 2>/dev/null || log "huge writeback failed"
++fi
++
++echo "$IDLE_SECONDS" > "$DEV/idle" 2>/dev/null || log "idle write failed (no access-time tracking?)"
++if ! echo "type=idle threshold=$THRESHOLD" > "$DEV/recompress" 2>/dev/null; then
++  log "recompress write failed"
++  exit 0
++fi
++
++after_data=$(awk '{print $1}' "$DEV/mm_stat")
++after_compr=$(awk '{print $2}' "$DEV/mm_stat")
++log "idle>=${IDLE_SECONDS}s, threshold=${THRESHOLD}B: data $((${after_data:-0}/1048576))MB compr $((${after_compr:-0}/1048576))MB" \
++    "(was $((${before_data:-0}/1048576))MB / $((${before_compr:-0}/1048576))MB)"
+diff --git a/system/zram/zram-recompress.timer b/system/zram/zram-recompress.timer
+new file mode 100644
+index 0000000..7d130e6
+--- /dev/null
++++ b/system/zram/zram-recompress.timer
+@@ -0,0 +1,10 @@
++[Unit]
++Description=Periodic idempotent-aging recompression of zram pages
++
++[Timer]
++OnBootSec=2min
++OnUnitActiveSec=10min
++AccuracySec=1min
++
++[Install]
++WantedBy=timers.target
+diff --git a/system/zram/zram-writeback-loop.service b/system/zram/zram-writeback-loop.service
+new file mode 100644
+index 0000000..2051168
+--- /dev/null
++++ b/system/zram/zram-writeback-loop.service
+@@ -0,0 +1,14 @@
++[Unit]
++Description=Attach the zram writeback backing file as a loop device
++DefaultDependencies=no
++After=local-fs.target
++Before=zramswap.service
++ConditionPathExists=/home/radxa/zram-writeback.img
++
++[Service]
++Type=oneshot
++RemainAfterExit=yes
++ExecStart=/bin/sh -c 'losetup -j /home/radxa/zram-writeback.img | grep -q . || losetup --find --show /home/radxa/zram-writeback.img'
++
++[Install]
++WantedBy=multi-user.target
+diff --git a/system/zram/zramswap.default b/system/zram/zramswap.default
+new file mode 100644
+index 0000000..a398cd6
+--- /dev/null
++++ b/system/zram/zramswap.default
+@@ -0,0 +1,22 @@
++# Compression algorithm selection
++# speed: lz4 > zstd 
++# compression: zstd > lz4
++# This is not inclusive of all that is available in latest kernels
++# See /sys/block/zram0/comp_algorithm (when zram module is loaded) to see
++# what is currently set and available for your kernel[1]
++# [1]  https://www.kernel.org/doc/html/latest/admin-guide/blockdev/zram.html#select-compression-algorithm
++ALGO=lz4
++
++# Specifies the amount of RAM that should be used for zram
++# based on a percentage the total amount of available memory
++# This takes precedence and overrides SIZE below
++PERCENT=100
++
++# Specifies a static amount of RAM that should be used for
++# the ZRAM devices, this is in MiB
++SIZE=512
++
++# Specifies the priority for the swap devices, see swapon(2)
++# for more details. Higher number = higher priority
++# This should probably be higher than hdd/ssd swaps.
++PRIORITY=100
+diff --git a/system/zram/zramswap.service.d/10-recomp.conf b/system/zram/zramswap.service.d/10-recomp.conf
+new file mode 100644
+index 0000000..54c599a
+--- /dev/null
++++ b/system/zram/zramswap.service.d/10-recomp.conf
+@@ -0,0 +1,6 @@
++# Prepare the zram device and register the recompression algorithm before
++# zramswap initialises it. The kernel only accepts algorithm changes while
++# disksize is 0, so this must be an ExecStartPre. The '-' keeps swap available
++# even if preparation ever fails (it logs to ~/zram-multicomp/recompress.log).
++[Service]
++ExecStartPre=-/usr/local/sbin/zram-multicomp-prepare.sh
+-- 
+2.47.3
+

@@ -1,0 +1,162 @@
+From 4422da4bc8d22dc21713328d2a724256cbb0fc87 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sat, 17 Oct 2026 10:43:06 +0800
+Subject: [PATCH 165/269] gallium/pvr: the PBE source-format mapping, and the
+ parameter that was one grep away
+
+  csb: source format follows with_packed_usc_channel for 8-bit targets
+  --- ALL PASS        (real open kernel)
+
+Round 62 stopped because with_packed_usc_channel decided the answer for the formats this driver
+accepts and its semantics were unestablished. One grep resolved it, and it was never a guess:
+
+  if (PVR_HAS_FEATURE(dev_info, usc_f16sop_u8))
+     with_packed_usc_channel = format is unorm or snorm;
+  else
+     with_packed_usc_channel = false;
+
+A DEVICE FEATURE plus the format's signedness. So 8-bit targets are F16-packed when the device lacks
+usc_f16sop_u8, and 8-per-channel when it has it - both are real hardware behaviours, not a reference
+quirk, which is why the counter-intuitive branch was worth stopping for rather than writing from the
+name.
+
+It is a parameter rather than a dev_info read because the CSB writer takes numbers, not devices (the
+same arrangement as the region header and the clip alignment). Callers pass the two facts they have,
+and the check exercises BOTH values for the same format - a check that pinned one would be recording
+the test device's answer as the rule.
+
+The reference's branches are mirrored using gallium's own predicates (util_format_is_float,
+util_format_is_pure_integer, util_format_is_srgb, util_format_has_depth/stencil) against a
+util_format_description, so there is no Vulkan table here either - the third time a mapping feared as
+large turned out to be a switch over the description this driver already has.
+---
+ src/gallium/drivers/pvr/pvr_csb.c   | 38 +++++++++++++++++++++++++++++
+ src/gallium/drivers/pvr/pvr_csb.h   | 23 +++++++++++++++++
+ src/gallium/drivers/pvr/pvr_probe.c | 27 +++++++++++++++++++-
+ 3 files changed, 87 insertions(+), 1 deletion(-)
+
+diff --git a/src/gallium/drivers/pvr/pvr_csb.c b/src/gallium/drivers/pvr/pvr_csb.c
+index 47fb0675..e3670864 100644
+--- a/src/gallium/drivers/pvr/pvr_csb.c
++++ b/src/gallium/drivers/pvr/pvr_csb.c
+@@ -383,6 +383,44 @@ pvr_pbe_linestride(uint32_t stride_bytes)
+    return (stride_bytes - 1) / ROGUE_PBESTATE_REG_WORD0_LINESTRIDE_UNIT_SIZE;
+ }
+ 
++enum ROGUE_PBESTATE_SOURCE_FORMAT
++pvr_pbe_source_format_from_pipe(enum pipe_format format, bool with_packed_usc_channel)
++{
++   const struct util_format_description *desc = util_format_description(format);
++   const uint32_t chan_0_width = desc->channel[0].size;
++   bool has_32bit_channel = false;
++
++   for (unsigned i = 0; i < 4; i++) {
++      if (desc->channel[i].size == 32)
++         has_32bit_channel = true;
++   }
++
++   if (has_32bit_channel || util_format_is_pure_integer(format))
++      return ROGUE_PBESTATE_SOURCE_FORMAT_8_PER_CHANNEL;
++
++   if (util_format_is_float(format))
++      return ROGUE_PBESTATE_SOURCE_FORMAT_F16_PER_CHANNEL;
++
++   if (desc->colorspace == UTIL_FORMAT_COLORSPACE_SRGB)
++      return ROGUE_PBESTATE_SOURCE_FORMAT_F16_PER_CHANNEL;
++
++   if (util_format_has_depth(desc) || util_format_has_stencil(desc))
++      return ROGUE_PBESTATE_SOURCE_FORMAT_8_PER_CHANNEL;
++
++   if (chan_0_width > 16)
++      return ROGUE_PBESTATE_SOURCE_FORMAT_8_PER_CHANNEL;
++
++   if (chan_0_width > 8)
++      return ROGUE_PBESTATE_SOURCE_FORMAT_F16_PER_CHANNEL;
++
++   /* The branch the parameter decides: an 8-bit format is F16-packed only when the driver has no
++    * packed USC channel to put it in. */
++   if (!with_packed_usc_channel)
++      return ROGUE_PBESTATE_SOURCE_FORMAT_F16_PER_CHANNEL;
++
++   return ROGUE_PBESTATE_SOURCE_FORMAT_8_PER_CHANNEL;
++}
++
+ bool
+ pvr_pbe_swizzle_from_pipe(uint8_t pipe_swizzle, enum ROGUE_PBESTATE_SWIZ *out)
+ {
+diff --git a/src/gallium/drivers/pvr/pvr_csb.h b/src/gallium/drivers/pvr/pvr_csb.h
+index 62486506..22049111 100644
+--- a/src/gallium/drivers/pvr/pvr_csb.h
++++ b/src/gallium/drivers/pvr/pvr_csb.h
+@@ -499,6 +499,29 @@ struct pvr_pbe_clip {
+  * no channel there, which is not a selector, and mapping it to a zero would change what is written. */
+ bool pvr_pbe_swizzle_from_pipe(uint8_t pipe_swizzle, enum ROGUE_PBESTATE_SWIZ *out);
+ 
++/* The PBE's per-channel width selector for a target format.
++ *
++ * Mirrors the reference's pvr_arch_pbe_get_src_format_and_gamma, which - like round 32's swizzle
++ * helper - works from a util_format_description, so this needs no Vulkan table.
++ *
++ * `with_packed_usc_channel` is NOT a guess and not a format property: the reference derives it as
++ *
++ *   if (PVR_HAS_FEATURE(dev_info, usc_f16sop_u8))
++ *      with_packed_usc_channel = format is unorm or snorm;
++ *   else
++ *      with_packed_usc_channel = false;
++ *
++ * i.e. a DEVICE FEATURE combined with the format's signedness. It is a parameter here rather than
++ * read from dev_info because the CSB writer takes numbers, not devices (the same arrangement as the
++ * region header and clip alignment). Callers pass the two facts they have; the branch is then
++ * explicit and testable both ways instead of depending on one device's answer.
++ *
++ * The two answers mean different things and both are real: 8-bit channels take F16_PER_CHANNEL when
++ * the parameter is false, which is the counter-intuitive case that made round 62 stop - it is not a
++ * mistake in the reference, it is what the hardware does without usc_f16sop_u8. */
++enum ROGUE_PBESTATE_SOURCE_FORMAT
++pvr_pbe_source_format_from_pipe(enum pipe_format format, bool with_packed_usc_channel);
++
+ void pvr_pbe_clip_from_area(uint32_t off_x, uint32_t off_y, uint32_t width, uint32_t height,
+                             uint32_t surface_width, uint32_t surface_height,
+                             struct pvr_pbe_clip *out);
+diff --git a/src/gallium/drivers/pvr/pvr_probe.c b/src/gallium/drivers/pvr/pvr_probe.c
+index 9930d35c..d7228211 100644
+--- a/src/gallium/drivers/pvr/pvr_probe.c
++++ b/src/gallium/drivers/pvr/pvr_probe.c
+@@ -1920,8 +1920,33 @@ csb_check(int fd, struct pipe_screen *pscreen)
+                   goto out;
+                }
+ 
++               /* Both answers for the SAME format, because the parameter is the whole point: an
++                * 8-bit target is F16-packed without usc_f16sop_u8 and 8-per-channel with it. A
++                * check that only exercised one value would pin whichever the test device happens
++                * to have and call it the rule. */
++               if (pvr_pbe_source_format_from_pipe(PIPE_FORMAT_R8G8B8A8_UNORM, true) !=
++                      ROGUE_PBESTATE_SOURCE_FORMAT_8_PER_CHANNEL ||
++                   pvr_pbe_source_format_from_pipe(PIPE_FORMAT_R8G8B8A8_UNORM, false) !=
++                      ROGUE_PBESTATE_SOURCE_FORMAT_F16_PER_CHANNEL) {
++                  printf("csb:           FAIL: an 8-bit target did not follow with_packed_usc_channel "
++                         "(true -> %u, false -> %u)\n",
++                         pvr_pbe_source_format_from_pipe(PIPE_FORMAT_R8G8B8A8_UNORM, true),
++                         pvr_pbe_source_format_from_pipe(PIPE_FORMAT_R8G8B8A8_UNORM, false));
++                  goto out;
++               }
++
++               /* A 32-bit-per-channel format is 8_PER_CHANNEL whichever the parameter says. */
++               if (pvr_pbe_source_format_from_pipe(PIPE_FORMAT_R32G32B32A32_FLOAT, false) !=
++                      ROGUE_PBESTATE_SOURCE_FORMAT_8_PER_CHANNEL ||
++                   pvr_pbe_source_format_from_pipe(PIPE_FORMAT_R16G16B16A16_FLOAT, false) !=
++                      ROGUE_PBESTATE_SOURCE_FORMAT_F16_PER_CHANNEL) {
++                  printf("csb:           FAIL: wide/float formats did not take their branches\n");
++                  goto out;
++               }
++
+                printf("csb:           PBE swizzle: %zu pipe selectors -> distinct hardware values, "
+-                      "NONE refused\n", ARRAY_SIZE(pipes));
++                      "NONE refused; source format follows with_packed_usc_channel for 8-bit "
++                      "targets\n", ARRAY_SIZE(pipes));
+             }
+ 
+             printf("csb:           PBE clip: inclusive pixels (whole 0,0..799,599; offset "
+-- 
+2.47.3
+

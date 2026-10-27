@@ -1,0 +1,1316 @@
+From bcae7a2af4c9fd9c3d14f489811c4f0c7d8fc691 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sat, 24 Oct 2026 22:53:21 +0800
+Subject: [PATCH 217/269] gallium/pvr: assemble the draw stream the captured
+ working draw has
+
+The probe's render submission now has the same shape as the capture: a PPP state block (TA state in
+memory, named by PPP_STATE_UPDATE), the full VDM vertex state, an index list, a terminate block and
+STREAM_TERMINATE. No PDS state updates, no standalone launchers - those were stand-ins from
+milestone 1 and the capture shows they are not how a draw is expressed.
+
+- USC and PDS programs are placed at chosen addresses in their heaps and named by heap-relative
+  offsets, which is what the hardware state takes (the capture's decoded values are absolute only
+  because the dump tool adds the heap base back): VS/FS code in the USC heap, the attribute
+  program's code+data and the fragment stage's kick program in the PDS heap.
+- The TA state block carries the capture's 25 words: header presence, ISPCTL + both face words + DBSC,
+  the five PDS words, region clip, viewport, wclamp, output select (vtxsize = the VS's 5 varying
+  dwords), varying counts, PPP ctrl and stream out. The probe checks all 20 state-determined words
+  against the capture byte for byte; the other five are this pipeline's own PDS addresses/sizes.
+- The terminate block and the fragment kick program complete the chain: the FS is named by
+  TA_STATE_PDS_SHADERBASE + SIZEINFO, not by a DDM PDS update.
+
+Two ownership bugs found while wiring it, both silent:
+
+- pco_shader keeps a pointer to the NIR it was built from, so callers that free the NIR corrupt the
+  heap at some later, unrelated allocation. pvr_shader_compile_data now ralloc_steals it, the rule
+  the Vulkan driver's build_shader uses.
+- The vertex maps must be allocated AFTER pco_lower_nir: lowering adds the gl_PointSize output, and a
+  map built earlier misses it (the translator then writes it to register 0). The captured draw's
+  5 output dwords are exactly position + point size.
+
+Verification (DRM noop shim, no GPU): probe exits 0, ALL PASS; TA block matches the captured draw;
+VDM state reproduces the captured dwords; PDS/TA/USC offsets are heap-relative. The stream has not
+executed on hardware yet - that is the next step.
+---
+ src/gallium/drivers/pvr_native/pvr_csb.c    | 140 +++-
+ src/gallium/drivers/pvr_native/pvr_csb.h    |  62 +-
+ src/gallium/drivers/pvr_native/pvr_probe.c  | 773 ++++++++++++--------
+ src/gallium/drivers/pvr_native/pvr_shader.c |  40 +-
+ src/gallium/drivers/pvr_native/pvr_shader.h |  20 +-
+ 5 files changed, 697 insertions(+), 338 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_csb.c b/src/gallium/drivers/pvr_native/pvr_csb.c
+index e4653a39..1d3d1989 100644
+--- a/src/gallium/drivers/pvr_native/pvr_csb.c
++++ b/src/gallium/drivers/pvr_native/pvr_csb.c
+@@ -932,12 +932,29 @@ pvr_csb_emit_ta_state_header(struct pvr_csb *csb, const struct pvr_ta_presence *
+ {
+    struct ROGUE_TA_STATE_HEADER header = {
+       .pres_ispctl = pres->ispctl,
++      .pres_ispctl_fa = pres->ispctl_fa,
++      .pres_ispctl_fb = pres->ispctl_fb,
++      .pres_ispctl_ba = pres->ispctl_ba,
++      .pres_ispctl_bb = pres->ispctl_bb,
++      .pres_ispctl_dbsc = pres->ispctl_dbsc,
++      .pres_pds_state_ptr0 = pres->pds_state_ptr0,
++      .pres_pds_state_ptr3 = pres->pds_state_ptr3,
++      .pres_region_clip = pres->region_clip,
+       .pres_viewport = pres->viewport,
+-      /* Not the last block in the stream, and no context switch or terminate here. */
++      .pres_wclamp = pres->wclamp,
++      .pres_outselects = pres->outselects,
++      .pres_varying_word0 = pres->varying_words,
++      .pres_varying_word1 = pres->varying_words,
++      .pres_varying_word2 = pres->varying_words,
++      .pres_ppp_ctrl = pres->ppp_ctrl,
++      .pres_stream_out_size = pres->stream_out_size,
++      /* A state block is not the last block in the stream, and never a context switch; only a
++       * terminate block sets pres_terminate. */
+       .not_final_term = false,
+-      .pres_terminate = false,
++      .pres_terminate = pres->terminate,
+       .context_switch = false,
+-      .view_port_count = pres->viewport ? 1 : 0,
++      /* A COUNT field: the capture carries 0 for one viewport. */
++      .view_port_count = pres->viewport_count ? pres->viewport_count - 1 : 0,
+    };
+    uint32_t *dw = pvr_csb_emit(csb, ROGUE_TA_STATE_HEADER_length);
+ 
+@@ -949,6 +966,123 @@ pvr_csb_emit_ta_state_header(struct pvr_csb *csb, const struct pvr_ta_presence *
+    return true;
+ }
+ 
++bool
++pvr_csb_emit_ta_isp_a(struct pvr_csb *csb, const struct ROGUE_TA_STATE_ISPA *a)
++{
++   uint32_t *dw = pvr_csb_emit(csb, ROGUE_TA_STATE_ISPA_length);
++
++   if (dw == NULL)
++      return false;
++
++   ROGUE_TA_STATE_ISPA_pack(dw, a);
++   return true;
++}
++
++bool
++pvr_csb_emit_ta_isp_b(struct pvr_csb *csb, const struct ROGUE_TA_STATE_ISPB *b)
++{
++   uint32_t *dw = pvr_csb_emit(csb, ROGUE_TA_STATE_ISPB_length);
++
++   if (dw == NULL)
++      return false;
++
++   ROGUE_TA_STATE_ISPB_pack(dw, b);
++   return true;
++}
++
++bool
++pvr_csb_emit_ta_isp_dbsc(struct pvr_csb *csb, const struct ROGUE_TA_STATE_ISPDBSC *dbsc)
++{
++   uint32_t *dw = pvr_csb_emit(csb, ROGUE_TA_STATE_ISPDBSC_length);
++
++   if (dw == NULL)
++      return false;
++
++   ROGUE_TA_STATE_ISPDBSC_pack(dw, dbsc);
++   return true;
++}
++
++bool
++pvr_csb_emit_ta_viewport(struct pvr_csb *csb, const struct pvr_viewport_words *vp)
++{
++   uint32_t *dw = pvr_csb_emit(csb, 6);
++
++   if (dw == NULL)
++      return false;
++
++   dw[0] = vp->a0;
++   dw[1] = vp->m0;
++   dw[2] = vp->a1;
++   dw[3] = vp->m1;
++   dw[4] = vp->a2;
++   dw[5] = vp->m2;
++
++   return true;
++}
++
++bool
++pvr_csb_emit_ta_varying(struct pvr_csb *csb, const struct ROGUE_TA_STATE_VARYING0 *v0,
++                        const struct ROGUE_TA_STATE_VARYING1 *v1)
++{
++   const uint32_t words = ROGUE_TA_STATE_VARYING0_length +
++                          ROGUE_TA_STATE_VARYING1_length +
++                          ROGUE_TA_STATE_VARYING2_length;
++   struct ROGUE_TA_STATE_VARYING2 v2 = { 0 };
++   uint32_t *dw = pvr_csb_emit(csb, words);
++
++   if (dw == NULL)
++      return false;
++
++   ROGUE_TA_STATE_VARYING0_pack(dw, v0);
++   ROGUE_TA_STATE_VARYING1_pack(dw + ROGUE_TA_STATE_VARYING0_length, v1);
++   ROGUE_TA_STATE_VARYING2_pack(dw + ROGUE_TA_STATE_VARYING0_length +
++                                   ROGUE_TA_STATE_VARYING1_length,
++                                &v2);
++   return true;
++}
++
++bool
++pvr_csb_emit_ta_ppp_ctrl(struct pvr_csb *csb, const struct ROGUE_TA_STATE_PPP_CTRL *ctrl)
++{
++   uint32_t *dw = pvr_csb_emit(csb, ROGUE_TA_STATE_PPP_CTRL_length);
++
++   if (dw == NULL)
++      return false;
++
++   ROGUE_TA_STATE_PPP_CTRL_pack(dw, ctrl);
++   return true;
++}
++
++bool
++pvr_csb_emit_ta_stream_out(struct pvr_csb *csb)
++{
++   struct ROGUE_TA_STATE_STREAM_OUT0 out = { 0 };
++   uint32_t *dw = pvr_csb_emit(csb, ROGUE_TA_STATE_STREAM_OUT0_length);
++
++   if (dw == NULL)
++      return false;
++
++   ROGUE_TA_STATE_STREAM_OUT0_pack(dw, &out);
++   return true;
++}
++
++bool
++pvr_csb_emit_ta_terminate(struct pvr_csb *csb,
++                          const struct ROGUE_TA_STATE_TERMINATE0 *t0,
++                          const struct ROGUE_TA_STATE_TERMINATE1 *t1)
++{
++   const uint32_t words = ROGUE_TA_STATE_TERMINATE0_length +
++                          ROGUE_TA_STATE_TERMINATE1_length;
++   uint32_t *dw = pvr_csb_emit(csb, words);
++
++   if (dw == NULL)
++      return false;
++
++   ROGUE_TA_STATE_TERMINATE0_pack(dw, t0);
++   ROGUE_TA_STATE_TERMINATE1_pack(dw + ROGUE_TA_STATE_TERMINATE0_length, t1);
++   return true;
++}
++
+ bool
+ pvr_csb_emit_sampler_desc(struct pvr_csb *csb, const struct pvr_sampler_desc *desc)
+ {
+diff --git a/src/gallium/drivers/pvr_native/pvr_csb.h b/src/gallium/drivers/pvr_native/pvr_csb.h
+index e57d138a..75acabbf 100644
+--- a/src/gallium/drivers/pvr_native/pvr_csb.h
++++ b/src/gallium/drivers/pvr_native/pvr_csb.h
+@@ -282,15 +282,75 @@ bool pvr_csb_emit_sampler_desc(struct pvr_csb *csb,
+  * worse than absent, because it makes the hardware read the next packet as that state. */
+ struct pvr_ta_presence {
+    bool ispctl;
++   bool ispctl_fa;
++   bool ispctl_fb;
++   bool ispctl_ba;
++   bool ispctl_bb;
++   bool ispctl_dbsc;
++   bool pds_state_ptr0;  /* SHADERBASE, TEXUNICODEBASE, SIZEINFO1, SIZEINFO2 */
++   bool pds_state_ptr3;  /* UNIFORMDATABASE */
++   bool region_clip;
+    bool viewport;
++   bool wclamp;
++   bool outselects;
++   bool varying_words;   /* VARYING0..2 */
++   bool ppp_ctrl;
++   bool stream_out_size;
++   bool terminate;       /* a terminate block: header + TERMINATE0/1, nothing else */
++   uint8_t viewport_count;
+ };
+ 
+ /* Emits only the header. The packets it announces are the caller's to emit, in the order the
+  * hardware expects, and a caller that sets a bit without emitting the packet is describing a
+- * stream that does not exist. */
++ * block that does not exist. The header is the first word of a PPP state block (a plain memory
++ * block, not a stream), so the caller composes the block by calling this and then one writer per
++ * set bit, in the reference's order:
++ *
++ *   header, ISPCTL, ISPA(front), ISPB(front), [ISPA(back), ISPB(back)], ISPDBSC,
++ *   PDS bases..., REGION_CLIP, VIEWPORT, WCLAMP, OUTPUT_SEL, VARYING0..2, PPP_CTRL, STREAM_OUT0
++ *
++ * viewport_count is a count; the header stores count-1 (the capture carries 0 for one viewport). */
+ bool pvr_csb_emit_ta_state_header(struct pvr_csb *csb,
+                                   const struct pvr_ta_presence *pres);
+ 
++/* The two face-value words and the depth-bias/scissor index word that follow ISPCTL. ISPA holds
++ * the A-format face (object type, pass type, depth/stencil compare, write masks), ISPB the
++ * B-format one (stencil compare/ops). The reference writes front A/B and, when two-sided, back
++ * A/B too; this driver emits what the caller asks for. */
++bool pvr_csb_emit_ta_isp_a(struct pvr_csb *csb, const struct ROGUE_TA_STATE_ISPA *a);
++bool pvr_csb_emit_ta_isp_b(struct pvr_csb *csb, const struct ROGUE_TA_STATE_ISPB *b);
++bool pvr_csb_emit_ta_isp_dbsc(struct pvr_csb *csb, const struct ROGUE_TA_STATE_ISPDBSC *dbsc);
++
++/* The viewport is SIX RAW DWORDs in the block - no packet type, no header - in the order
++ * a0, m0, a1, m1, a2, m2. The captured draw's values for a 512-wide viewport are
++ * 256.0f 256.0f 256.0f 256.0f 0.0f 1.0f as floats. Kept as raw dwords here because the
++ * scale/translate-to-a/m mapping has not been ported yet; inventing it would be a guess. */
++struct pvr_viewport_words {
++   uint32_t a0, m0, a1, m1, a2, m2;
++};
++bool pvr_csb_emit_ta_viewport(struct pvr_csb *csb,
++                              const struct pvr_viewport_words *vp);
++
++/* VARYING0/1 carry the per-interpolation varying counts, VARYING2 is only ever written as zero
++ * (the reference writes a literal 0 there on the first draw of a render job). */
++bool pvr_csb_emit_ta_varying(struct pvr_csb *csb,
++                             const struct ROGUE_TA_STATE_VARYING0 *v0,
++                             const struct ROGUE_TA_STATE_VARYING1 *v1);
++
++/* STATE_PPP_CTRL: cull mode, clip mode, flat-shade vertex, w-clamp enable. */
++bool pvr_csb_emit_ta_ppp_ctrl(struct pvr_csb *csb,
++                              const struct ROGUE_TA_STATE_PPP_CTRL *ctrl);
++
++/* TA_STATE_STREAM_OUT0, always zero here (no stream output). */
++bool pvr_csb_emit_ta_stream_out(struct pvr_csb *csb);
++
++/* TA_STATE_TERMINATE0/1, the last two words of a terminate block. The block is a header with only
++ * pres_terminate set, then these two words. Clip values are in the same device-alignment units as
++ * region clip. */
++bool pvr_csb_emit_ta_terminate(struct pvr_csb *csb,
++                               const struct ROGUE_TA_STATE_TERMINATE0 *t0,
++                               const struct ROGUE_TA_STATE_TERMINATE1 *t1);
++
+ /* TA_STATE_ISPCTL, the packet the header's pres_ispctl bit announces.
+  *
+  * Three of its fields are DERIVED from state this driver records, and each mapping is checked
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index de787db7..135171d0 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -116,27 +116,29 @@ out:
+  * address space. This is the step that makes a buffer reachable by the GPU; none of
+  * it can be exercised without the real kernel module, because the shim does not
+  * implement the VM ioctls. */
+-/* The fragment shader's doutu offset, set by the shader check and consumed by the
+- * draw test so the fragment launcher can name real uploaded code. */
+-static uint32_t g_fs_doutu;
+-/* The vertex attribute program's device address, set by the shader check and named by the control
+- * stream's PDS state update. */
+-static uint64_t g_vertex_prog_addr;
++/* The compiled shaders, kept for the draw test: the fragment stage's PDS program and the TA state
++ * need the fragment shader's sizes and temps. */
++static struct pvr_shader *g_fs_shader;
++static struct pvr_shader *g_vs_shader;
++/* Where each program was placed. USC offsets are relative to the USC heap base and are what DOUTU
++ * takes; PDS offsets are relative to the PDS heap base and are what the VDM/TA state takes - both
++ * heaps are addressed by offset, not by an arbitrary device address. */
++static uint32_t g_vs_usc_offset;
++static uint32_t g_fs_usc_offset;
++static uint64_t g_vertex_prog_code_offset;
++static uint64_t g_vertex_prog_data_offset;
++static uint64_t g_fs_pds_base_offset;
+ /* The vertex buffer's device address (three positions, 3 floats each). */
+ static uint64_t g_vertex_data_addr;
+-/* The patched PDS data block the VDM state points at - not the vertex buffer itself. */
+-static uint64_t g_vertex_pds_data_addr;
+ /* What the compiled vertex shader needs from the PDS vertex program: its temp count goes into the
+- * program's DOUTU control word, and the attribute DMA writes the vtxin registers the shader reads.
+- * Set by the shader check, consumed by the draw test. */
++ * program's DOUTU control word, and the attribute DMA writes the vtxin registers the shader reads. */
+ static unsigned g_vs_temps;
+ static unsigned g_vs_vtxins;
+-/* The VS binary's offset within the USC heap, which is the address its DOUTU takes. */
+-static uint32_t g_vs_usc_offset;
+ /* The varying registers the VS writes per vertex, and the attribute program's PDS sizes: the VDM
+  * state's STATE4/STATE5 and the TA's output-select vtxsize all take these. */
+ static unsigned g_vs_vtxouts;
+ static struct pvr_shader_vertex_program_info g_vertex_prog_info;
++static struct pvr_shader_pds_launcher_info g_fs_prog_info;
+ 
+ static bool
+ 
+@@ -746,15 +748,13 @@ real_job_done:
+                const uint32_t flen = pvr_frag_static_stream(rtcsb.map, rtcsb.size,
+                                                            (const uint64_t *)rtcsb.map, 1, 0x2780,
+                                                            false);
+-               /* A control stream with nothing but a STREAM_TERMINATE block: the smallest valid
+-                * stream the TA can read. It says "no geometry here" rather than "garbage here". */
++               /* Assemble the draw stream with the shape the captured working draw has:
++                * PPP state block pointer -> VDM state -> index list -> terminate block -> STREAM
++                * TERMINATE. The TA state lives in a memory block, not in stream packets. */
+                {
+-                  /* A control stream that actually describes a draw: a PDS state update naming the
+-                   * vertex shader's launcher, the VDM state, three indices and the terminate. This is
+-                   * the first stream that hands the TA a program instead of an empty stream. */
+                   struct pvr_csb ctl_csb;
+-                  struct pvr_bo ibo = { 0 };
+-                  uint64_t iaddr = 0;
++                  struct pvr_bo ibo = { 0 }, pbo = { 0 }, tbo = { 0 };
++                  uint64_t iaddr = 0, paddr = 0, taddr = 0;
+                   const uint16_t idx[3] = { 0, 1, 2 };
+                   uint32_t vdm_words = 0;
+                   bool okc = pvr_bo_create(pvm_fd_for_probe, 4096, 1, &ibo) &&
+@@ -762,109 +762,228 @@ real_job_done:
+                              pvr_vm_map(&vm, iaddr, ibo.handle, ibo.size) &&
+                              pvr_bo_map(pvm_fd_for_probe, &ibo);
+ 
+-                  if (okc) {
+-                     /* A launcher for a zero-temps shader is 36 bytes and needs no compiled VS -
+-                      * temps=0 is the whole input. Upload it so the PDS state update can name a real
+-                      * device address rather than a placeholder. */
+-                     struct pvr_shader zeros = { .temps = 0 };
+-                     uint8_t launcher[256];
+-                     struct pvr_bo lbo = { 0 };
+-                     uint64_t laddr = 0;
+-                     /* The launcher must name the SAME offset the compiled shader was uploaded to:
+-                      * base + carveout, rounded up to a page, relative to the heap base. Using 0 here
+-                      * was the placeholder that kept the TA pointed at empty space. */
+-                     const struct pvr_heap *usc2 = &vm.heaps[DRM_PVR_HEAP_USC_CODE];
+-                     const uint64_t doutu = usc2->size ?
+-                        (ALIGN_POT(usc2->base + (usc2->size - usc2->usable_size),
+-                                   (uint64_t)usc2->page_size) - usc2->base) : 0;
+-                     const uint32_t llen = pvr_shader_pds_launcher(&zeros, (uint32_t)doutu,
+-                                                                   launcher, sizeof(launcher));
+-
+-                     if (llen > 0 && pvr_bo_create(pvm_fd_for_probe, 4096, 1, &lbo) &&
+-                         (laddr = pvr_vm_alloc(&vm, lbo.size, vm.general.page_size)) != 0 &&
+-                         pvr_vm_map(&vm, laddr, lbo.handle, lbo.size) &&
+-                         pvr_bo_map(pvm_fd_for_probe, &lbo)) {
+-                        memcpy(lbo.map, launcher, llen);
+-                        printf("hwrt:          launcher %u B at 0x%" PRIx64 ", doutu offset 0x%" PRIx64 "\n",
+-                               llen, laddr, doutu);
+-                     } else {
+-                        laddr = 0;
+-                     }
+-
++                  if (!okc) {
++                     printf("hwrt:          could not set up the index buffer\n");
++                  } else {
+                      memcpy(ibo.map, idx, sizeof(idx));
+-                     pvr_csb_init(&ctl_csb, rctl.map, rctl.size, PVR_CSB_LINK_DWORDS);
+-                     /* A second launcher for the fragment stage, and the PDS state update that
+-                      * targets the DDM. Both programs are now bound in the one control stream the TA
+-                      * reads. */
+-                     struct pvr_bo fbo = { 0 };
+-                     uint64_t faddr = 0;
+-                     uint8_t flauncher[256];
+-                     const uint32_t fllen = pvr_shader_pds_launcher(&zeros, g_fs_doutu, flauncher,
+-                                                                    sizeof(flauncher));
+-                     if (fllen > 0 && pvr_bo_create(pvm_fd_for_probe, 4096, 1, &fbo) &&
+-                         (faddr = pvr_vm_alloc(&vm, fbo.size, vm.general.page_size)) != 0 &&
+-                         pvr_vm_map(&vm, faddr, fbo.handle, fbo.size) &&
+-                         pvr_bo_map(pvm_fd_for_probe, &fbo)) {
+-                        memcpy(fbo.map, flauncher, fllen);
+-                        printf("hwrt:          FS launcher %u B at 0x%" PRIx64 " (DDM target)\n",
+-                               fllen, faddr);
+-                     } else {
+-                        faddr = 0;
+-                     }
+ 
+-                     if (g_vertex_prog_addr != 0)
+-                        pvr_csb_emit_pds_state_update(&ctl_csb, g_vertex_prog_addr, 0, 0, false);
+-                     /* A clip region covering the whole target. Without one the draw covers no
+-                      * tiles, the fragment stage is never reached, and nothing can be written - which
+-                      * is what "target unchanged" would mean at this point. 16 is the alignment for
+-                      * this device's 16x16 tiles. */
+-                     {
++                     /* --- The TA state block (general heap; the PPP packet names it) --- */
++                     if (!pvr_bo_create(pvm_fd_for_probe, 4096, 1, &pbo) ||
++                         (paddr = pvr_vm_alloc(&vm, pbo.size, vm.general.page_size)) == 0 ||
++                         !pvr_vm_map(&vm, paddr, pbo.handle, pbo.size) ||
++                         !pvr_bo_map(pvm_fd_for_probe, &pbo)) {
++                        printf("hwrt:          could not set up the TA state block\n");
++                        okc = false;
++                     } else {
++                        struct pvr_csb block;
++                        struct pvr_ta_presence pres = {
++                           .ispctl = true,
++                           .ispctl_fa = true,
++                           .ispctl_fb = true,
++                           .ispctl_dbsc = true,
++                           .pds_state_ptr0 = true,
++                           .pds_state_ptr3 = true,
++                           .region_clip = true,
++                           .viewport = true,
++                           .viewport_count = 1,
++                           .wclamp = true,
++                           .outselects = true,
++                           .varying_words = true,
++                           .ppp_ctrl = true,
++                           .stream_out_size = true,
++                        };
++                        const struct pvr_ta_ispctl ispctl = { .bpres = true };
++                        const struct ROGUE_TA_STATE_ISPA ispa = {
++                           .objtype = ROGUE_TA_OBJTYPE_TRIANGLE,
++                           .passtype = ROGUE_TA_PASSTYPE_OPAQUE,
++                           .dwritedisable = true,
++                           .dcmpmode = ROGUE_TA_CMPMODE_ALWAYS,
++                           .pointlinewidth = 15,
++                        };
++                        const struct ROGUE_TA_STATE_ISPB ispb = {
++                           .scmpmode = ROGUE_TA_CMPMODE_ALWAYS,
++                           .sop1 = ROGUE_TA_ISPB_STENCILOP_KEEP,
++                           .sop2 = ROGUE_TA_ISPB_STENCILOP_KEEP,
++                           .sop3 = ROGUE_TA_ISPB_STENCILOP_KEEP,
++                        };
++                        const struct ROGUE_TA_STATE_ISPDBSC dbsc = { 0 };
++                        const struct pvr_pds_sizes pds_sizes = {
++                           /* No uniform/coefficient/texture-state programs yet. */
++                           .usc_varying_bytes = g_fs_shader->coeffs * 4,
++                           .usc_shared_count = g_fs_shader->shareds,
++                        };
++                        const struct pvr_viewport_words vp = {
++                           .a0 = 0x43800000, /* 256.0f */
++                           .m0 = 0x43800000,
++                           .a1 = 0x43800000,
++                           .m1 = 0x43800000,
++                           .a2 = 0,
++                           .m2 = 0x3f800000, /* 1.0f */
++                        };
++                        const struct ROGUE_TA_STATE_VARYING0 varying0 = { 0 };
++                        const struct ROGUE_TA_STATE_VARYING1 varying1 = { 0 };
++                        const struct ROGUE_TA_STATE_PPP_CTRL ppp_ctrl = {
++                           .cullmode = ROGUE_TA_CULLMODE_NO_CULLING,
++                           .clip_mode = ROGUE_TA_CLIP_MODE_FRONT_REAR,
++                           .drawclippededges = true,
++                           .flatshade_vtx = ROGUE_TA_FLATSHADE_VTX_VERTEX_0,
++                           .wclampen = true,
++                        };
++                        const struct pvr_ta_output_sel outsel = {
++                           .vtxsize = g_vs_vtxouts,
++                           .psprite_size_pres = true,
++                        };
+                         struct pvr_region_clip clip;
++                        bool built;
++
+                         pvr_region_clip_from_rect(0, 0, RTW, RTH, 16, &clip);
+-                        if (!pvr_csb_emit_ta_region_clip(&ctl_csb, &clip))
+-                           printf("hwrt:          could not emit the region clip\n");
+-                     }
+ 
+-                     /* The VDM state's vertex half, with the shape the captured working draw
+-                      * carries. ponytail: the PDS addresses here are still device addresses from the
+-                      * general heap, while the hardware takes the PDS program's offset within the
+-                      * PDS heap (the capture's raw values are heap-relative; the dump tool adds the
+-                      * heap base back when it prints). Moving the attribute program into the PDS
+-                      * heap is part of first-draw work, not part of the encoder. */
+-                     struct pvr_vdm_vs vdm_vs = { 0 };
+-                     if (g_vertex_pds_data_addr != 0) {
+-                        vdm_vs.pds_data_addr = g_vertex_pds_data_addr;
+-                        vdm_vs.pds_code_addr = g_vertex_prog_addr;
+-                        vdm_vs.output_size = g_vs_vtxouts;
+-                        vdm_vs.usc_unified_bytes = g_vs_vtxins * 4;
+-                        vdm_vs.pds_temp_dwords = g_vertex_prog_info.temp_dwords;
+-                        vdm_vs.pds_data_dwords = g_vertex_prog_info.data_dwords;
+-                        pvr_vdm_cam_size(dev_info, g_vs_vtxouts, true, &vdm_vs.cam_size,
+-                                         &vdm_vs.max_instances);
+-                     }
++                        pvr_csb_init(&block, pbo.map, pbo.size, 0);
++                        built = pvr_csb_emit_ta_state_header(&block, &pres) &&
++                                pvr_csb_emit_ta_ispctl(&block, NULL, true, &ispctl) &&
++                                pvr_csb_emit_ta_isp_a(&block, &ispa) &&
++                                pvr_csb_emit_ta_isp_b(&block, &ispb) &&
++                                pvr_csb_emit_ta_isp_dbsc(&block, &dbsc) &&
++                                pvr_csb_emit_ta_pds_base(&block, PVR_PDS_BASE_SHADER,
++                                                         g_fs_pds_base_offset) &&
++                                pvr_csb_emit_ta_pds_base(&block, PVR_PDS_BASE_TEXUNICODE, 0) &&
++                                pvr_csb_emit_ta_pds_sizeinfo(&block, &pds_sizes, true, 0) &&
++                                pvr_csb_emit_ta_pds_base(&block, PVR_PDS_BASE_UNIFORMDATA, 0) &&
++                                pvr_csb_emit_ta_region_clip(&block, &clip) &&
++                                pvr_csb_emit_ta_viewport(&block, &vp) &&
++                                pvr_csb_emit_ta_wclamp(&block, PVR_TA_WCLAMP_MIN_W) &&
++                                pvr_csb_emit_ta_output_sel(&block, &outsel) &&
++                                pvr_csb_emit_ta_varying(&block, &varying0, &varying1) &&
++                                pvr_csb_emit_ta_ppp_ctrl(&block, &ppp_ctrl) &&
++                                pvr_csb_emit_ta_stream_out(&block);
++
++                        if (!built || block.overflowed) {
++                           printf("hwrt:          could not build the TA state block\n");
++                           okc = false;
++                        } else {
++                           const uint32_t block_words = pvr_csb_size(&block) / 4;
++
++                           printf("hwrt:          TA state block: %u words at 0x%" PRIx64 "\n",
++                                  block_words, paddr);
++
++                           /* Conformance against the captured working draw: every word whose
++                            * value is determined by STATE (not by a program address or size) must
++                            * equal the capture's. Five words are skipped - SHADERBASE, TEXUNICODE,
++                            * both SIZEINFOs and UNIFORMDATABASE - because this pipeline has its own
++                            * program addresses and sizes. Everything else (header presence, ISP
++                            * face values, clip, viewport, wclamp, output select, varying counts,
++                            * PPP ctrl) is fixed by the draw being a full-target opaque triangle and
++                            * must match byte for byte. */
++                           {
++                              static const uint32_t captured[25] = {
++                                 0x007f0e67, 0x00050000, 0x002e0f00, 0x0e000000, 0x00000000,
++                                 0x00002900, 0x00002780, 0x01000000, 0x00804000, 0x000028c0,
++                                 0x8000001f, 0x0000001f, 0x43800000, 0x43800000, 0x43800000,
++                                 0x43800000, 0x00000000, 0x3f800000, 0x29e12e13, 0x05040000,
++                                 0x00000000, 0x00000000, 0x00000000, 0x000006a0, 0x00000000,
++                              };
++                              static const unsigned program_words[] = { 5, 6, 7, 8, 9 };
++                              const uint32_t *got = (const uint32_t *)pbo.map;
++
++                              if (block_words == ARRAY_SIZE(captured)) {
++                                 for (unsigned i = 0; i < ARRAY_SIZE(captured); i++) {
++                                    bool is_program_word = false;
++
++                                    for (unsigned j = 0; j < ARRAY_SIZE(program_words); j++)
++                                       is_program_word |= i == program_words[j];
++                                    if (is_program_word || got[i] == captured[i])
++                                       continue;
++
++                                    printf("hwrt:          FAIL: TA state word %u is 0x%08x, "
++                                           "captured draw has 0x%08x\n", i, got[i],
++                                           captured[i]);
++                                    okc = false;
++                                    break;
++                                 }
++                                 if (okc)
++                                    printf("hwrt:          TA state matches the captured draw at "
++                                           "every state-determined word (%u of %u; the rest are "
++                                           "this pipeline's PDS addresses/sizes)\n",
++                                           (unsigned)ARRAY_SIZE(captured) -
++                                              (unsigned)ARRAY_SIZE(program_words),
++                                           (unsigned)ARRAY_SIZE(captured));
++                              }
++                           }
++
++                           /* --- The terminate block: header(pres_terminate) + clip --- */
++                           {
++                              struct pvr_csb tb;
++                              struct pvr_ta_presence tpres = { .terminate = true };
++                              struct pvr_region_clip tclip;
++                              struct ROGUE_TA_STATE_TERMINATE0 t0;
++                              struct ROGUE_TA_STATE_TERMINATE1 t1;
++
++                              pvr_region_clip_from_rect(0, 0, RTW, RTH, 32, &tclip);
++                              t0 = (struct ROGUE_TA_STATE_TERMINATE0){
++                                 .clip_right = tclip.right,
++                                 .clip_top = tclip.top,
++                                 .clip_bottom = tclip.bottom,
++                              };
++                              t1 = (struct ROGUE_TA_STATE_TERMINATE1){
++                                 .clip_left = tclip.left,
++                                 .render_target = 0,
++                              };
++
++                              if (!pvr_bo_create(pvm_fd_for_probe, 4096, 1, &tbo) ||
++                                  (taddr = pvr_vm_alloc(&vm, tbo.size, vm.general.page_size)) == 0 ||
++                                  !pvr_vm_map(&vm, taddr, tbo.handle, tbo.size) ||
++                                  !pvr_bo_map(pvm_fd_for_probe, &tbo)) {
++                                 printf("hwrt:          could not set up the terminate block\n");
++                                 okc = false;
++                              } else {
++                                 pvr_csb_init(&tb, tbo.map, tbo.size, 0);
++                                 built = pvr_csb_emit_ta_state_header(&tb, &tpres) &&
++                                         pvr_csb_emit_ta_terminate(&tb, &t0, &t1);
++                                 if (!built || tb.overflowed) {
++                                    printf("hwrt:          could not build the terminate block\n");
++                                    okc = false;
++                                 }
++                              }
++                           }
++                        }
+ 
+-                     if (!pvr_csb_emit_pds_state_update(&ctl_csb, laddr, 0, 0, false) ||
+-                         !pvr_csb_emit_pds_state_update(&ctl_csb, faddr, 0, 0, true) ||
+-                         !pvr_csb_emit_vdm_state(&ctl_csb, false, 0,
+-                                                 g_vertex_pds_data_addr != 0 ? &vdm_vs : NULL,
+-                                                 &vdm_words) ||
+-                         !pvr_csb_emit_index_list(&ctl_csb, iaddr, 3, 1,
+-                                                  ROGUE_VDMCTRL_INDEX_SIZE_B16) ||
+-                         !pvr_csb_emit_stream_terminate(&ctl_csb))
+-                        printf("hwrt:          could not emit the draw blocks (launcher %u B)\n", llen);
+-                     else
+-                     {
+-                        const uint32_t *cw = (const uint32_t *)rctl.map;
+-                        printf("hwrt:          control stream: VDM state (%u dw) + 3 indices + terminate; "
+-                               "first dwords:", vdm_words);
+-                        for (unsigned i = 0; i < 12; i++)
+-                           printf(" %08x", cw[i]);
+-                        printf("\n");
++                        if (okc) {
++                           struct pvr_vdm_vs vdm_vs = {
++                              .pds_data_addr = g_vertex_prog_data_offset,
++                              .pds_code_addr = g_vertex_prog_code_offset,
++                              .output_size = g_vs_vtxouts,
++                              .usc_unified_bytes = g_vs_vtxins * 4,
++                              .pds_temp_dwords = g_vertex_prog_info.temp_dwords,
++                              .pds_data_dwords = g_vertex_prog_info.data_dwords,
++                           };
++                           pvr_vdm_cam_size(dev_info, g_vs_vtxouts, true, &vdm_vs.cam_size,
++                                            &vdm_vs.max_instances);
++
++                           pvr_csb_init(&ctl_csb, rctl.map, rctl.size, PVR_CSB_LINK_DWORDS);
++                           if (!pvr_csb_emit_ppp_state(&ctl_csb, paddr,
++                                                       pvr_csb_size(&block) / 4) ||
++                               !pvr_csb_emit_vdm_state(&ctl_csb, false, 0, &vdm_vs,
++                                                       &vdm_words) ||
++                               !pvr_csb_emit_index_list(&ctl_csb, iaddr, 3, 1,
++                                                        ROGUE_VDMCTRL_INDEX_SIZE_B16) ||
++                               !pvr_csb_emit_ppp_state(&ctl_csb, taddr, 3) ||
++                               !pvr_csb_emit_stream_terminate(&ctl_csb)) {
++                              printf("hwrt:          could not emit the draw stream\n");
++                           } else {
++                              const uint32_t *cw = (const uint32_t *)rctl.map;
++
++                              printf("hwrt:          draw stream: TA block (%u w) + VDM state "
++                                     "(%u dw) + 3 indices + terminate; first dwords:",
++                                     pvr_csb_size(&block) / 4, vdm_words);
++                              for (unsigned i = 0; i < 14; i++)
++                                 printf(" %08x", cw[i]);
++                              printf("\n");
++                           }
++                        }
+                      }
+-                  } else {
+-                     printf("hwrt:          could not set up the index buffer\n");
+                   }
+                }
++
+                const uint32_t glen = pvr_geom_static_stream(rctl.map, rctl.size, rctladdr,
+                                                            rbctaddr, false, 0, false, 0, 0,
+                                                            PVR_HAS_QUIRK(dev_info, 49927));
+@@ -1204,6 +1323,38 @@ out_ctx:
+    return ok;
+ }
+ 
++/* Map a buffer object at an exact GPU address. The PDS and USC heaps are addressed by offsets from
++ * the heap base, so their contents have to live at chosen addresses rather than at whatever
++ * pvr_vm_alloc() hands out. The BOs are never freed: the probe is one-shot and the GPU reads them
++ * asynchronously. */
++static bool
++probe_map_bo_at(int fd, struct pvr_vm *vm, uint64_t addr, const void *data, uint32_t size,
++                struct pvr_bo *bo)
++{
++   if (!pvr_bo_create(fd, size, 1, bo))
++      return false;
++
++   if (!pvr_vm_map(vm, addr, bo->handle, bo->size))
++      return false;
++
++   if (!pvr_bo_map(fd, bo))
++      return false;
++
++   if (data != NULL)
++      memcpy(bo->map, data, size);
++
++   return true;
++}
++
++/* First page of a heap's usable area: the firmware's static programs occupy the carveout at the
++ * base, and VM_MAP is page-granular, so the first byte a driver may map is the next page. */
++static uint64_t
++probe_heap_usable_page(const struct pvr_heap *heap)
++{
++   return ALIGN_POT(heap->base + (heap->size - heap->usable_size),
++                    (uint64_t)heap->page_size);
++}
++
+ /* Run the linked compiler over a shader and check it produces code. This is the whole
+  * point of having linked pco rather than written one: the driver must be able to get
+  * a NIR shader through it and out as an encoded binary. */
+@@ -1239,30 +1390,32 @@ shader_compile_check(struct pipe_screen *pscreen)
+    nir_frag_store_pco(&b, nir_imm_int(&b, 0), .base = 0);
+    nir_jump(&b, nir_jump_return);
+ 
+-   if (!pvr_shader_compile(screen->pco_ctx, b.shader, &shader, &binary, &size)) {
+-      printf("shader:        FAIL: pco produced no code\n");
+-      ralloc_free(b.shader);
++   g_fs_shader = pvr_shader_create(b.shader, screen->pco_ctx);
++   if (g_fs_shader == NULL) {
++      printf("shader:        FAIL: pco produced no fragment code\n");
++      /* The compiled shader owns its NIR (it is ralloc_stolen); freeing it here would be a
++    * double free once the shader is destroyed. */
+       return false;
+    }
++   /* The compiled shader owns its NIR (it is ralloc_stolen); freeing it here would be a
++    * double free once the shader is destroyed. */
+ 
++   binary = g_fs_shader->binary;
++   size = g_fs_shader->binary_size;
+    ok = binary != NULL && size > 0;
+ 
+-   printf("shader:        pco encoded %u bytes of USC for a fragment shader\n", size);
++   printf("shader:        pco encoded %u bytes of USC for a fragment shader; PDS kick needs "
++          "temps=%u, TA PDS sizes: usc_varyings %u, usc_shareds %u\n", size, g_fs_shader->temps,
++          g_fs_shader->coeffs, g_fs_shader->shareds);
+ 
+-   /* A vertex shader is a different pipeline stage, not just a different NIR: pco lowers it with
+-    * vertex-specific passes and the PDS program that kicks it is built differently. Confirm the
+-    * driver can produce one before wiring a draw that needs it. */
++   /* The vertex shader reads the position attribute - the point of milestone 2. Two facts are
++    * needed for pco's per-vertex-input pass to lower it, and neither is discoverable from the load
++    * alone: the shader_in variable (the pass takes the attribute's type from it) and the
++    * driver-filled formats/ranges in pco_data (see pvr_shader_init_vs_formats/alloc). This is the
++    * shape the Vulkan driver's spirv-to-nir output ends up with, reached without a SPIR-V detour. */
+    {
+-      pco_shader *vshader = NULL;
+-      const void *vbin = NULL;
+-      unsigned vsize = 0;
+       nir_builder vb = nir_builder_init_simple_shader(MESA_SHADER_VERTEX, pco_nir_options(),
+                                                       "vs_probe");
+-      /* The shader reads the position attribute - the point of milestone 2. Two facts are needed
+-       * for pco's per-vertex-input pass to lower it, and neither is discoverable from the load
+-       * alone: the shader_in variable (the pass takes the attribute's type from it) and the
+-       * driver-filled ranges/formats in pco_data (see pvr_shader_init_vs_data). This is the shape
+-       * the Vulkan driver's spirv-to-nir output ends up with, reached without a SPIR-V detour. */
+       {
+          nir_variable *in = nir_variable_create(vb.shader, nir_var_shader_in,
+                                                 glsl_vec_type(3), "position");
+@@ -1284,85 +1437,33 @@ shader_compile_check(struct pipe_screen *pscreen)
+       }
+       vb.shader->info.internal = false;
+ 
+-      {
+-         struct pvr_screen *scr = pvr_screen(pscreen);
+-         uint8_t vprog[1024];
+-         const uint32_t vlen = pvr_shader_vertex_program(&scr->dev_info, vprog, sizeof(vprog),
+-                                                         12, 12, 0, &g_vertex_prog_info);
+-         if (vlen > 0) {
+-            struct pvr_bo vbo = { 0 };
+-            uint64_t vaddr = 0;
+-
+-            printf("shader:        vertex attribute program: %u bytes (1 attribute: 3 floats, "
+-                   "stride 12), PDS temps %u dw, data %u dw\n", vlen,
+-                   g_vertex_prog_info.temp_dwords, g_vertex_prog_info.data_dwords);
+-
+-            /* The program needs a device address before it can be named by a PDS state update; keep it
+-             * in the same general heap as the other stream buffers. */
+-            if (pvr_bo_create(scr->fd, vlen, 1, &vbo) &&
+-                (vaddr = pvr_vm_alloc(&scr->vm, vbo.size, scr->vm.general.page_size)) != 0 &&
+-                pvr_vm_map(&scr->vm, vaddr, vbo.handle, vbo.size) &&
+-                pvr_bo_map(scr->fd, &vbo)) {
+-               memcpy(vbo.map, vprog, vlen);
+-               g_vertex_prog_addr = vaddr;
+-               {
+-                  /* Three positions for a triangle, in clip space: 3 floats each. */
+-                  static const float tri[9] = {
+-                     -0.5f, -0.5f, 0.0f,
+-                      0.5f, -0.5f, 0.0f,
+-                      0.0f,  0.5f, 0.0f,
+-                  };
+-                  struct pvr_bo dbo = { 0 };
+-                  uint64_t daddr = 0;
+-
+-                  if (pvr_bo_create(scr->fd, sizeof(tri), 1, &dbo) &&
+-                      (daddr = pvr_vm_alloc(&scr->vm, dbo.size, scr->vm.general.page_size)) != 0 &&
+-                      pvr_vm_map(&scr->vm, daddr, dbo.handle, dbo.size) &&
+-                      pvr_bo_map(scr->fd, &dbo)) {
+-                     memcpy(dbo.map, tri, sizeof(tri));
+-                     g_vertex_data_addr = daddr;
+-                     printf("shader:        vertex buffer uploaded at 0x%" PRIx64 " (3 positions, 36 bytes)\n", daddr);
+-                  }
+-               }
+-               printf("shader:        vertex program uploaded at 0x%" PRIx64 "\n", vaddr);
+-            } else {
+-               printf("shader:        FAIL: could not upload the vertex program\n");
+-            }
+-         }
+-         else
+-            printf("shader:        FAIL: no vertex attribute program\n");
+-      }
+-
+-      struct pvr_shader *vobj = pvr_shader_create(vb.shader, screen->pco_ctx);
+-
+-      if (vobj != NULL) {
+-         g_vs_temps = vobj->temps;
+-         g_vs_vtxins = vobj->vtxins;
+-         g_vs_vtxouts = vobj->vtxouts;
++      g_vs_shader = pvr_shader_create(vb.shader, screen->pco_ctx);
++      if (g_vs_shader != NULL) {
++         g_vs_temps = g_vs_shader->temps;
++         g_vs_vtxins = g_vs_shader->vtxins;
++         g_vs_vtxouts = g_vs_shader->vtxouts;
+          printf("shader:        pco encoded %u bytes of USC for a VERTEX shader; PDS kick needs "
+-                "temps=%u vtxins=%u\n", vobj->binary_size, vobj->temps, vobj->vtxins);
++                "temps=%u vtxins=%u vtxouts=%u\n", g_vs_shader->binary_size, g_vs_shader->temps,
++                g_vs_shader->vtxins, g_vs_shader->vtxouts);
+ 
+          /* The milestone-2 blocker: a vertex shader that reads an attribute has to come out with
+-          * the attribute's three components allocated as vtxin registers. vtxins == 0 is the old
+-          * symptom (load dropped, shader identical to a constant one). */
+-         if (vobj->vtxins != 3) {
++          * the attribute's three components allocated as vtxin registers. */
++         if (g_vs_shader->vtxins != 3) {
+             printf("shader:        FAIL: the VS reads one vec3 attribute but allocated %u vtxins\n",
+-                   vobj->vtxins);
++                   g_vs_shader->vtxins);
+             ok = false;
+          }
+ 
+          /* 5 = gl_Position (4) + the gl_PointSize write pco's lowering adds to every vertex
+-          * shader. The captured working draw carries the same 5 (vkrender's VS also writes only
+-          * position), so this is the number the VDM state and TA must be given. */
+-         if (vobj->vtxouts != 5) {
++          * shader. The captured working draw carries the same 5. */
++         if (g_vs_shader->vtxouts != 5) {
+             printf("shader:        FAIL: the VS allocated %u varying registers, expected 5 "
+-                   "(position + point size)\n", vobj->vtxouts);
++                   "(position + point size)\n", g_vs_shader->vtxouts);
+             ok = false;
+          }
+ 
+          /* The failure mode that cost two rounds was silent: the attribute load was dropped and
+-          * the binary was byte-identical to a shader that reads no attributes. Require the two to
+-          * differ, not just to compile. */
++          * the binary was byte-identical to a shader that reads no attributes. */
+          {
+             nir_builder cb = nir_builder_init_simple_shader(MESA_SHADER_VERTEX, pco_nir_options(),
+                                                             "vs_constant_check");
+@@ -1377,137 +1478,19 @@ shader_compile_check(struct pipe_screen *pscreen)
+             if (cobj == NULL) {
+                printf("shader:        FAIL: the constant-control VS did not compile\n");
+                ok = false;
+-            } else if (cobj->binary_size == vobj->binary_size &&
+-                       memcmp(cobj->binary, vobj->binary, vobj->binary_size) == 0) {
++            } else if (cobj->binary_size == g_vs_shader->binary_size &&
++                       memcmp(cobj->binary, g_vs_shader->binary, g_vs_shader->binary_size) == 0) {
+                printf("shader:        FAIL: the attribute VS encoded byte-identical to a constant "
+                       "VS - the load was dropped\n");
+                ok = false;
+             }
+-            ralloc_free(cb.shader);
+-         }
+-      /* Upload the VS into the USC code heap's USABLE area, which is what the doutu offset is
+-       * relative to. The firmware's static areas occupy the carveout at the heap base, so the first
+-       * byte a shader may use is base + (size - usable_size), and that carveout size IS the offset the
+-       * PDS launcher must name. */
+-      if (vobj != NULL) {
+-         struct pvr_screen *scr2 = pvr_screen(pscreen);
+-         const struct pvr_heap *usc = &scr2->vm.heaps[DRM_PVR_HEAP_USC_CODE];
+-         const uint64_t carveout = usc->size - usc->usable_size;
+-         struct pvr_bo ubo = { 0 };
+-
+-         if (usc->size != 0 && carveout > 0 && vobj->binary_size <= usc->usable_size &&
+-             pvr_bo_create(scr2->fd, vobj->binary_size, 1, &ubo)) {
+-            /* VM_MAP needs a page-aligned address, and the usable area starts wherever the firmware
+-             * carveout ends - 0x80 into the heap on this device - so round up. The doutu offset is
+-             * then relative to the heap base, not the carveout size. */
+-            const uint64_t dst = ALIGN_POT(usc->base + carveout, (uint64_t)usc->page_size);
+-            const uint64_t doutu = dst - usc->base;
+-
+-            if (pvr_vm_map(&scr2->vm, dst, ubo.handle, ubo.size) && pvr_bo_map(scr2->fd, &ubo)) {
+-               memcpy(ubo.map, vobj->binary, vobj->binary_size);
+-               g_vs_usc_offset = (uint32_t)doutu;
+-               printf("shader:        VS USC uploaded into the USC heap usable area at 0x%" PRIx64
+-                      "; doutu offset = 0x%" PRIx64 "\n", dst, doutu);
+-
+-               /* The attribute program's DATA segment. It has to be built after the shader is
+-                * placed: it carries both the vertex buffer's address and the shader's USC offset
+-                * (in the DOUTU entry), which is what makes the fetch program start the VS that
+-                * reads what was fetched. */
+-               if (g_vertex_data_addr != 0) {
+-                  uint8_t vdata[256];
+-                  struct pvr_screen *scr3 = pvr_screen(pscreen);
+-                  const uint32_t dlen = pvr_shader_vertex_data(
+-                     &scr3->dev_info, g_vertex_data_addr, g_vs_usc_offset, vdata, sizeof(vdata),
+-                     12, 12, 0, g_vs_temps);
+-                  struct pvr_bo pbo = { 0 };
+-                  uint64_t paddr = 0;
+-
+-                  if (dlen > 0 && pvr_bo_create(scr3->fd, dlen, 1, &pbo) &&
+-                      (paddr = pvr_vm_alloc(&scr3->vm, pbo.size, scr3->vm.general.page_size)) != 0 &&
+-                      pvr_vm_map(&scr3->vm, paddr, pbo.handle, pbo.size) &&
+-                      pvr_bo_map(scr3->fd, &pbo)) {
+-                     memcpy(pbo.map, vdata, dlen);
+-                     g_vertex_pds_data_addr = paddr;
+-
+-                     /* The DOUTU entry is patched with the VS's USC offset in the instruction's
+-                      * own encoding: bits [2:31] are the offset with the low two bits clear. */
+-                     const uint32_t doutu_word = *(const uint32_t *)vdata;
+-                     printf("shader:        vertex PDS data %u B at 0x%" PRIx64
+-                            " (attribute address + DOUTU -> 0x%x)\n",
+-                            dlen, paddr, doutu_word & ~3u);
+-                     if ((doutu_word & ~3u) != g_vs_usc_offset) {
+-                        printf("shader:        FAIL: PDS DOUTU address 0x%x is not the VS offset "
+-                               "0x%x\n", doutu_word & ~3u, g_vs_usc_offset);
+-                        ok = false;
+-                     }
+-                  } else {
+-                     printf("shader:        FAIL: no vertex PDS data\n");
+-                     ok = false;
+-                  }
+-               }
+-
+-               /* The FS goes into the heap after the VS, on the next page. Same contract: the offset
+-                * is relative to the heap base and the launcher must name it. */
+-               {
+-                  struct pvr_bo fbo2 = { 0 };
+-                  const uint64_t fdst = ALIGN_POT(dst + ubo.size, (uint64_t)usc->page_size);
+-
+-                  if (pvr_bo_create(scr2->fd, 4096, 1, &fbo2) &&
+-                      pvr_vm_map(&scr2->vm, fdst, fbo2.handle, fbo2.size) &&
+-                      pvr_bo_map(scr2->fd, &fbo2)) {
+-                     g_fs_doutu = (uint32_t)(fdst - usc->base);
+-                     printf("shader:        FS slot reserved at 0x%" PRIx64 ", doutu offset = 0x%x\n",
+-                            fdst, g_fs_doutu);
+-                  }
+-               }
+-            } else {
+-               printf("shader:        FAIL: could not map the USC heap usable area (base 0x%" PRIx64
+-                      " carveout 0x%" PRIx64 " dst 0x%" PRIx64 " size %" PRIu64
+-                      " page %u - dst aligned %d)\n", usc->base, carveout, dst, ubo.size,
+-                      usc->page_size, (dst % usc->page_size) == 0);
+-            }
+-         } else {
+-            printf("shader:        FAIL: USC heap too small for the shader (%u B vs %" PRIu64
+-                   " usable)\n", vobj->binary_size, usc->usable_size);
+-         }
+-      }
+-
+-         {
+-            uint8_t launcher[256];
+-            const uint32_t llen = pvr_shader_pds_launcher(vobj, 0, launcher, sizeof(launcher));
+-
+-            if (llen > 0)
+-               printf("shader:        PDS launcher for the VS: %u bytes (temps=%u)\n", llen,
+-                      g_vs_temps);
+-            else
+-               printf("shader:        FAIL: no PDS launcher for the VS\n");
++            /* The compiled shader owns its NIR; see above. */
+          }
+       } else {
+          printf("shader:        FAIL: pco produced no vertex code\n");
+          ok = false;
+       }
+-      ralloc_free(vb.shader);
+-   }
+-
+-   /* Upload the encoded USC to a GPU buffer. Compiling is not the same as being able to run it: the
+-    * GPU reads the program from a device address, so the binary has to live in a BO that is mapped
+-    * into the VM and whose address the PDS/VDM state can name. */
+-   if (ok) {
+-      struct pvr_screen *scr = pvr_screen(pscreen);
+-      struct pvr_bo sbo = { 0 };
+-      uint64_t saddr = 0;
+-
+-      if (pvr_bo_create(scr->fd, size, 1, &sbo) &&
+-          (saddr = pvr_vm_alloc(&scr->vm, sbo.size, scr->vm.general.page_size)) != 0 &&
+-          pvr_vm_map(&scr->vm, saddr, sbo.handle, sbo.size) &&
+-          pvr_bo_map(scr->fd, &sbo)) {
+-         memcpy(sbo.map, binary, size);
+-         printf("shader:        %u bytes of USC uploaded at device address 0x%" PRIx64
+-                " - the GPU can now be pointed at it\n", size, saddr);
+-      } else {
+-         printf("shader:        FAIL: could not upload the encoded USC\n");
+-         ok = false;
+-      }
++      /* The compiled shader owns its NIR; see above. */
+    }
+ 
+    /* A single non-zero number could be a constant. Compile a shader that does strictly
+@@ -1526,10 +1509,9 @@ shader_compile_check(struct pipe_screen *pscreen)
+       nir_frag_store_pco(&b2, nir_imm_int(&b2, 0), .base = 2);
+       nir_jump(&b2, nir_jump_return);
+ 
+-      if (!pvr_shader_compile(screen->pco_ctx, b2.shader, &bigger, &bigger_bin,
+-                              &bigger_size)) {
++      if (!pvr_shader_compile(screen->pco_ctx, b2.shader, &bigger, &bigger_bin, &bigger_size)) {
+          printf("shader:        FAIL: the second shader produced no code\n");
+-         ralloc_free(b.shader);
++         /* The compiled shader owns its NIR; see above. */
+          return false;
+       }
+ 
+@@ -1540,16 +1522,159 @@ shader_compile_check(struct pipe_screen *pscreen)
+          printf("shader:        FAIL: more work did not produce more code - the size is\n"
+                 "               not being derived from the shader\n");
+          ralloc_free(bigger);
+-         ralloc_free(b.shader);
++         /* The compiled shader owns its NIR; see above. */
+          return false;
+       }
+ 
+       ralloc_free(bigger);
++      /* The compiled shader owns its NIR; see above. */
+    }
++
++   /* Place everything the draw needs. The GPU addresses programs by offset from their heap base:
++    * USC code by a DOUTU offset, PDS programs by the VDM/TA state's PDS offsets. */
++   if (ok) {
++      struct pvr_screen *scr = pvr_screen(pscreen);
++      const struct pvr_heap *usc = &scr->vm.heaps[DRM_PVR_HEAP_USC_CODE];
++      const struct pvr_heap *pds = &scr->vm.heaps[DRM_PVR_HEAP_PDS_CODE_DATA];
++      const uint64_t usc_usable = probe_heap_usable_page(usc);
++      uint64_t usc_next = usc_usable;
++      struct pvr_bo vbo = { 0 }, fbo = { 0 };
++
++      /* USC: the VS first, the FS on the next page. Both are named by heap-relative offsets. */
++      if (usc->size != 0 && g_vs_shader->binary_size <= usc->usable_size &&
++          probe_map_bo_at(scr->fd, &scr->vm, usc_next, g_vs_shader->binary,
++                          g_vs_shader->binary_size, &vbo)) {
++         g_vs_usc_offset = (uint32_t)(usc_next - usc->base);
++         printf("shader:        VS USC at 0x%" PRIx64 " (doutu offset 0x%x)\n", usc_next,
++                g_vs_usc_offset);
++         usc_next = ALIGN_POT(usc_next + vbo.size, (uint64_t)usc->page_size);
++      } else {
++         printf("shader:        FAIL: could not place the VS in the USC heap\n");
++         ok = false;
++      }
++
++      if (ok && g_fs_shader->binary_size <= usc->usable_size &&
++          probe_map_bo_at(scr->fd, &scr->vm, usc_next, g_fs_shader->binary,
++                          g_fs_shader->binary_size, &fbo)) {
++         g_fs_usc_offset = (uint32_t)(usc_next - usc->base);
++         printf("shader:        FS USC at 0x%" PRIx64 " (doutu offset 0x%x)\n", usc_next,
++                g_fs_usc_offset);
++      } else if (ok) {
++         printf("shader:        FAIL: could not place the FS in the USC heap\n");
++         ok = false;
++      }
++
++      /* The vertex buffer the attribute program fetches from: three positions, 3 floats each. */
++      if (ok) {
++         static const float tri[9] = {
++            -0.5f, -0.5f, 0.0f,
++             0.5f, -0.5f, 0.0f,
++             0.0f,  0.5f, 0.0f,
++         };
++         struct pvr_bo dbo = { 0 };
++
++         g_vertex_data_addr = pvr_vm_alloc(&scr->vm, sizeof(tri), scr->vm.general.page_size);
++         if (g_vertex_data_addr != 0 &&
++             probe_map_bo_at(scr->fd, &scr->vm, g_vertex_data_addr, tri, sizeof(tri), &dbo)) {
++            printf("shader:        vertex buffer at 0x%" PRIx64 " (3 positions, 36 bytes)\n",
++                   g_vertex_data_addr);
++         } else {
++            printf("shader:        FAIL: could not upload the vertex buffer\n");
++            ok = false;
++         }
++      }
++
++      /* PDS heap: the attribute program's code and data, then the fragment stage's kick program
++       * (data + code contiguous). Every address the VDM/TA state names is an offset from the PDS
++       * heap base, exactly as the captured draw's are. */
++      if (ok && pds->size != 0) {
++         uint64_t pds_next = probe_heap_usable_page(pds);
++         uint8_t vprog[1024], vdata[256];
++         const uint32_t vlen = pvr_shader_vertex_program(&scr->dev_info, vprog, sizeof(vprog),
++                                                         12, 12, 0, &g_vertex_prog_info);
++         const uint32_t dlen = vlen > 0
++            ? pvr_shader_vertex_data(&scr->dev_info, g_vertex_data_addr, g_vs_usc_offset, vdata,
++                                     sizeof(vdata), 12, 12, 0, g_vs_temps)
++            : 0;
++         struct pvr_bo cbo = { 0 }, dbo = { 0 };
++
++         if (vlen > 0 && probe_map_bo_at(scr->fd, &scr->vm, pds_next, vprog, vlen, &cbo)) {
++            g_vertex_prog_code_offset = pds_next - pds->base;
++            printf("shader:        attribute program code at PDS+0x%" PRIx64
++                   " (%u B, PDS temps %u dw, data %u dw)\n", g_vertex_prog_code_offset, vlen,
++                   g_vertex_prog_info.temp_dwords, g_vertex_prog_info.data_dwords);
++            pds_next = ALIGN_POT(pds_next + cbo.size, (uint64_t)pds->page_size);
++         } else {
++            printf("shader:        FAIL: could not place the attribute program in the PDS heap\n");
++            ok = false;
++         }
++
++         if (ok && dlen > 0 &&
++             probe_map_bo_at(scr->fd, &scr->vm, pds_next, vdata, dlen, &dbo)) {
++            g_vertex_prog_data_offset = pds_next - pds->base;
++            pds_next = ALIGN_POT(pds_next + dbo.size, (uint64_t)pds->page_size);
++
++            /* The DOUTU entry's execution address must be the VS's USC offset: the fetch program
++             * ends by starting the shader, and a wrong offset kicks empty space. */
++            const uint32_t doutu_word = *(const uint32_t *)vdata;
++            printf("shader:        attribute program data at PDS+0x%" PRIx64
++                   " (%u B, DOUTU -> 0x%x)\n", g_vertex_prog_data_offset, dlen,
++                   doutu_word & ~3u);
++            if ((doutu_word & ~3u) != g_vs_usc_offset) {
++               printf("shader:        FAIL: PDS DOUTU address 0x%x is not the VS offset 0x%x\n",
++                      doutu_word & ~3u, g_vs_usc_offset);
++               ok = false;
++            }
++         } else if (ok) {
++            printf("shader:        FAIL: could not place the attribute program data\n");
++            ok = false;
++         }
++
++         /* The fragment stage's PDS program: the kick program the TA runs at pixel stage, generated
++          * data+code contiguous and named by the TA state's SHADERBASE. */
++         if (ok) {
++            uint8_t fprog[1024];
++            struct pvr_bo fpo = { 0 };
++            const uint32_t flen = pvr_shader_pds_launcher(g_fs_shader, g_fs_usc_offset, fprog,
++                                                          sizeof(fprog), &g_fs_prog_info);
++
++            if (flen > 0 && probe_map_bo_at(scr->fd, &scr->vm, pds_next, fprog, flen, &fpo)) {
++               g_fs_pds_base_offset = pds_next - pds->base;
++               printf("shader:        FS PDS program at PDS+0x%" PRIx64
++                      " (%u B = %u data + %u code dwords)\n", g_fs_pds_base_offset, flen,
++                      g_fs_prog_info.data_dwords, g_fs_prog_info.code_dwords);
++            } else {
++               printf("shader:        FAIL: could not place the FS PDS program\n");
++               ok = false;
++            }
++         }
++      } else if (ok) {
++         printf("shader:        FAIL: the PDS heap is absent or empty\n");
++         ok = false;
++      }
++   }
++
++   /* Upload the encoded USC to an ordinary general-heap buffer as well: compiling is not the same
++    * as being able to run it, and this is the check that the binary can live in a mapped BO. */
++   if (ok) {
++      struct pvr_screen *scr = pvr_screen(pscreen);
++      struct pvr_bo sbo = { 0 };
++      uint64_t saddr = 0;
++
++      if (pvr_bo_create(scr->fd, size, 1, &sbo) &&
++          (saddr = pvr_vm_alloc(&scr->vm, sbo.size, scr->vm.general.page_size)) != 0 &&
++          probe_map_bo_at(scr->fd, &scr->vm, saddr, binary, size, &sbo)) {
++         printf("shader:        %u bytes of USC uploaded at device address 0x%" PRIx64
++                " - the GPU can now be pointed at it\n", size, saddr);
++      } else {
++         printf("shader:        FAIL: could not upload the encoded USC\n");
++         ok = false;
++      }
++   }
++
++   (void)shader;
+    printf("shader:        %s (nir -> pco pipeline -> encoded binary)\n",
+           ok ? "PASS" : "FAIL");
+-
+-   ralloc_free(shader);
+    return ok;
+ }
+ 
+@@ -1588,7 +1713,8 @@ shader_state_check(struct pipe_screen *pscreen)
+       pctx->delete_fs_state(pctx, fs);
+    }
+ 
+-   ralloc_free(b.shader);
++   /* The compiled shader owns its NIR (it is ralloc_stolen); freeing it here would be a
++    * double free once the shader is destroyed. */
+    pctx->destroy(pctx);
+ 
+    /* FragCoord usage, the analysis TA_OUTPUT_SEL's flags need. Checked with two shaders that
+@@ -3487,6 +3613,7 @@ out:
+    return ok;
+ }
+ 
++
+ int
+ main(int argc, char **argv)
+ {
+diff --git a/src/gallium/drivers/pvr_native/pvr_shader.c b/src/gallium/drivers/pvr_native/pvr_shader.c
+index e0b51158..d3e86239 100644
+--- a/src/gallium/drivers/pvr_native/pvr_shader.c
++++ b/src/gallium/drivers/pvr_native/pvr_shader.c
+@@ -257,6 +257,12 @@ pvr_shader_create(struct nir_shader *nir, pco_ctx *ctx)
+    }
+    shader->vtxouts = data.vs.vtxouts;
+ 
++   if (nir->info.stage == MESA_SHADER_FRAGMENT) {
++      shader->shareds = data.common.shareds;
++      shader->coeffs = data.common.coeffs;
++      shader->phase_change = data.fs.uses.phase_change;
++   }
++
+    return shader;
+ }
+ 
+@@ -441,24 +447,36 @@ pvr_shader_vertex_program(const struct pvr_device_info *dev_info,
+ 
+ uint32_t
+ pvr_shader_pds_launcher(const struct pvr_shader *shader, uint32_t usc_offset,
+-                        void *dst, uint32_t dst_size)
++                        void *dst, uint32_t dst_size,
++                        struct pvr_shader_pds_launcher_info *info_out)
+ {
+    struct pvr_pds_kickusc_program program = { 0 };
+    uint32_t *end;
++   uint32_t total_bytes;
+ 
+-   /* ponytail: one pass, fixed layout. pvr_pds_kick_usc returns the end pointer rather than a size,
+-    * so there is no size query to do here; a launcher is a few instructions and dst is caller-sized
+-    * generously. If the returned end ever exceeds dst+dst_size that is a caller bug worth an assert,
+-    * not a silent overrun. */
+-   if (shader == NULL || dst == NULL || dst_size < 64)
++   if (shader == NULL)
+       return 0;
+ 
+    pvr_pds_setup_doutu(&program.usc_task_control, usc_offset, shader->temps,
+-                       PVR_ROGUE_PDSINST_DOUT_FIELDS_DOUTU_SAMPLE_RATE_INSTANCE, false);
++                       PVR_ROGUE_PDSINST_DOUT_FIELDS_DOUTU_SAMPLE_RATE_INSTANCE,
++                       shader->phase_change);
++
++   /* Sizes first: the TA names the data segment and needs its length, and the caller has to place
++    * data+code contiguously in the PDS heap before generating into it. */
++   pvr_pds_kick_usc(&program, NULL, 0, false, PDS_GENERATE_SIZES);
++   total_bytes = PVR_DW_TO_BYTES(program.data_size + program.code_size);
++
++   if (info_out != NULL) {
++      info_out->data_dwords = program.data_size;
++      info_out->code_dwords = program.code_size;
++   }
++
++   if (dst == NULL || total_bytes == 0 || total_bytes > dst_size)
++      return 0;
+ 
+    end = pvr_pds_kick_usc(&program, (uint32_t *)dst, 0, false, PDS_GENERATE_CODEDATA_SEGMENTS);
+ 
+-   return end == NULL ? 0 : (uint32_t)((uint8_t *)end - (uint8_t *)dst);
++   return end == NULL ? 0 : total_bytes;
+ }
+ 
+ void
+@@ -503,6 +521,12 @@ pvr_shader_compile_data(pco_ctx *ctx, struct nir_shader *nir, pco_data *data,
+       return false;
+    }
+ 
++   /* The shader now owns the NIR. This is the reference's rule (pvr_usc.c's build_shader does
++    * ralloc_steal(shader, nir)) and it is not optional: pco_shader keeps a pointer to the NIR, so
++    * a caller that frees it while the shader lives corrupts the heap at some later allocation -
++    * which shows up nowhere near the free. Callers must not free the NIR they hand over. */
++   ralloc_steal(shader, nir);
++
+    pco_process_ir(ctx, shader);
+    pco_encode_ir(ctx, shader);
+ 
+diff --git a/src/gallium/drivers/pvr_native/pvr_shader.h b/src/gallium/drivers/pvr_native/pvr_shader.h
+index 07574d89..e2fbf287 100644
+--- a/src/gallium/drivers/pvr_native/pvr_shader.h
++++ b/src/gallium/drivers/pvr_native/pvr_shader.h
+@@ -35,19 +35,33 @@ struct pvr_shader {
+    /* Varying registers the vertex shader writes per vertex (pco_data.vs.vtxouts): the TA's
+     * output-select vtxsize and the VDM state's vs_output_size both take this number. */
+    unsigned vtxouts;
++
++   /* Fragment stage only: shared/coefficient register counts and whether the shader changes phase.
++    * The TA's PDS SIZEINFO2 and the fragment kick program's DOUTU control word take them. */
++   unsigned shareds;
++   unsigned coeffs;
++   bool phase_change;
+ };
+ 
+ struct pvr_shader *pvr_shader_create(struct nir_shader *nir, pco_ctx *ctx);
+ void pvr_shader_destroy(struct pvr_shader *shader);
+ 
++/* The launcher's two halves. The buffer it is generated into is [data segment][code segment] -
++ * that is the layout pvr_pds_kick_usc() writes and what pvr_up_upload_pds expects - and the TA
++ * names the DATA segment as the PDS program base, with the code following it. */
++struct pvr_shader_pds_launcher_info {
++   uint32_t data_dwords;
++   uint32_t code_dwords;
++};
++
+ /* Builds the PDS launcher for a compiled shader into a byte buffer: the program that makes the
+  * USC run. `usc_offset` is the shader's offset within the USC code heap, which is what the hardware's
+  * doutu instruction takes. Returns the number of bytes written, or 0.
+  *
+- * The temps count comes from the compiled shader, so a position-only vertex shader (temps = 0) gets
+- * the simplest possible kick - the same shape the VDM sync program uses. */
++ * The temps count and phase-change flag come from the compiled shader. */
+ uint32_t pvr_shader_pds_launcher(const struct pvr_shader *shader, uint32_t usc_offset,
+-                                 void *dst, uint32_t dst_size);
++                                 void *dst, uint32_t dst_size,
++                                 struct pvr_shader_pds_launcher_info *info_out);
+ 
+ /* What the VDM state's STATE5 needs from the attribute program: how many PDS temps it uses and how
+  * big its data segment is, both in dwords. The hardware allocates those regions from these counts,
+-- 
+2.47.3
+

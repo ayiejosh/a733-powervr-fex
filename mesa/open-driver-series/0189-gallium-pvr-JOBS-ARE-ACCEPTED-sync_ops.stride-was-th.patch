@@ -1,0 +1,69 @@
+From 08baee0c69ad068d87f37a6433dd01a089bd43bb Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 23 Oct 2026 20:39:43 +0800
+Subject: [PATCH 189/269] gallium/pvr: JOBS ARE ACCEPTED - sync_ops.stride was
+ the blocker
+
+The kernel's copy helper checks the array STRIDE before it ever looks at the count:
+
+  pvr_get_uobj_array():
+      if (in->stride < min_stride)
+          return -EINVAL;
+      if (!in->count)
+          return 0;
+
+Both submit paths left sync_ops zeroed, so stride was 0 while min_stride was
+sizeof(struct drm_pvr_sync_op). Every submit was therefore rejected with EINVAL before any of the
+stream, hwrt or context logic ran - which is exactly why every stream, every length and every job type
+failed IDENTICALLY, and why the captured stream from the working driver failed too. Three rounds of
+narrowing (length scan, captured-stream control, fragment-vs-geometry) all pointed at "not the stream",
+and this is the check they were pointing at.
+
+Setting sync_ops.stride = sizeof(struct drm_pvr_sync_op) with count = 0 makes the kernel accept:
+
+  - the geometry stream at 40/44/48/52/56/60/64 bytes
+  - the CAPTURED 40-byte stream from the working driver
+  - a 384-byte FRAGMENT job
+  - a real 40-byte geometry job referencing real BOs, the ctrl stream and the border colour table,
+    against a real GPU context and a real HWRT data set
+
+The driver now submits work to the kernel and the kernel validates and accepts it. That is the first
+time this driver has had a submission path that works end to end.
+---
+ src/gallium/drivers/pvr_native/pvr_vm.c | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_vm.c b/src/gallium/drivers/pvr_native/pvr_vm.c
+index 928f1435..efd7f98d 100644
+--- a/src/gallium/drivers/pvr_native/pvr_vm.c
++++ b/src/gallium/drivers/pvr_native/pvr_vm.c
+@@ -357,6 +357,12 @@ pvr_job_submit(struct pvr_vm *vm, uint32_t context_handle, uint32_t job_type,
+          .set_handle = hwrt_set_handle,
+          .data_index = hwrt_data_index,
+       },
++      /* The kernel checks sync_ops.stride BEFORE it looks at sync_ops.count, so a zero stride is
++       * rejected even when there are no sync operations at all. */
++      .sync_ops = {
++         .stride = sizeof(struct drm_pvr_sync_op),
++         .count = 0,
++      },
+    };
+    struct drm_pvr_ioctl_submit_jobs_args args = {
+       .jobs = {
+@@ -388,11 +394,13 @@ pvr_job_submit_render(struct pvr_vm *vm, uint32_t context_handle,
+          .context_handle = context_handle,
+          .cmd_stream = (uint64_t)(uintptr_t)geom_stream,
+          .cmd_stream_len = geom_len,
++         .sync_ops = { .stride = sizeof(struct drm_pvr_sync_op), .count = 0 },
+       }, {
+          .type = DRM_PVR_JOB_TYPE_FRAGMENT,
+          .context_handle = context_handle,
+          .cmd_stream = (uint64_t)(uintptr_t)frag_stream,
+          .cmd_stream_len = frag_len,
++         .sync_ops = { .stride = sizeof(struct drm_pvr_sync_op), .count = 0 },
+       },
+    };
+    struct drm_pvr_ioctl_submit_jobs_args args = {
+-- 
+2.47.3
+

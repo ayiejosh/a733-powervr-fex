@@ -1,0 +1,111 @@
+MESA: info: pvr: PowerVR B-Series BXM-4-64 (36.56.104.183), device_id 0x36104183, gpu_id 0x240038006800b7
+MESA: info: pvr: pvr_screen_create fd=3 -> PowerVR B-Series BXM-4-64 (36.56.104.183) (skeleton: no draw path)
+MESA: info: pvr: static area heap 0 usage 1 offset 0x0 size 128
+MESA: info: pvr: static area heap 0 usage 3 offset 0x80 size 1024
+MESA: info: pvr: static area heap 1 usage 2 offset 0x0 size 128
+MESA: info: pvr: static area heap 1 usage 0 offset 0x80 size 128
+MESA: info: pvr: static area heap 2 usage 2 offset 0x0 size 128
+MESA: info: pvr: 6 heaps; general base 0x8000000000 size 137438953472 carveout 1152 usable 0x8000000480 (137438952320 bytes), page 4096, vm_context 1
+MESA: error: pvr: transfer job did not signal completion within 2000 ms (ret=-62 errno=62)
+MESA: info: pvr: static memory: YUV CSC table at general+0x80
+MESA: info: pvr: static memory: 12 bytes of firmware programs in 3 carveouts
+MESA: info: pvr: GPU context 1 (render), callstack 0x9ffffdb000, VDM state 0x9ffffdd000, GEOM state 0x9ffffdc000, static state 192 bytes
+MESA: error: pvr: the render job did not signal completion within 2 s
+name:          PowerVR B-Series BXM-4-64 (36.56.104.183)
+vendor:        Imagination Technologies
+device vendor: Imagination Technologies
+tq:            USC fill kernel installed at USC+0x5c00 (16 bytes)
+tq:            fill replay sync did not signal in 2 s (stream 176 B, dst 0x80000b1000, PDS event data 0x2600 / code 0x2620)
+tq:            readback changed=4096/4096 mismatched=0 first=0xdeadbeef (waited 1000 us)
+tq:            PASS (native TQ fill job writes the target)
+enumeration:   PASS (expected substring BXM-4-64)
+bo:            created handles 1 (4096 bytes, asked 1000) and 2 (65536 bytes)
+bo:            PASS (create, map, read back, unmap, close)
+runtime:       free list 102400..2147483648 bytes, shared 11264, coeffs 4096, phantoms 1, cores 1
+shader:        pco encoded 224 bytes of USC for a fragment shader; PDS kick needs temps=3, TA PDS sizes: usc_varyings 0, usc_shareds 0
+shader:        pco encoded 56 bytes of USC for a VERTEX shader; PDS kick needs temps=0 vtxins=3 vtxouts=5
+shader:        a three-store shader encodes 232 bytes (vs 224)
+shader:        VS USC at 0xe000001000 (doutu offset 0x1000)
+shader:        FS USC at 0xe000002000 (doutu offset 0x2000)
+shader:        vertex buffer at 0x9ffffff000 (3 positions, 36 bytes)
+shader:        attribute program code at PDS+0x1000 (12 B, PDS temps 2 dw, data 8 dw)
+shader:        attribute program data at PDS+0x2000 (32 B, DOUTU -> 0x1000)
+shader:        FS PDS program at PDS+0x3000 (36 B = 8 data + 1 code dwords)
+shader:        224 bytes of USC uploaded at device address 0x9fffffe000 - the GPU can now be pointed at it
+shader:        PASS (nir -> pco pipeline -> encoded binary)
+vm:            general heap 0x8000000000+137438953472 bytes, carveout 1152, usable 0x8000000480+137438952320, page 4096
+vm:            5 firmware areas; fence 128 bytes at +0x0, yuv csc 1024 bytes at +0x80, total 1152 == carveout
+vm:            heap 0 carveout: 1152 bytes, 2 area(s) tiling it exactly (eot absent, fence present, vdm_sync absent, yuv_csc present)
+vm:            heap 1 carveout: 256 bytes, 2 area(s) tiling it exactly (eot present, fence absent, vdm_sync present, yuv_csc absent)
+vm:            heap 2 carveout: 128 bytes, 1 area(s) tiling it exactly (eot absent, fence absent, vdm_sync present, yuv_csc absent)
+vm:            firmware programs: VDM sync verified at the kernel's USC vdm_sync offset, PDS launcher and pixel-event programs generated (12 bytes counted)
+vm:            context switch: VDM/GEOM state buffers named, SR store/load and PT store/resume PDS programs built, 192-byte static state
+vm:            sizes: drm_pvr_job=48 obj_array=16 hwrt_ref=8
+vm:            GPU context 1 created: render type, callstack at 0x9ffffdb000
+vm:            zero-length submission skipped (not what the reference does)
+hwrt:          512x512: tiles 32x32, mtiles 4x4, tiles/mtile 8x8, tpc 2048 B stride 0, region headers 256 B, simple=1 v2
+hwrt:          device free-list limits: 25..524288 pages, using global 512..65536 grow 256, local 32
+hwrt:          free lists 1/2 and HWRT data set 1 CREATED for 512x512 - the kernel accepted the descriptions
+hwrt:          heap usable base 0x8000000480 size 0x1ffffffb80; RT 0x9800000000 ctrl 0x9ffff90000 bct 0x9ffff8f000
+hwrt:          end-of-tile program: USC 0x3000 (32 bytes, 1 temps), PDS data 0xf000 (2 dwords)
+hwrt:          TA state block: 25 words at 0x9ffff8d000
+hwrt:          TA state matches the captured draw at every state-determined word (20 of 25; the rest are this pipeline's PDS addresses/sizes)
+hwrt:          draw stream: TA block (25 w) + VDM state (5 dw) + 3 indices + terminate; first dwords: 0000199f fff8d000 4c000f80 00002000 00001000 00000005 20000442 68000600 00000003 0000039f fff8c000 c0000000 00000000 00000000
+hwrt:          fragment stream: PDS bgnd = PDS+0x3000, border table 0x9ffff8f000
+hwrt:          the render submit was refused
+vm:            mapped and unmapped 0x9ffffee000 (65536 bytes); second address 0x9ffffde000
+vm:            PASS (heap query, VM context, device address, VM_MAP/UNMAP)
+csb:           region header: 6 dwords reseMESA: error: pvr: texture descriptor with a zero extent (w 0 h 32 stride 256) - the hardware stores value-minus-one
+MESA: error: pvr: PDS base 0x9ff0400000 does not fit bits [4:31] (16-byte aligned, below 4GB)
+MESA: error: pvr: PDS base 0x9ff0400000 does not fit bits [4:31] (16-byte aligned, below 4GB)
+MESA: error: pvr: PDS base 0x9ff0400000 does not fit bits [4:31] (16-byte aligned, below 4GB)
+MESA: error: pvr: PDS base 0x9ff0400000 does not fit bits [4:31] (16-byte aligned, below 4GB)
+MESA: error: pvr: PDS base 0x9ff0400000 does not fit bits [4:31] (16-byte aligned, below 4GB)
+MESA: error: pvr: PBE target 0x100000000 is outside the encodable set (bits [0:31] and [34:39], so 16GB-aligned below 1TB)
+rved (device-derived, not a generated packet)
+csb:           format layouts: RGBA8/BGRA8 share U8U8U8U8 but differ in swizzle (0 vs 2); colour formats only, depth unmapped and refused
+csb:           compare modes: 8 functions all distinct
+csb:           sampler translations: 6 wrap modes all distinct, nearest and linear distinct; sampler emission itself NOT implemented
+csb:           sampler descriptor: cmp_mode 0 (reference never assigns it), lod fixed-point 6 bits (1.0 -> 64), wrap/filter fields verified
+csb:           PBE target description: RGBA8 -> 8_PER_CHANNEL with four distinct channel selectors, address and MRT index carried; depth refused
+csb:           STATIC STREAM MATCHES THE CAPTURE BYTE-FOR-BYTE - 384 bytes, an external reference
+csb:           fragment static stream: 384 bytes (capture: 384), PBE words at byte 56 (capture: 56) - PBE offset matches the capture
+csb:           static-stream components: pre 14 dw, pbe 48 dw, tail 34 dw (tpu 2, bgrnd 12, usc_clear 8, px_ctrl 1, isp 4, pdsinfo 1, viewidx 1, phantom 1, eot 1) = 97 dw
+csb:           cluster_grouping false -> 384 bytes, true -> 384 bytes; the captured working stream is 384 -> cluster_grouping is FALSE
+csb:           geometry static stream: 40 bytes (10 dw), header carries it, overflow refused; packets: vdmbase tpu pppctrl tepsg pdsstate0 viewidx
+csb:           geometry stream MATCHES the capture at the header, both address packets, CR_PPP_CTRL and the view index; dw7 TE_PSG 00000000 (capture 00020000), dw8 PDS_STATE0 20000000 (capture 20010000) - runtime inputs, reported not asserted
+csb:           render job assembles: geometry 40 B + fragment 384 B, both headers match their lengths (two jobs, one submit)
+csb:           region headers: 64x64 -> 1, 256x64 -> 2, 2x2 macrotiles -> 4, 800x600 -> 35 units, zero tile size refused
+csb:           PBE swizzle: 6 pipe selectors -> distinct hardware values, NONE refused; source format follows with_packed_usc_channel for 8-bit targets
+csb:           PBE clip: inclusive pixels (whole 0,0..799,599; offset 10,20..109,69; overhang clamped; zero extent does not wrap)
+csb:           PBE encodings: linestride (stride-1)/2 -> 0/1/2 for strides 2/4/6, memlayout LINEAR, size as round-up log2 (100 px -> 128)
+csb:           PBE target: bits [0:31]+[34:39]; a real 2^39 heap address round-trips, bit-32 addresses refused
+csb:           TA PDS bases: all five fit bits[4:31] and round-trip; a 40-bit address refused on each rather than truncated
+csb:           TA wclamp: 0x29e12e13, the float bit pattern of the reference's 1.0e-13f (not an integer)
+csb:           TA clip region: aligned units (align 16), far edge as round-up-minus-one, mode OUTSIDE
+csb:           TA ISPCTL: dbenable from polygon offset (depth BIAS, not depth test), scenable/tagwritedisable from discard and FS presence
+csb:           TA state header: presence bitmap matches all four requests exactly, no unannounced bits, view_port_count follows the viewport bit
+csb:           texture descriptor: 4 dwords, STRIDE/linear, extents as value-minus-one, smpcnt 0 (log2 of one sample), zero extent refused
+csb:           VDM state: length follows its own flags (1/2/2/3 and 5/6 dwords), and a full vertex state reproduces the captured working draw dword for dword
+csb:           PPP state: 2 dwords pointing at a 32-word block, address reconstructed
+csb:           PDS state update: 3 dwords, temps 4, data 6 dwords, code follows data
+csb:           chained: 4096 bytes in the first buffer, link followed into the second, continuation verified at its start
+csb:           stream link: 2 dwords, address split as lsb 0xfffe0000 / msb 0x9f00000000, both halves verified against a local pack
+csb:           packet at the right slot (word 0xffff0000), readback matches the generated pack/unpack, 4096 bytes fills exactly, one more word refused
+csb:           PASS (emit, packet placement, readback, overflow refused)
+clear:         whole target 0xff0000ff, scissored top-left 0xff00ff00, outside the box still 0xff0000ff
+clear:         PASS (glClear writes the target; scissor respected)
+resMESA: warning: pvr: draw received (mode 4, 36 vertices, 1 instance(s)) but this driver has no job assembly - NOTHING WILL BE DRAWN. Further draws are recorded silently.
+ource:      256x256 RGBA8 -> stride 1024, 262144 bytes, device address 0x9ffff4c000
+resource:      PASS (create, device address, GPU map, destroy; mipmaps refused)
+context:       wrote a 8x8 box at (4,4) into stride 256; verified at byte 1040
+context:       draws REACH the driver and are recorded (mode 4, 36 vertices at 3) - and are NOT executed: no job assembly exists
+context:       vertex buffers: referenced on bind, released on unbind and on resource->user replacement, user buffers never referenced
+context:       PASS (create, texture_map/unmap, offset arithmetic)
+context:       FragCoord usage: z-only shader reports 0x4, a shader that ignores it reports 0
+shader state:  PASS (create_fs_state/bind/delete over NIR)
+framebuffer:   recorded 64x64, cbuf0 target address 0x9fffffa000
+framebuffer:   PASS (set_framebuffer_state records and keeps the target alive)
+pipeline:      blend/dsa/rasterizer recorded, viewport scale 32,32 translate 32,32
+pipeline:      PASS (create/bind/delete + viewport, stored by value)
+--- ALL PASS

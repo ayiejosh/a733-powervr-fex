@@ -1,0 +1,72 @@
+From de2231920b430eddcb6893125c722ffdb22b430a Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sun, 25 Oct 2026 01:24:25 +0800
+Subject: [PATCH 227/269] gallium/pvr: TA PDS bases are env-selectable;
+ pointing them at a real program changes nothing
+
+Round-eleven experiment on the TA-never-starts problem: the TA state block's PDS group
+(SHADERBASE/TEXUNICODE/SIZEINFO1/SIZEINFO2/UNIFORMDATABASE) is the last hardware-visible
+difference from the captured draw. The texunicode and uniform bases are now settable with
+PVR_PROBE_PDS_TEX / PVR_PROBE_PDS_UNI, and pointing both at the driver's fragment PDS program
+(a real, mapped PDS data segment) does not change the outcome: the firmware prints the same
+"Kick TA: ... First kick:1, Last kick:1" line and then nothing - no TA interrupt, EVENT_STATUS
+stays 0, phase count 0, USC slots 0 - and DM2 times out, for both the full draw and the
+terminate-only minimal geometry job.
+
+Also confirmed this round: the kernel-parsed geometry command the firmware receives is identical to
+the reference's apart from addresses (28 dwords, compared field by field), and our firmware trace's
+pre-kick sequence is line-for-line identical to the reference's (freelists, TA buffers, region
+header base, ALIST/MLIST stack pointers, kick line). The reference's TA raises EVENT_STATUS=0x20 and
+prints "TA finished" ~120 ticks later; ours never raises an interrupt at all.
+
+Verification: probe still ALL PASS under the shim; trace archived as
+captures/real-runs/fwtrace-r11-baseline.txt.
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c | 23 ++++++++++++++--------
+ 1 file changed, 15 insertions(+), 8 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index ad715b63..570d1d86 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -954,6 +954,14 @@ real_job_done:
+                            .psprite_size_pres = true,
+                         };
+                         struct pvr_region_clip clip;
++                        const uint64_t pds_tex_base =
++                           getenv("PVR_PROBE_PDS_TEX") ? strtoull(getenv("PVR_PROBE_PDS_TEX"),
++                                                                 NULL, 0)
++                                                       : 0;
++                        const uint64_t pds_uni_base =
++                           getenv("PVR_PROBE_PDS_UNI") ? strtoull(getenv("PVR_PROBE_PDS_UNI"),
++                                                                 NULL, 0)
++                                                       : 0;
+                         bool built;
+ 
+                         pvr_region_clip_from_rect(0, 0, RTW, RTH, 16, &clip);
+@@ -971,15 +979,14 @@ real_job_done:
+                                 pvr_csb_emit_ta_isp_dbsc(&block, &dbsc) &&
+                                 pvr_csb_emit_ta_pds_base(&block, PVR_PDS_BASE_SHADER,
+                                                          g_fs_pds_base_offset) &&
+-                                /* The reference gives these a real (nop) program. Pointing them
+-                                 * at our fragment program data instead was tried in round 8 and
+-                                 * did NOT move the fault (still exactly the PDS heap base), so the
+-                                 * zero PDS pointer the TA dereferences is elsewhere - see the
+-                                 * handoff. Kept at the reference-capture value 0 here until that
+-                                 * pointer is identified. */
+-                                pvr_csb_emit_ta_pds_base(&block, PVR_PDS_BASE_TEXUNICODE, 0) &&
++                                /* The reference points these at real programs (texunicode/
++                                 * uniform descriptor state, or its nop program). Env-selectable so
++                                 * candidates can be tried without a rebuild. */
++                                pvr_csb_emit_ta_pds_base(&block, PVR_PDS_BASE_TEXUNICODE,
++                                                         pds_tex_base) &&
+                                 pvr_csb_emit_ta_pds_sizeinfo(&block, &pds_sizes, true, 0) &&
+-                                pvr_csb_emit_ta_pds_base(&block, PVR_PDS_BASE_UNIFORMDATA, 0) &&
++                                pvr_csb_emit_ta_pds_base(&block, PVR_PDS_BASE_UNIFORMDATA,
++                                                         pds_uni_base) &&
+                                 pvr_csb_emit_ta_region_clip(&block, &clip) &&
+                                 pvr_csb_emit_ta_viewport(&block, &vp) &&
+                                 pvr_csb_emit_ta_wclamp(&block, PVR_TA_WCLAMP_MIN_W) &&
+-- 
+2.47.3
+

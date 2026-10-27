@@ -1,0 +1,135 @@
+From d9539fe6a3309761a7c944ffd9985b31191557b4 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 18:35:04 +0800
+Subject: [PATCH 143/269] gallium/pvr: the swizzle translation, and the two
+ descriptor conventions still unknown
+
+The texture descriptor's field list is now known, and it settled two things:
+
+  IMAGE_WORD0: smpcnt, height, width, texformat, texformat_compressed, minlod, swiz0..3,
+               twocomp_gamma
+  IMAGE_WORD1: baselevel, alpha_msb, border, lossy_compression_mode, compression_mode,
+               tile_size, index_lookup, frame_buffer_compression,
+               frame_buffer_compression_addressing_mode, texaddr
+
+* the swizzle lives in IMAGE_WORD0 as four enum ROGUE_TEXSTATE_SWIZ fields, and that enum maps
+  one-to-one onto gallium's: SRCCHAN_0..3 are PIPE_SWIZZLE_X/Y/Z/W, SRC_ONE/SRC_ZERO are
+  PIPE_SWIZZLE_1/0. So the translation is a switch, not a table.
+* tile_size is a BOOL, not a multi-value enum, which makes round 28's tiling decision a
+  single flag rather than a layout selection.
+
+pvr_swizzle_from_pipe() is that switch, and the check verifies the property that makes it a
+correspondence rather than a lookup: RGBA8's four channels must translate to four DISTINCT
+hardware values. A translation that collapsed two channels would still compile and still
+produce a descriptor, and it would sample the same channel twice.
+
+PIPE_SWIZZLE_NONE is refused rather than mapped, because it is not a selector - it means "no
+channel here", which is a statement about the format. Turning it into a zero would change what
+is sampled while looking like a translation.
+
+Two conventions remain UNKNOWN and are not guessed at:
+  1. whether width/height are in texels or texels-minus-one;
+  2. whether tile_size = false means linear.
+A wrong answer to either produces a descriptor that reads the wrong memory extent or describes
+the layout wrongly, and both are silent. They need the reference's usage, not reasoning.
+---
+ src/gallium/drivers/pvr/pvr_csb.c   | 16 +++++++++++++++
+ src/gallium/drivers/pvr/pvr_csb.h   | 11 ++++++++++
+ src/gallium/drivers/pvr/pvr_probe.c | 32 +++++++++++++++++++++++++++++
+ 3 files changed, 59 insertions(+)
+
+diff --git a/src/gallium/drivers/pvr/pvr_csb.c b/src/gallium/drivers/pvr/pvr_csb.c
+index df5de86e..8c3796f5 100644
+--- a/src/gallium/drivers/pvr/pvr_csb.c
++++ b/src/gallium/drivers/pvr/pvr_csb.c
+@@ -199,6 +199,22 @@ pvr_csb_emit_vdm_state(struct pvr_csb *csb, bool cut_index_enable,
+    return true;
+ }
+ 
++bool
++pvr_swizzle_from_pipe(uint8_t pipe_swizzle, enum ROGUE_TEXSTATE_SWIZ *out)
++{
++   switch (pipe_swizzle) {
++   case PIPE_SWIZZLE_X: *out = ROGUE_TEXSTATE_SWIZ_SRCCHAN_0; return true;
++   case PIPE_SWIZZLE_Y: *out = ROGUE_TEXSTATE_SWIZ_SRCCHAN_1; return true;
++   case PIPE_SWIZZLE_Z: *out = ROGUE_TEXSTATE_SWIZ_SRCCHAN_2; return true;
++   case PIPE_SWIZZLE_W: *out = ROGUE_TEXSTATE_SWIZ_SRCCHAN_3; return true;
++   case PIPE_SWIZZLE_0: *out = ROGUE_TEXSTATE_SWIZ_SRC_ZERO; return true;
++   case PIPE_SWIZZLE_1: *out = ROGUE_TEXSTATE_SWIZ_SRC_ONE; return true;
++   default:
++      /* PIPE_SWIZZLE_NONE, and anything else. Refused rather than approximated. */
++      return false;
++   }
++}
++
+ bool
+ pvr_format_layout_from_pipe(enum pipe_format format, struct pvr_format_layout *layout_out)
+ {
+diff --git a/src/gallium/drivers/pvr/pvr_csb.h b/src/gallium/drivers/pvr/pvr_csb.h
+index 24145d76..ed905ba6 100644
+--- a/src/gallium/drivers/pvr/pvr_csb.h
++++ b/src/gallium/drivers/pvr/pvr_csb.h
+@@ -141,6 +141,17 @@ struct pvr_format_layout {
+ bool pvr_format_layout_from_pipe(enum pipe_format format,
+                                  struct pvr_format_layout *layout_out);
+ 
++/* Translate one gallium channel selector into the hardware's swizzle value.
++ *
++ * The correspondence is one-to-one and needs no table: SRCCHAN_0..3 are PIPE_SWIZZLE_X/Y/Z/W
++ * and SRC_ONE/SRC_ZERO are PIPE_SWIZZLE_1/0. PIPE_SWIZZLE_NONE has NO hardware equivalent and
++ * is refused rather than mapped to something close - it means "no channel here", which is a
++ * statement about the format rather than a selector, and silently turning it into a zero
++ * would change what is sampled.
++ *
++ * Returns false for anything it cannot represent exactly. */
++bool pvr_swizzle_from_pipe(uint8_t pipe_swizzle, enum ROGUE_TEXSTATE_SWIZ *out);
++
+ /* Dwords a stream link occupies - what the guard must be at minimum. */
+ #define PVR_CSB_LINK_DWORDS (ROGUE_VDMCTRL_STREAM_LINK0_length + \
+                              ROGUE_VDMCTRL_STREAM_LINK1_length)
+diff --git a/src/gallium/drivers/pvr/pvr_probe.c b/src/gallium/drivers/pvr/pvr_probe.c
+index c63509a1..9a727f3c 100644
+--- a/src/gallium/drivers/pvr/pvr_probe.c
++++ b/src/gallium/drivers/pvr/pvr_probe.c
+@@ -1170,6 +1170,38 @@ csb_check(int fd, struct pipe_screen *pscreen)
+          goto out;
+       }
+ 
++      /* The swizzle values the layout produces must be translatable. RGBA8's are the four
++       * channels; checking that each maps to a distinct hardware value is what makes the
++       * translation a correspondence rather than a lookup that could collapse two. */
++      {
++         enum ROGUE_TEXSTATE_SWIZ got[4];
++         bool distinct = true;
++
++         for (unsigned c = 0; c < 4; c++) {
++            if (!pvr_swizzle_from_pipe(rgba.swizzle[c], &got[c])) {
++               printf("csb:           FAIL: RGBA8 channel %u (selector %u) has no hardware "
++                      "swizzle\n", c, rgba.swizzle[c]);
++               goto out;
++            }
++            for (unsigned d = 0; d < c; d++) {
++               if (got[d] == got[c])
++                  distinct = false;
++            }
++         }
++
++         if (!distinct) {
++            printf("csb:           FAIL: two channels collapsed to the same hardware swizzle "
++                   "- the translation is not one-to-one\n");
++            goto out;
++         }
++
++         /* NONE is a statement about the format, not a selector: refused. */
++         if (pvr_swizzle_from_pipe(PIPE_SWIZZLE_NONE, &got[0])) {
++            printf("csb:           FAIL: PIPE_SWIZZLE_NONE was given a hardware swizzle\n");
++            goto out;
++         }
++      }
++
+       printf("csb:           format layouts: RGBA8/BGRA8 share U8U8U8U8 but differ in "
+              "swizzle (%u vs %u); colour formats only, depth unmapped and refused\n",
+              rgba.swizzle[0], bgra.swizzle[0]);
+-- 
+2.47.3
+

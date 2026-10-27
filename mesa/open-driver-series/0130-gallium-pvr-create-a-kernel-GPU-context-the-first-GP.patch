@@ -1,0 +1,211 @@
+From a6a4d7ddf8f0726314c9ee73eb9ef9cddb9e8474 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 16:34:10 +0800
+Subject: [PATCH 130/269] gallium/pvr: create a kernel GPU context - the first
+ GPU-path component
+
+The driver now holds a render context the kernel and the firmware both accept:
+
+  pvr: GPU context 1 (render), callstack 0x9ffffdf000, static state 192 bytes
+  --- ALL PASS        (real open kernel)
+
+CREATE_CONTEXT is the first component on this path that asks the kernel to DO something
+rather than preparing to, so its success validates the whole prerequisite chain end to
+end: heaps queried, carveouts reserved, firmware programs placed at the kernel's own
+offsets, static context state built, callstack allocated.
+
+The VDM callstack turned out to be eight bytes - sizeof(uint64_t) times a maximum depth of
+one - and comes from the ORDINARY general heap, not the firmware carveout. It is a normal
+allocation the GPU happens to read, which is why it is asserted to be outside the carveout
+rather than inside it.
+
+One judgement about what the check should assert. The first version failed on `handle == 0`
+because the DRM shim returns 0 for every kernel handle it hands out - the same shim
+behaviour already seen with the VM context. A driver should not assert on a value the
+kernel assigns; what the driver is responsible for is that the ioctl succeeded and the
+callstack is a real allocation. The check now asserts that, and the real kernel's handle
+(non-zero, 1) is verified by observation in the run above. This is the same lesson as the
+overlapping-mapping failure: the shim's values are not the kernel's.
+
+What this is NOT: nothing is submitted. A context handle with no CSB content, no job
+description and no SUBMIT_JOBS cannot draw anything, and no benchmark is possible.
+---
+ src/gallium/drivers/pvr/pvr_probe.c | 38 ++++++++++++++
+ src/gallium/drivers/pvr/pvr_vm.c    | 81 +++++++++++++++++++++++++++++
+ src/gallium/drivers/pvr/pvr_vm.h    | 12 +++++
+ 3 files changed, 131 insertions(+)
+
+diff --git a/src/gallium/drivers/pvr/pvr_probe.c b/src/gallium/drivers/pvr/pvr_probe.c
+index fcc80638..91c0e326 100644
+--- a/src/gallium/drivers/pvr/pvr_probe.c
++++ b/src/gallium/drivers/pvr/pvr_probe.c
+@@ -405,6 +405,44 @@ vm_roundtrip(int fd, const struct pvr_device_info *dev_info)
+       pvr_static_memory_fini(&vm, &sm);
+    }
+ 
++   /* A kernel GPU context - the handle every job is submitted against. This is the first
++    * component on the GPU path that asks the kernel to do something rather than preparing
++    * to: if CREATE_CONTEXT succeeds, the driver has a context the firmware and the kernel
++    * both accept, and the whole prerequisite chain is validated end to end. */
++   {
++      struct pvr_gpu_context gpu_ctx;
++
++      if (!pvr_gpu_context_create(&vm, &gpu_ctx)) {
++         printf("vm:            FAIL: CREATE_CONTEXT did not succeed\n");
++         goto out;
++      }
++
++      /* What is asserted is what the DRIVER is responsible for: the ioctl succeeded and
++       * the callstack is a real allocation. The handle's value is the kernel's to assign
++       * - and the DRM shim returns 0 for every kernel handle it hands out, so asserting
++       * on it here would fail against a shim while saying nothing about the driver. The
++       * real kernel's value is checked by observation in the verification run. */
++      if (gpu_ctx.callstack_addr == 0) {
++         printf("vm:            FAIL: no callstack address for the GPU context\n");
++         pvr_gpu_context_destroy(&vm, &gpu_ctx);
++         goto out;
++      }
++
++      /* The callstack is an ordinary allocation, so it must be inside the ordinary
++       * range and not in the carveout the firmware owns. */
++      if (gpu_ctx.callstack_addr < vm.general.usable_base) {
++         printf("vm:            FAIL: the VDM callstack landed in the firmware "
++                "carveout (0x%" PRIx64 ")\n", gpu_ctx.callstack_addr);
++         pvr_gpu_context_destroy(&vm, &gpu_ctx);
++         goto out;
++      }
++
++      printf("vm:            GPU context %u created: render type, callstack at 0x%"
++             PRIx64 "\n", gpu_ctx.handle, gpu_ctx.callstack_addr);
++
++      pvr_gpu_context_destroy(&vm, &gpu_ctx);
++   }
++
+    printf("vm:            mapped and unmapped 0x%" PRIx64 " (%" PRIu64 " bytes); "
+           "second address 0x%" PRIx64 "\n", addr_a, size, addr_b);
+    ok = true;
+diff --git a/src/gallium/drivers/pvr/pvr_vm.c b/src/gallium/drivers/pvr/pvr_vm.c
+index 8e535e57..ccfcb9c4 100644
+--- a/src/gallium/drivers/pvr/pvr_vm.c
++++ b/src/gallium/drivers/pvr/pvr_vm.c
+@@ -20,6 +20,8 @@
+ #include "util/macros.h"
+ #include "util/os_misc.h"
+ 
++#include "pvr_static.h"
++
+ /* Object-array queries are two calls: the first, with a null array, reports how many
+  * entries there are; the second fills a buffer of that size. The kernel silently
+  * clamps count to its own table size rather than failing, so the returned count is
+@@ -262,6 +264,85 @@ out:
+    return ok;
+ }
+ 
++/* One level of callstack, which is what the reference allocates. */
++#define PVR_VDM_CALLSTACK_SIZE (sizeof(uint64_t) * 1)
++
++bool
++pvr_gpu_context_create(struct pvr_vm *vm, struct pvr_gpu_context *ctx)
++{
++   uint8_t static_state[192];
++   uint32_t static_state_len;
++   struct drm_pvr_ioctl_create_context_args args;
++
++   memset(ctx, 0, sizeof(*ctx));
++
++   static_state_len = pvr_static_context_state(static_state, sizeof(static_state));
++   if (static_state_len == 0)
++      return false;
++
++   /* The callstack lives in the ordinary general heap, not the firmware carveout - it is
++    * a normal allocation the GPU happens to read. */
++   if (!pvr_bo_create(vm->fd, PVR_VDM_CALLSTACK_SIZE, 1, &ctx->callstack_bo))
++      return false;
++
++   ctx->callstack_addr =
++      pvr_vm_alloc(vm, ctx->callstack_bo.size, vm->general.page_size);
++   if (ctx->callstack_addr == 0) {
++      mesa_loge("pvr: no device address for the VDM callstack");
++      goto fail_bo;
++   }
++
++   if (!pvr_vm_map(vm, ctx->callstack_addr, ctx->callstack_bo.handle,
++                   ctx->callstack_bo.size))
++      goto fail_addr;
++
++   args = (struct drm_pvr_ioctl_create_context_args) {
++      .type = DRM_PVR_CTX_TYPE_RENDER,
++      .static_context_state = (uint64_t)(uintptr_t)static_state,
++      .static_context_state_len = static_state_len,
++      .vm_context_handle = vm->context_handle,
++      .callstack_addr = ctx->callstack_addr,
++   };
++
++   if (drmIoctl(vm->fd, DRM_IOCTL_PVR_CREATE_CONTEXT, &args) != 0) {
++      mesa_loge("pvr: CREATE_CONTEXT failed: %s", strerror(errno));
++      goto fail_addr;
++   }
++
++   ctx->handle = args.handle;
++
++   mesa_logi("pvr: GPU context %u (render), callstack 0x%" PRIx64 ", static state %u "
++             "bytes", ctx->handle, ctx->callstack_addr, static_state_len);
++
++   return true;
++
++fail_addr:
++   pvr_vm_free(vm, ctx->callstack_addr, ctx->callstack_bo.size);
++   ctx->callstack_addr = 0;
++fail_bo:
++   pvr_bo_destroy(vm->fd, &ctx->callstack_bo);
++   return false;
++}
++
++void
++pvr_gpu_context_destroy(struct pvr_vm *vm, struct pvr_gpu_context *ctx)
++{
++   struct drm_pvr_ioctl_destroy_context_args args = {
++      .handle = ctx->handle,
++   };
++
++   if (ctx->handle != 0)
++      drmIoctl(vm->fd, DRM_IOCTL_PVR_DESTROY_CONTEXT, &args);
++
++   if (ctx->callstack_addr != 0) {
++      pvr_vm_unmap(vm, ctx->callstack_addr, ctx->callstack_bo.size);
++      pvr_vm_free(vm, ctx->callstack_addr, ctx->callstack_bo.size);
++   }
++
++   pvr_bo_destroy(vm->fd, &ctx->callstack_bo);
++   ctx->handle = 0;
++}
++
+ void
+ pvr_vm_finish(struct pvr_vm *vm)
+ {
+diff --git a/src/gallium/drivers/pvr/pvr_vm.h b/src/gallium/drivers/pvr/pvr_vm.h
+index e1c4bf4f..a4e5863a 100644
+--- a/src/gallium/drivers/pvr/pvr_vm.h
++++ b/src/gallium/drivers/pvr/pvr_vm.h
+@@ -83,6 +83,18 @@ pvr_vm_static_area(const struct pvr_vm *vm, uint16_t usage, uint16_t heap_id);
+ bool pvr_vm_alloc_carveout(struct pvr_vm *vm, uint16_t heap_id,
+                            struct pvr_bo *bo_out, uint64_t *base_out);
+ 
++/* A kernel GPU context: the handle every job is submitted against. Creating it needs the
++ * static context state and a VDM callstack, which is eight bytes (one level) allocated
++ * from the ordinary general heap rather than the firmware carveout. */
++struct pvr_gpu_context {
++   uint32_t handle;
++   struct pvr_bo callstack_bo;
++   uint64_t callstack_addr;
++};
++
++bool pvr_gpu_context_create(struct pvr_vm *vm, struct pvr_gpu_context *ctx);
++void pvr_gpu_context_destroy(struct pvr_vm *vm, struct pvr_gpu_context *ctx);
++
+ bool pvr_vm_init(int fd, struct pvr_vm *vm);
+ void pvr_vm_finish(struct pvr_vm *vm);
+ 
+-- 
+2.47.3
+

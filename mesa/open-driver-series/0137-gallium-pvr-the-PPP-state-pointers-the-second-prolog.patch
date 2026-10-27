@@ -1,0 +1,158 @@
+From 15b0b4f39c7c2f50a36970940c1ac0d64870662b Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 17:42:34 +0800
+Subject: [PATCH 137/269] gallium/pvr: the PPP state pointers - the second
+ prologue packet group
+
+  csb: PPP state: 2 dwords pointing at a 32-word block, address reconstructed
+  --- ALL PASS        (real open kernel)
+
+VDMCTRL_PPP_STATE0/1 carry a state block's address and its length in words, which is how the
+hardware is pointed at pipeline state the driver wrote elsewhere in a GPU-reachable buffer.
+Same split-address shape as the stream link: STATE0 takes the high part, STATE1 the low,
+both are handed the whole address, and the generated pack extracts its half.
+
+The word count is in 32-bit WORDS, not bytes - the same class of unit error as the PDS
+state update's data size in the previous round, and worth stating twice because passing
+bytes for a word count is off by four in a way nothing reports.
+
+The check reconstructs the address from both halves rather than asserting each against a
+hand-computed shift. That is round 20's lesson applied deliberately: three earlier attempts
+at a split-address check failed against correct code because the generated unpack leaves
+fields in place, so asserting the shifted form encodes the packer's convention into the
+test. This one passed first time, which is the point of writing it that way.
+
+What this does NOT do: nothing validates that the address points at memory the GPU can
+read. The kernel checks the CSB's own address range, not what the stream later dereferences,
+so a wrong address here produces a hang or garbage on the hardware rather than an error
+anywhere - which is why the two emit functions document the caller's responsibility
+explicitly rather than implying the driver checks it.
+---
+ src/gallium/drivers/pvr/pvr_csb.c   | 23 +++++++++++++
+ src/gallium/drivers/pvr/pvr_csb.h   | 13 ++++++++
+ src/gallium/drivers/pvr/pvr_probe.c | 51 +++++++++++++++++++++++++++++
+ 3 files changed, 87 insertions(+)
+
+diff --git a/src/gallium/drivers/pvr/pvr_csb.c b/src/gallium/drivers/pvr/pvr_csb.c
+index 99ed0be1..57a6c517 100644
+--- a/src/gallium/drivers/pvr/pvr_csb.c
++++ b/src/gallium/drivers/pvr/pvr_csb.c
+@@ -118,6 +118,29 @@ pvr_csb_emit_pds_state_update(struct pvr_csb *csb, uint64_t program_addr,
+    return true;
+ }
+ 
++bool
++pvr_csb_emit_ppp_state(struct pvr_csb *csb, uint64_t state_addr, uint32_t word_count)
++{
++   const uint32_t words = ROGUE_VDMCTRL_PPP_STATE0_length +
++                          ROGUE_VDMCTRL_PPP_STATE1_length;
++   struct ROGUE_VDMCTRL_PPP_STATE0 state0 = {
++      .addrmsb = state_addr,
++      .word_count = word_count,
++   };
++   struct ROGUE_VDMCTRL_PPP_STATE1 state1 = {
++      .addrlsb = state_addr,
++   };
++   uint32_t *dw = pvr_csb_emit(csb, words);
++
++   if (dw == NULL)
++      return false;
++
++   ROGUE_VDMCTRL_PPP_STATE0_pack(dw, &state0);
++   ROGUE_VDMCTRL_PPP_STATE1_pack(dw + ROGUE_VDMCTRL_PPP_STATE0_length, &state1);
++
++   return true;
++}
++
+ uint32_t
+ pvr_csb_switch_buffer(struct pvr_csb *csb, void *map, uint32_t size_bytes,
+                       uint32_t guard_dwords)
+diff --git a/src/gallium/drivers/pvr/pvr_csb.h b/src/gallium/drivers/pvr/pvr_csb.h
+index b19e3947..06c76474 100644
+--- a/src/gallium/drivers/pvr/pvr_csb.h
++++ b/src/gallium/drivers/pvr/pvr_csb.h
+@@ -83,6 +83,19 @@ uint32_t pvr_csb_switch_buffer(struct pvr_csb *csb, void *map, uint32_t size_byt
+ bool pvr_csb_emit_pds_state_update(struct pvr_csb *csb, uint64_t program_addr,
+                                    uint32_t data_dwords, uint32_t temps);
+ 
++/* Point the hardware at a state block: the two VDMCTRL_PPP_STATE packets that carry an
++ * address and the block's length in words.
++ *
++ * The address is split across the packets exactly as the stream link's is - STATE0 takes
++ * the high part and STATE1 the low - so both are given the whole address and the generated
++ * pack extracts its half. The word count is in 32-bit WORDS, not bytes.
++ *
++ * The block itself is written by the caller elsewhere in a buffer the GPU can reach; this
++ * only says where it is. Passing an address the GPU cannot read is not detectable here and
++ * is the caller's responsibility. */
++bool pvr_csb_emit_ppp_state(struct pvr_csb *csb, uint64_t state_addr,
++                            uint32_t word_count);
++
+ /* Dwords a stream link occupies - what the guard must be at minimum. */
+ #define PVR_CSB_LINK_DWORDS (ROGUE_VDMCTRL_STREAM_LINK0_length + \
+                              ROGUE_VDMCTRL_STREAM_LINK1_length)
+diff --git a/src/gallium/drivers/pvr/pvr_probe.c b/src/gallium/drivers/pvr/pvr_probe.c
+index 7548c660..3e69b78c 100644
+--- a/src/gallium/drivers/pvr/pvr_probe.c
++++ b/src/gallium/drivers/pvr/pvr_probe.c
+@@ -1115,6 +1115,57 @@ csb_check(int fd, struct pipe_screen *pscreen)
+     * together, checked against a locally packed reference and read back with the
+     * generated unpacker - the same pattern as the packet check, but this is content the
+     * GPU follows rather than a packet it merely reads. */
++   /* Pointing the hardware at a state block. The address is split across the two packets
++    * the same way the stream link's is, so this check reconstructs it rather than
++    * asserting each half against a hand-computed shift - the mistake that cost three
++    * attempts in round 20. */
++   {
++      const uint64_t state_addr = 0x9ff0100000ULL;
++      const uint32_t block_words = 32;
++      const uint32_t words = ROGUE_VDMCTRL_PPP_STATE0_length +
++                             ROGUE_VDMCTRL_PPP_STATE1_length;
++      uint32_t reference[2];
++      struct ROGUE_VDMCTRL_PPP_STATE0 p0_ref = { .addrmsb = state_addr,
++                                                 .word_count = block_words };
++      struct ROGUE_VDMCTRL_PPP_STATE1 p1_ref = { .addrlsb = state_addr };
++      struct ROGUE_VDMCTRL_PPP_STATE0 p0_read = { 0 };
++      struct ROGUE_VDMCTRL_PPP_STATE1 p1_read = { 0 };
++
++      ROGUE_VDMCTRL_PPP_STATE0_pack(reference, &p0_ref);
++      ROGUE_VDMCTRL_PPP_STATE1_pack(reference + ROGUE_VDMCTRL_PPP_STATE0_length, &p1_ref);
++
++      pvr_csb_reset(&csb);
++
++      if (!pvr_csb_emit_ppp_state(&csb, state_addr, block_words) ||
++          pvr_csb_size(&csb) != words * 4) {
++         printf("csb:           FAIL: the PPP state did not emit %u dwords\n", words);
++         goto out;
++      }
++
++      if (memcmp(bo.map, reference, sizeof(reference)) != 0) {
++         printf("csb:           FAIL: the emitted PPP state differs from packing "
++                "locally\n");
++         goto out;
++      }
++
++      ROGUE_VDMCTRL_PPP_STATE0_unpack(bo.map, &p0_read);
++      ROGUE_VDMCTRL_PPP_STATE1_unpack((uint32_t *)bo.map + ROGUE_VDMCTRL_PPP_STATE0_length,
++                                      &p1_read);
++
++      if ((p0_read.addrmsb | p1_read.addrlsb) != (state_addr & 0xffffffffffULL) ||
++          p0_read.word_count != block_words) {
++         printf("csb:           FAIL: PPP state reconstructs to 0x%" PRIx64 " (want 0x%"
++                PRIx64 "), word count %u (want %u)\n",
++                (uint64_t)(p0_read.addrmsb | p1_read.addrlsb),
++                (uint64_t)(state_addr & 0xffffffffffULL), p0_read.word_count,
++                block_words);
++         goto out;
++      }
++
++      printf("csb:           PPP state: %u dwords pointing at a %u-word block, address "
++             "reconstructed\n", words, p0_read.word_count);
++   }
++
+    /* The first program-loading content in a stream: the PDS state update that says where a
+     * program's data and code are and how many temporaries it needs. Checked the way the
+     * packet check is - a locally packed reference compared against what landed in the
+-- 
+2.47.3
+

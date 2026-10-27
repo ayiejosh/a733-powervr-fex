@@ -1,0 +1,88 @@
+From 9396fc1ba8e71fa380ddf908e9e999af60f97ae5 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sat, 24 Oct 2026 09:06:30 +0800
+Subject: [PATCH 213/269] gallium/pvr: fix the const-map buffer overflow;
+ attribute loads crash pco's register allocator
+
+Two findings, one fixed and one escalated to what it actually is.
+
+Fixed: the const-map entry buffers were 512 bytes in both builders. The generator writes more than that
+for a program with an entry, so it overflowed and glibc reported "unaligned tcache chunk detected" -
+heap corruption, not a logic error. Raised to 4096, and the patch walk now clamps
+entries_written_size_in_bytes to the allocation instead of trusting it, because an over-large value
+reads past the buffer. That clamp is what turned a crash into a survivable path.
+
+Found, and NOT mine to paper over: a vertex shader that actually loads the position attribute
+(nir_load_input with io_semantics.location = 0) crashes pco's register allocator:
+
+  #8 ra_alloc_interference_graph  -> ra_realloc_interference_graph -> reralloc_array_size -> malloc abort
+
+So the vertex fetch path cannot be exercised end to end yet - not because the fetch wiring is wrong, but
+because the compiler cannot compile the shader that would use it. The test shader is back to a constant
+position with that reason in a comment, so the probe still runs and the rest is verifiable.
+
+Next, in order: either express the input the way pco's PVFIO pass expects (pco_nir_pvfio.c handles
+vertex format I/O and a raw load_input may bypass the metadata it needs), or fix the RA crash. The first
+is likely the correct route; the second is a real bug worth reporting upstream regardless.
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c  |  4 ++++
+ src/gallium/drivers/pvr_native/pvr_shader.c | 14 +++++++++++---
+ 2 files changed, 15 insertions(+), 3 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index be34b9d5..210e835e 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -1227,6 +1227,10 @@ shader_compile_check(struct pipe_screen *pscreen)
+       unsigned vsize = 0;
+       nir_builder vb = nir_builder_init_simple_shader(MESA_SHADER_VERTEX, pco_nir_options(),
+                                                       "vs_probe");
++      /* ponytail: a CONSTANT position, not an attribute load. Reading the attribute trips a bug in
++       * pco's register allocator (ra_alloc_interference_graph -> malloc abort), so the fetch path
++       * cannot be exercised end to end until that is fixed or the input is expressed the way pco's
++       * PVFIO pass expects. Kept constant so the rest of the probe still runs. */
+       nir_def *pos = nir_vec4(&vb, nir_imm_float(&vb, 0.0f), nir_imm_float(&vb, 0.5f),
+                               nir_imm_float(&vb, 0.0f), nir_imm_float(&vb, 1.0f));
+       {
+diff --git a/src/gallium/drivers/pvr_native/pvr_shader.c b/src/gallium/drivers/pvr_native/pvr_shader.c
+index ad33ab1d..d3e2dc64 100644
+--- a/src/gallium/drivers/pvr_native/pvr_shader.c
++++ b/src/gallium/drivers/pvr_native/pvr_shader.c
+@@ -63,7 +63,10 @@ pvr_shader_vertex_data(const struct pvr_device_info *dev_info,
+    uint32_t produced;
+    int32_t remaining;
+ 
+-   info.entries_size_in_bytes = 512;
++   /* 512 was too small: the generator wrote past it and corrupted the heap (glibc reported
++    * "unaligned tcache chunk detected"). Sized for the largest entry set a vertex program can
++    * produce rather than for the one-attribute case that happened to fit. */
++   info.entries_size_in_bytes = 4096;
+    info.entries = calloc(1, info.entries_size_in_bytes);
+    if (info.entries == NULL)
+       return 0;
+@@ -83,7 +86,9 @@ pvr_shader_vertex_data(const struct pvr_device_info *dev_info,
+     * offset. A one-attribute program has exactly one, so other entry types are not walked - if a later
+     * program needs them this becomes the reference's switch, not a guess. */
+    entries = (const uint8_t *)info.entries;
+-   remaining = (int32_t)info.entries_written_size_in_bytes;
++   /* Clamp to what was actually allocated: the walk trusts this number, and an over-large one reads
++    * past the buffer - which is how this crashed with heap corruption before. */
++   remaining = (int32_t)MIN2(info.entries_written_size_in_bytes, info.entries_size_in_bytes);
+ 
+    while (remaining >= (int32_t)sizeof(struct pvr_const_map_entry_vertex_attribute_address)) {
+       const struct pvr_const_map_entry_vertex_attribute_address *e =
+@@ -128,7 +133,10 @@ pvr_shader_vertex_program(const struct pvr_device_info *dev_info,
+    /* The const map is where the program's immediate/descriptor references are recorded. A vertex
+     * program with no uniform reads needs few or none, but the generator writes into this buffer, so it
+     * has to exist and be sized. */
+-   info.entries_size_in_bytes = 512;
++   /* 512 was too small: the generator wrote past it and corrupted the heap (glibc reported
++    * "unaligned tcache chunk detected"). Sized for the largest entry set a vertex program can
++    * produce rather than for the one-attribute case that happened to fit. */
++   info.entries_size_in_bytes = 4096;
+    info.entries = calloc(1, info.entries_size_in_bytes);
+    if (info.entries == NULL)
+       return 0;
+-- 
+2.47.3
+
