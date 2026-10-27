@@ -1,0 +1,37 @@
+From 25eef88d2864b3664926a873505e46ef260a954f Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Tue, 27 Oct 2026 05:01:31 +0800
+Subject: [PATCH 269/269] gallium/pvr: add a probe hook to submit the geometry
+ job without sync ops; result: the TA kick still times out, so the
+ signal-dependency shape is not the DM2 stall's cause
+
+---
+ src/gallium/drivers/pvr_native/pvr_vm.c | 12 ++++++++++++
+ 1 file changed, 12 insertions(+)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_vm.c b/src/gallium/drivers/pvr_native/pvr_vm.c
+index 0ae5e53f..f3869af5 100644
+--- a/src/gallium/drivers/pvr_native/pvr_vm.c
++++ b/src/gallium/drivers/pvr_native/pvr_vm.c
+@@ -468,6 +468,18 @@ pvr_job_submit_geom_sync(struct pvr_vm *vm, uint32_t context_handle,
+    uint32_t sync = 0;
+    bool completed;
+ 
++   /* Probe hook: submit the geometry job with no sync ops at all (diagnostic: does the presence /
++    * absence of the signal dependency change the DM2 kick path?). */
++   if (getenv("PVR_PROBE_NO_SYNC_OPS")) {
++      job.sync_ops.count = 0;
++      if (drmIoctl(vm->fd, DRM_IOCTL_PVR_SUBMIT_JOBS, &args) != 0) {
++         mesa_loge("pvr: SUBMIT_JOBS geometry (no sync ops) failed: %s", strerror(errno));
++         return false;
++      }
++      usleep(300000);
++      return true;
++   }
++
+    if (drmSyncobjCreate(vm->fd, 0, &sync) != 0)
+       return false;
+ 
+-- 
+2.47.3
+

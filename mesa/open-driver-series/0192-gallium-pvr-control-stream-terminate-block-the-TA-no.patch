@@ -1,0 +1,89 @@
+From 6f6127763bed32ab71327d28d2fb73840a318e76 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sat, 24 Oct 2026 01:20:09 +0800
+Subject: [PATCH 192/269] gallium/pvr: control-stream terminate block; the TA
+ now reads a real stream
+
+The TA's input is not a packet list but a BLOCK-structured stream
+(VDMCTRL_BLOCK_TYPE_CONTROL / PPP_STATE_UPDATE / PDS_STATE_UPDATE / VDM_STATE_UPDATE / INDEX_LIST /
+STREAM_LINK / STREAM_RETURN / STREAM_TERMINATE). Establishing that stopped a search for a
+"ROGUE_*_DRAW" packet that does not exist - the draw is expressed as a control block.
+
+Adds pvr_csb_emit_stream_terminate(), mirroring the existing PDS-state-update emitter, and wires a
+control stream containing nothing but a terminate block into the geometry job. The render submit is
+still accepted and the target is still unchanged, which is now the CORRECT and meaningful result: a
+terminate-only control stream tells the TA there is no geometry, so no tiles are produced and the
+fragment job has nothing to shade. That closes the loop on the earlier "target unchanged" observation -
+it was not a silent failure, it was an empty stream.
+
+Next: PPP/VDM state blocks plus an INDEX_LIST block carrying vertex data, and the shaders those
+vertices need, which is what turns an accepted, correctly-empty submission into pixels.
+---
+ src/gallium/drivers/pvr_native/pvr_csb.c   | 18 ++++++++++++++++++
+ src/gallium/drivers/pvr_native/pvr_csb.h   |  1 +
+ src/gallium/drivers/pvr_native/pvr_probe.c |  8 ++++++++
+ 3 files changed, 27 insertions(+)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_csb.c b/src/gallium/drivers/pvr_native/pvr_csb.c
+index ef2ab3d2..46303648 100644
+--- a/src/gallium/drivers/pvr_native/pvr_csb.c
++++ b/src/gallium/drivers/pvr_native/pvr_csb.c
+@@ -88,6 +88,24 @@ pvr_csb_overflowed(const struct pvr_csb *csb)
+    return csb->overflowed;
+ }
+ 
++/* A STREAM_TERMINATE block ends a control stream. It carries no payload, so the TA sees "the
++ * geometry for this job ends here" - the minimum a control stream can say that is still a valid
++ * stream. */
++bool
++pvr_csb_emit_stream_terminate(struct pvr_csb *csb)
++{
++   struct ROGUE_VDMCTRL_STREAM_TERMINATE t = {
++      .block_type = ROGUE_VDMCTRL_BLOCK_TYPE_STREAM_TERMINATE,
++   };
++   uint32_t *dw = pvr_csb_emit(csb, ROGUE_VDMCTRL_STREAM_TERMINATE_length);
++
++   if (dw == NULL)
++      return false;
++
++   ROGUE_VDMCTRL_STREAM_TERMINATE_pack(dw, &t);
++   return true;
++}
++
+ bool
+ pvr_csb_emit_pds_state_update(struct pvr_csb *csb, uint64_t program_addr,
+                               uint32_t data_dwords, uint32_t temps)
+diff --git a/src/gallium/drivers/pvr_native/pvr_csb.h b/src/gallium/drivers/pvr_native/pvr_csb.h
+index f4007d67..224829f5 100644
+--- a/src/gallium/drivers/pvr_native/pvr_csb.h
++++ b/src/gallium/drivers/pvr_native/pvr_csb.h
+@@ -628,6 +628,7 @@ void pvr_csb_reset(struct pvr_csb *csb);
+ /* Reserves `words` 32-bit words and returns where to write them, or NULL if they do not
+  * fit - in which case nothing is reserved and the CSB is marked overflowed. */
+ uint32_t *pvr_csb_emit(struct pvr_csb *csb, uint32_t words);
++bool pvr_csb_emit_stream_terminate(struct pvr_csb *csb);
+ 
+ uint32_t pvr_csb_size(const struct pvr_csb *csb);
+ bool pvr_csb_overflowed(const struct pvr_csb *csb);
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index 25dded2c..7867db68 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -723,6 +723,14 @@ real_job_done:
+                const uint32_t flen = pvr_frag_static_stream(rtcsb.map, rtcsb.size,
+                                                            (const uint64_t *)rtcsb.map, 1, 0x2780,
+                                                            false);
++               /* A control stream with nothing but a STREAM_TERMINATE block: the smallest valid
++                * stream the TA can read. It says "no geometry here" rather than "garbage here". */
++               {
++                  struct pvr_csb ctl_csb;
++                  pvr_csb_init(&ctl_csb, rctl.map, rctl.size, PVR_CSB_LINK_DWORDS);
++                  if (!pvr_csb_emit_stream_terminate(&ctl_csb))
++                     printf("hwrt:          could not emit the control stream terminate block\n");
++               }
+                const uint32_t glen = pvr_geom_static_stream(rctl.map, rctl.size, rctladdr,
+                                                            rbctaddr, false, 0, false, 0, 0,
+                                                            PVR_HAS_QUIRK(dev_info, 49927));
+-- 
+2.47.3
+

@@ -1,0 +1,63 @@
+From 5e4871eba4a2c1447a768298d2704cbd83f2c972 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sat, 24 Oct 2026 03:56:47 +0800
+Subject: [PATCH 199/269] gallium/pvr: PDS state update block names a real
+ launcher address
+
+The control stream now carries the PDS state update that tells the TA where the vertex program lives,
+with the launcher uploaded to a real device address rather than a placeholder:
+
+  hwrt: launcher 36 B uploaded at 0x9ffffd0000
+  hwrt: control stream: VDM state (1 dw) + 3 indices + terminate
+  hwrt: RENDER SUBMIT ACCEPTED (geom 40 B + frag 384 B) - target unchanged
+
+A launcher for a zero-temps shader needs no compiled VS to construct - temps = 0 is the entire input -
+so the block can be wired and the submission validated before the shader upload path is exercised.
+
+The target is still unchanged, and the reasons are now specific rather than general: the launcher points
+at USC offset 0 where no compiled vertex shader sits yet, and the fragment job's control stream does not
+name a fragment program. Both are shader-binding work, not structural work - the stream is complete and
+the kernel accepts it.
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c | 21 +++++++++++++++++++--
+ 1 file changed, 19 insertions(+), 2 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index d84a3d00..8f13956b 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -740,12 +740,29 @@ real_job_done:
+                              pvr_bo_map(pvm_fd_for_probe, &ibo);
+ 
+                   if (okc) {
++                     /* A launcher for a zero-temps shader is 36 bytes and needs no compiled VS -
++                      * temps=0 is the whole input. Upload it so the PDS state update can name a real
++                      * device address rather than a placeholder. */
++                     struct pvr_shader zeros = { .temps = 0 };
+                      uint8_t launcher[256];
+-                     const uint32_t llen = pvr_shader_pds_launcher(NULL, 0, launcher, sizeof(launcher));
++                     struct pvr_bo lbo = { 0 };
++                     uint64_t laddr = 0;
++                     const uint32_t llen = pvr_shader_pds_launcher(&zeros, 0, launcher, sizeof(launcher));
++
++                     if (llen > 0 && pvr_bo_create(pvm_fd_for_probe, 4096, 1, &lbo) &&
++                         (laddr = pvr_vm_alloc(&vm, lbo.size, vm.general.page_size)) != 0 &&
++                         pvr_vm_map(&vm, laddr, lbo.handle, lbo.size) &&
++                         pvr_bo_map(pvm_fd_for_probe, &lbo)) {
++                        memcpy(lbo.map, launcher, llen);
++                        printf("hwrt:          launcher %u B uploaded at 0x%" PRIx64 "\n", llen, laddr);
++                     } else {
++                        laddr = 0;
++                     }
+ 
+                      memcpy(ibo.map, idx, sizeof(idx));
+                      pvr_csb_init(&ctl_csb, rctl.map, rctl.size, PVR_CSB_LINK_DWORDS);
+-                     if (!pvr_csb_emit_vdm_state(&ctl_csb, false, 0, false, 0, &vdm_words) ||
++                     if (!pvr_csb_emit_pds_state_update(&ctl_csb, laddr, 0, 0) ||
++                         !pvr_csb_emit_vdm_state(&ctl_csb, false, 0, false, 0, &vdm_words) ||
+                          !pvr_csb_emit_index_list(&ctl_csb, iaddr, 3, 1,
+                                                   ROGUE_VDMCTRL_INDEX_SIZE_B16) ||
+                          !pvr_csb_emit_stream_terminate(&ctl_csb))
+-- 
+2.47.3
+

@@ -1,0 +1,10 @@
+#version 450
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(std430, set = 0, binding = 0) writeonly buffer Out { uint px[]; };
+void main() {
+   px[gl_LocalInvocationID.y * 8u + gl_LocalInvocationID.x] = 0x11110000u | gl_LocalInvocationID.x;
+   px[1024u + gl_WorkGroupID.x] = 0x22220000u | gl_WorkGroupID.x;
+   px[2048u + gl_WorkGroupID.y] = 0x33330000u | gl_WorkGroupID.y;
+   px[3072u + gl_GlobalInvocationID.x] = 0x44440000u | gl_GlobalInvocationID.x;
+   px[4096u] = 0xCAFEBABEu;
+}

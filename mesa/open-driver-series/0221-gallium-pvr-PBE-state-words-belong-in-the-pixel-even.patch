@@ -1,0 +1,755 @@
+From 9593e55d7c0cb4ecdfdbbaeff97bcffb812d7406 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sun, 25 Oct 2026 00:26:58 +0800
+Subject: [PATCH 221/269] gallium/pvr: PBE state words belong in the
+ pixel-event program, not the fragment stream
+
+Comparing the CCCB commands the kernel hands the firmware for our draw and for the working Vulkan
+driver (traced in round 4, re-traced here) showed the fragment stream parsed into the wrong thing.
+The cause is a layout fact the earlier stream port had wrong: the fragment firmware stream carries
+PBE *register* words only - PBESTATE_REG_WORD0 (memory layout, encoded stride, channel swizzles) and
+REG_WORD1 (clip extents) plus a zero word - while the target address and output format are
+PBESTATE_STATE_WORD0/WORD1 and live in the pixel-event PDS program's emit words
+(pvr_arch_job_common.c pvr_pbe_state_words, pvr_arch_cmd_buffer.c per-job fragment programs). Writing
+the state words into the stream made the kernel parse a command whose PBE block was a stream header
+and garbage.
+
+pvr_csb_pbe_words() now builds the register words in the reference's encoding; the probe builds
+them before the stream from the target's stride/width/height rather than over its own source buffer.
+
+Also unified the probe onto one VM context: the shader/PDS/USC programs were placed in the screen's
+VM context while vm_roundtrip created a second context and submitted jobs there, so the firmware
+read its programs through a context in which those heap addresses were not mapped. The draw test now
+uses the screen's VM (the same one the programs are placed in), which is what any real driver does.
+
+Verification: probe exits 0 ALL PASS under the noop shim; on the real driver the firmware still does
+not complete the kick. The remaining missing piece is visible in the reference now: CR_EVENT_PIXEL_PDS_DATA
+points at a per-job pixel-event program built by pco (pvr_usc_eot) with the PBE state words as emit
+words and wrapped in a PDS DOUTU program; this driver still passes a hardcoded offset with no such
+program behind it.
+---
+ src/gallium/drivers/pvr_native/pvr_csb.c   |  47 ++---
+ src/gallium/drivers/pvr_native/pvr_csb.h   |  20 +-
+ src/gallium/drivers/pvr_native/pvr_probe.c | 222 +++++++++++----------
+ 3 files changed, 139 insertions(+), 150 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_csb.c b/src/gallium/drivers/pvr_native/pvr_csb.c
+index 940af838..1419e241 100644
+--- a/src/gallium/drivers/pvr_native/pvr_csb.c
++++ b/src/gallium/drivers/pvr_native/pvr_csb.c
+@@ -778,48 +778,33 @@ pvr_pbe_memlayout_linear(void)
+ }
+ 
+ bool
+-pvr_csb_pbe_words(enum pipe_format format, uint64_t addr, uint32_t mrt_index,
+-                  uint32_t stride_bytes, uint64_t words[3])
++pvr_csb_pbe_words(enum pipe_format format, uint32_t stride_bytes, uint32_t width,
++                  uint32_t height, uint64_t words[3])
+ {
+    const struct util_format_description *desc = util_format_description(format);
+    const int chan = util_format_get_first_non_void_channel(format);
+    struct pvr_format_layout layout;
+-   struct ROGUE_PBESTATE_STATE_WORD0 sw0 = { .address_low = addr };
+-   struct ROGUE_PBESTATE_STATE_WORD1 sw1 = {
+-      .address_high = addr,
+-      .source_format = pvr_pbe_source_format_from_pipe(
+-         format, true /* with_packed_usc_channel */),
+-      .mrt_index = mrt_index,
+-      .source_pos = ROGUE_PBESTATE_SOURCE_POS_START_BIT0,
+-      .norm = chan >= 0 && desc->channel[chan].normalized,
+-   };
+    struct ROGUE_PBESTATE_REG_WORD0 reg0 = {
+       .tilerelative = true,
+       .memlayout = ROGUE_PBESTATE_MEMLAYOUT_LINEAR,
+       .rotation = ROGUE_PBESTATE_ROTATION_TYPE_0_DEG,
+       .linestride = pvr_pbe_linestride(stride_bytes),
+    };
+-   struct ROGUE_PBESTATE_REG_WORD1 reg1 = { 0 };
+-   uint32_t cs[2];
++   struct ROGUE_PBESTATE_REG_WORD1 reg1 = {
++      .maxclip_x = width - 1,
++      .maxclip_y = height - 1,
++   };
+ 
+    if (chan < 0 || !pvr_format_layout_from_pipe(format, &layout))
+       return false;
+ 
+-   /* The reference derives the pack mode from the output format's channel layout. Only the
+-    * layouts this driver can describe are encoded; anything else is refused. */
++   /* The pack mode would be encoded here if it belonged to this word; the format lives in the
++    * pixel-event program instead. It is still checked so an unsupported format is refused rather
++    * than silently rendered as something else. */
+    if (desc->channel[chan].type == UTIL_FORMAT_TYPE_FLOAT) {
+-      sw1.packmode = desc->channel[chan].size == 16
+-                        ? ROGUE_PBESTATE_PACKMODE_F16F16F16F16
+-                        : ROGUE_PBESTATE_PACKMODE_F32F32F32F32;
+-   } else if (desc->channel[chan].size == 8) {
+-      sw1.packmode = desc->channel[chan].type == UTIL_FORMAT_TYPE_SIGNED
+-                        ? ROGUE_PBESTATE_PACKMODE_S8S8S8S8
+-                        : ROGUE_PBESTATE_PACKMODE_U8U8U8U8;
+-   } else if (desc->channel[chan].size == 16) {
+-      sw1.packmode = desc->channel[chan].type == UTIL_FORMAT_TYPE_SIGNED
+-                        ? ROGUE_PBESTATE_PACKMODE_S16S16S16S16
+-                        : ROGUE_PBESTATE_PACKMODE_U16U16U16U16;
+-   } else {
++      if (desc->channel[chan].size != 16 && desc->channel[chan].size != 32)
++         return false;
++   } else if (desc->channel[chan].size != 8 && desc->channel[chan].size != 16) {
+       return false;
+    }
+ 
+@@ -844,11 +829,9 @@ pvr_csb_pbe_words(enum pipe_format format, uint64_t addr, uint32_t mrt_index,
+       }
+    }
+ 
+-   ROGUE_PBESTATE_STATE_WORD0_pack(&cs[0], &sw0);
+-   ROGUE_PBESTATE_STATE_WORD1_pack(&cs[1], &sw1);
+-   words[0] = (uint64_t)cs[0] | ((uint64_t)cs[1] << 32);
+-   ROGUE_PBESTATE_REG_WORD0_pack(&words[1], &reg0);
+-   ROGUE_PBESTATE_REG_WORD1_pack(&words[2], &reg1);
++   ROGUE_PBESTATE_REG_WORD0_pack(&words[0], &reg0);
++   ROGUE_PBESTATE_REG_WORD1_pack(&words[1], &reg1);
++   words[2] = 0;
+ 
+    return true;
+ }
+diff --git a/src/gallium/drivers/pvr_native/pvr_csb.h b/src/gallium/drivers/pvr_native/pvr_csb.h
+index 9fc46add..cf5750e7 100644
+--- a/src/gallium/drivers/pvr_native/pvr_csb.h
++++ b/src/gallium/drivers/pvr_native/pvr_csb.h
+@@ -511,15 +511,17 @@ bool pvr_csb_emit_ta_pds_sizeinfo(struct pvr_csb *csb, const struct pvr_pds_size
+ /* Builds the three 64-bit PBE register words a fragment job's firmware stream carries per colour
+  * attachment, in the reference's encoding (pvr_arch_job_common.c pvr_pbe_state_words):
+  *
+- *   words[0] = PBESTATE_STATE_WORD0 in the low dword, STATE_WORD1 in the high one
+- *   words[1] = PBESTATE_REG_WORD0   (memory layout, stride, channel swizzles)
+- *   words[2] = PBESTATE_REG_WORD1   (size/clip words; zero for a linear target)
+- *
+- * A fragment stream built without them configures no render target at all - the PBE slots are
+- * zeros - and the firmware cannot run the fragment job. Returns false for formats whose PBE
+- * packmode this function does not encode rather than emitting a plausible wrong one. */
+-bool pvr_csb_pbe_words(enum pipe_format format, uint64_t addr, uint32_t mrt_index,
+-                       uint32_t stride_bytes, uint64_t words[3]);
++ *   words[0] = PBESTATE_REG_WORD0 - memory layout, encoded stride, channel swizzles
++ *   words[1] = PBESTATE_REG_WORD1 - clip extents (size_{x,y} stay zero for a linear target)
++ *   words[2] = zero
++ *
++ * Note what is NOT here: the target address and output format live in the pixel-event PDS program's
++ * emit words (PBESTATE_STATE_WORD0/WORD1), not in this stream. Putting the state words here makes a
++ * stream the kernel parses into a nonsense command.
++ *
++ * Returns false for formats whose PBE packmode this function does not encode. */
++bool pvr_csb_pbe_words(enum pipe_format format, uint32_t stride_bytes, uint32_t width,
++                       uint32_t height, uint64_t words[3]);
+ 
+ /* The PBE (pixel backend) render-target address: PBESTATE_STATE_WORD0 + STATE_WORD1.
+  *
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index 4c770885..44f4b527 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -143,31 +143,33 @@ static struct pvr_shader_pds_launcher_info g_fs_prog_info;
+ 
+ static bool
+ 
+-vm_roundtrip(int fd, const struct pvr_device_info *dev_info)
++vm_roundtrip(int fd, struct pipe_screen *pscreen)
+ {
++   struct pvr_screen *scr = pvr_screen(pscreen);
++   const struct pvr_device_info *dev_info = &scr->dev_info;
++   /* Everything this test allocates is referenced by jobs submitted below, and the firmware programs
++    * (PDS/USC) are named by heap offsets. They were placed in the SCREEN's VM context while the jobs
++    * ran in a freshly created one: the same device addresses, but mapped only in the other context,
++    * so the firmware reading its programs through the job's context found nothing. One VM context
++    * for the whole test - the same one the driver places its programs in. */
++   struct pvr_vm *vm = &scr->vm;
+    const int pvm_fd_for_probe = fd;
+-   struct pvr_vm vm;
+    struct pvr_bo a = { 0 }, b = { 0 };
+    uint64_t addr_a = 0, addr_b = 0, size = 0;
+    bool ok = false;
+ 
+-   if (!pvr_vm_init(fd, &vm)) {
+-      printf("vm:            FAIL: could not read the heaps or create a VM context\n");
+-      return false;
+-   }
+-
+    printf("vm:            general heap 0x%" PRIx64 "+%" PRIu64 " bytes, "
+           "carveout %" PRIu64 ", usable 0x%" PRIx64 "+%" PRIu64 ", page %u\n",
+-          vm.general.base, vm.general.size, vm.general.base - vm.general.base +
+-             (vm.general.size - vm.general.usable_size),
+-          vm.general.usable_base, vm.general.usable_size, vm.general.page_size);
++          vm->general.base, vm->general.size, vm->general.base - vm->general.base +
++             (vm->general.size - vm->general.usable_size),
++          vm->general.usable_base, vm->general.usable_size, vm->general.page_size);
+ 
+    if (!pvr_bo_create(fd, 64 * 1024, 4096, &a))
+       goto out;
+    size = a.size;
+ 
+-   addr_a = pvr_vm_alloc(&vm, size, 4096);
+-   addr_b = pvr_vm_alloc(&vm, size, 4096);
++   addr_a = pvr_vm_alloc(vm, size, 4096);
++   addr_b = pvr_vm_alloc(vm, size, 4096);
+ 
+    if (addr_a == 0 || addr_b == 0) {
+       printf("vm:            FAIL: could not allocate a device address\n");
+@@ -180,20 +182,20 @@ vm_roundtrip(int fd, const struct pvr_device_info *dev_info)
+ 
+    /* The address must lie inside the usable range and be page aligned - a heap base
+     * that was not added, or a carveout that was not subtracted, shows up right here. */
+-   const uint64_t usable_end = vm.general.usable_base + vm.general.usable_size;
+-   if (addr_a < vm.general.usable_base || addr_a + size > usable_end ||
+-       addr_a % vm.general.page_size != 0) {
++   const uint64_t usable_end = vm->general.usable_base + vm->general.usable_size;
++   if (addr_a < vm->general.usable_base || addr_a + size > usable_end ||
++       addr_a % vm->general.page_size != 0) {
+       printf("vm:            FAIL: address 0x%" PRIx64 " outside usable range\n", addr_a);
+       goto out;
+    }
+ 
+-   if (!pvr_vm_map(&vm, addr_a, a.handle, size)) {
++   if (!pvr_vm_map(vm, addr_a, a.handle, size)) {
+       printf("vm:            FAIL: VM_MAP rejected the mapping\n");
+       goto out;
+    }
+ 
+    /* Round-trip the unmap before freeing, so a failure is attributable. */
+-   if (!pvr_vm_unmap(&vm, addr_a, size)) {
++   if (!pvr_vm_unmap(vm, addr_a, size)) {
+       printf("vm:            FAIL: VM_UNMAP failed\n");
+       goto out;
+    }
+@@ -204,28 +206,28 @@ vm_roundtrip(int fd, const struct pvr_device_info *dev_info)
+     * the two stop agreeing. The per-area sizes are what the kernel's table states. */
+    {
+       const struct drm_pvr_static_data_area *fence =
+-         pvr_vm_static_area(&vm, DRM_PVR_STATIC_DATA_AREA_FENCE, DRM_PVR_HEAP_GENERAL);
++         pvr_vm_static_area(vm, DRM_PVR_STATIC_DATA_AREA_FENCE, DRM_PVR_HEAP_GENERAL);
+       const struct drm_pvr_static_data_area *yuv =
+-         pvr_vm_static_area(&vm, DRM_PVR_STATIC_DATA_AREA_YUV_CSC, DRM_PVR_HEAP_GENERAL);
++         pvr_vm_static_area(vm, DRM_PVR_STATIC_DATA_AREA_YUV_CSC, DRM_PVR_HEAP_GENERAL);
+       uint64_t area_total = 0;
+-      const uint64_t carveout = vm.general.size - vm.general.usable_size;
++      const uint64_t carveout = vm->general.size - vm->general.usable_size;
+ 
+-      for (unsigned i = 0; i < vm.nr_areas; i++) {
+-         if (vm.areas[i].location_heap_id == DRM_PVR_HEAP_GENERAL)
+-            area_total += vm.areas[i].size;
++      for (unsigned i = 0; i < vm->nr_areas; i++) {
++         if (vm->areas[i].location_heap_id == DRM_PVR_HEAP_GENERAL)
++            area_total += vm->areas[i].size;
+       }
+ 
+       if (area_total != carveout || fence == NULL || yuv == NULL ||
+           fence->size != 128 || yuv->size != 1024) {
+          printf("vm:            FAIL: %u areas total %" PRIu64 " but carveout is %" PRIu64
+-                " (fence %s, yuv %s)\n", vm.nr_areas, area_total, carveout,
++                " (fence %s, yuv %s)\n", vm->nr_areas, area_total, carveout,
+                 fence ? "found" : "missing", yuv ? "found" : "missing");
+          goto out;
+       }
+ 
+       printf("vm:            %u firmware areas; fence %u bytes at +0x%" PRIx64
+              ", yuv csc %u bytes at +0x%" PRIx64 ", total %" PRIu64 " == carveout\n",
+-             vm.nr_areas, fence->size, (uint64_t)fence->offset, yuv->size,
++             vm->nr_areas, fence->size, (uint64_t)fence->offset, yuv->size,
+              (uint64_t)yuv->offset, area_total);
+    }
+ 
+@@ -241,7 +243,7 @@ vm_roundtrip(int fd, const struct pvr_device_info *dev_info)
+          DRM_PVR_STATIC_DATA_AREA_VDM_SYNC,
+          DRM_PVR_STATIC_DATA_AREA_YUV_CSC,
+       };
+-      const struct pvr_heap *heap = &vm.heaps[heap_id];
++      const struct pvr_heap *heap = &vm->heaps[heap_id];
+       struct pvr_bo carveout_bo = { 0 };
+       uint64_t carveout_base = 0;
+       unsigned nr_areas = 0;
+@@ -249,7 +251,7 @@ vm_roundtrip(int fd, const struct pvr_device_info *dev_info)
+       if (heap->size == 0 || heap->size == heap->usable_size)
+          continue;
+ 
+-      if (!pvr_vm_alloc_carveout(&vm, heap_id, &carveout_bo, &carveout_base)) {
++      if (!pvr_vm_alloc_carveout(vm, heap_id, &carveout_bo, &carveout_base)) {
+          printf("vm:            FAIL: could not reserve the carveout of heap %u\n",
+                 heap_id);
+          goto out;
+@@ -258,14 +260,14 @@ vm_roundtrip(int fd, const struct pvr_device_info *dev_info)
+       if (carveout_base != heap->base) {
+          printf("vm:            FAIL: heap %u carveout at 0x%" PRIx64 ", base is "
+                 "0x%" PRIx64 "\n", heap_id, carveout_base, heap->base);
+-         pvr_vm_unmap(&vm, carveout_base, carveout_bo.size);
++         pvr_vm_unmap(vm, carveout_base, carveout_bo.size);
+          pvr_bo_destroy(fd, &carveout_bo);
+          goto out;
+       }
+ 
+       for (unsigned u = 0; u < ARRAY_SIZE(usages); u++) {
+          const struct drm_pvr_static_data_area *area =
+-            pvr_vm_static_area(&vm, usages[u], heap_id);
++            pvr_vm_static_area(vm, usages[u], heap_id);
+          uint64_t area_addr;
+ 
+          if (area == NULL)
+@@ -279,7 +281,7 @@ vm_roundtrip(int fd, const struct pvr_device_info *dev_info)
+              area_addr + area->size > heap->usable_base) {
+             printf("vm:            FAIL: heap %u area %u at 0x%" PRIx64
+                    " is outside its carveout\n", heap_id, usages[u], area_addr);
+-            pvr_vm_unmap(&vm, carveout_base, carveout_bo.size);
++            pvr_vm_unmap(vm, carveout_base, carveout_bo.size);
+             pvr_bo_destroy(fd, &carveout_bo);
+             goto out;
+          }
+@@ -295,8 +297,8 @@ vm_roundtrip(int fd, const struct pvr_device_info *dev_info)
+          const uint64_t carveout_size = heap->size - heap->usable_size;
+          uint64_t highest_end = 0;
+ 
+-         for (unsigned u = 0; u < vm.nr_areas; u++) {
+-            const struct drm_pvr_static_data_area *area = &vm.areas[u];
++         for (unsigned u = 0; u < vm->nr_areas; u++) {
++            const struct drm_pvr_static_data_area *area = &vm->areas[u];
+ 
+             if (area->location_heap_id != heap_id)
+                continue;
+@@ -308,7 +310,7 @@ vm_roundtrip(int fd, const struct pvr_device_info *dev_info)
+             printf("vm:            FAIL: heap %u areas end at %" PRIu64
+                    ", carveout is %" PRIu64 "\n", heap_id, highest_end,
+                    carveout_size);
+-            pvr_vm_unmap(&vm, carveout_base, carveout_bo.size);
++            pvr_vm_unmap(vm, carveout_base, carveout_bo.size);
+             pvr_bo_destroy(fd, &carveout_bo);
+             goto out;
+          }
+@@ -316,23 +318,23 @@ vm_roundtrip(int fd, const struct pvr_device_info *dev_info)
+          printf("vm:            heap %u carveout: %" PRIu64 " bytes, %u area(s) tiling "
+                 "it exactly (eot %s, fence %s, vdm_sync %s, yuv_csc %s)\n",
+                 heap_id, carveout_size, nr_areas,
+-                vm.offsets[heap_id].eot == PVR_STATIC_ABSENT ? "absent" : "present",
+-                vm.offsets[heap_id].fence == PVR_STATIC_ABSENT ? "absent" : "present",
+-                vm.offsets[heap_id].vdm_sync == PVR_STATIC_ABSENT ? "absent" : "present",
+-                vm.offsets[heap_id].yuv_csc == PVR_STATIC_ABSENT ? "absent" : "present");
++                vm->offsets[heap_id].eot == PVR_STATIC_ABSENT ? "absent" : "present",
++                vm->offsets[heap_id].fence == PVR_STATIC_ABSENT ? "absent" : "present",
++                vm->offsets[heap_id].vdm_sync == PVR_STATIC_ABSENT ? "absent" : "present",
++                vm->offsets[heap_id].yuv_csc == PVR_STATIC_ABSENT ? "absent" : "present");
+       }
+ 
+       /* The ordinary allocator must never hand out a carveout address, or an ordinary
+        * buffer would land on top of firmware state. */
+-      if (heap_id == DRM_PVR_HEAP_GENERAL && addr_a < vm.general.usable_base) {
++      if (heap_id == DRM_PVR_HEAP_GENERAL && addr_a < vm->general.usable_base) {
+          printf("vm:            FAIL: the ordinary allocator returned a carveout "
+                 "address 0x%" PRIx64 "\n", addr_a);
+-         pvr_vm_unmap(&vm, carveout_base, carveout_bo.size);
++         pvr_vm_unmap(vm, carveout_base, carveout_bo.size);
+          pvr_bo_destroy(fd, &carveout_bo);
+          goto out;
+       }
+ 
+-      pvr_vm_unmap(&vm, carveout_base, carveout_bo.size);
++      pvr_vm_unmap(vm, carveout_base, carveout_bo.size);
+       pvr_bo_destroy(fd, &carveout_bo);
+    }
+ 
+@@ -347,19 +349,19 @@ vm_roundtrip(int fd, const struct pvr_device_info *dev_info)
+       const pco_precomp_data *precomp =
+          (const pco_precomp_data *)pco_usclib_common[VS_NOP_COMMON];
+ 
+-      if (!pvr_static_memory_init(&vm, dev_info, &sm)) {
++      if (!pvr_static_memory_init(vm, dev_info, &sm)) {
+          printf("vm:            FAIL: could not place the firmware programs\n");
+          goto out;
+       }
+ 
+       if (sm.program_bytes == 0) {
+          printf("vm:            FAIL: no firmware program bytes were written\n");
+-         pvr_static_memory_fini(&vm, &sm);
++         pvr_static_memory_fini(vm, &sm);
+          goto out;
+       }
+ 
+       if (precomp != NULL) {
+-         const uint64_t usc_off = vm.offsets[DRM_PVR_HEAP_USC_CODE].vdm_sync;
++         const uint64_t usc_off = vm->offsets[DRM_PVR_HEAP_USC_CODE].vdm_sync;
+          const uint32_t bytes = precomp->size_dwords * sizeof(uint32_t);
+ 
+          if (usc_off == PVR_STATIC_ABSENT ||
+@@ -367,7 +369,7 @@ vm_roundtrip(int fd, const struct pvr_device_info *dev_info)
+                     bytes) != 0) {
+             printf("vm:            FAIL: the VDM sync program is not at the USC heap's "
+                    "vdm_sync offset\n");
+-            pvr_static_memory_fini(&vm, &sm);
++            pvr_static_memory_fini(vm, &sm);
+             goto out;
+          }
+       }
+@@ -376,8 +378,8 @@ vm_roundtrip(int fd, const struct pvr_device_info *dev_info)
+        * are checked for having been produced at all rather than compared byte-for-byte.
+        * A generator that silently wrote nothing would otherwise look like success. */
+       {
+-         const uint64_t pds_sync = vm.offsets[DRM_PVR_HEAP_PDS_CODE_DATA].vdm_sync;
+-         const uint64_t pds_eot = vm.offsets[DRM_PVR_HEAP_PDS_CODE_DATA].eot;
++         const uint64_t pds_sync = vm->offsets[DRM_PVR_HEAP_PDS_CODE_DATA].vdm_sync;
++         const uint64_t pds_eot = vm->offsets[DRM_PVR_HEAP_PDS_CODE_DATA].eot;
+          const uint8_t *pds_map = sm.map[1];
+          bool launcher = false, eot = false;
+ 
+@@ -392,7 +394,7 @@ vm_roundtrip(int fd, const struct pvr_device_info *dev_info)
+             printf("vm:            FAIL: a generated PDS program is empty (launcher %s, "
+                    "eot %s)\n", launcher ? "written" : "EMPTY",
+                    eot ? "written" : "EMPTY");
+-            pvr_static_memory_fini(&vm, &sm);
++            pvr_static_memory_fini(vm, &sm);
+             goto out;
+          }
+       }
+@@ -400,7 +402,7 @@ vm_roundtrip(int fd, const struct pvr_device_info *dev_info)
+       printf("vm:            firmware programs: VDM sync verified at the kernel's USC "
+              "vdm_sync offset, PDS launcher and pixel-event programs generated "
+              "(%u bytes counted)\n", sm.program_bytes);
+-      pvr_static_memory_fini(&vm, &sm);
++      pvr_static_memory_fini(vm, &sm);
+    }
+ 
+    /* A kernel GPU context - the handle every job is submitted against. This is the first
+@@ -410,7 +412,7 @@ vm_roundtrip(int fd, const struct pvr_device_info *dev_info)
+    {
+       struct pvr_gpu_context gpu_ctx;
+ 
+-      if (!pvr_gpu_context_create(&vm, dev_info, &gpu_ctx)) {
++      if (!pvr_gpu_context_create(vm, dev_info, &gpu_ctx)) {
+          printf("vm:            FAIL: CREATE_CONTEXT did not succeed\n");
+          goto out;
+       }
+@@ -423,16 +425,16 @@ vm_roundtrip(int fd, const struct pvr_device_info *dev_info)
+       if (gpu_ctx.callstack_addr == 0) {
+          printf("vm:            FAIL: no callstack address for the GPU context\n");
+    
+-      pvr_gpu_context_destroy(&vm, &gpu_ctx);
++      pvr_gpu_context_destroy(vm, &gpu_ctx);
+          goto out;
+       }
+ 
+       /* The callstack is an ordinary allocation, so it must be inside the ordinary
+        * range and not in the carveout the firmware owns. */
+-      if (gpu_ctx.callstack_addr < vm.general.usable_base) {
++      if (gpu_ctx.callstack_addr < vm->general.usable_base) {
+          printf("vm:            FAIL: the VDM callstack landed in the firmware "
+                 "carveout (0x%" PRIx64 ")\n", gpu_ctx.callstack_addr);
+-         pvr_gpu_context_destroy(&vm, &gpu_ctx);
++         pvr_gpu_context_destroy(vm, &gpu_ctx);
+          goto out;
+       }
+ 
+@@ -471,11 +473,17 @@ vm_roundtrip(int fd, const struct pvr_device_info *dev_info)
+                      p->pt_store.data_dwords != 0 && p->pt_resume.code_dwords != 0;
+          }
+ 
++         if (getenv("PVR_DUMP_CTX")) {
++            printf("OURCTX64: len=%u\n", len);
++            for (unsigned i = 0; i < len / 8; i++)
++               printf("OURCTX64: %2u: 0x%016" PRIx64 "\n", i, words[i]);
++         }
++
+          if (!ok_ctx) {
+             printf("vm:            FAIL: context-switch state is incomplete (len %u, VDM 0x%"
+                    PRIx64 ", GEOM 0x%" PRIx64 ")\n", len,
+                    (uint64_t)vdm_read.addr, (uint64_t)geom_read.addr);
+-            pvr_gpu_context_destroy(&vm, &gpu_ctx);
++            pvr_gpu_context_destroy(vm, &gpu_ctx);
+             goto out;
+          }
+ 
+@@ -505,11 +513,11 @@ vm_roundtrip(int fd, const struct pvr_device_info *dev_info)
+          uint64_t csb_addr = 0;
+ 
+          if (pvr_bo_create(pvm_fd_for_probe, 4096, 1, &csb_bo)) {
+-            csb_addr = pvr_vm_alloc(&vm, csb_bo.size, vm.general.page_size);
++            csb_addr = pvr_vm_alloc(vm, csb_bo.size, vm->general.page_size);
+ 
+             if (csb_addr != 0 &&
+-                pvr_vm_map(&vm, csb_addr, csb_bo.handle, csb_bo.size)) {
+-               if (pvr_job_submit(&vm, gpu_ctx.handle, DRM_PVR_JOB_TYPE_GEOMETRY,
++                pvr_vm_map(vm, csb_addr, csb_bo.handle, csb_bo.size)) {
++               if (pvr_job_submit(vm, gpu_ctx.handle, DRM_PVR_JOB_TYPE_GEOMETRY,
+                                     NULL, 0, 0, 0)) {
+                   printf("vm:            SUBMIT_JOBS accepted a zero-length geometry "
+                          "job at 0x%" PRIx64 " - the submission path works\n",
+@@ -518,8 +526,8 @@ vm_roundtrip(int fd, const struct pvr_device_info *dev_info)
+                   printf("vm:            SUBMIT_JOBS refused a zero-length job (see the "
+                          "error above for the kernel's reason)\n");
+                }
+-               pvr_vm_unmap(&vm, csb_addr, csb_bo.size);
+-               pvr_vm_free(&vm, csb_addr, csb_bo.size);
++               pvr_vm_unmap(vm, csb_addr, csb_bo.size);
++               pvr_vm_free(vm, csb_addr, csb_bo.size);
+             }
+             pvr_bo_destroy(pvm_fd_for_probe, &csb_bo);
+          }
+@@ -565,8 +573,8 @@ vm_roundtrip(int fd, const struct pvr_device_info *dev_info)
+             const uint64_t flags = (i < 2) ? DRM_PVR_BO_PM_FW_PROTECT
+                                            : DRM_PVR_BO_ALLOW_CPU_USERSPACE_ACCESS;
+             if (!pvr_bo_create_flags(pvm_fd_for_probe, sz[i], 1, flags, bos[i])) { okb = false; break; }
+-            *ads[i] = pvr_vm_alloc(&vm, bos[i]->size, vm.general.page_size);
+-            if (!*ads[i] || !pvr_vm_map(&vm, *ads[i], bos[i]->handle, bos[i]->size)) { okb = false; break; }
++            *ads[i] = pvr_vm_alloc(vm, bos[i]->size, vm->general.page_size);
++            if (!*ads[i] || !pvr_vm_map(vm, *ads[i], bos[i]->handle, bos[i]->size)) { okb = false; break; }
+          }
+ 
+          if (okb) {
+@@ -581,8 +589,8 @@ vm_roundtrip(int fd, const struct pvr_device_info *dev_info)
+             /* UAPI: page counts must be multiples of 4, and with grow_num_pages == 0 the initial
+              * count must EQUAL the maximum. 1024 pages = 4096 bytes of entries. */
+             fl_initial = fl_pages;
+-            okb = flmin && pvr_free_list_create(&vm, fladdr[0], fl_initial, fl_pages, 0, 25, &flhandle[0]) &&
+-                  pvr_free_list_create(&vm, fladdr[1], fl_initial, fl_pages, 0, 25, &flhandle[1]);
++            okb = flmin && pvr_free_list_create(vm, fladdr[0], fl_initial, fl_pages, 0, 25, &flhandle[0]) &&
++                  pvr_free_list_create(vm, fladdr[1], fl_initial, fl_pages, 0, 25, &flhandle[1]);
+             if (okb) {
+                struct pvr_hwrt_dataset_desc d = {
+                   .tpc_dev_addr = tpcaddr, .tpc_size = 4096, .tpc_stride = 0,
+@@ -601,7 +609,7 @@ vm_roundtrip(int fd, const struct pvr_device_info *dev_info)
+                   .isp_merge_upper_x = 0, .isp_merge_upper_y = 0,
+                   .region_header_size = 256,
+                };
+-               okb = pvr_hwrt_dataset_create(&vm, &d, &dset_handle);
++               okb = pvr_hwrt_dataset_create(vm, &d, &dset_handle);
+                if (okb)
+                   printf("hwrt:          free lists %u/%u and HWRT data set %u CREATED for 512x512 - the "
+                          "kernel accepted the descriptions\n", flhandle[0], flhandle[1], dset_handle);
+@@ -633,15 +641,15 @@ vm_roundtrip(int fd, const struct pvr_device_info *dev_info)
+             goto real_job_done;
+          }
+          {
+-            rcsb_addr = pvr_vm_alloc(&vm, rcsb.size, vm.general.page_size);
+-            ctl_addr = pvr_vm_alloc(&vm, ctl.size, vm.general.page_size);
+-            bct_addr = pvr_vm_alloc(&vm, bct.size, vm.general.page_size);
++            rcsb_addr = pvr_vm_alloc(vm, rcsb.size, vm->general.page_size);
++            ctl_addr = pvr_vm_alloc(vm, ctl.size, vm->general.page_size);
++            bct_addr = pvr_vm_alloc(vm, bct.size, vm->general.page_size);
+             if (!rcsb_addr || !ctl_addr || !bct_addr) {
+                printf("vm:            real job: address allocation failed (0x%" PRIx64 ", 0x%" PRIx64
+                       ", 0x%" PRIx64 ")\n", rcsb_addr, ctl_addr, bct_addr);
+-            } else if (!pvr_vm_map(&vm, rcsb_addr, rcsb.handle, rcsb.size) ||
+-                       !pvr_vm_map(&vm, ctl_addr, ctl.handle, ctl.size) ||
+-                       !pvr_vm_map(&vm, bct_addr, bct.handle, bct.size)) {
++            } else if (!pvr_vm_map(vm, rcsb_addr, rcsb.handle, rcsb.size) ||
++                       !pvr_vm_map(vm, ctl_addr, ctl.handle, ctl.size) ||
++                       !pvr_vm_map(vm, bct_addr, bct.handle, bct.size)) {
+                printf("vm:            real job: VM mapping failed\n");
+             } else if (!pvr_bo_map(pvm_fd_for_probe, &rcsb)) {
+                printf("vm:            real job: CPU mapping of the command stream failed\n");
+@@ -651,7 +659,7 @@ vm_roundtrip(int fd, const struct pvr_device_info *dev_info)
+                /* The kernel's stream parser is strict about length: probe which size it accepts. The main
+                 * stream keeps its own length in dw0; only the submitted size varies. */
+                for (uint32_t try_len = 40; try_len <= 64; try_len += 4) {
+-                  if (pvr_job_submit(&vm, gpu_ctx.handle, DRM_PVR_JOB_TYPE_GEOMETRY, rcsb.map,
++                  if (pvr_job_submit(vm, gpu_ctx.handle, DRM_PVR_JOB_TYPE_GEOMETRY, rcsb.map,
+                                      try_len, dset_handle, 0))
+                      printf("vm:            SUBMIT_JOBS ACCEPTED the geometry stream at %u bytes\n",
+                             try_len);
+@@ -664,7 +672,7 @@ vm_roundtrip(int fd, const struct pvr_device_info *dev_info)
+                      0x00000028u, 0x00000000u, 0x003bf000u, 0x00000080u, 0x0001c400u,
+                      0x00000020u, 0x00000202u, 0x00020000u, 0x20010000u, 0x00000000u,
+                   };
+-                  if (pvr_job_submit(&vm, gpu_ctx.handle, DRM_PVR_JOB_TYPE_GEOMETRY, cap40, 40,
++                  if (pvr_job_submit(vm, gpu_ctx.handle, DRM_PVR_JOB_TYPE_GEOMETRY, cap40, 40,
+                                      dset_handle, 0))
+                      printf("vm:            the CAPTURED 40-byte stream was ACCEPTED\n");
+                   else
+@@ -679,7 +687,7 @@ vm_roundtrip(int fd, const struct pvr_device_info *dev_info)
+                   static const uint64_t pbe2[3] = { 0x0200003c68800000ull, 0x0000001f0000001full, 0 };
+                   const uint32_t fl2 = pvr_frag_static_stream(fbuf, sizeof(fbuf), pbe2, 1, 0x2780,
+                                                               false);
+-                  if (pvr_job_submit(&vm, gpu_ctx.handle, DRM_PVR_JOB_TYPE_FRAGMENT, fbuf, fl2,
++                  if (pvr_job_submit(vm, gpu_ctx.handle, DRM_PVR_JOB_TYPE_FRAGMENT, fbuf, fl2,
+                                      dset_handle, 0))
+                      printf("vm:            a FRAGMENT job was ACCEPTED (%u bytes) - the context and "
+                             "hwrt lookups work, so the geometry failure is geometry-specific\n", fl2);
+@@ -687,7 +695,7 @@ vm_roundtrip(int fd, const struct pvr_device_info *dev_info)
+                      printf("vm:            the FRAGMENT job was refused too - the failure is in the "
+                             "context or hwrt lookup, not in the stream\n");
+                }
+-               if (pvr_job_submit(&vm, gpu_ctx.handle, DRM_PVR_JOB_TYPE_GEOMETRY, rcsb.map, gl, dset_handle, 0)) {
++               if (pvr_job_submit(vm, gpu_ctx.handle, DRM_PVR_JOB_TYPE_GEOMETRY, rcsb.map, gl, dset_handle, 0)) {
+                   printf("vm:            SUBMIT_JOBS ACCEPTED a real %u-byte geometry job at "
+                          "0x%" PRIx64 " (ctrl 0x%" PRIx64 ", border table 0x%" PRIx64 ") - the "
+                          "kernel validated the stream it was given\n",
+@@ -698,9 +706,9 @@ vm_roundtrip(int fd, const struct pvr_device_info *dev_info)
+                }
+                pvr_bo_unmap(&rcsb);
+             }
+-            if (bct_addr) { pvr_vm_unmap(&vm, bct_addr, bct.size); pvr_vm_free(&vm, bct_addr, bct.size); }
+-            if (ctl_addr) { pvr_vm_unmap(&vm, ctl_addr, ctl.size); pvr_vm_free(&vm, ctl_addr, ctl.size); }
+-            if (rcsb_addr) { pvr_vm_unmap(&vm, rcsb_addr, rcsb.size); pvr_vm_free(&vm, rcsb_addr, rcsb.size); }
++            if (bct_addr) { pvr_vm_unmap(vm, bct_addr, bct.size); pvr_vm_free(vm, bct_addr, bct.size); }
++            if (ctl_addr) { pvr_vm_unmap(vm, ctl_addr, ctl.size); pvr_vm_free(vm, ctl_addr, ctl.size); }
++            if (rcsb_addr) { pvr_vm_unmap(vm, rcsb_addr, rcsb.size); pvr_vm_free(vm, rcsb_addr, rcsb.size); }
+          }
+          pvr_bo_destroy(pvm_fd_for_probe, &bct);
+          pvr_bo_destroy(pvm_fd_for_probe, &ctl);
+@@ -729,19 +737,19 @@ real_job_done:
+             /* The PBE encodes the target address in bits [0:31] and [34:39]: bits 32 and 33 have no
+              * field, so a target whose address sets either cannot be described at all. A 16 GiB
+              * alignment guarantees both are clear. */
+-            rtaddr = pvr_vm_alloc(&vm, rtbo.size, 1ULL << 34);
+-            rctladdr = pvr_vm_alloc(&vm, rctl.size, vm.general.page_size);
+-            rbctaddr = pvr_vm_alloc(&vm, rbct.size, vm.general.page_size);
++            rtaddr = pvr_vm_alloc(vm, rtbo.size, 1ULL << 34);
++            rctladdr = pvr_vm_alloc(vm, rctl.size, vm->general.page_size);
++            rbctaddr = pvr_vm_alloc(vm, rbct.size, vm->general.page_size);
+             printf("hwrt:          heap usable base 0x%" PRIx64 " size 0x%" PRIx64 "; RT 0x%" PRIx64
+-                   " ctrl 0x%" PRIx64 " bct 0x%" PRIx64 "\n", vm.general.usable_base,
+-                   vm.general.usable_size, rtaddr, rctladdr, rbctaddr);
++                   " ctrl 0x%" PRIx64 " bct 0x%" PRIx64 "\n", vm->general.usable_base,
++                   vm->general.usable_size, rtaddr, rctladdr, rbctaddr);
+             if (!rtaddr || !rctladdr || !rbctaddr)
+                printf("hwrt:          VM alloc failed (0x%" PRIx64 ", 0x%" PRIx64 ", 0x%" PRIx64 ")\n",
+                       rtaddr, rctladdr, rbctaddr);
+             ok2 = rtaddr && rctladdr && rbctaddr &&
+-                  pvr_vm_map(&vm, rtaddr, rtbo.handle, rtbo.size) &&
+-                  pvr_vm_map(&vm, rctladdr, rctl.handle, rctl.size) &&
+-                  pvr_vm_map(&vm, rbctaddr, rbct.handle, rbct.size) &&
++                  pvr_vm_map(vm, rtaddr, rtbo.handle, rtbo.size) &&
++                  pvr_vm_map(vm, rctladdr, rctl.handle, rctl.size) &&
++                  pvr_vm_map(vm, rbctaddr, rbct.handle, rbct.size) &&
+                   pvr_bo_map(pvm_fd_for_probe, &rtbo) &&
+                   pvr_bo_map(pvm_fd_for_probe, &rtcsb) &&
+                   pvr_bo_map(pvm_fd_for_probe, &rctl);
+@@ -760,8 +768,8 @@ real_job_done:
+ 
+             (void)dfw;
+             if (pvr_bo_create(pvm_fd_for_probe, 4096, 1, &dbo) &&
+-                (daddr = pvr_vm_alloc(&vm, dbo.size, vm.general.page_size)) != 0 &&
+-                pvr_vm_map(&vm, daddr, dbo.handle, dbo.size) &&
++                (daddr = pvr_vm_alloc(vm, dbo.size, vm->general.page_size)) != 0 &&
++                pvr_vm_map(vm, daddr, dbo.handle, dbo.size) &&
+                 pvr_bo_map(pvm_fd_for_probe, &dbo)) {
+                struct pvr_csb tcsb;
+                const uint32_t dlen =
+@@ -776,7 +784,7 @@ real_job_done:
+                pvr_csb_init(&tcsb, dbo.map, dbo.size, PVR_CSB_LINK_DWORDS);
+                pvr_csb_emit_stream_terminate(&tcsb);
+                done = dlen > 0 && dfrag_len > 0 &&
+-                      pvr_job_submit_render(&vm, gpu_ctx.handle, dfw_buf, dlen, dfrag,
++                      pvr_job_submit_render(vm, gpu_ctx.handle, dfw_buf, dlen, dfrag,
+                                             dfrag_len, dset_handle, 0);
+                printf("hwrt:          empty-control-stream render %s\n",
+                       done ? "COMPLETED" : "DID NOT complete in 2 s - the firmware is stalling "
+@@ -787,7 +795,6 @@ real_job_done:
+          }
+ 
+          if (ok2) {
+-            struct pvr_pbe_target t = { 0 };
+             uint64_t pbe_words[3] = { 0 };
+             uint8_t *rt = rtbo.map;
+             const uint32_t before = *(uint32_t *)rt;
+@@ -795,15 +802,11 @@ real_job_done:
+             /* Fill the target with a known pattern so any GPU write is visible. */
+             memset(rt, 0x5a, RTW * RTH * 4);
+ 
+-            /* The three PBE register words per attachment the fragment stream must carry. They
+-             * have to be built BEFORE the stream, and into their own buffer: building the stream
+-             * over its own PBE source (which this did) replaces the words with the stream header and
+-             * leaves the fragment job describing no render target at all. */
+-            if (!pvr_pbe_target_from_format(PIPE_FORMAT_R8G8B8A8_UNORM, rtaddr, 0, true, &t)) {
+-               printf("hwrt:          could not describe the render target\n");
+-               ok2 = false;
+-            } else if (!pvr_csb_pbe_words(PIPE_FORMAT_R8G8B8A8_UNORM, rtaddr, 0, RTW * 4,
+-                                          pbe_words)) {
++            /* The three PBE register words per attachment the fragment stream must carry (layout,
++             * stride, swizzles, clip extents - the address and format live in the pixel-event
++             * program). They have to be built BEFORE the stream, and into their own buffer: building
++             * the stream over its own PBE source replaces the words with the stream header. */
++            if (!pvr_csb_pbe_words(PIPE_FORMAT_R8G8B8A8_UNORM, RTW * 4, RTW, RTH, pbe_words)) {
+                printf("hwrt:          could not encode the PBE words\n");
+                ok2 = false;
+             }
+@@ -819,8 +822,8 @@ real_job_done:
+                   const uint16_t idx[3] = { 0, 1, 2 };
+                   uint32_t vdm_words = 0;
+                   bool okc = pvr_bo_create(pvm_fd_for_probe, 4096, 1, &ibo) &&
+-                             (iaddr = pvr_vm_alloc(&vm, ibo.size, vm.general.page_size)) != 0 &&
+-                             pvr_vm_map(&vm, iaddr, ibo.handle, ibo.size) &&
++                             (iaddr = pvr_vm_alloc(vm, ibo.size, vm->general.page_size)) != 0 &&
++                             pvr_vm_map(vm, iaddr, ibo.handle, ibo.size) &&
+                              pvr_bo_map(pvm_fd_for_probe, &ibo);
+ 
+                   if (!okc) {
+@@ -830,8 +833,8 @@ real_job_done:
+ 
+                      /* --- The TA state block (general heap; the PPP packet names it) --- */
+                      if (!pvr_bo_create(pvm_fd_for_probe, 4096, 1, &pbo) ||
+-                         (paddr = pvr_vm_alloc(&vm, pbo.size, vm.general.page_size)) == 0 ||
+-                         !pvr_vm_map(&vm, paddr, pbo.handle, pbo.size) ||
++                         (paddr = pvr_vm_alloc(vm, pbo.size, vm->general.page_size)) == 0 ||
++                         !pvr_vm_map(vm, paddr, pbo.handle, pbo.size) ||
+                          !pvr_bo_map(pvm_fd_for_probe, &pbo)) {
+                         printf("hwrt:          could not set up the TA state block\n");
+                         okc = false;
+@@ -991,8 +994,8 @@ real_job_done:
+                               };
+ 
+                               if (!pvr_bo_create(pvm_fd_for_probe, 4096, 1, &tbo) ||
+-                                  (taddr = pvr_vm_alloc(&vm, tbo.size, vm.general.page_size)) == 0 ||
+-                                  !pvr_vm_map(&vm, taddr, tbo.handle, tbo.size) ||
++                                  (taddr = pvr_vm_alloc(vm, tbo.size, vm->general.page_size)) == 0 ||
++                                  !pvr_vm_map(vm, taddr, tbo.handle, tbo.size) ||
+                                   !pvr_bo_map(pvm_fd_for_probe, &tbo)) {
+                                  printf("hwrt:          could not set up the terminate block\n");
+                                  okc = false;
+@@ -1066,6 +1069,8 @@ real_job_done:
+                const uint32_t f2 = pvr_frag_static_stream(fstream, sizeof(fstream), pbe_words, 1,
+                                                          0x2780, false);
+                if (dump_streams) {
++                  printf("OURPBE: %016" PRIx64 " %016" PRIx64 " %016" PRIx64 "\n",
++                         pbe_words[0], pbe_words[1], pbe_words[2]);
+                   printf("OURFW: geom len=%u:", glen);
+                   for (unsigned i = 0; i < glen / 4; i++)
+                      printf(" %08x", ((const uint32_t *)gstream)[i]);
+@@ -1075,7 +1080,7 @@ real_job_done:
+                   printf("\n");
+                }
+ 
+-               if (pvr_job_submit_render(&vm, gpu_ctx.handle, gstream, glen, fstream, f2,
++               if (pvr_job_submit_render(vm, gpu_ctx.handle, gstream, glen, fstream, f2,
+                                          dset_handle, 0)) {
+                   uint32_t changed = 0;
+                   unsigned waited_us = 0;
+@@ -1109,7 +1114,7 @@ real_job_done:
+             printf("hwrt:          render target setup failed\n");
+       }
+ 
+-      pvr_gpu_context_destroy(&vm, &gpu_ctx);
++      pvr_gpu_context_destroy(vm, &gpu_ctx);
+    }
+ 
+    printf("vm:            mapped and unmapped 0x%" PRIx64 " (%" PRIu64 " bytes); "
+@@ -1118,12 +1123,11 @@ real_job_done:
+ 
+ out:
+    if (addr_a)
+-      pvr_vm_free(&vm, addr_a, size);
++      pvr_vm_free(vm, addr_a, size);
+    if (addr_b)
+-      pvr_vm_free(&vm, addr_b, size);
++      pvr_vm_free(vm, addr_b, size);
+    pvr_bo_destroy(fd, &a);
+    pvr_bo_destroy(fd, &b);
+-   pvr_vm_finish(&vm);
+ 
+    printf("vm:            %s (heap query, VM context, device address, VM_MAP/UNMAP)\n",
+           ok ? "PASS" : "FAIL");
+@@ -3742,7 +3746,7 @@ main(int argc, char **argv)
+    /* Before destroying the screen, which closes the fd. */
+    const bool bo_pass = bo_roundtrip(fd);
+    const bool shader_pass = shader_compile_check(screen);
+-   const bool vm_pass = vm_roundtrip(fd, &pvr_screen(screen)->dev_info);
++   const bool vm_pass = vm_roundtrip(fd, screen);
+    const bool csb_pass = csb_check(fd, screen);
+    const bool clear_pass = clear_check(screen);
+    const bool res_pass = resource_roundtrip(screen);
+-- 
+2.47.3
+

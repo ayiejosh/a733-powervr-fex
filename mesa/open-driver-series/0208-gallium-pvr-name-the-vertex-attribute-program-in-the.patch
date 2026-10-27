@@ -1,0 +1,64 @@
+From a2457fa058547e5fde9ddc46a0a6490854a87f2a Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sat, 24 Oct 2026 07:56:01 +0800
+Subject: [PATCH 208/269] gallium/pvr: name the vertex attribute program in the
+ control stream
+
+The control stream now carries three PDS state updates - the vertex attribute program, the vertex
+launcher and the fragment launcher - and the kernel still accepts the submission:
+
+  20000000 fffff006 fffff000   vertex attribute program (0x9ffffff000)
+  20000000 fffd0006 fffd0000   vertex launcher
+  30000000 fffcf006 fffcf000   fragment launcher (DDM)
+  40000000                     VDM state
+  7c0a0000 fffd1000 00000003 00000001   index list
+  c0000000                     STREAM_TERMINATE
+
+Two PDS updates share the 20000000 block form and the fragment one is 30000000, so the DM target
+discriminator is visible in the bytes rather than inferred from the code.
+
+The vertex program address is carried from the shader check (which can build it) to the draw test (which
+can submit it) the same way the fragment doutu offset is - a static, because the two live in different
+functions with different prerequisites.
+
+The target is still unchanged: the TA can now be pointed at a vertex-fetch program, but no vertex buffer
+is bound and the VDM state still says there is no vertex data. That is the next piece, and it is the
+difference between "has a fetcher" and "has something to fetch".
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index d145a502..c51c1685 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -119,6 +119,9 @@ out:
+ /* The fragment shader's doutu offset, set by the shader check and consumed by the
+  * draw test so the fragment launcher can name real uploaded code. */
+ static uint32_t g_fs_doutu;
++/* The vertex attribute program's device address, set by the shader check and named by the control
++ * stream's PDS state update. */
++static uint64_t g_vertex_prog_addr;
+ 
+ static bool
+ 
+@@ -794,6 +797,8 @@ real_job_done:
+                         faddr = 0;
+                      }
+ 
++                     if (g_vertex_prog_addr != 0)
++                        pvr_csb_emit_pds_state_update(&ctl_csb, g_vertex_prog_addr, 0, 0, false);
+                      if (!pvr_csb_emit_pds_state_update(&ctl_csb, laddr, 0, 0, false) ||
+                          !pvr_csb_emit_pds_state_update(&ctl_csb, faddr, 0, 0, true) ||
+                          !pvr_csb_emit_vdm_state(&ctl_csb, false, 0, false, 0, &vdm_words) ||
+@@ -1236,6 +1241,7 @@ shader_compile_check(struct pipe_screen *pscreen)
+                 pvr_vm_map(&scr->vm, vaddr, vbo.handle, vbo.size) &&
+                 pvr_bo_map(scr->fd, &vbo)) {
+                memcpy(vbo.map, vprog, vlen);
++               g_vertex_prog_addr = vaddr;
+                printf("shader:        vertex program uploaded at 0x%" PRIx64 "\n", vaddr);
+             } else {
+                printf("shader:        FAIL: could not upload the vertex program\n");
+-- 
+2.47.3
+

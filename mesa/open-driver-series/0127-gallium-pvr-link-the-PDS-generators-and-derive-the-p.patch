@@ -1,0 +1,181 @@
+From 4d4b44e3a625c6ed3140abd6176f77a9bffd2f09 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 16:03:45 +0800
+Subject: [PATCH 127/269] gallium/pvr: link the PDS generators, and derive the
+ per-heap static offsets
+
+The static context state needs the firmware's VDM sync and pixel-event programs, which
+are produced by the PDS program generators. Those live under src/imagination/vulkan/pds/
+but have no Vulkan dependency at all, so the gallium driver now links libpowervr_pds
+directly. Verified on the real kernel, with the offsets the fill will consume:
+
+  vm: heap 0 carveout: 1152 bytes, 2 area(s) tiling it exactly
+      (eot absent, fence present, vdm_sync absent, yuv_csc present)
+  vm: heap 1 carveout:  256 bytes, 2 area(s) tiling it exactly
+      (eot present, fence absent, vdm_sync present, yuv_csc absent)
+  vm: heap 2 carveout:  128 bytes, 1 area(s) tiling it exactly
+      (eot absent, fence absent, vdm_sync present, yuv_csc absent)
+  --- ALL PASS
+
+Linking that library is the point worth recording: it is 5379 lines with zero Vk
+references and its include list carries no Vulkan headers, so using it is additive on
+the gallium side and modifies no Vulkan source. That is what makes the rest of this path
+possible under the objective's "reuse, do not rewrite" and "keep the Vulkan driver
+untouched" constraints at the same time.
+
+Also adds a structural check that pays for itself immediately: the static-data areas must
+TILE each heap's carveout exactly. That catches both a missed area and one placed outside
+the region the driver reserved, either of which would put a firmware structure at an
+address the GPU reads as something else - silently.
+
+And fixes a latent bug in my own first version of the offset table. Absent areas were left
+at zero, but offset 0 is a real address (the general heap's fence area is at 0), so
+"this heap has no EOT area" and "the EOT area is first" were indistinguishable. The fill
+would have written a program over whatever the heap does begin with. Absent is now
+PVR_STATIC_ABSENT and the check prints present/absent explicitly, which is how the
+kernels's own arrangement became visible: general has fence and YUV CSC, PDS has EOT and
+VDM sync, USC has VDM sync.
+---
+ src/gallium/drivers/pvr/meson.build |  6 ++++-
+ src/gallium/drivers/pvr/pvr_probe.c | 36 +++++++++++++++++++++++++++--
+ src/gallium/drivers/pvr/pvr_vm.c    | 33 ++++++++++++++++++++++++++
+ src/gallium/drivers/pvr/pvr_vm.h    | 15 ++++++++++++
+ 4 files changed, 87 insertions(+), 3 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr/meson.build b/src/gallium/drivers/pvr/meson.build
+index a7311d9c..dd2f196c 100644
+--- a/src/gallium/drivers/pvr/meson.build
++++ b/src/gallium/drivers/pvr/meson.build
+@@ -24,7 +24,11 @@ libpvr = static_library(
+   # same one the Vulkan driver uses. Linked here rather than rewritten.
+   dependencies : [idep_mesautil, idep_nir_headers, dep_libdrm, dep_csbgen, idep_pco_pygen, idep_pco_usclib,
+                   idep_pco_uscgen_programs_headers],
+-  link_with : [libpowervr_common, libpowervr_compiler, libpowervr_uscgen],
++  # libpowervr_pds is the PDS program generator. It lives under src/imagination/vulkan/
++  # but has no Vulkan dependency at all - 5379 lines, zero Vk references, and its own
++  # include list carries no Vulkan headers. Linking it here is additive and modifies no
++  # Vulkan source, which is what makes the static context state reachable at all.
++  link_with : [libpowervr_common, libpowervr_compiler, libpowervr_uscgen, libpowervr_pds],
+ )
+ 
+ driver_pvr = declare_dependency(
+diff --git a/src/gallium/drivers/pvr/pvr_probe.c b/src/gallium/drivers/pvr/pvr_probe.c
+index 25ebacdb..679381eb 100644
+--- a/src/gallium/drivers/pvr/pvr_probe.c
++++ b/src/gallium/drivers/pvr/pvr_probe.c
+@@ -255,8 +255,40 @@ vm_roundtrip(int fd)
+          nr_areas++;
+       }
+ 
+-      printf("vm:            heap %u carveout: %" PRIu64 " bytes reserved, %u static "
+-             "area(s) inside\n", heap_id, heap->size - heap->usable_size, nr_areas);
++      /* The offsets the static context state will name, and a structural check on them:
++       * the areas must tile the carveout exactly. If they do not, either an area was
++       * missed or one was placed outside the region the driver reserved - and a
++       * firmware structure at the wrong address is read as something else, silently. */
++      {
++         const uint64_t carveout_size = heap->size - heap->usable_size;
++         uint64_t highest_end = 0;
++
++         for (unsigned u = 0; u < vm.nr_areas; u++) {
++            const struct drm_pvr_static_data_area *area = &vm.areas[u];
++
++            if (area->location_heap_id != heap_id)
++               continue;
++
++            highest_end = MAX2(highest_end, (uint64_t)area->offset + area->size);
++         }
++
++         if (highest_end != carveout_size) {
++            printf("vm:            FAIL: heap %u areas end at %" PRIu64
++                   ", carveout is %" PRIu64 "\n", heap_id, highest_end,
++                   carveout_size);
++            pvr_vm_unmap(&vm, carveout_base, carveout_bo.size);
++            pvr_bo_destroy(fd, &carveout_bo);
++            goto out;
++         }
++
++         printf("vm:            heap %u carveout: %" PRIu64 " bytes, %u area(s) tiling "
++                "it exactly (eot %s, fence %s, vdm_sync %s, yuv_csc %s)\n",
++                heap_id, carveout_size, nr_areas,
++                vm.offsets[heap_id].eot == PVR_STATIC_ABSENT ? "absent" : "present",
++                vm.offsets[heap_id].fence == PVR_STATIC_ABSENT ? "absent" : "present",
++                vm.offsets[heap_id].vdm_sync == PVR_STATIC_ABSENT ? "absent" : "present",
++                vm.offsets[heap_id].yuv_csc == PVR_STATIC_ABSENT ? "absent" : "present");
++      }
+ 
+       /* The ordinary allocator must never hand out a carveout address, or an ordinary
+        * buffer would land on top of firmware state. */
+diff --git a/src/gallium/drivers/pvr/pvr_vm.c b/src/gallium/drivers/pvr/pvr_vm.c
+index 2c8c2554..8e535e57 100644
+--- a/src/gallium/drivers/pvr/pvr_vm.c
++++ b/src/gallium/drivers/pvr/pvr_vm.c
+@@ -174,6 +174,39 @@ pvr_vm_init(int fd, struct pvr_vm *vm)
+    for (uint32_t i = 0; i < area_count && vm->nr_areas < ARRAY_SIZE(vm->areas); i++)
+       vm->areas[vm->nr_areas++] = areas[i];
+ 
++   /* Per-heap offsets, straight out of the area table. A missing area keeps offset 0
++    * and is left to the caller to notice, rather than being invented. */
++   for (uint16_t h = 0; h < DRM_PVR_HEAP_COUNT; h++) {
++      vm->offsets[h].eot = PVR_STATIC_ABSENT;
++      vm->offsets[h].fence = PVR_STATIC_ABSENT;
++      vm->offsets[h].vdm_sync = PVR_STATIC_ABSENT;
++      vm->offsets[h].yuv_csc = PVR_STATIC_ABSENT;
++   }
++
++   for (unsigned i = 0; i < vm->nr_areas; i++) {
++      const struct drm_pvr_static_data_area *area = &vm->areas[i];
++
++      if (area->location_heap_id >= DRM_PVR_HEAP_COUNT)
++         continue;
++
++      switch (area->area_usage) {
++      case DRM_PVR_STATIC_DATA_AREA_EOT:
++         vm->offsets[area->location_heap_id].eot = area->offset;
++         break;
++      case DRM_PVR_STATIC_DATA_AREA_FENCE:
++         vm->offsets[area->location_heap_id].fence = area->offset;
++         break;
++      case DRM_PVR_STATIC_DATA_AREA_VDM_SYNC:
++         vm->offsets[area->location_heap_id].vdm_sync = area->offset;
++         break;
++      case DRM_PVR_STATIC_DATA_AREA_YUV_CSC:
++         vm->offsets[area->location_heap_id].yuv_csc = area->offset;
++         break;
++      default:
++         break;
++      }
++   }
++
+    vm->general.usable_base = general->base + carveout;
+    vm->general.usable_size = general->size - carveout;
+    vm->heaps[DRM_PVR_HEAP_GENERAL] = vm->general;
+diff --git a/src/gallium/drivers/pvr/pvr_vm.h b/src/gallium/drivers/pvr/pvr_vm.h
+index 38b01083..e1c4bf4f 100644
+--- a/src/gallium/drivers/pvr/pvr_vm.h
++++ b/src/gallium/drivers/pvr/pvr_vm.h
+@@ -46,6 +46,21 @@ struct pvr_vm {
+   * count, so the array is sized with room to spare and nr_areas is what is trusted. */
+    struct drm_pvr_static_data_area areas[8];
+    unsigned nr_areas;
++
++   /* Where each firmware structure sits inside its heap, as byte offsets from the heap
++    * base, or PVR_STATIC_ABSENT when the heap does not have that area at all.
++    *
++    * The sentinel is not decoration: offset 0 is a real address (the general heap's
++    * fence area is at 0), so a zero-initialised table cannot distinguish "this heap has
++    * no EOT area" from "the EOT area is first". Treating the former as the latter writes
++    * a program over whatever the heap does begin with. */
++#define PVR_STATIC_ABSENT UINT64_MAX
++   struct {
++      uint64_t eot;
++      uint64_t fence;
++      uint64_t vdm_sync;
++      uint64_t yuv_csc;
++   } offsets[DRM_PVR_HEAP_COUNT];
+ };
+ 
+ /* Returns the area serving `usage`, or NULL. The kernel's table is authoritative for
+-- 
+2.47.3
+

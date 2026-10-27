@@ -1,0 +1,80 @@
+From eff9d13db38fec3ba303d0694f356c304441f3c8 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sun, 25 Oct 2026 06:35:22 +0800
+Subject: [PATCH 242/269] gallium/pvr: fill the firmware YUV CSC table at
+ static memory init; env-gated static area dump
+
+The reference driver writes the firmware's YUV CSC table (general heap static area at +0x80, 1024 B) at
+device init; this driver never did, leaving zeroed coefficients. Fill it with the same
+pvr_setup_static_yuv_csc_table() values and add PVR_DUMP_STATIC_AREAS to print the four static areas
+(PDS VDM sync, USC VDM sync, PDS EOT, YUV CSC).
+
+Byte comparison against the open Vulkan driver's static areas: **all four areas are now byte-identical**
+(32/32, 32/32, 32/32 and 256/256 dwords). The geometry TA kick still hangs, so the firmware static data
+areas are ruled out too.
+---
+ src/gallium/drivers/pvr_native/pvr_static.c | 41 +++++++++++++++++++++
+ 1 file changed, 41 insertions(+)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_static.c b/src/gallium/drivers/pvr_native/pvr_static.c
+index 965b1851..55819d50 100644
+--- a/src/gallium/drivers/pvr_native/pvr_static.c
++++ b/src/gallium/drivers/pvr_native/pvr_static.c
+@@ -14,6 +14,11 @@
+ #include "pco_uscgen_programs.h"
+ #include "pvr_pds.h"
+ 
++/* The reference driver fills the firmware's YUV CSC table at device init
++ * (pvr_winsys_helper_fill_static_memory -> pvr_setup_static_yuv_csc_table); the firmware may read it
++ * during job setup, and zeroed coefficients are not the same as the reference's values. */
++#include "pvr_ycbcr.h"
++
+ #include "util/log.h"
+ #include "util/macros.h"
+ 
+@@ -539,6 +544,42 @@ pvr_static_memory_init(struct pvr_vm *vm, const struct pvr_device_info *dev_info
+    if (!pvr_fill_pixel_event(vm, dev_info, sm))
+       goto fail;
+ 
++   /* The YUV CSC table lives in the general heap's static area. */
++   {
++      const unsigned general_slot = pvr_heap_slot(DRM_PVR_HEAP_GENERAL);
++      const uint64_t yuv_offset = vm->offsets[DRM_PVR_HEAP_GENERAL].yuv_csc;
++
++      if (yuv_offset != PVR_STATIC_ABSENT) {
++         pvr_setup_static_yuv_csc_table((uint8_t *)sm->map[general_slot], yuv_offset);
++         mesa_logi("pvr: static memory: YUV CSC table at general+0x%llx",
++                   (unsigned long long)yuv_offset);
++      }
++   }
++
++   if (getenv("PVR_DUMP_STATIC_AREAS")) {
++      const unsigned pds_slot = pvr_heap_slot(DRM_PVR_HEAP_PDS_CODE_DATA);
++      const unsigned usc_slot = pvr_heap_slot(DRM_PVR_HEAP_USC_CODE);
++      const unsigned general_slot = pvr_heap_slot(DRM_PVR_HEAP_GENERAL);
++      const uint32_t *pds = sm->map[pds_slot];
++      const uint32_t *usc = sm->map[usc_slot];
++      const uint32_t *gen = sm->map[general_slot];
++      const uint64_t pds_vdm = vm->offsets[DRM_PVR_HEAP_PDS_CODE_DATA].vdm_sync;
++      const uint64_t pds_eot = vm->offsets[DRM_PVR_HEAP_PDS_CODE_DATA].eot;
++      const uint64_t usc_vdm = vm->offsets[DRM_PVR_HEAP_USC_CODE].vdm_sync;
++      const uint64_t yuv = vm->offsets[DRM_PVR_HEAP_GENERAL].yuv_csc;
++      unsigned i;
++
++      fprintf(stderr, "NSTATIC pds_vdm(128):");
++      for (i = 0; i < 32; i++) fprintf(stderr, " %08x", pds[pds_vdm / 4 + i]);
++      fprintf(stderr, "\nNSTATIC usc_vdm(128):");
++      for (i = 0; i < 32; i++) fprintf(stderr, " %08x", usc[usc_vdm / 4 + i]);
++      fprintf(stderr, "\nNSTATIC pds_eot(128):");
++      for (i = 0; i < 32; i++) fprintf(stderr, " %08x", pds[pds_eot / 4 + i]);
++      fprintf(stderr, "\nNSTATIC yuv(1024):");
++      for (i = 0; i < 256; i++) fprintf(stderr, " %08x", gen[yuv / 4 + i]);
++      fprintf(stderr, "\n");
++   }
++
+    mesa_logi("pvr: static memory: %u bytes of firmware programs in 3 carveouts",
+              sm->program_bytes);
+ 
+-- 
+2.47.3
+

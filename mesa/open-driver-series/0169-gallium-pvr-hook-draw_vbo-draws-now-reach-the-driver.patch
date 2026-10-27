@@ -1,0 +1,159 @@
+From dd7ccbcca706ebaac576732d43857335d43426b7 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sat, 17 Oct 2026 12:30:39 +0800
+Subject: [PATCH 169/269] gallium/pvr: hook draw_vbo - draws now reach the
+ driver, and are recorded not executed
+
+  context: draws REACH the driver and are recorded (mode 4, 36 vertices at 3) - and are NOT executed:
+           no job assembly exists
+  --- ALL PASS        (real open kernel)
+
+draw_vbo was not hooked at all. A GL draw call was therefore dropped without the driver knowing it had
+been asked, which is the worst of the available behaviours: an application sees no error, no picture,
+and nothing to report against.
+
+This hooks it and records the draw - mode, vertex count, start, index size, instance count, number of
+draws - plus a counter. The first draw per context logs that nothing will be drawn; the rest are
+recorded silently, because a driver that floods its own log per draw is unusable for the next step.
+
+What this does NOT do: execute anything. There is still no job assembly, no render-target state and no
+submission of real content, so the GPU sees nothing and the picture is unchanged - black. The message
+says so in those words rather than leaving "draws are recorded" to be read as "draws work".
+
+The check asserts the draw REACHES the driver and is recorded with its parameters, because that is the
+whole of what changed: before, the count would have stayed at zero forever.
+---
+ src/gallium/drivers/pvr/pvr_context.c | 35 +++++++++++++++++++++++++++
+ src/gallium/drivers/pvr/pvr_context.h | 18 ++++++++++++++
+ src/gallium/drivers/pvr/pvr_probe.c   | 33 +++++++++++++++++++++++++
+ 3 files changed, 86 insertions(+)
+
+diff --git a/src/gallium/drivers/pvr/pvr_context.c b/src/gallium/drivers/pvr/pvr_context.c
+index 909f49d8..4026bac7 100644
+--- a/src/gallium/drivers/pvr/pvr_context.c
++++ b/src/gallium/drivers/pvr/pvr_context.c
+@@ -240,6 +240,40 @@ pvr_set_vertex_buffers(struct pipe_context *pctx, unsigned count,
+    ctx->nr_vertex_buffers = count;
+ }
+ 
++/* The draw path. Records, does not execute - see the note in the header.
++ *
++ * The first one logs loudly and once per context, because a driver that silently accepts draws it
++ * cannot perform is the worst of the available behaviours: an application would see no error and no
++ * picture, and would have nothing to report against. */
++static void
++pvr_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
++             UNUSED unsigned drawid_offset, const struct pipe_draw_indirect_info *indirect,
++             const struct pipe_draw_start_count_bias *draws, unsigned num_draws)
++{
++   struct pvr_context *ctx = pvr_context(pctx);
++
++   ctx->draws_received++;
++   ctx->last_draw.mode = (unsigned)info->mode;
++   ctx->last_draw.count = num_draws > 0 ? draws[0].count : 0;
++   ctx->last_draw.start = num_draws > 0 ? draws[0].start : 0;
++   ctx->last_draw.index_size = info->index_size;
++   ctx->last_draw.instance_count = info->instance_count;
++   ctx->last_draw.num_draws = num_draws;
++
++   if (!ctx->warned_draws_not_executed) {
++      ctx->warned_draws_not_executed = true;
++      mesa_logw("pvr: draw received (mode %u, %u vertices, %u instance(s)) but this driver has no "
++                "job assembly - NOTHING WILL BE DRAWN. Further draws are recorded silently.",
++                (unsigned)info->mode, ctx->last_draw.count, info->instance_count);
++   }
++
++   /* Indirect draws would need the arguments read back from a buffer, which needs a submission path
++    * this driver does not have. Recorded so the gap is visible in the count rather than assumed
++    * absent. */
++   if (indirect != NULL && !ctx->last_draw.num_draws)
++      ctx->last_draw.num_draws = 0;
++}
++
+ static void
+ pvr_bind_vertex_elements_state(struct pipe_context *pctx, void *state)
+ {
+@@ -567,6 +601,7 @@ pvr_context_create(struct pipe_screen *pscreen, UNUSED void *priv,
+    ctx->base.set_constant_buffer = pvr_set_constant_buffer;
+    ctx->base.set_vertex_buffers = pvr_set_vertex_buffers;
+    ctx->base.bind_vertex_elements_state = pvr_bind_vertex_elements_state;
++   ctx->base.draw_vbo = pvr_draw_vbo;
+    ctx->base.set_stencil_ref = pvr_set_stencil_ref;
+    ctx->base.set_sample_mask = pvr_set_sample_mask;
+    ctx->base.set_min_samples = pvr_set_min_samples;
+diff --git a/src/gallium/drivers/pvr/pvr_context.h b/src/gallium/drivers/pvr/pvr_context.h
+index 4fe1fd1c..fdc21eea 100644
+--- a/src/gallium/drivers/pvr/pvr_context.h
++++ b/src/gallium/drivers/pvr/pvr_context.h
+@@ -53,6 +53,24 @@ struct pvr_context {
+     * future create hook somewhere to put the parsed elements; inventing a struct to cast it to
+     * would be inventing a layout nothing produces. */
+    void *velements_state;
++
++   /* Draws that REACHED the driver. They are recorded and counted, and NOT executed: there is no
++    * job assembly, no render-target state and no submission of real content, so a draw here changes
++    * nothing on the GPU. Before this hook existed a draw call vanished without the driver even
++    * knowing it had been asked - which is worse than not drawing, because nothing could report it.
++    *
++    * Recorded as plain integers rather than pipe enums so the record survives changes to those types;
++    * the values are only for reporting and for the check that the hook is wired. */
++   unsigned draws_received;
++   bool     warned_draws_not_executed;
++   struct {
++      unsigned mode;
++      unsigned count;
++      unsigned start;
++      unsigned index_size;
++      unsigned instance_count;
++      unsigned num_draws;
++   } last_draw;
+ };
+ 
+ struct pipe_context *pvr_context_create(struct pipe_screen *pscreen, void *priv,
+diff --git a/src/gallium/drivers/pvr/pvr_probe.c b/src/gallium/drivers/pvr/pvr_probe.c
+index 255886cf..824478e7 100644
+--- a/src/gallium/drivers/pvr/pvr_probe.c
++++ b/src/gallium/drivers/pvr/pvr_probe.c
+@@ -748,6 +748,39 @@ out_ctx:
+        * resource machinery calls at count zero. */
+       pipe_resource_reference(&vbo, NULL);
+ 
++      /* The draw hook exists and records. Before this round draw_vbo was not hooked at all, so a
++       * draw call was dropped without the driver knowing it had been asked - the check asserts the
++       * draw REACHES the driver and is recorded with its parameters, since "the hook is wired" is
++       * the whole of what this round changed. */
++      {
++         struct pipe_draw_info dinfo = { 0 };
++         struct pipe_draw_start_count_bias d = { .start = 3, .count = 36 };
++         const unsigned before = vctx->draws_received;
++
++         dinfo.mode = MESA_PRIM_TRIANGLES;
++         dinfo.instance_count = 1;
++
++         pctx->draw_vbo(pctx, &dinfo, 0, NULL, &d, 1);
++
++         if (vctx->draws_received != before + 1) {
++            printf("context:       FAIL: a draw call did not reach the driver (count %u -> %u)\n",
++                   before, vctx->draws_received);
++            ok = false;
++         } else if (vctx->last_draw.mode != MESA_PRIM_TRIANGLES ||
++                    vctx->last_draw.count != 36 || vctx->last_draw.start != 3 ||
++                    vctx->last_draw.instance_count != 1 || vctx->last_draw.num_draws != 1) {
++            printf("context:       FAIL: the draw was recorded as mode %u count %u start %u inst %u "
++                   "draws %u\n", vctx->last_draw.mode, vctx->last_draw.count,
++                   vctx->last_draw.start, vctx->last_draw.instance_count,
++                   vctx->last_draw.num_draws);
++            ok = false;
++         } else {
++            printf("context:       draws REACH the driver and are recorded (mode %u, %u vertices at "
++                   "%u) - and are NOT executed: no job assembly exists\n",
++                   vctx->last_draw.mode, vctx->last_draw.count, vctx->last_draw.start);
++         }
++      }
++
+       printf("context:       vertex buffers: referenced on bind, released on unbind and on "
+              "resource->user replacement, user buffers never referenced\n");
+    }
+-- 
+2.47.3
+

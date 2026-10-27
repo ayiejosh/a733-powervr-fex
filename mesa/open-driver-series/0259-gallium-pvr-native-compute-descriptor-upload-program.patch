@@ -1,0 +1,124 @@
+From e1e9cd26acb15f80fe58c75bdeeaf76147fccc90 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Mon, 26 Oct 2026 03:25:41 +0800
+Subject: [PATCH 259/269] gallium/pvr: native compute descriptor-upload program
+ matches the reference byte-for-byte
+
+The probe's compute check now also builds the descriptor-upload PDS program a compute submission needs:
+pvr_pds_generate_descriptor_upload_program() with the shader's descriptor-set range (4 dwords at shareds)
+and its compile-time literal pool (9 dwords at literals.start), then the dispatch-time data segment built
+from the generated const-map entries (descriptor-set address, literal-pool address, literal32 control
+words). All three match the reference capture exactly:
+  desc code: f0040000 f4050100
+  desc data: 0004b080 00000080 0004b040 00000080 10000004 90008009
+  kernel PDS data: 00007200 00000010 90000002 80000000
+  kernel PDS code prefix: c2c00005 90012000 90016041 f0024001 d3000000 f0034001 fc000002 d3000000
+So the native compute pipeline now has byte-identical shader, kernel program, and descriptor program. Left:
+the CDM control stream, the compute fw stream, compute context creation and submission.
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c | 89 ++++++++++++++++++++++
+ 1 file changed, 89 insertions(+)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index fe98115c..0b80207a 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -4237,6 +4237,95 @@ cdm_compile_check(struct pipe_screen *pscreen)
+          printf(" %08x", code[i]);
+       printf("\n");
+       free(stage_buf);
++
++      /* Descriptor upload PDS program + data segment, exactly as a compute submission would build it:
++       * the descriptor-set range and the compile-time literal pool are copied into the shader's shared
++       * registers by the descriptor kernel. Compare with the reference capture
++       * (desc_code @PDS+0x2600: f0040000 f4050100; desc data @PDS+0x26c0: 6 dwords). */
++      {
++         struct pvr_pds_descriptor_program_input din = { 0 };
++         struct pvr_pds_info dinfo = { 0 };
++         uint32_t *code_buf;
++         uint32_t *entries;
++         uint32_t *seg;
++         unsigned i;
++
++         din.descriptor_set_count = 1;
++         din.descriptor_sets[0] = (struct pvr_pds_descriptor_set){
++            .descriptor_set = 0,
++            .size_in_dwords = sd->common.desc_sets[0].range.count,
++            .destination = sd->common.desc_sets[0].range.start,
++         };
++         din.buffer_count = 1;
++         din.buffers[0] = (struct pvr_pds_buffer){
++            .type = PVR_BUFFER_TYPE_COMPILE_TIME,
++            .size_in_dwords = sd->common.literals.count,
++            .destination = sd->common.literals.start,
++         };
++         entries = calloc(1, 4096); /* PVR_PDS_MAX_DESC_UPLOAD_BYTES is < 1 KiB */
++         dinfo.entries = (struct pvr_const_map_entry *)entries;
++         dinfo.entries_size_in_bytes = 4096;
++         pvr_pds_generate_descriptor_upload_program(&din, NULL, &dinfo);
++         code_buf = calloc(dinfo.code_size_in_dwords ? dinfo.code_size_in_dwords : 1, 4);
++         pvr_pds_generate_descriptor_upload_program(&din, code_buf, &dinfo);
++         printf("cdmc:          desc program code dw=%u:", dinfo.code_size_in_dwords);
++         for (i = 0; i < dinfo.code_size_in_dwords; i++)
++            printf(" %08x", code_buf[i]);
++         printf("\ncdmc:          desc entries=%u bytes=%u data_dw=%u\n", dinfo.entry_count,
++                (unsigned)dinfo.entries_written_size_in_bytes, dinfo.data_size_in_dwords);
++
++         seg = calloc(dinfo.data_size_in_dwords ? dinfo.data_size_in_dwords : 1, 4);
++         {
++            const uint8_t *e = (const uint8_t *)dinfo.entries;
++            const uint8_t *end = e + dinfo.entries_written_size_in_bytes;
++            const uint64_t desc_set_addr = 0x800004b080ULL;
++            const uint64_t literal_addr = 0x800004b040ULL;
++
++            while (e < end) {
++               const struct pvr_const_map_entry *hdr = (const struct pvr_const_map_entry *)e;
++
++               switch (hdr->type) {
++               case PVR_PDS_CONST_MAP_ENTRY_TYPE_LITERAL32: {
++                  const struct pvr_const_map_entry_literal32 *lit =
++                     (const struct pvr_const_map_entry_literal32 *)e;
++
++                  if (lit->const_offset < dinfo.data_size_in_dwords)
++                     seg[lit->const_offset] = lit->literal_value;
++                  e += sizeof(*lit);
++                  break;
++               }
++               case PVR_PDS_CONST_MAP_ENTRY_TYPE_DESCRIPTOR_SET: {
++                  const struct pvr_const_map_entry_descriptor_set *d =
++                     (const struct pvr_const_map_entry_descriptor_set *)e;
++
++                  if (d->const_offset / 2 + 1 <= dinfo.data_size_in_dwords)
++                     ((uint64_t *)seg)[d->const_offset / 2] = desc_set_addr;
++                  e += sizeof(*d);
++                  break;
++               }
++               case PVR_PDS_CONST_MAP_ENTRY_TYPE_SPECIAL_BUFFER: {
++                  const struct pvr_const_map_entry_special_buffer *sp =
++                     (const struct pvr_const_map_entry_special_buffer *)e;
++
++                  if (sp->const_offset / 2 + 1 <= dinfo.data_size_in_dwords)
++                     ((uint64_t *)seg)[sp->const_offset / 2] = literal_addr;
++                  e += sizeof(*sp);
++                  break;
++               }
++               default:
++                  e = end;
++                  break;
++               }
++            }
++         }
++         printf("cdmc:          desc data dw=%u:", dinfo.data_size_in_dwords);
++         for (i = 0; i < dinfo.data_size_in_dwords; i++)
++            printf(" %08x", seg[i]);
++         printf("\n");
++         free(seg);
++         free(code_buf);
++         free(entries);
++      }
+    }
+    f = fopen(out_path, "wb");
+    if (f) {
+-- 
+2.47.3
+

@@ -1,0 +1,27 @@
+; A vertex shader as a SPIR-V module: vec3 attribute -> gl_Position. Position is a plain
+; Output variable decorated BuiltIn Position (no gl_PerVertex interface block) - the shape
+; pco's own lowering produces, and the shape the native driver's TA state expects.
+               OpCapability Shader
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint Vertex %main "main" %in_pos %out_pos
+               OpName %in_pos "pos"
+               OpName %out_pos "gl_Position"
+               OpDecorate %in_pos Location 0
+               OpDecorate %out_pos BuiltIn Position
+       %void = OpTypeVoid
+         %fn = OpTypeFunction %void
+      %float = OpTypeFloat 32
+         %v3 = OpTypeVector %float 3
+         %v4 = OpTypeVector %float 4
+     %ptr_in = OpTypePointer Input %v3
+    %ptr_out = OpTypePointer Output %v4
+     %in_pos = OpVariable %ptr_in Input
+    %out_pos = OpVariable %ptr_out Output
+        %one = OpConstant %float 1
+       %main = OpFunction %void None %fn
+      %label = OpLabel
+          %p = OpLoad %v3 %in_pos
+         %p4 = OpCompositeConstruct %v4 %p %one
+               OpStore %out_pos %p4
+               OpReturn
+               OpFunctionEnd

@@ -1,0 +1,60 @@
+From 5f97af1e1437afdee6a26e3d7bc70cd74398bdce Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 18:09:11 +0800
+Subject: [PATCH 140/269] gallium/pvr: state exactly what the format gate does
+ and does not claim
+
+is_format_supported accepts plain non-compressed formats, which is what lets EGL build
+configs and DRI hand them out - the difference between this driver reporting GL 2.1/ES2 and
+reporting nothing. What it does NOT mean is that a texture of that format can be given to
+the hardware: there is no pipe_format -> hardware format mapping yet, so nothing can tell
+the GPU how to read such a resource.
+
+That gap is now written at the function rather than left implied. A reader who took a true
+return value as "this format is usable" would be wrong, and it is the kind of wrong that
+looks like a working driver until something tries to sample.
+
+No behaviour change: the same formats are accepted, all 13 checks pass, and GL still
+initialises, so nothing is traded away for the accuracy. Round 28 identified the format
+mapping as the next piece; this records at the call site why it is needed rather than
+leaving the permissive return to speak for itself.
+---
+ src/gallium/drivers/pvr/pvr_screen.c | 22 +++++++++++++++-------
+ 1 file changed, 15 insertions(+), 7 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr/pvr_screen.c b/src/gallium/drivers/pvr/pvr_screen.c
+index ca560810..c125dc2b 100644
+--- a/src/gallium/drivers/pvr/pvr_screen.c
++++ b/src/gallium/drivers/pvr/pvr_screen.c
+@@ -57,13 +57,21 @@ pvr_get_device_vendor(struct pipe_screen *pscreen)
+    return "Imagination Technologies";
+ }
+ 
+-/* What this answers is narrow, and worth being precise about: can the driver back a
+- * resource of this format with memory and describe its layout? Linear memory can
+- * describe any plain (non-compressed) format, so those are accepted. It does NOT
+- * claim a working draw path - there is none yet - but without it the state tracker
+- * builds no configs at all, DRI has nothing to hand out, and EGL cannot initialise,
+- * so this is also the gate on everything downstream. Compressed and subsampled
+- * layouts are refused rather than accepted and described wrongly. */
++/* What this answers, and what it does NOT.
++ *
++ * It claims: the driver can back a resource of this format with memory and describe its
++ * layout linearly, because resource_create has no size limit and the layout is linear.
++ *
++ * It does NOT claim the driver can build a hardware descriptor for the format. It cannot:
++ * there is no pipe_format -> hardware format mapping yet (round 28 - the encodings live in
++ * struct pvr_format.tex_format on the Vulkan side, keyed by VkFormat), so nothing can tell
++ * the hardware how to read such a resource. The gap is stated here rather than left implied
++ * because this function being permissive is what lets EGL build configs and DRI hand them
++ * out; the difference between "GL initialises" and "GL can be given a texture" is exactly
++ * the missing mapping, and a reader who took this return value as descriptor readiness
++ * would be wrong.
++ *
++ * Compressed and subsampled layouts are refused rather than accepted and described wrongly. */
+ static bool
+ pvr_is_format_supported(UNUSED struct pipe_screen *pscreen,
+                         enum pipe_format format,
+-- 
+2.47.3
+

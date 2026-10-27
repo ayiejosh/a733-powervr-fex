@@ -1,0 +1,368 @@
+From 7ecd71d49344cf133e3e9e16a1ba72bb0a7c27c6 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 14:31:08 +0800
+Subject: [PATCH 118/269] gallium/pvr: shader stages - create/bind/delete VS
+ and FS through pco
+
+create_vs_state and create_fs_state now compile through the linked compiler, so a
+shader arriving from the state tracker as NIR comes back as encoded USC microcode,
+and bind/delete record and release it:
+
+  shader:       pco encoded 224 bytes of USC for a fragment shader
+  shader state: PASS (create_fs_state/bind/delete over NIR)
+  --- ALL PASS        (real open kernel module)
+
+Supporting changes:
+
+* shader_caps for vertex and fragment, and supported_irs = NIR per stage so the
+  state tracker hands over NIR rather than TGSI. supported_irs is a shader_caps
+  field in this Mesa, not a pipe_caps one.
+* The numeric caps resources can now honour: max_texture_2d_size from
+  rogue_get_render_size_max(), the same device-derived helper the Vulkan driver
+  uses. This was deferred in an earlier round precisely because declaring a texture
+  size the driver cannot allocate would be a lie; resource creation exists now, so
+  it is no longer one.
+* Cube, 3D and array are reported ABSENT (0 levels, 1 array layer) because
+  resource_create refuses them. Reporting the hardware's full texture capability
+  would advertise features the resource code would then reject.
+* max_const_buffer0_size matters more than it looks - the state tracker divides it
+  by 4 to get MaxUniformComponents, so leaving it zero would give shaders no
+  uniforms at all.
+
+Effect on what GL advertises: the four ARB shader extensions now appear
+(GL_ARB_vertex_shader, GL_ARB_fragment_shader, GL_ARB_shader_objects,
+GL_ARB_shading_language_100) where before there were none.
+
+NOT achieved, and not claimed: the reported GL version is still 1.5 / ES-CM 1.1.
+Something outside the shader stage is holding it there and I did not identify
+which, so I did not go looking for caps to set until the number moved - that is how
+a driver ends up advertising capability it does not have. The shader caps are also
+conservative under-claims rather than measured hardware limits, and are marked as
+such in the code.
+---
+ src/gallium/drivers/pvr/pvr_context.c | 60 ++++++++++++++++++++++++++-
+ src/gallium/drivers/pvr/pvr_context.h |  8 ++++
+ src/gallium/drivers/pvr/pvr_probe.c   | 47 ++++++++++++++++++++-
+ src/gallium/drivers/pvr/pvr_screen.c  | 60 +++++++++++++++++++++++++++
+ src/gallium/drivers/pvr/pvr_shader.c  | 29 +++++++++++++
+ src/gallium/drivers/pvr/pvr_shader.h  | 10 +++++
+ 6 files changed, 211 insertions(+), 3 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr/pvr_context.c b/src/gallium/drivers/pvr/pvr_context.c
+index bc901a95..81713caf 100644
+--- a/src/gallium/drivers/pvr/pvr_context.c
++++ b/src/gallium/drivers/pvr/pvr_context.c
+@@ -11,6 +11,7 @@
+ 
+ #include "pvr_resource.h"
+ #include "pvr_screen.h"
++#include "pvr_shader.h"
+ 
+ struct pvr_transfer {
+    struct pipe_transfer base;
+@@ -217,6 +218,57 @@ pvr_set_stream_output_targets(UNUSED struct pipe_context *pctx,
+ {
+ }
+ 
++static struct pvr_shader *
++pvr_shader_from_state(struct pipe_context *pctx, const struct pipe_shader_state *state)
++{
++   struct pvr_screen *screen = pvr_screen(pctx->screen);
++
++   /* The state tracker only hands over NIR because caps->supported_irs says so. If
++    * anything else arrives it is a bug, not something to translate. */
++   if (state->type != PIPE_SHADER_IR_NIR) {
++      mesa_loge("pvr: shader state is not NIR (type %u)", state->type);
++      return NULL;
++   }
++
++   return pvr_shader_create(state->ir.nir, screen->pco_ctx);
++}
++
++static void *
++pvr_create_fs_state(struct pipe_context *pctx, const struct pipe_shader_state *state)
++{
++   return pvr_shader_from_state(pctx, state);
++}
++
++static void *
++pvr_create_vs_state(struct pipe_context *pctx, const struct pipe_shader_state *state)
++{
++   return pvr_shader_from_state(pctx, state);
++}
++
++static void
++pvr_bind_fs_state(struct pipe_context *pctx, void *state)
++{
++   pvr_context(pctx)->fs = state;
++}
++
++static void
++pvr_bind_vs_state(struct pipe_context *pctx, void *state)
++{
++   pvr_context(pctx)->vs = state;
++}
++
++static void
++pvr_delete_fs_state(UNUSED struct pipe_context *pctx, void *state)
++{
++   pvr_shader_destroy(state);
++}
++
++static void
++pvr_delete_vs_state(UNUSED struct pipe_context *pctx, void *state)
++{
++   pvr_shader_destroy(state);
++}
++
+ static void
+ pvr_context_destroy(struct pipe_context *pctx)
+ {
+@@ -247,8 +299,12 @@ pvr_context_create(struct pipe_screen *pscreen, UNUSED void *priv,
+    ctx->base.bind_blend_state = pvr_bind_state_noop;
+    ctx->base.bind_depth_stencil_alpha_state = pvr_bind_state_noop;
+    ctx->base.bind_rasterizer_state = pvr_bind_state_noop;
+-   ctx->base.bind_vs_state = pvr_bind_state_noop;
+-   ctx->base.bind_fs_state = pvr_bind_state_noop;
++   ctx->base.bind_vs_state = pvr_bind_vs_state;
++   ctx->base.bind_fs_state = pvr_bind_fs_state;
++   ctx->base.create_vs_state = pvr_create_vs_state;
++   ctx->base.create_fs_state = pvr_create_fs_state;
++   ctx->base.delete_vs_state = pvr_delete_vs_state;
++   ctx->base.delete_fs_state = pvr_delete_fs_state;
+    ctx->base.bind_gs_state = pvr_bind_state_noop;
+    ctx->base.bind_tcs_state = pvr_bind_state_noop;
+    ctx->base.bind_tes_state = pvr_bind_state_noop;
+diff --git a/src/gallium/drivers/pvr/pvr_context.h b/src/gallium/drivers/pvr/pvr_context.h
+index 1e6518bf..8e3ea524 100644
+--- a/src/gallium/drivers/pvr/pvr_context.h
++++ b/src/gallium/drivers/pvr/pvr_context.h
+@@ -10,8 +10,16 @@
+ 
+ #include "pipe/p_context.h"
+ 
++struct pvr_shader;
++
+ struct pvr_context {
+    struct pipe_context base;
++
++   /* What the CSO cache last bound. Nothing consumes these yet - no draw path - but
++    * the point of the gauge is that state is recorded when it is set rather than
++    * ignored, so the draw path has something to read. */
++   struct pvr_shader *vs;
++   struct pvr_shader *fs;
+ };
+ 
+ struct pipe_context *pvr_context_create(struct pipe_screen *pscreen, void *priv,
+diff --git a/src/gallium/drivers/pvr/pvr_probe.c b/src/gallium/drivers/pvr/pvr_probe.c
+index 3f1bb055..cbdaae41 100644
+--- a/src/gallium/drivers/pvr/pvr_probe.c
++++ b/src/gallium/drivers/pvr/pvr_probe.c
+@@ -453,6 +453,49 @@ shader_compile_check(struct pipe_screen *pscreen)
+    return ok;
+ }
+ 
++/* The shader path as GL will actually use it: a pipe_shader_state carrying NIR goes in
++ * through create_fs_state and comes back as something the context can bind and delete.
++ * The compile check above proves pco works; this proves the driver's plumbing to it
++ * does, including that the state tracker is told to hand over NIR. */
++static bool
++shader_state_check(struct pipe_screen *pscreen)
++{
++   struct pipe_context *pctx = pscreen->context_create(pscreen, NULL, 0);
++   struct pipe_shader_state state = { 0 };
++   void *fs;
++   bool ok;
++
++   if (pctx == NULL) {
++      printf("shader state:  FAIL: no context\n");
++      return false;
++   }
++
++   nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT,
++                                                  pco_nir_options(),
++                                                  "pvr_state_fs");
++   b.shader->info.internal = false;
++   nir_frag_store_pco(&b, nir_imm_int(&b, 0), .base = 0);
++   nir_jump(&b, nir_jump_return);
++
++   state.type = PIPE_SHADER_IR_NIR;
++   state.ir.nir = b.shader;
++
++   fs = pctx->create_fs_state(pctx, &state);
++   ok = fs != NULL;
++
++   if (ok) {
++      pctx->bind_fs_state(pctx, fs);
++      pctx->delete_fs_state(pctx, fs);
++   }
++
++   ralloc_free(b.shader);
++   pctx->destroy(pctx);
++
++   printf("shader state:  %s (create_fs_state/bind/delete over NIR)\n",
++          ok ? "PASS" : "FAIL");
++   return ok;
++}
++
+ int
+ main(int argc, char **argv)
+ {
+@@ -485,10 +528,12 @@ main(int argc, char **argv)
+    const bool res_pass = resource_roundtrip(screen);
+    const bool ctx_pass = transfer_roundtrip(screen);
+    const bool shader_pass = shader_compile_check(screen);
++   const bool state_pass = shader_state_check(screen);
+ 
+    screen->destroy(screen);
+ 
+-   const bool all = enum_pass && bo_pass && vm_pass && res_pass && ctx_pass && shader_pass;
++   const bool all = enum_pass && bo_pass && vm_pass && res_pass && ctx_pass &&
++                    shader_pass && state_pass;
+    printf("--- %s\n", all ? "ALL PASS" : "FAILURES ABOVE");
+    return all ? 0 : 1;
+ }
+diff --git a/src/gallium/drivers/pvr/pvr_screen.c b/src/gallium/drivers/pvr/pvr_screen.c
+index 373364e9..324697e4 100644
+--- a/src/gallium/drivers/pvr/pvr_screen.c
++++ b/src/gallium/drivers/pvr/pvr_screen.c
+@@ -170,6 +170,21 @@ pvr_screen_create(int fd, const struct pipe_screen_config *config,
+       struct pipe_caps *caps = (struct pipe_caps *)&screen->base.caps;
+       const struct pvr_device_ident *ident = &screen->dev_info.ident;
+ 
++      /* Numeric limits. These describe what THIS DRIVER supports, not what the
++       * hardware could do, which is the distinction that keeps them honest:
++       *   - 2D size comes from the hardware (rogue_get_render_size_max, the same
++       *     helper the Vulkan driver uses) and the driver can back it, because
++       *     resource_create has no size limit;
++       *   - cube, 3D and array are refused by resource_create, so they are reported as
++       *     absent rather than advertised and then refused;
++       *   - one level because mipmaps are refused.
++       * Reporting the hardware's full texture capability here would be claiming
++       * features the resource code would reject. */
++      caps->max_texture_2d_size = rogue_get_render_size_max(&screen->dev_info);
++      caps->max_texture_cube_levels = 0;
++      caps->max_texture_3d_levels = 0;
++      caps->max_texture_array_layers = 1;
++
+       caps->device_type = PIPE_DEVICE_TYPE_INTEGRATED_GPU;
+       caps->uma = true;             /* the GPU shares system RAM on this SoC */
+       caps->vendor_id = 0x1010;     /* Imagination Technologies PCI vendor ID */
+@@ -229,6 +244,51 @@ pvr_screen_create(int fd, const struct pipe_screen_config *config,
+    screen->base.get_vendor = pvr_get_vendor;
+    screen->base.get_device_vendor = pvr_get_device_vendor;
+    screen->base.is_format_supported = pvr_is_format_supported;
++   /* Shader caps. A non-zero max_instructions is what makes a stage exist at all -
++       * with it zero the state tracker skips the stage and GL is pinned at 1.5.
++       *
++       * These values are deliberately conservative, and the distinction matters:
++       * max_texture_samplers/max_sampler_views (32) come from the limits the Vulkan
++       * driver declares for this same hardware, but the rest are under-claims rather
++       * than measured hardware limits. Under-claiming is safe - GL reports a smaller
++       * limit and nothing breaks - whereas over-claiming would have shaders accepted
++       * that the hardware then rejects. They must be replaced with real limits from
++       * the ISA/PDSC before any of these numbers are quoted as the hardware's.
++       *
++       * max_const_buffer0_size matters more than it looks: the state tracker divides
++       * it by 4 to get MaxUniformComponents, so leaving it zero would give shaders no
++       * uniforms at all. */
++   {
++      struct pipe_shader_caps *sc;
++
++      sc = (struct pipe_shader_caps *)&screen->base.shader_caps[MESA_SHADER_VERTEX];
++      sc->max_instructions = 4096;
++      sc->max_alu_instructions = 1024;
++      sc->max_tex_instructions = 512;
++      sc->max_tex_indirections = 8;
++      sc->max_inputs = 16;
++      sc->max_temps = 64;
++      sc->max_const_buffer0_size = 1024;
++      sc->max_const_buffers = 4;
++      sc->max_texture_samplers = 32;
++      sc->max_sampler_views = 32;
++      /* NIR only: pco is a NIR compiler, so the state tracker must hand over NIR. */
++      sc->supported_irs = 1 << PIPE_SHADER_IR_NIR;
++
++      sc = (struct pipe_shader_caps *)&screen->base.shader_caps[MESA_SHADER_FRAGMENT];
++      sc->max_instructions = 4096;
++      sc->max_alu_instructions = 1024;
++      sc->max_tex_instructions = 512;
++      sc->max_tex_indirections = 8;
++      sc->max_inputs = 16;
++      sc->max_temps = 64;
++      sc->max_const_buffer0_size = 1024;
++      sc->max_const_buffers = 4;
++      sc->max_texture_samplers = 32;
++      sc->max_sampler_views = 32;
++      sc->supported_irs = 1 << PIPE_SHADER_IR_NIR;
++   }
++
+    screen->base.fence_reference = pvr_fence_reference;
+    screen->base.context_create = pvr_context_create;
+    screen->base.resource_create = pvr_resource_create;
+diff --git a/src/gallium/drivers/pvr/pvr_shader.c b/src/gallium/drivers/pvr/pvr_shader.c
+index 59e9dd2a..7a8f2e3e 100644
+--- a/src/gallium/drivers/pvr/pvr_shader.c
++++ b/src/gallium/drivers/pvr/pvr_shader.c
+@@ -5,8 +5,37 @@
+ 
+ #include "pco/pco_data.h"
+ 
++#include "stdlib.h"
++
+ #include "util/log.h"
+ 
++struct pvr_shader *
++pvr_shader_create(struct nir_shader *nir, pco_ctx *ctx)
++{
++   struct pvr_shader *shader = calloc(1, sizeof(*shader));
++
++   if (shader == NULL)
++      return NULL;
++
++   if (!pvr_shader_compile(ctx, nir, &shader->pco, &shader->binary,
++                           &shader->binary_size)) {
++      free(shader);
++      return NULL;
++   }
++
++   return shader;
++}
++
++void
++pvr_shader_destroy(struct pvr_shader *shader)
++{
++   if (shader == NULL)
++      return;
++
++   ralloc_free(shader->pco);
++   free(shader);
++}
++
+ bool
+ pvr_shader_compile(pco_ctx *ctx, struct nir_shader *nir, pco_shader **shader_out,
+                    const void **data_out, unsigned *size_out)
+diff --git a/src/gallium/drivers/pvr/pvr_shader.h b/src/gallium/drivers/pvr/pvr_shader.h
+index 8d262286..dafca9ed 100644
+--- a/src/gallium/drivers/pvr/pvr_shader.h
++++ b/src/gallium/drivers/pvr/pvr_shader.h
+@@ -16,6 +16,16 @@
+ 
+ struct nir_shader;
+ 
++/* One compiled shader: the pco shader and the microcode it encoded. */
++struct pvr_shader {
++   pco_shader *pco;
++   const void *binary;
++   unsigned binary_size;
++};
++
++struct pvr_shader *pvr_shader_create(struct nir_shader *nir, pco_ctx *ctx);
++void pvr_shader_destroy(struct pvr_shader *shader);
++
+ /* Runs the full pco pipeline over a NIR shader and returns the encoded binary.
+  *
+  * The sequence is the one the Vulkan driver uses (pvr_usc.c build_shader): preprocess,
+-- 
+2.47.3
+

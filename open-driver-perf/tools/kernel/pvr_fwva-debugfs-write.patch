@@ -1,0 +1,203 @@
+diff --git a/pvr_debugfs.c b/pvr_debugfs.c
+index c7ce7da..dfc0ba8 100644
+--- a/pvr_debugfs.c
++++ b/pvr_debugfs.c
+@@ -4,22 +4,198 @@
+ #include "pvr_debugfs.h"
+ 
+ #include "pvr_device.h"
++#include "pvr_fw.h"
++#include "pvr_fw_mips.h"
+ #include "pvr_fw_trace.h"
+ #include "pvr_params.h"
++#include "pvr_rogue_mips.h"
+ 
+ #include <linux/dcache.h>
+ #include <linux/debugfs.h>
+ #include <linux/err.h>
++#include <linux/io.h>
+ #include <linux/kernel.h>
++#include <linux/mm.h>
++#include <linux/moduleparam.h>
++#include <linux/seq_file.h>
+ #include <linux/types.h>
+ 
+ #include <drm/drm_device.h>
+ #include <drm/drm_file.h>
+ #include <drm/drm_print.h>
+ 
++/* Debug-only reader for the firmware's (MIPS) address space: set the firmware VA through the
++ * module parameter, then read the "fwva" file to dump it. Used to compare firmware heap object
++ * contents (FWCtx, RTData) between the working Vulkan client and the native driver. */
++static unsigned long long pvr_dbg_fw_va;
++module_param_named(fwva, pvr_dbg_fw_va, ullong, 0644);
++MODULE_PARM_DESC(fwva, "Firmware MIPS virtual address to dump (see fwva file)");
++
++static unsigned int pvr_dbg_fw_len = 256;
++module_param_named(fwvalen, pvr_dbg_fw_len, uint, 0644);
++MODULE_PARM_DESC(fwvalen, "Number of bytes to dump from fwva (max 4096)");
++
++/* Optional instrumentation: if fwvawrite is non-zero, reading the fwva file writes fwvaval (u32)
++ * to that firmware MIPS address first (used to pre-fill a scratch word in firmware data). */
++static unsigned long long pvr_dbg_fw_write_va;
++module_param_named(fwvawrite, pvr_dbg_fw_write_va, ullong, 0644);
++MODULE_PARM_DESC(fwvawrite, "Firmware MIPS address to write fwvaval to on fwva read (0 = off)");
++static unsigned int pvr_dbg_fw_write_val;
++module_param_named(fwvaval, pvr_dbg_fw_write_val, uint, 0644);
++MODULE_PARM_DESC(fwvaval, "u32 value written to fwvawrite on fwva read");
++
++static phys_addr_t
++pvr_dbg_fw_va_to_dma(struct pvr_device *pvr_dev, u32 va)
++{
++	struct pvr_fw_mips_data *mips = pvr_dev->fw_dev.processor_data.mips_data;
++	u32 off, idx, pte;
++
++	if (mips == NULL || mips->pt == NULL)
++		return 0;
++
++	/* The firmware heap is mapped at ROGUE_FW_HEAP_MIPS_BASE in the MIPS address space. */
++	if (va < 0xC0000000U)
++		return 0;
++
++	off = va - 0xC0000000U;
++	if (off >= (1U << 24))
++		return 0;
++
++	idx = off >> ROGUE_MIPSFW_LOG2_PAGE_SIZE_4K;
++	pte = READ_ONCE(mips->pt[idx]);
++	if (!(pte & ROGUE_MIPSFW_ENTRYLO_VALID_EN))
++		return 0;
++
++	return (phys_addr_t)((pte & mips->pfn_mask) >> ROGUE_MIPSFW_ENTRYLO_PFN_SHIFT)
++	       << ROGUE_MIPSFW_LOG2_PAGE_SIZE_4K;
++}
++
++static int
++pvr_dbg_fwva_show(struct seq_file *m, void *unused)
++{
++	struct pvr_device *pvr_dev = m->private;
++	const u32 va_start = (u32)pvr_dbg_fw_va;
++	const u32 len = min_t(u32, pvr_dbg_fw_len, 4096);
++	u32 done = 0;
++
++	seq_printf(m, "fwva=0x%08x len=%u", va_start, len);
++	if (va_start == 0) {
++		/* Summary mode: show every valid 4 KB page-table entry and its page index. */
++		struct pvr_fw_mips_data *mips = pvr_dev ? pvr_dev->fw_dev.processor_data.mips_data : NULL;
++		u32 idx;
++
++		seq_puts(m, " (page-table summary)\n");
++		if (mips == NULL || mips->pt == NULL)
++			return 0;
++		seq_printf(m, "pfn_mask=0x%08x entries=0x%x\n", mips->pfn_mask, 1U << 12);
++		for (idx = 0; idx < (1U << 12); idx++) {
++			u32 pte = READ_ONCE(mips->pt[idx]);
++
++			if (pte & ROGUE_MIPSFW_ENTRYLO_VALID_EN)
++				seq_printf(m, "idx=0x%03x va=0x%08x pte=0x%08x dma=0x%llx\n", idx,
++					   0xC0000000U + (idx << ROGUE_MIPSFW_LOG2_PAGE_SIZE_4K),
++					   pte,
++					   (unsigned long long)
++					   ((phys_addr_t)((pte & mips->pfn_mask) >>
++							  ROGUE_MIPSFW_ENTRYLO_PFN_SHIFT) <<
++					    ROGUE_MIPSFW_LOG2_PAGE_SIZE_4K));
++		}
++		return 0;
++	}
++	if (pvr_dev == NULL || pvr_dev->fw_dev.processor_data.mips_data == NULL || len == 0) {
++		seq_puts(m, " (no firmware mips data)\n");
++		return 0;
++	}
++
++	if (pvr_dbg_fw_write_va) {
++		const u32 va_w = (u32)pvr_dbg_fw_write_va;
++		const u32 off_w = va_w & ROGUE_MIPSFW_PAGE_MASK_4K;
++		const phys_addr_t dma_w = pvr_dbg_fw_va_to_dma(pvr_dev, va_w & ~ROGUE_MIPSFW_PAGE_MASK_4K);
++
++		if (dma_w == 0) {
++			seq_printf(m, "\nfwvawrite: va=0x%08x <unmapped>\n", va_w);
++		} else {
++			void __iomem *map_w = memremap(dma_w, ROGUE_MIPSFW_PAGE_SIZE_4K, MEMREMAP_WB);
++			u32 before = 0, after = 0;
++
++			if (map_w != NULL) {
++				before = readl((void __iomem *)((u8 *)map_w + off_w));
++				writel(pvr_dbg_fw_write_val, (void __iomem *)((u8 *)map_w + off_w));
++				wmb();
++				after = readl((void __iomem *)((u8 *)map_w + off_w));
++				memunmap(map_w);
++				seq_printf(m, "\nfwvawrite: va=0x%08x before=0x%08x wrote=0x%08x readback=0x%08x\n",
++					   va_w, before, pvr_dbg_fw_write_val, after);
++			} else {
++				seq_printf(m, "\nfwvawrite: va=0x%08x memremap failed\n", va_w);
++			}
++		}
++	}
++	seq_puts(m, "\n");
++
++	while (done < len) {
++		const u32 va = va_start + done;
++		const u32 page_off = va & ROGUE_MIPSFW_PAGE_MASK_4K;
++		const u32 chunk = min_t(u32, len - done, ROGUE_MIPSFW_PAGE_SIZE_4K - page_off);
++		const phys_addr_t dma = pvr_dbg_fw_va_to_dma(pvr_dev, va & ~ROGUE_MIPSFW_PAGE_MASK_4K);
++		const void __iomem *map;
++		const u8 *bytes;
++		u32 i;
++
++		if (dma == 0) {
++			seq_printf(m, "%08x: <unmapped>\n", va);
++			done += chunk;
++			continue;
++		}
++
++		map = memremap(dma, ROGUE_MIPSFW_PAGE_SIZE_4K, MEMREMAP_WB);
++		if (map == NULL) {
++			seq_printf(m, "%08x: <memremap failed phys=0x%llx>\n", va,
++				   (unsigned long long)dma);
++			done += chunk;
++			continue;
++		}
++		bytes = (const u8 *)map + page_off;
++		for (i = 0; i < chunk; i += 16) {
++			char line[3 * 16 + 1];
++			u32 j;
++
++			for (j = 0; j < 16 && i + j < chunk; j++)
++				snprintf(line + 3 * j, 4, "%02x ", bytes[i + j]);
++			line[3 * j] = 0;
++			seq_printf(m, "%08x: %s\n", va + i, line);
++		}
++		memunmap((void *)map);
++		done += chunk;
++	}
++
++	return 0;
++}
++
++static int
++pvr_dbg_fwva_open(struct inode *inode, struct file *file)
++{
++	return single_open(file, pvr_dbg_fwva_show, inode->i_private);
++}
++
++static const struct file_operations pvr_dbg_fwva_fops = {
++	.owner = THIS_MODULE,
++	.open = pvr_dbg_fwva_open,
++	.read = seq_read,
++	.llseek = seq_lseek,
++	.release = single_release,
++};
++
++static void
++pvr_dbg_debugfs_init(struct pvr_device *pvr_dev, struct dentry *dir)
++{
++	debugfs_create_file("fwva", 0444, dir, pvr_dev, &pvr_dbg_fwva_fops);
++}
++
+ static const struct pvr_debugfs_entry pvr_debugfs_entries[] = {
+ 	{"pvr_params", pvr_params_debugfs_init},
+ 	{"pvr_fw", pvr_fw_trace_debugfs_init},
++	{"pvr_dbg", pvr_dbg_debugfs_init},
+ };
+ 
+ void

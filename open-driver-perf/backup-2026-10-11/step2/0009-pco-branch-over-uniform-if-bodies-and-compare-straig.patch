@@ -1,0 +1,463 @@
+From d06ae1286d8dbbe71a9e2039f79c0c5c1b5610fd Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sun, 11 Oct 2026 11:29:39 +0800
+Subject: [PATCH 09/11] pco: branch over uniform if bodies and compare straight
+ into p0
+
+Every if was lowered with the execution mask counter (cndst, br.allinst,
+cndef, br.allinst, cndend), even when all instances take the same side.
+The descriptor check versioning puts such an if at the top of most
+shaders, so the fast path paid 8 control instructions.
+
+An if whose condition is computed only by pure ALU ops from shared
+registers, constants and immediates, with no loop or masking if around it,
+now sets p0 with an (ignorepe) test and branches over the body that is not
+taken. The condition producers become (ignorepe) too, so p0 is valid in
+every instance. A large uniform body is branched over rather than issued
+predicated. The emc is now initialised at the start of the function, so
+it is set on every path.
+
+New op tstp compares two sources into a predicate. If prologues recompute
+a bcmp condition straight into p0 instead of testing its boolean result;
+DCE removes the bcmp when nothing else uses it.
+
+glmark2 (zink, off-screen) vs before: function +4..6%, conditionals
++6..9%, loop +4..8%, jellyfish +7%. The function fragment shader's fast
+path goes from 8 control instructions to 2.
+---
+ src/imagination/pco/pco_cf.c       | 260 ++++++++++++++++++++++++++---
+ src/imagination/pco/pco_internal.h |   1 +
+ src/imagination/pco/pco_map.py     |  34 ++++
+ src/imagination/pco/pco_ops.py     |   1 +
+ 4 files changed, 271 insertions(+), 25 deletions(-)
+
+diff --git a/src/imagination/pco/pco_cf.c b/src/imagination/pco/pco_cf.c
+index 7ff9a34..4e0d820 100644
+--- a/src/imagination/pco/pco_cf.c
++++ b/src/imagination/pco/pco_cf.c
+@@ -22,13 +22,19 @@
+ #include <assert.h>
+ #include <stdbool.h>
+ 
+-pco_ref pco_emc_ref(pco_func *func, pco_builder *b)
++pco_ref pco_emc_ref(pco_func *func, UNUSED pco_builder *b)
+ {
+    if (pco_ref_is_null(func->emc)) {
+-      /* Allocate and initialize the emc. */
++      /* Allocate and initialize the emc at the start of the function, so that
++       * it is initialized on every path, including the ones that branch over
++       * uniform if bodies.
++       */
+       func->emc = pco_ref_new_vreg(func);
++      pco_builder init_b =
++         pco_builder_create(func,
++                            pco_cursor_before_block(pco_func_first_block(func)));
+ 
+-      pco_cndst(b,
++      pco_cndst(&init_b,
+                 pco_ref_pred(PCO_PRED_PE),
+                 func->emc,
+                 pco_zero,
+@@ -126,8 +132,65 @@ static inline void set_body_exec_cnd(struct list_head *body,
+    }
+ }
+ 
++/* Whether a comparison source has the same value wherever the comparison is
++ * recomputed before its if.
++ */
++static inline bool cmp_src_is_stable(pco_ref ref)
++{
++   if (pco_ref_is_ssa(ref) || pco_ref_is_imm(ref))
++      return true;
++
++   if (!pco_ref_is_hwreg(ref))
++      return false;
++
++   enum pco_reg_class reg_class = pco_ref_get_reg_class(ref);
++   return reg_class == PCO_REG_CLASS_SHARED || reg_class == PCO_REG_CLASS_CONST;
++}
++
++/* Sets p0 from the if condition and returns whether p0 is set when the
++ * condition is true. A condition that comes straight from a comparison is
++ * recomputed into p0, instead of testing its boolean result; DCE removes the
++ * comparison if nothing else uses it.
++ */
++static bool set_p0_from_cond(pco_builder *b,
++                             pco_ref cond,
++                             enum pco_exec_cnd exec_cnd,
++                             pco_instr **writes,
++                             unsigned num_writes)
++{
++   pco_instr *cmp = pco_ref_is_ssa(cond) && cond.val < num_writes
++                       ? writes[cond.val]
++                       : NULL;
++
++   if (cmp && cmp->op == PCO_OP_BCMP && cmp_src_is_stable(cmp->src[0]) &&
++       cmp_src_is_stable(cmp->src[1])) {
++      pco_tstp(b,
++               pco_ref_null(),
++               pco_ref_pred(PCO_PRED_P0),
++               cmp->src[0],
++               cmp->src[1],
++               .exec_cnd = exec_cnd,
++               .tst_op_main = pco_instr_get_tst_op_main(cmp),
++               .tst_type_main = pco_instr_get_tst_type_main(cmp));
++      return true;
++   }
++
++   pco_tstz(b,
++            pco_ref_null(),
++            pco_ref_pred(PCO_PRED_P0),
++            cond,
++            .exec_cnd = exec_cnd,
++            .tst_type_main = PCO_TST_TYPE_MAIN_U32);
++   return false;
++}
++
+ static inline void
+-lower_if_pred_exec(pco_if *pif, pco_func *func, bool has_else, bool invert_cond)
++lower_if_pred_exec(pco_if *pif,
++                   pco_func *func,
++                   bool has_else,
++                   bool invert_cond,
++                   pco_instr **writes,
++                   unsigned num_writes)
+ {
+    pco_block *prologue = cf_section_create(func,
+                                            &pif->cf_node,
+@@ -137,12 +200,8 @@ lower_if_pred_exec(pco_if *pif, pco_func *func, bool has_else, bool invert_cond)
+    /* Setup the prologue. */
+    pco_builder b = pco_builder_create(func, pco_cursor_after_block(prologue));
+ 
+-   /* TODO: see if the cond producer can set p0 directly. */
+-   pco_tstz(&b,
+-            pco_ref_null(),
+-            pco_ref_pred(PCO_PRED_P0),
+-            pif->cond,
+-            .tst_type_main = PCO_TST_TYPE_MAIN_U32);
++   invert_cond ^=
++      set_p0_from_cond(&b, pif->cond, PCO_EXEC_CND_E1_ZX, writes, num_writes);
+ 
+    set_body_exec_cnd(&pif->then_body,
+                      invert_cond ? PCO_EXEC_CND_E1_Z1 : PCO_EXEC_CND_E1_Z0);
+@@ -154,7 +213,12 @@ lower_if_pred_exec(pco_if *pif, pco_func *func, bool has_else, bool invert_cond)
+ }
+ 
+ static inline void
+-lower_if_cond_exec(pco_if *pif, pco_func *func, bool has_else, bool invert_cond)
++lower_if_cond_exec(pco_if *pif,
++                   pco_func *func,
++                   bool has_else,
++                   bool invert_cond,
++                   pco_instr **writes,
++                   unsigned num_writes)
+ {
+    pco_block *prologue = cf_section_create(func,
+                                            &pif->cf_node,
+@@ -177,12 +241,8 @@ lower_if_cond_exec(pco_if *pif, pco_func *func, bool has_else, bool invert_cond)
+    pco_builder b = pco_builder_create(func, pco_cursor_after_block(prologue));
+    pco_ref emc = pco_emc_ref(func, &b);
+ 
+-   /* TODO: see if the cond producer can set p0 directly. */
+-   pco_tstz(&b,
+-            pco_ref_null(),
+-            pco_ref_pred(PCO_PRED_P0),
+-            pif->cond,
+-            .tst_type_main = PCO_TST_TYPE_MAIN_U32);
++   invert_cond ^=
++      set_p0_from_cond(&b, pif->cond, PCO_EXEC_CND_E1_ZX, writes, num_writes);
+ 
+    pco_cndst(&b,
+              pco_ref_pred(PCO_PRED_PE),
+@@ -222,7 +282,118 @@ lower_if_cond_exec(pco_if *pif, pco_func *func, bool has_else, bool invert_cond)
+               .exec_cnd = PCO_EXEC_CND_EX_ZX);
+ }
+ 
+-static inline void lower_if(pco_if *pif, pco_func *func)
++/* An if whose condition is the same in every instance, outside of any loop or
++ * conditionally executed if, so that no instance is masked: branch over the
++ * body that isn't taken instead of masking instances. The condition producers
++ * run in every instance so that p0 is valid in all of them.
++ */
++static inline void
++lower_if_uniform(pco_if *pif,
++                 pco_func *func,
++                 bool has_else,
++                 bool invert_cond,
++                 pco_instr **writes,
++                 unsigned num_writes)
++{
++   pco_block *prologue = cf_section_create(func,
++                                           &pif->cf_node,
++                                           &pif->prologue,
++                                           PCO_CF_NODE_FLAG_PROLOGUE);
++   pco_block *interlogue = has_else
++                              ? cf_section_create(func,
++                                                  &pif->cf_node,
++                                                  &pif->interlogue,
++                                                  PCO_CF_NODE_FLAG_INTERLOGUE)
++                              : NULL;
++   pco_block *epilogue = cf_section_create(func,
++                                           &pif->cf_node,
++                                           &pif->epilogue,
++                                           PCO_CF_NODE_FLAG_EPILOGUE);
++
++   pco_builder b = pco_builder_create(func, pco_cursor_after_block(prologue));
++   invert_cond ^=
++      set_p0_from_cond(&b, pif->cond, PCO_EXEC_CND_EX_ZX, writes, num_writes);
++
++   /* Skip the then body when the condition is false. */
++   pco_br(&b,
++          has_else ? pco_cf_node_head(&pif->else_body) : &epilogue->cf_node,
++          .exec_cnd = invert_cond ? PCO_EXEC_CND_E1_Z0 : PCO_EXEC_CND_E1_Z1);
++
++   if (has_else) {
++      b.cursor = pco_cursor_after_block(interlogue);
++      pco_br(&b, &epilogue->cf_node, .exec_cnd = PCO_EXEC_CND_EX_ZX);
++   }
++}
++
++/* Whether a value is the same in every instance: computed only by pure ALU
++ * ops from shared registers, constants and immediates.
++ */
++static bool ref_is_uniform(pco_instr **writes,
++                           unsigned num_writes,
++                           pco_ref ref,
++                           struct util_dynarray *producers,
++                           unsigned depth)
++{
++   if (pco_ref_is_null(ref) || pco_ref_is_imm(ref))
++      return true;
++
++   if (pco_ref_is_hwreg(ref)) {
++      enum pco_reg_class reg_class = pco_ref_get_reg_class(ref);
++      return reg_class == PCO_REG_CLASS_SHARED ||
++             reg_class == PCO_REG_CLASS_CONST;
++   }
++
++   if (!pco_ref_is_ssa(ref) || ref.val >= num_writes || !depth)
++      return false;
++
++   /* (ignorepe) producers come from an earlier uniform if. */
++   pco_instr *instr = writes[ref.val];
++   if (!instr || !pco_instr_has_exec_cnd(instr) ||
++       (!pco_instr_has_default_exec(instr) &&
++        pco_instr_get_exec_cnd(instr) != PCO_EXEC_CND_EX_ZX))
++      return false;
++
++   switch (instr->op) {
++   case PCO_OP_MOV:
++   case PCO_OP_MOVI32:
++   case PCO_OP_MBYP:
++   case PCO_OP_LOGICAL:
++   case PCO_OP_SHIFT:
++   case PCO_OP_IADD32:
++   case PCO_OP_BCMP:
++   case PCO_OP_BCSEL:
++   case PCO_OP_CSEL:
++   case PCO_OP_TSTZ:
++      break;
++   default:
++      return false;
++   }
++
++   pco_foreach_instr_dest (pdest, instr) {
++      if (pco_ref_is_pred(*pdest))
++         return false;
++   }
++
++   pco_foreach_instr_src (psrc, instr) {
++      if (!ref_is_uniform(writes, num_writes, *psrc, producers, depth - 1))
++         return false;
++   }
++
++   util_dynarray_append(producers, instr);
++   return true;
++}
++
++static inline unsigned body_num_instrs(struct list_head *body)
++{
++   if (list_is_empty(body))
++      return 0;
++
++   pco_block *block = pco_cf_node_as_block(pco_cf_node_head(body));
++   return list_length(&block->instrs);
++}
++
++static inline void
++lower_if(pco_if *pif, pco_func *func, pco_instr **writes, unsigned num_writes)
+ {
+    assert(!pco_ref_is_null(pif->cond));
+    assert(list_is_empty(&pif->prologue));
+@@ -249,9 +420,11 @@ static inline void lower_if(pco_if *pif, pco_func *func)
+    assert(has_then);
+ 
+    if (pif->pred_exec)
+-      lower_if_pred_exec(pif, func, has_else, invert_cond);
++      lower_if_pred_exec(pif, func, has_else, invert_cond, writes, num_writes);
++   else if (pif->uniform)
++      lower_if_uniform(pif, func, has_else, invert_cond, writes, num_writes);
+    else
+-      lower_if_cond_exec(pif, func, has_else, invert_cond);
++      lower_if_cond_exec(pif, func, has_else, invert_cond, writes, num_writes);
+ 
+    pif->cond = pco_ref_null();
+ }
+@@ -390,6 +563,15 @@ static inline bool pco_lower_cf(pco_func *func)
+    util_dynarray_init(&pif_stack, mem_ctx);
+    util_dynarray_init(&loop_stack, mem_ctx);
+ 
++   /* Loops and conditionally executed ifs that can mask instances. */
++   unsigned masking_nestings = 0;
++   unsigned num_writes = func->next_ssa;
++   pco_instr **writes = rzalloc_array(mem_ctx, pco_instr *, num_writes);
++   pco_foreach_instr_in_func (instr, func) {
++      pco_foreach_instr_dest_ssa (pdest, instr) {
++         writes[pdest->val] = instr;
++      }
++   }
+    pco_foreach_cf_node_in_func_structured (cf_node, cf_node_completed, func) {
+       /* Handle the end of an if/loop. */
+       if (cf_node_completed) {
+@@ -399,9 +581,10 @@ static inline bool pco_lower_cf(pco_func *func)
+ 
+             ASSERTED pco_if *last_pif = util_dynarray_pop(&pif_stack, pco_if *);
+             assert(pif == last_pif);
+-
+-            if (!pif->pred_exec)
++            if (!pif->pred_exec && !pif->uniform) {
+                --loop_nestings;
++               --masking_nestings;
++            }
+ 
+             break;
+          }
+@@ -414,6 +597,7 @@ static inline bool pco_lower_cf(pco_func *func)
+ 
+             assert(loop_nestings == 0);
+             loop_nestings = util_dynarray_pop(&loop_nestings_stack, unsigned);
++            --masking_nestings;
+             break;
+          }
+ 
+@@ -427,12 +611,37 @@ static inline bool pco_lower_cf(pco_func *func)
+       case PCO_CF_NODE_TYPE_IF: {
+          pco_if *pif = pco_cf_node_as_if(cf_node);
+          pif->pred_exec = can_pred_exec(pif);
+-         util_dynarray_append(&pif_stack, pif);
+ 
+-         if (!pif->pred_exec)
++         struct util_dynarray producers;
++         util_dynarray_init(&producers, mem_ctx);
++         bool uniform = !masking_nestings && !PCO_DEBUG(NO_PRED_CF) &&
++                        ref_is_uniform(writes,
++                                       num_writes,
++                                       pif->cond,
++                                       &producers,
++                                       8);
++
++         /* Predicated bodies are issued either way; branch over large ones. */
++         if (pif->pred_exec && uniform &&
++             body_num_instrs(&pif->then_body) +
++                   body_num_instrs(&pif->else_body) >
++                4) {
++            pif->pred_exec = false;
++         }
++
++         pif->uniform = uniform && !pif->pred_exec;
++         if (pif->uniform) {
++            util_dynarray_foreach (&producers, pco_instr *, producer)
++               pco_instr_set_exec_cnd(*producer, PCO_EXEC_CND_EX_ZX);
++         }
++
++         util_dynarray_append(&pif_stack, pif);
++         if (!pif->pred_exec && !pif->uniform) {
+             ++loop_nestings;
++            ++masking_nestings;
++         }
+ 
+-         lower_if(pif, func);
++         lower_if(pif, func, writes, num_writes);
+          progress = true;
+ 
+          break;
+@@ -441,6 +650,7 @@ static inline bool pco_lower_cf(pco_func *func)
+       case PCO_CF_NODE_TYPE_LOOP: {
+          util_dynarray_append(&loop_nestings_stack, loop_nestings);
+          loop_nestings = 0;
++         ++masking_nestings;
+ 
+          pco_loop *loop = pco_cf_node_as_loop(cf_node);
+          util_dynarray_append(&loop_stack, loop);
+diff --git a/src/imagination/pco/pco_internal.h b/src/imagination/pco/pco_internal.h
+index 092fdb5..71063ab 100644
+--- a/src/imagination/pco/pco_internal.h
++++ b/src/imagination/pco/pco_internal.h
+@@ -313,6 +313,7 @@ typedef struct _pco_if {
+    pco_func *parent_func; /** Parent function. */
+    pco_ref cond; /** If condition. */
+    bool pred_exec; /** Whether this if construct uses predicated execution. */
++   bool uniform; /** Whether this if construct branches on a uniform condition. */
+    struct list_head prologue; /** List of pco_cf_nodes for if prologue. */
+    struct list_head then_body; /** List of pco_cf_nodes for if body. */
+    struct list_head interlogue; /** List of pco_cf_nodes for if interlogue. */
+diff --git a/src/imagination/pco/pco_map.py b/src/imagination/pco/pco_map.py
+index 358198b..9f976d0 100644
+--- a/src/imagination/pco/pco_map.py
++++ b/src/imagination/pco/pco_map.py
+@@ -2870,6 +2870,40 @@ group_map(O_TSTZ,
+    ]
+ )
+ 
++group_map(O_TSTP,
++   hdr=(I_IGRP_HDR_MAIN, [
++      ('oporg', 'p0_p1_p2'),
++      ('olchk', OM_OLCHK),
++      ('w1p', False),
++      ('w0p', ('!pco_ref_is_null', DEST(0))),
++      ('cc', OM_EXEC_CND),
++      ('end', OM_END),
++      ('atom', OM_ATOM),
++      ('rpt', OM_RPT)
++   ]),
++   enc_ops=[
++      ('0', O_MBYP, ['ft0'], [SRC(0)]),
++      ('1', O_MBYP, ['ft1'], [SRC(1)]),
++      ('2_tst', O_TST, ['ftt', DEST(1)], ['is1', 'is2'], [(OM_TST_OP_MAIN, OM_TST_OP_MAIN), (OM_TST_TYPE_MAIN, OM_TST_TYPE_MAIN)]),
++      ('2_pck', O_PCK, ['ft2'], ['_'], [(OM_PCK_FMT, 'zero')]),
++      ('2_mov', O_MOVC, [DEST(0), '_'], ['ftt', 'fte', 'is4', '_', '_'])
++   ],
++   srcs=[
++      ('s[0]', ('0', SRC(0)), 's0'),
++      ('s[1]', 'pco_true'),
++      ('s[3]', ('1', SRC(0)), 's3'),
++   ],
++   iss=[
++      ('is[0]', 's1'),
++      ('is[1]', 'ft0'),
++      ('is[2]', 'ft1'),
++      ('is[4]', 'ft2'),
++   ],
++   dests=[
++      ('w[0]', ('2_mov', DEST(0)), 'w0'),
++   ]
++)
++
+ group_map(O_ST32,
+    hdr=(I_IGRP_HDR_MAIN, [
+       ('oporg', 'be'),
+diff --git a/src/imagination/pco/pco_ops.py b/src/imagination/pco/pco_ops.py
+index de53bdf..b0dd890 100644
+--- a/src/imagination/pco/pco_ops.py
++++ b/src/imagination/pco/pco_ops.py
+@@ -509,6 +509,7 @@ O_UADD_CARRY = hw_op('uadd_carry', OM_ALU, 2, 2)
+ O_UADD_SAT = hw_op('uadd_sat', OM_ALU, 1, 3)
+ 
+ O_TSTZ = hw_op('tstz', OM_ALU + [OM_TST_TYPE_MAIN], 2, 1, [], [[RM_ELEM]])
++O_TSTP = hw_op('tstp', OM_ALU + [OM_TST_OP_MAIN, OM_TST_TYPE_MAIN], 2, 2, [], [[RM_ABS, RM_NEG], [RM_ABS, RM_NEG]])
+ O_ST32 = hw_op('st32', OM_ALU_RPT1 + [OM_MCU_CACHE_MODE_ST, OM_IDF], 0, 5)
+ O_ST32_REGBL = hw_op('st32.regbl', OM_ALU_RPT1 + [OM_MCU_CACHE_MODE_ST, OM_IDF], 0, 5)
+ 
+-- 
+2.47.3
+

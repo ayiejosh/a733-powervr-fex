@@ -1,0 +1,15 @@
+MESA: info: pvr: PowerVR B-Series BXM-4-64 (36.56.104.183), device_id 0x36104183, gpu_id 0x240038006800b7
+MESA: info: pvr: pvr_screen_create fd=3 -> PowerVR B-Series BXM-4-64 (36.56.104.183) (skeleton: no draw path)
+MESA: info: pvr: static area heap 0 usage 1 offset 0x0 size 128
+MESA: info: pvr: static area heap 0 usage 3 offset 0x80 size 1024
+MESA: info: pvr: static area heap 1 usage 2 offset 0x0 size 128
+MESA: info: pvr: static area heap 1 usage 0 offset 0x80 size 128
+MESA: info: pvr: static area heap 2 usage 2 offset 0x0 size 128
+MESA: info: pvr: 6 heaps; general base 0x8000000000 size 137438953472 carveout 1152 usable 0x8000000480 (137438952320 bytes), page 4096, vm_context 1
+name:          PowerVR B-Series BXM-4-64 (36.56.104.183)
+vendor:        Imagination Technologies
+device vendor: Imagination Technologies
+cdm:           replaying captured compute job (fw stream 44 B, ctrl stream @0x80001b1000, state @0x800006b000, programs installed)
+MESA: error: pvr: compute job did not signal completion within 2000 ms
+cdm:           readback inside=0 outside=0 zero=262144 (waited 3000000 us, target 0x80000b1000)
+cdm:           FAIL (native compute draw of the captured Vulkan triangle job)

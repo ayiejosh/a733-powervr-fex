@@ -1,0 +1,513 @@
+From ac7ecacaaee298ad288da6b0f2b228d119715856 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 07:38:14 +0800
+Subject: [PATCH 114/269] gallium/pvr: GPU address space - heaps, VM context,
+ map and unmap
+
+The other half of resource management: a buffer object can now be given a device
+address the GPU can reach, which is what everything downstream needs.
+
+* DRM_PVR_DEV_QUERY_HEAP_INFO_GET and _STATIC_DATA_AREAS_GET, both two-call
+  object-array queries (first call with a null array reports the count, second
+  fills it). The general heap is the only one used; the others are firmware
+  territory (PDS, USC, vis test, region header, transfer fragment).
+* DRM_IOCTL_PVR_CREATE_VM_CONTEXT / _DESTROY_VM_CONTEXT.
+* DRM_IOCTL_PVR_VM_MAP / _VM_UNMAP for whole-buffer mappings.
+* util_vma_heap over the general heap's usable range for device addresses.
+
+Three details that are quiet when wrong:
+
+1. The first bytes of the general heap belong to the firmware (fence area, YUV CSC,
+   sync programs). The kernel only checks that a mapping lies inside the heap, so
+   it would happily let the driver map over them - the carveout has to be
+   subtracted in userspace. Measured on the real kernel the carveout is 1152 bytes
+   (128 + 1024), which is exactly what the kernel's static data table describes, so
+   it is being parsed rather than passing by luck.
+2. util_vma_heap_alloc returns an absolute address here, not an offset, because the
+   heap is seeded via util_vma_heap_free(heap, start, size) with an absolute start.
+   0 means failure - which is why a heap must never begin at 0.
+3. VM_UNMAP is keyed on the size, so it must be given exactly the size that was
+   mapped; a smaller value leaves part of the mapping behind.
+
+sizeof mismatch avoided: the UAPI's __u64 is long long unsigned here while PRIu64
+is %lu, so the kernel struct fields are cast at the printf sites.
+
+Runnable check added to pvr-probe: read the heaps, create a VM context, allocate
+two distinct device addresses, verify the first lies inside the usable range and is
+page aligned, map a real buffer there, unmap it, free both, destroy the context.
+Verified on the real open kernel module:
+
+  pvr: 6 heaps; general base 0x8000000000 size 137438953472 carveout 1152
+       usable 0x8000000480 (137438952320 bytes), page 4096, vm_context 1
+  vm:  mapped and unmapped 0x9fffff0000 (65536 bytes); second address 0x9ffffe0000
+  vm:  PASS (heap query, VM context, device address, VM_MAP/UNMAP)
+  --- ALL PASS
+---
+ src/gallium/drivers/pvr/meson.build |   1 +
+ src/gallium/drivers/pvr/pvr_probe.c |  84 ++++++++-
+ src/gallium/drivers/pvr/pvr_vm.c    | 277 ++++++++++++++++++++++++++++
+ src/gallium/drivers/pvr/pvr_vm.h    |  46 +++++
+ 4 files changed, 406 insertions(+), 2 deletions(-)
+ create mode 100644 src/gallium/drivers/pvr/pvr_vm.c
+ create mode 100644 src/gallium/drivers/pvr/pvr_vm.h
+
+diff --git a/src/gallium/drivers/pvr/meson.build b/src/gallium/drivers/pvr/meson.build
+index ed2c04cf..e0f5ff7f 100644
+--- a/src/gallium/drivers/pvr/meson.build
++++ b/src/gallium/drivers/pvr/meson.build
+@@ -6,6 +6,7 @@
+ 
+ files_pvr = files(
+   'pvr_bo.c',
++  'pvr_vm.c',
+   'pvr_screen.c',
+ )
+ 
+diff --git a/src/gallium/drivers/pvr/pvr_probe.c b/src/gallium/drivers/pvr/pvr_probe.c
+index 2dde4caa..a060f6cb 100644
+--- a/src/gallium/drivers/pvr/pvr_probe.c
++++ b/src/gallium/drivers/pvr/pvr_probe.c
+@@ -21,6 +21,7 @@
+ #include <fcntl.h>
+ 
+ #include "pvr_bo.h"
++#include "pvr_vm.h"
+ #include "pvr_public.h"
+ #include "pipe/p_screen.h"
+ 
+@@ -96,6 +97,83 @@ out:
+    return ok;
+ }
+ 
++/* Allocate device addresses out of the general heap and map a buffer into the GPU's
++ * address space. This is the step that makes a buffer reachable by the GPU; none of
++ * it can be exercised without the real kernel module, because the shim does not
++ * implement the VM ioctls. */
++static bool
++vm_roundtrip(int fd)
++{
++   struct pvr_vm vm;
++   struct pvr_bo a = { 0 }, b = { 0 };
++   uint64_t addr_a = 0, addr_b = 0, size = 0;
++   bool ok = false;
++
++   if (!pvr_vm_init(fd, &vm)) {
++      printf("vm:            FAIL: could not read the heaps or create a VM context\n");
++      return false;
++   }
++
++   printf("vm:            general heap 0x%" PRIx64 "+%" PRIu64 " bytes, "
++          "carveout %" PRIu64 ", usable 0x%" PRIx64 "+%" PRIu64 ", page %u\n",
++          vm.general.base, vm.general.size, vm.general.base - vm.general.base +
++             (vm.general.size - vm.general.usable_size),
++          vm.general.usable_base, vm.general.usable_size, vm.general.page_size);
++
++   if (!pvr_bo_create(fd, 64 * 1024, 4096, &a))
++      goto out;
++   size = a.size;
++
++   addr_a = pvr_vm_alloc(&vm, size, 4096);
++   addr_b = pvr_vm_alloc(&vm, size, 4096);
++
++   if (addr_a == 0 || addr_b == 0) {
++      printf("vm:            FAIL: could not allocate a device address\n");
++      goto out;
++   }
++   if (addr_a == addr_b) {
++      printf("vm:            FAIL: the allocator handed out the same address twice\n");
++      goto out;
++   }
++
++   /* The address must lie inside the usable range and be page aligned - a heap base
++    * that was not added, or a carveout that was not subtracted, shows up right here. */
++   const uint64_t usable_end = vm.general.usable_base + vm.general.usable_size;
++   if (addr_a < vm.general.usable_base || addr_a + size > usable_end ||
++       addr_a % vm.general.page_size != 0) {
++      printf("vm:            FAIL: address 0x%" PRIx64 " outside usable range\n", addr_a);
++      goto out;
++   }
++
++   if (!pvr_vm_map(&vm, addr_a, a.handle, size)) {
++      printf("vm:            FAIL: VM_MAP rejected the mapping\n");
++      goto out;
++   }
++
++   /* Round-trip the unmap before freeing, so a failure is attributable. */
++   if (!pvr_vm_unmap(&vm, addr_a, size)) {
++      printf("vm:            FAIL: VM_UNMAP failed\n");
++      goto out;
++   }
++
++   printf("vm:            mapped and unmapped 0x%" PRIx64 " (%" PRIu64 " bytes); "
++          "second address 0x%" PRIx64 "\n", addr_a, size, addr_b);
++   ok = true;
++
++out:
++   if (addr_a)
++      pvr_vm_free(&vm, addr_a, size);
++   if (addr_b)
++      pvr_vm_free(&vm, addr_b, size);
++   pvr_bo_destroy(fd, &a);
++   pvr_bo_destroy(fd, &b);
++   pvr_vm_finish(&vm);
++
++   printf("vm:            %s (heap query, VM context, device address, VM_MAP/UNMAP)\n",
++          ok ? "PASS" : "FAIL");
++   return ok;
++}
++
+ int
+ main(int argc, char **argv)
+ {
+@@ -124,9 +202,11 @@ main(int argc, char **argv)
+ 
+    /* Before destroying the screen, which closes the fd. */
+    const bool bo_pass = bo_roundtrip(fd);
++   const bool vm_pass = vm_roundtrip(fd);
+ 
+    screen->destroy(screen);
+ 
+-   printf("--- %s\n", (enum_pass && bo_pass) ? "ALL PASS" : "FAILURES ABOVE");
+-   return (enum_pass && bo_pass) ? 0 : 1;
++   const bool all = enum_pass && bo_pass && vm_pass;
++   printf("--- %s\n", all ? "ALL PASS" : "FAILURES ABOVE");
++   return all ? 0 : 1;
+ }
+diff --git a/src/gallium/drivers/pvr/pvr_vm.c b/src/gallium/drivers/pvr/pvr_vm.c
+new file mode 100644
+index 00000000..e39400ba
+--- /dev/null
++++ b/src/gallium/drivers/pvr/pvr_vm.c
+@@ -0,0 +1,277 @@
++/* Copyright 2026 The Mesa authors
++ * SPDX-License-Identifier: MIT
++ *
++ * GPU address space setup and mapping. Follows the Vulkan winsys
++ * (src/imagination/vulkan/winsys/powervr/pvr_drm.c, pvr_winsys_helper.c), which is
++ * the working reference for this UAPI.
++ */
++#include "pvr_vm.h"
++
++#include <errno.h>
++#include <inttypes.h>
++#include <stdlib.h>
++#include <string.h>
++
++#include <xf86drm.h>
++
++#include "drm-uapi/pvr_drm.h"
++
++#include "util/log.h"
++#include "util/macros.h"
++#include "util/os_misc.h"
++
++/* Object-array queries are two calls: the first, with a null array, reports how many
++ * entries there are; the second fills a buffer of that size. The kernel silently
++ * clamps count to its own table size rather than failing, so the returned count is
++ * what gets trusted, not the requested one. */
++static bool
++pvr_query_heap_info(int fd, struct drm_pvr_heap **heaps_out, uint32_t *count_out)
++{
++   struct drm_pvr_dev_query_heap_info query = { 0 };
++   struct drm_pvr_ioctl_dev_query_args args = {
++      .type = DRM_PVR_DEV_QUERY_HEAP_INFO_GET,
++      .size = sizeof(query),
++      .pointer = (__u64)&query,
++   };
++
++   if (drmIoctl(fd, DRM_IOCTL_PVR_DEV_QUERY, &args) != 0) {
++      mesa_loge("pvr: heap info size query failed: %s", strerror(errno));
++      return false;
++   }
++
++   if (query.heaps.count == 0 || query.heaps.count > DRM_PVR_HEAP_COUNT) {
++      mesa_loge("pvr: kernel reports %u heaps, expected 1..%d", query.heaps.count,
++                DRM_PVR_HEAP_COUNT);
++      return false;
++   }
++
++   struct drm_pvr_heap *heaps = calloc(query.heaps.count, sizeof(*heaps));
++   if (!heaps)
++      return false;
++
++   query.heaps.array = (__u64)heaps;
++
++   if (drmIoctl(fd, DRM_IOCTL_PVR_DEV_QUERY, &args) != 0) {
++      mesa_loge("pvr: heap info array query failed: %s", strerror(errno));
++      free(heaps);
++      return false;
++   }
++
++   *heaps_out = heaps;
++   *count_out = query.heaps.count;
++
++   return true;
++}
++
++static bool
++pvr_query_static_data_areas(int fd, struct drm_pvr_static_data_area **areas_out,
++                            uint32_t *count_out)
++{
++   struct drm_pvr_dev_query_static_data_areas query = { 0 };
++   struct drm_pvr_ioctl_dev_query_args args = {
++      .type = DRM_PVR_DEV_QUERY_STATIC_DATA_AREAS_GET,
++      .size = sizeof(query),
++      .pointer = (__u64)&query,
++   };
++
++   if (drmIoctl(fd, DRM_IOCTL_PVR_DEV_QUERY, &args) != 0 || query.static_data_areas.count == 0)
++      return false;
++
++   struct drm_pvr_static_data_area *areas =
++      calloc(query.static_data_areas.count, sizeof(*areas));
++   if (!areas)
++      return false;
++
++   query.static_data_areas.array = (__u64)areas;
++
++   if (drmIoctl(fd, DRM_IOCTL_PVR_DEV_QUERY, &args) != 0) {
++      free(areas);
++      return false;
++   }
++
++   *areas_out = areas;
++   *count_out = query.static_data_areas.count;
++
++   return true;
++}
++
++/* Matched rather than indexed by heap id on purpose: location_heap_id is a u16 from
++ * the kernel, so a heap this userspace does not know about would be an out-of-bounds
++ * write if it were used as an array index. */
++static uint64_t
++pvr_static_data_total(const struct drm_pvr_static_data_area *areas, uint32_t count,
++                      uint32_t heap_id)
++{
++   uint64_t total = 0;
++
++   for (uint32_t i = 0; i < count; i++) {
++      if (areas[i].location_heap_id == heap_id)
++         total += areas[i].size;
++   }
++
++   return total;
++}
++
++bool
++pvr_vm_init(int fd, struct pvr_vm *vm)
++{
++   uint64_t host_page_size = 4096;
++   struct drm_pvr_heap *heaps = NULL;
++   uint32_t heap_count = 0;
++   struct drm_pvr_static_data_area *areas = NULL;
++   uint32_t area_count = 0;
++   uint64_t carveout;
++   const struct drm_pvr_heap *general;
++   bool ok = false;
++
++   memset(vm, 0, sizeof(*vm));
++   vm->fd = fd;
++
++   if (!os_get_page_size(&host_page_size) || host_page_size == 0)
++      host_page_size = 4096;
++
++   if (!pvr_query_heap_info(fd, &heaps, &heap_count))
++      return false;
++
++   /* Not fatal: without the carveout list the usable range is merely conservative,
++    * which costs a little address space and nothing else. */
++   if (!pvr_query_static_data_areas(fd, &areas, &area_count))
++      mesa_logi("pvr: static data areas unavailable; not reserving a carveout");
++
++   general = &heaps[DRM_PVR_HEAP_GENERAL];
++
++   if (general->size == 0) {
++      mesa_loge("pvr: the general heap is absent or empty");
++      goto out;
++   }
++
++   vm->general.base = general->base;
++   vm->general.size = general->size;
++   vm->general.page_size = 1u << general->page_size_log2;
++
++   /* The first bytes of the heap are firmware-owned (fence, YUV CSC, sync programs).
++    * The kernel only checks that a mapping lies inside the heap, so it will happily
++    * let us map over them - the subtraction has to happen here. */
++   carveout = areas ? pvr_static_data_total(areas, area_count, DRM_PVR_HEAP_GENERAL) : 0;
++   if (carveout >= general->size) {
++      mesa_loge("pvr: static data carveout %" PRIu64 " >= general heap %" PRIu64,
++                carveout, (uint64_t)general->size);
++      goto out;
++   }
++
++   vm->general.usable_base = general->base + carveout;
++   vm->general.usable_size = general->size - carveout;
++
++   if (vm->general.page_size != host_page_size) {
++      /* Not fatal, but VM_MAP aligns to the host page, so the two must not be
++       * confused when rounding sizes. */
++      mesa_logi("pvr: heap page size %u differs from host page size %" PRIu64,
++                vm->general.page_size, host_page_size);
++   }
++
++   util_vma_heap_init(&vm->vma, vm->general.usable_base, vm->general.usable_size);
++
++   /* Needed for VM_MAP only - buffer creation and CPU mapping do not require it. */
++   {
++      struct drm_pvr_ioctl_create_vm_context_args args = { 0 };
++      if (drmIoctl(fd, DRM_IOCTL_PVR_CREATE_VM_CONTEXT, &args) != 0) {
++         mesa_loge("pvr: CREATE_VM_CONTEXT failed: %s", strerror(errno));
++         util_vma_heap_finish(&vm->vma);
++         goto out;
++      }
++      vm->context_handle = args.handle;
++   }
++
++   mesa_logi("pvr: %u heaps; general base 0x%" PRIx64 " size %" PRIu64
++             " carveout %" PRIu64 " usable 0x%" PRIx64 " (%" PRIu64 " bytes), page %u,"
++             " vm_context %u",
++             heap_count, (uint64_t)general->base, (uint64_t)general->size, carveout,
++             vm->general.usable_base, vm->general.usable_size, vm->general.page_size,
++             vm->context_handle);
++
++   ok = true;
++
++out:
++   free(heaps);
++   free(areas);
++   return ok;
++}
++
++void
++pvr_vm_finish(struct pvr_vm *vm)
++{
++   struct drm_pvr_ioctl_destroy_vm_context_args args = {
++      .handle = vm->context_handle,
++   };
++
++   util_vma_heap_finish(&vm->vma);
++
++   if (vm->context_handle != 0)
++      drmIoctl(vm->fd, DRM_IOCTL_PVR_DESTROY_VM_CONTEXT, &args);
++
++   vm->context_handle = 0;
++}
++
++uint64_t
++pvr_vm_alloc(struct pvr_vm *vm, uint64_t size, uint64_t alignment)
++{
++   const uint64_t align = MAX2(alignment, (uint64_t)vm->general.page_size);
++   const uint64_t aligned_size = ALIGN_POT(size, align);
++
++   /* The heap was seeded with an absolute address, so the value that comes back is an
++    * absolute device address and can be handed to VM_MAP as-is. 0 means failure, which
++    * is exactly why a heap must never start at 0. */
++   return util_vma_heap_alloc(&vm->vma, aligned_size, vm->general.page_size);
++}
++
++void
++pvr_vm_free(struct pvr_vm *vm, uint64_t dev_addr, uint64_t size)
++{
++   const uint64_t align = MAX2((uint64_t)1, (uint64_t)vm->general.page_size);
++   const uint64_t aligned_size = ALIGN_POT(size, align);
++
++   util_vma_heap_free(&vm->vma, dev_addr, aligned_size);
++}
++
++bool
++pvr_vm_map(struct pvr_vm *vm, uint64_t dev_addr, uint32_t handle, uint64_t size)
++{
++   /* Whole-buffer mapping only, so the "virtual offset" is zero and the address the
++    * GPU sees is dev_addr. Mapping at a sub-page offset would move the GPU's view to
++    * dev_addr + offset_in_page, which is a silent-wrong-bytes trap for later. */
++   struct drm_pvr_ioctl_vm_map_args args = {
++      .vm_context_handle = vm->context_handle,
++      .device_addr = dev_addr,
++      .handle = handle,
++      .offset = 0,
++      .size = size,
++   };
++
++   if (drmIoctl(vm->fd, DRM_IOCTL_PVR_VM_MAP, &args) != 0) {
++      mesa_loge("pvr: VM_MAP addr 0x%" PRIx64 " handle %u size %" PRIu64 " failed: %s",
++                dev_addr, handle, size, strerror(errno));
++      return false;
++   }
++
++   return true;
++}
++
++bool
++pvr_vm_unmap(struct pvr_vm *vm, uint64_t dev_addr, uint64_t size)
++{
++   /* The kernel keys removal on the size, so this must be the exact size that was
++    * mapped - a smaller value would leave part of the mapping behind. */
++   struct drm_pvr_ioctl_vm_unmap_args args = {
++      .vm_context_handle = vm->context_handle,
++      .device_addr = dev_addr,
++      .size = size,
++   };
++
++   if (drmIoctl(vm->fd, DRM_IOCTL_PVR_VM_UNMAP, &args) != 0) {
++      mesa_loge("pvr: VM_UNMAP addr 0x%" PRIx64 " size %" PRIu64 " failed: %s",
++                dev_addr, size, strerror(errno));
++      return false;
++   }
++
++   return true;
++}
+diff --git a/src/gallium/drivers/pvr/pvr_vm.h b/src/gallium/drivers/pvr/pvr_vm.h
+new file mode 100644
+index 00000000..76c6bdb2
+--- /dev/null
++++ b/src/gallium/drivers/pvr/pvr_vm.h
+@@ -0,0 +1,46 @@
++/* Copyright 2026 The Mesa authors
++ * SPDX-License-Identifier: MIT
++ *
++ * The GPU address space, as far as this driver uses it: one general-purpose heap,
++ * a bump-free allocator over it, and a VM context to map buffer objects into.
++ *
++ * Queried from the kernel, never hardcoded - the heap bases and sizes come from
++ * DRM_PVR_DEV_QUERY_HEAP_INFO_GET and may differ per device.
++ */
++#ifndef PVR_VM_H
++#define PVR_VM_H
++
++#include <stdbool.h>
++#include <stdint.h>
++
++#include "util/vma.h"
++
++struct pvr_heap {
++   uint64_t base;        /* as the kernel reports it */
++   uint64_t size;
++   uint64_t usable_base; /* base + the firmware's static-data carveout */
++   uint64_t usable_size;
++   uint32_t page_size;   /* the heap's own page size, from page_size_log2 */
++};
++
++struct pvr_vm {
++   int fd;
++   uint32_t context_handle; /* from DRM_IOCTL_PVR_CREATE_VM_CONTEXT */
++   struct pvr_heap general; /* DRM_PVR_HEAP_GENERAL - the only heap v1 uses */
++   struct util_vma_heap vma;
++};
++
++bool pvr_vm_init(int fd, struct pvr_vm *vm);
++void pvr_vm_finish(struct pvr_vm *vm);
++
++/* Returns an absolute device address, or 0 on failure. */
++uint64_t pvr_vm_alloc(struct pvr_vm *vm, uint64_t size, uint64_t alignment);
++/* size must be the same page-aligned size that was allocated. */
++void pvr_vm_free(struct pvr_vm *vm, uint64_t dev_addr, uint64_t size);
++
++/* Map a whole buffer object at dev_addr. size must be host-page aligned, and whole-BO
++ * mappings (no sub-page offset) are all v1 needs. */
++bool pvr_vm_map(struct pvr_vm *vm, uint64_t dev_addr, uint32_t handle, uint64_t size);
++bool pvr_vm_unmap(struct pvr_vm *vm, uint64_t dev_addr, uint64_t size);
++
++#endif /* PVR_VM_H */
+-- 
+2.47.3
+

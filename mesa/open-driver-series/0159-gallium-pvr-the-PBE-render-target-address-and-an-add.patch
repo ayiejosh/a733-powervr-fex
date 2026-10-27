@@ -1,0 +1,172 @@
+From 74f47930b90a9a0c2e42d0a9134b261cde20c82e Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sat, 17 Oct 2026 09:54:59 +0800
+Subject: [PATCH 159/269] gallium/pvr: the PBE render-target address, and an
+ addressing conflict found by arithmetic
+
+  csb: PBE target: 38-bit split (32+6) round-trips; a general-heap address at 2^39 refused,
+       addressing unresolved
+  --- ALL PASS        (real open kernel)
+
+PBESTATE_STATE_WORD0.address_low is bits [0:31] and STATE_WORD1.address_high is bits [0:5] - six
+bits - so the pair addresses at most 2^38, i.e. 256GB.
+
+THIS DEVICE'S GENERAL HEAP BASE IS 0x8000000000, WHICH IS 2^39.
+
+A render target allocated from the general heap therefore does not fit these fields, and the
+generated pack would keep the low 38 bits and drop the rest without complaint - the PBE would write
+pixels into a different 256GB window, and nothing would report it.
+
+The reference never trips over this because it passes surface addresses it derived itself, which is
+the same reason round 47's PDS window never bit it: values that happen to fit. What it means for a
+driver allocating from the general heap is NOT RESOLVED - either PBE targets are addressed relative
+to something, or they must come from a lower heap. Recording it rather than picking the reading that
+sounds better: that mistake is already in this log five times.
+
+So the emit enforces the window and refuses larger addresses, and the check asserts both directions:
+a 38-bit address round-trips, a general-heap one is refused rather than truncated.
+
+This blocks render-target state until the addressing is understood, which is worth knowing BEFORE
+building the mtile geometry and region-header allocation that sit on top of it.
+---
+ src/gallium/drivers/pvr/pvr_csb.c   | 32 ++++++++++++++++++++++
+ src/gallium/drivers/pvr/pvr_csb.h   | 27 +++++++++++++++++++
+ src/gallium/drivers/pvr/pvr_probe.c | 41 +++++++++++++++++++++++++++++
+ 3 files changed, 100 insertions(+)
+
+diff --git a/src/gallium/drivers/pvr/pvr_csb.c b/src/gallium/drivers/pvr/pvr_csb.c
+index 104f1d8a..14f3e62c 100644
+--- a/src/gallium/drivers/pvr/pvr_csb.c
++++ b/src/gallium/drivers/pvr/pvr_csb.c
+@@ -370,6 +370,38 @@ pvr_csb_emit_ta_output_sel(struct pvr_csb *csb, const struct pvr_ta_output_sel *
+    return true;
+ }
+ 
++bool
++pvr_csb_emit_pbe_target(struct pvr_csb *csb, const struct pvr_pbe_target *target)
++{
++   const uint32_t words = ROGUE_PBESTATE_STATE_WORD0_length +
++                          ROGUE_PBESTATE_STATE_WORD1_length;
++   struct ROGUE_PBESTATE_STATE_WORD0 word0 = { .address_low = target->addr };
++   struct ROGUE_PBESTATE_STATE_WORD1 word1 = {
++      .address_high = target->addr,
++      .source_format = target->source_format,
++      .mrt_index = target->mrt_index,
++   };
++   uint32_t *dw;
++
++   /* 32 + 6 bits. See the header: this device's general heap base is 2^39 and does not fit, so the
++    * refusal is the honest answer until the addressing question is settled. */
++   if (target->addr > 0x3fffffffffULL) {
++      mesa_loge("pvr: PBE target 0x%" PRIx64 " exceeds the address split's 38 bits (256GB) - this "
++                "device's general heap starts at 0x8000000000, so render-target addressing needs "
++                "resolving before this can be used", target->addr);
++      return false;
++   }
++
++   dw = pvr_csb_emit(csb, words);
++   if (dw == NULL)
++      return false;
++
++   ROGUE_PBESTATE_STATE_WORD0_pack(dw, &word0);
++   ROGUE_PBESTATE_STATE_WORD1_pack(dw + ROGUE_PBESTATE_STATE_WORD0_length, &word1);
++
++   return true;
++}
++
+ bool
+ pvr_csb_emit_ta_pds_base(struct pvr_csb *csb, enum pvr_pds_base which, uint64_t addr)
+ {
+diff --git a/src/gallium/drivers/pvr/pvr_csb.h b/src/gallium/drivers/pvr/pvr_csb.h
+index 08794327..680daff9 100644
+--- a/src/gallium/drivers/pvr/pvr_csb.h
++++ b/src/gallium/drivers/pvr/pvr_csb.h
+@@ -415,6 +415,33 @@ struct pvr_pds_sizes {
+ bool pvr_csb_emit_ta_pds_sizeinfo(struct pvr_csb *csb, const struct pvr_pds_sizes *sizes,
+                                   bool tri_merge_disable, uint32_t batchnum);
+ 
++/* The PBE (pixel backend) render-target address: PBESTATE_STATE_WORD0 + STATE_WORD1.
++ *
++ * The split is NOT symmetrical with the other address packets here. WORD0's address_low is bits
++ * [0:31] and WORD1's address_high is bits **[0:5]** - six bits - so the pair addresses at most
++ * 2^38, i.e. 256 GiB.
++ *
++ * **THIS DEVICE'S GENERAL HEAP BASE IS 0x8000000000, WHICH IS 2^39.** A render target allocated
++ * from the general heap therefore does NOT fit these fields, and the generated pack would keep the
++ * low 38 bits and drop the rest without complaint - the PBE would then write pixels to a different
++ * 256 GiB window entirely.
++ *
++ * The reference does not trip over this because it passes surface addresses it derived itself,
++ * which is the same reason round 47's PDS window never bit it: offsets that happen to fit. What
++ * this means for a driver allocating from the general heap is NOT RESOLVED - either PBE targets are
++ * addressed relative to something, or they must come from a lower heap, and picking either answer
++ * without evidence would be the plausible-inference mistake this programme has recorded five times.
++ *
++ * So the emit enforces the window and refuses anything larger, and the question is recorded here
++ * where the next person will hit it rather than left to become a hang. */
++struct pvr_pbe_target {
++   uint64_t addr;
++   enum ROGUE_PBESTATE_SOURCE_FORMAT source_format;
++   uint32_t mrt_index;
++};
++
++bool pvr_csb_emit_pbe_target(struct pvr_csb *csb, const struct pvr_pbe_target *target);
++
+ /* Dwords a stream link occupies - what the guard must be at minimum. */
+ #define PVR_CSB_LINK_DWORDS (ROGUE_VDMCTRL_STREAM_LINK0_length + \
+                              ROGUE_VDMCTRL_STREAM_LINK1_length)
+diff --git a/src/gallium/drivers/pvr/pvr_probe.c b/src/gallium/drivers/pvr/pvr_probe.c
+index 8b8283f0..7d3f3489 100644
+--- a/src/gallium/drivers/pvr/pvr_probe.c
++++ b/src/gallium/drivers/pvr/pvr_probe.c
+@@ -1774,6 +1774,47 @@ csb_check(int fd, struct pipe_screen *pscreen)
+             }
+          }
+ 
++      /* The PBE render-target address. The check asserts the ENCODING and the window: an address
++       * inside 38 bits round-trips, and a real general-heap address (0x8000000000) is REFUSED
++       * rather than truncated into a different 256GB window. */
++      {
++         const struct pvr_pbe_target t = {
++            .addr = 0x0000000100ULL, .source_format = 0, .mrt_index = 0,
++         };
++         struct ROGUE_PBESTATE_STATE_WORD0 w0 = { 0 };
++         struct ROGUE_PBESTATE_STATE_WORD1 w1 = { 0 };
++
++         pvr_csb_reset(&csb);
++
++         if (!pvr_csb_emit_pbe_target(&csb, &t) ||
++             pvr_csb_size(&csb) != (ROGUE_PBESTATE_STATE_WORD0_length +
++                                    ROGUE_PBESTATE_STATE_WORD1_length) * 4) {
++            printf("csb:           FAIL: the PBE target did not emit\n");
++            goto out;
++         }
++
++         ROGUE_PBESTATE_STATE_WORD0_unpack(bo.map, &w0);
++         ROGUE_PBESTATE_STATE_WORD1_unpack(
++            (uint32_t *)bo.map + ROGUE_PBESTATE_STATE_WORD0_length, &w1);
++
++         if ((w0.address_low | ((uint64_t)w1.address_high << 32)) != t.addr) {
++            printf("csb:           FAIL: the PBE address did not reconstruct\n");
++            goto out;
++         }
++
++         /* A general-heap address is 2^39 and does not fit 32+6 bits. Accepting it would write
++          * pixels into a different window. */
++         if (pvr_csb_emit_pbe_target(&csb, &(struct pvr_pbe_target){
++                .addr = 0x8000000000ULL, .source_format = 0, .mrt_index = 0 })) {
++            printf("csb:           FAIL: the PBE target accepted a 2^39 address into a 38-bit "
++                   "split - it would be truncated into another window\n");
++            goto out;
++         }
++
++         printf("csb:           PBE target: 38-bit split (32+6) round-trips; a general-heap "
++                "address at 2^39 refused, addressing unresolved\n");
++      }
++
+       printf("csb:           TA PDS bases: all five fit bits[4:31] and round-trip; a 40-bit "
+              "address refused on each rather than truncated\n");
+       }
+-- 
+2.47.3
+

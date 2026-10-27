@@ -1,0 +1,46 @@
+From 1e03d19e87dabbed4c71a8ba133a11601515793e Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sat, 24 Oct 2026 04:15:59 +0800
+Subject: [PATCH 200/269] gallium/pvr: dump the built control stream (ground
+ truth for the block layout)
+
+Assumed layouts have cost this driver two rounds already, so the probe now prints the control stream it
+built and submits:
+
+  20000000 fffd0006 fffd0000   PDS state update, launcher at 0x9ffffd0000
+  40000000                     VDM state, 1 dword as reported
+  7c0a0000 fffd1000 00000003 00000001   index list: address 0x9ffffd1000, count 3, instances 1
+  c0000000                     STREAM_TERMINATE
+
+The index count (3) and instance count (1) land exactly where the emitter's length arithmetic says they
+should, which validates the block sizes end to end rather than per-emitter. The submit is still
+accepted and the target still unchanged, for the reasons already recorded: the launcher points at USC
+offset 0 where no compiled vertex shader sits, and the fragment job names no fragment program.
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c | 10 ++++++++--
+ 1 file changed, 8 insertions(+), 2 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index 8f13956b..96f4f654 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -768,8 +768,14 @@ real_job_done:
+                          !pvr_csb_emit_stream_terminate(&ctl_csb))
+                         printf("hwrt:          could not emit the draw blocks (launcher %u B)\n", llen);
+                      else
+-                        printf("hwrt:          control stream: VDM state (%u dw) + 3 indices + terminate\n",
+-                               vdm_words);
++                     {
++                        const uint32_t *cw = (const uint32_t *)rctl.map;
++                        printf("hwrt:          control stream: VDM state (%u dw) + 3 indices + terminate; "
++                               "first dwords:", vdm_words);
++                        for (unsigned i = 0; i < 12; i++)
++                           printf(" %08x", cw[i]);
++                        printf("\n");
++                     }
+                   } else {
+                      printf("hwrt:          could not set up the index buffer\n");
+                   }
+-- 
+2.47.3
+

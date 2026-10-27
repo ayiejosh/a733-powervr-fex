@@ -1,0 +1,162 @@
+From a36ba9d7575cf5a3ce30f30eb99f9a5d3eb0d511 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 22:05:08 +0800
+Subject: [PATCH 155/269] gallium/pvr: which components of gl_FragCoord a
+ fragment shader reads
+
+  context: FragCoord usage: z-only shader reports 0x4, a shader that ignores it reports 0
+  --- ALL PASS        (real open kernel)
+
+The analysis TA_OUTPUT_SEL's flags need. It walks the shader's intrinsic loads of gl_FragCoord and
+unions their destination writemasks, because reading FragCoord is an intrinsic load rather than a
+declaration: a shader may load it twice with different writemasks and a declaration scan would
+answer neither reliably.
+
+Two things the check asserts:
+  - a shader reading only .z reports exactly z (0x4), not "reads something". z versus w is exactly
+    the distinction the two output-select flags turn on, so a mask that collapsed them would be
+    useless for the purpose it exists for;
+  - a shader that never touches FragCoord reports 0, or every fragment shader would claim to need
+    z and w written out - which would cost bandwidth on every draw for nothing.
+
+And a discrepancy found while reading the field documentation, recorded rather than resolved by
+picking a side:
+
+  tsp_unclamped_z_pres  "an unclamped Z value is written out at the start of the TSP data
+                        immediately after the RHW"  - consistent with the reference's use of z.
+  rhw_pres              "the W value is written to memory ... This bit should be set unless the
+                        object is of type viewport"
+
+The second is NOT the rule the reference implements (it uses the shader's use of w). Documentation
+and reference disagree on rhw_pres, so this function deliberately answers only what the SHADER uses
+and the header says so - filling that field needs the question settled first, and picking whichever
+reading looked better would be the plausible-inference mistake recorded five times already.
+---
+ src/gallium/drivers/pvr/pvr_probe.c  | 42 ++++++++++++++++++++++++++++
+ src/gallium/drivers/pvr/pvr_shader.c | 26 +++++++++++++++++
+ src/gallium/drivers/pvr/pvr_shader.h | 24 ++++++++++++++++
+ 3 files changed, 92 insertions(+)
+
+diff --git a/src/gallium/drivers/pvr/pvr_probe.c b/src/gallium/drivers/pvr/pvr_probe.c
+index 967651d4..82070514 100644
+--- a/src/gallium/drivers/pvr/pvr_probe.c
++++ b/src/gallium/drivers/pvr/pvr_probe.c
+@@ -883,6 +883,48 @@ shader_state_check(struct pipe_screen *pscreen)
+    ralloc_free(b.shader);
+    pctx->destroy(pctx);
+ 
++   /* FragCoord usage, the analysis TA_OUTPUT_SEL's flags need. Checked with two shaders that
++    * differ only in which channel of gl_FragCoord they read, because the failure mode is a mask
++    * that reports "reads something" rather than WHICH components - and z vs w is exactly the
++    * distinction ta_output_sel's two flags turn on. */
++   {
++      nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, NULL, "fc_z");
++      nir_def *fc = nir_load_frag_coord(&b);
++      nir_def *z = nir_channel(&b, fc, 2);
++      nir_variable *out = nir_variable_create(b.shader, nir_var_shader_out,
++                                              glsl_vec4_type(), "colour");
++      const uint8_t mask_z = pvr_shader_frag_coord_usage(b.shader);
++
++      nir_store_var(&b, out, nir_vec4(&b, z, z, z, z), 0xf);
++
++      /* Read the mask AFTER the use is in place, so components_read sees it. */
++      const uint8_t mask_z_used = pvr_shader_frag_coord_usage(b.shader);
++
++      if (mask_z_used != PVR_SHADER_FRAG_Z) {
++         printf("context:       FAIL: a shader reading FragCoord.z reports mask 0x%x (want 0x%x, "
++                "pre-use 0x%x)\n", mask_z_used, PVR_SHADER_FRAG_Z, mask_z);
++         ok = false;
++      } else {
++         /* A shader that never touches FragCoord must report nothing, or every fragment shader
++          * would claim to need z and w written out. */
++         nir_builder b2 = nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, NULL, "fc_none");
++         nir_variable *o2 = nir_variable_create(b2.shader, nir_var_shader_out,
++                                                glsl_vec4_type(), "colour");
++         nir_store_var(&b2, o2, nir_imm_vec4(&b2, 0.0f, 0.0f, 0.0f, 0.0f), 0xf);
++
++         const uint8_t none = pvr_shader_frag_coord_usage(b2.shader);
++
++         if (none != 0) {
++            printf("context:       FAIL: a shader that never reads FragCoord reports mask 0x%x\n",
++                   none);
++            ok = false;
++         } else {
++            printf("context:       FragCoord usage: z-only shader reports 0x%x, a shader that "
++                   "ignores it reports 0\n", mask_z_used);
++         }
++      }
++   }
++
+    printf("shader state:  %s (create_fs_state/bind/delete over NIR)\n",
+           ok ? "PASS" : "FAIL");
+    return ok;
+diff --git a/src/gallium/drivers/pvr/pvr_shader.c b/src/gallium/drivers/pvr/pvr_shader.c
+index 7a8f2e3e..4a9c9d5e 100644
+--- a/src/gallium/drivers/pvr/pvr_shader.c
++++ b/src/gallium/drivers/pvr/pvr_shader.c
+@@ -76,3 +76,29 @@ pvr_shader_compile(pco_ctx *ctx, struct nir_shader *nir, pco_shader **shader_out
+ 
+    return true;
+ }
++
++uint8_t
++pvr_shader_frag_coord_usage(const struct nir_shader *nir)
++{
++   uint8_t used = 0;
++
++   nir_foreach_function_impl(impl, nir) {
++      nir_foreach_block(block, impl) {
++         nir_foreach_instr(instr, block) {
++            if (instr->type != nir_instr_type_intrinsic)
++               continue;
++
++            nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
++
++            if (intr->intrinsic != nir_intrinsic_load_frag_coord)
++               continue;
++
++            /* The union of the writemasks actually written: a shader that loads .xy in one place
++             * and .z elsewhere reads z, and a declaration scan would find neither reliably. */
++            used |= nir_def_components_read(&intr->def);
++         }
++      }
++   }
++
++   return used;
++}
+diff --git a/src/gallium/drivers/pvr/pvr_shader.h b/src/gallium/drivers/pvr/pvr_shader.h
+index dafca9ed..2d535889 100644
+--- a/src/gallium/drivers/pvr/pvr_shader.h
++++ b/src/gallium/drivers/pvr/pvr_shader.h
+@@ -38,4 +38,28 @@ void pvr_shader_destroy(struct pvr_shader *shader);
+ bool pvr_shader_compile(pco_ctx *ctx, struct nir_shader *nir, pco_shader **shader_out,
+                         const void **data_out, unsigned *size_out);
+ 
++/* Which components of gl_FragCoord a fragment shader actually reads, as a 4-bit mask in gallium's
++ * usual order (x=1, y=2, z=4, w=8).
++ *
++ * This is the analysis TA_OUTPUT_SEL needs: the reference fills tsp_unclamped_z_pres from its
++ * shader's use of z, and its generated header documents that field as "an unclamped Z value is
++ * written out at the start of the TSP data" - i.e. the TA must write out what the fragment stage
++ * reads, so "does the FS read z" is the question.
++ *
++ * NOTE ON rhw_pres: the same header says it "should be set unless the object is of type viewport",
++ * which is NOT the rule the reference implements (it uses the shader's use of w). Those disagree,
++ * and this function only answers what the SHADER uses - deciding which rule fills the field is a
++ * separate question that needs resolving before it is set from here.
++ *
++ * Reading gl_FragCoord is an intrinsic load, so the answer is the union of its destination
++ * writemasks across the shader, not a declaration scan: a shader may load it twice with different
++ * writemasks and only one of them matters. */
++#define PVR_SHADER_FRAG_X 0x1
++#define PVR_SHADER_FRAG_Y 0x2
++#define PVR_SHADER_FRAG_Z 0x4
++#define PVR_SHADER_FRAG_W 0x8
++
++struct nir_shader;
++uint8_t pvr_shader_frag_coord_usage(const struct nir_shader *nir);
++
+ #endif /* PVR_SHADER_H */
+-- 
+2.47.3
+

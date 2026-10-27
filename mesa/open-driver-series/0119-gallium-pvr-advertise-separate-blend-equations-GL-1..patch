@@ -1,0 +1,65 @@
+From 8edc368395c2a14197f720ff1a26c594232f56a4 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 14:38:03 +0800
+Subject: [PATCH 119/269] gallium/pvr: advertise separate blend equations - GL
+ 1.5/ES1 becomes GL 2.1/ES2
+
+Last round ended with the version stuck at 1.5 and an unidentified cause, recorded
+rather than patched around. This round found it, in Mesa's own version logic rather
+than by trying caps until the number moved.
+
+compute_version_es2 (src/mesa/main/version.c) needs exactly three extensions:
+
+  const bool ver_2_0 = (extensions->ARB_vertex_shader &&
+                        extensions->ARB_fragment_shader &&
+                        extensions->EXT_blend_equation_separate);
+
+The shader ones arrived with the shader stages. EXT_blend_equation_separate did not:
+it maps one-to-one to the gallium cap blend_equation_separate (st_extensions.c), and
+without it compute_version_es2 returns 0, no ES2 context can be created, and glmark2
+cannot make a canvas.
+
+Effect, on the real open kernel driver:
+
+  OpenGL compatibility profile version: 2.1        (was 1.5)
+  OpenGL ES profile version: OpenGL ES 2.0         (was ES-CM 1.1)
+  OpenGL ES profile shading language: GLSL ES 1.0.16
+
+That is the level glmark2-es2 requires, so the driver is now ELIGIBLE for the
+measurement this objective is aiming at.
+
+Honest about the capability: ES2 mandates glBlendEquationSeparate, so any ES2-capable
+part supports it - this is claiming the minimum the API level requires, not a feature
+invented to move a number. The driver still has no draw path, so an application that
+gets a context and then draws will not get a picture.
+
+glmark2-es2 was tried and still reports "Could not initialize canvas" WITHOUT reaching
+the driver at all - no pvr log lines. That is its canvas selection (X11/GBM/Wayland)
+and needs a display; it is not a driver failure. It would also need the draw path
+before a score meant anything.
+---
+ src/gallium/drivers/pvr/pvr_screen.c | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/src/gallium/drivers/pvr/pvr_screen.c b/src/gallium/drivers/pvr/pvr_screen.c
+index 324697e4..e59647ef 100644
+--- a/src/gallium/drivers/pvr/pvr_screen.c
++++ b/src/gallium/drivers/pvr/pvr_screen.c
+@@ -185,6 +185,14 @@ pvr_screen_create(int fd, const struct pipe_screen_config *config,
+       caps->max_texture_3d_levels = 0;
+       caps->max_texture_array_layers = 1;
+ 
++      /* Separate RGB/alpha blend equations. Not a guess: Mesa's own ES2 requirement
++       * list (version.c compute_version_es2) is exactly three extensions -
++       * ARB_vertex_shader, ARB_fragment_shader and EXT_blend_equation_separate - and
++       * without this one no ES2 context can be created at all, which is why eglinfo
++       * offered only an ES1 one and glmark2-es2 could not make a canvas. ES2 mandates
++       * glBlendEquationSeparate, so any ES2-capable part supports it. */
++      caps->blend_equation_separate = true;
++
+       caps->device_type = PIPE_DEVICE_TYPE_INTEGRATED_GPU;
+       caps->uma = true;             /* the GPU shares system RAM on this SoC */
+       caps->vendor_id = 0x1010;     /* Imagination Technologies PCI vendor ID */
+-- 
+2.47.3
+

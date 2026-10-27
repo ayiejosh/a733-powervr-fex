@@ -1,0 +1,66 @@
+From de5659b1f8297539c17f6257d11bc8d907724bd1 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sun, 25 Oct 2026 06:31:52 +0800
+Subject: [PATCH 241/269] gallium/pvr: FS-launcher-first PDS placement
+ experiment (PVR_PROBE_FS_FIRST)
+
+Places the fragment PDS launcher first in the PDS heap (at Vulkan's NOP-program offset, PDS+0x1000)
+and then the attribute programs, so the geometry TA block's SHADERBASE names a program at the same
+kind of address as the working reference. Hardware test: still hangs (`Kick TA` -> `DM2 timed out`),
+also with the full reference-shaped PDS group (SHADERBASE/TEXUNICODE/UNIFORMDATABASE/SIZEINFO patched to
+reference values). PDS placement and TA-block PDS words are therefore not the trigger.
+
+Verification: probe ALL PASS under the shim.
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c | 21 ++++++++++++++++++++-
+ 1 file changed, 20 insertions(+), 1 deletion(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index 780246b4..7c8142df 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -2004,6 +2004,10 @@ shader_compile_check(struct pipe_screen *pscreen)
+             probe_heap_usable_page(pds) +
+             (getenv("PVR_PROBE_PDS_OFFSET") ? strtoull(getenv("PVR_PROBE_PDS_OFFSET"), NULL, 0)
+                                             : 0);
++         /* Round-37: place the fragment launcher first (at Vulkan's NOP-program offset), before the
++          * attribute programs, so the geometry TA block's SHADERBASE names a program at the same
++          * kind of PDS address as the working reference. */
++         bool fs_first_placed = false;
+          uint8_t vprog[1024] = { 0 }, vdata[256] = { 0 };
+          const uint32_t vlen = pvr_shader_vertex_program(&scr->dev_info, vprog, sizeof(vprog),
+                                                          12, 12, 0, &g_vertex_prog_info);
+@@ -2013,6 +2017,21 @@ shader_compile_check(struct pipe_screen *pscreen)
+             : 0;
+          struct pvr_bo cbo = { 0 }, dbo = { 0 };
+ 
++         if (getenv("PVR_PROBE_FS_FIRST") && g_fs_shader != NULL) {
++            uint8_t fpf[1024] = { 0 };
++            struct pvr_bo fpfbo = { 0 };
++            const uint32_t fplen = pvr_shader_pds_launcher(g_fs_shader, g_fs_usc_offset, fpf,
++                                                           sizeof(fpf), &g_fs_prog_info);
++
++            if (fplen > 0 && probe_map_bo_at(scr->fd, &scr->vm, pds_next, fpf, fplen, &fpfbo)) {
++               g_fs_pds_base_offset = pds_next - pds->base;
++               fs_first_placed = true;
++               pds_next = ALIGN_POT(pds_next + fpfbo.size, (uint64_t)pds->page_size);
++               printf("shader:        FS PDS program placed first at PDS+0x%" PRIx64 " (%u B)\n",
++                      g_fs_pds_base_offset, fplen);
++            }
++         }
++
+          if (vlen > 0 && probe_map_bo_at(scr->fd, &scr->vm, pds_next, vprog, vlen, &cbo)) {
+             g_vertex_prog_code_offset = pds_next - pds->base;
+             printf("shader:        attribute program code at PDS+0x%" PRIx64
+@@ -2047,7 +2066,7 @@ shader_compile_check(struct pipe_screen *pscreen)
+ 
+          /* The fragment stage's PDS program: the kick program the TA runs at pixel stage, generated
+           * data+code contiguous and named by the TA state's SHADERBASE. */
+-         if (ok) {
++         if (ok && !fs_first_placed) {
+             /* The launcher only writes the constants it knows about; the rest of the data
+              * segment must be zero, exactly like the reference (its staging buffer comes from
+              * vk_alloc, which zero-fills). A garbage data segment is something the hardware
+-- 
+2.47.3
+

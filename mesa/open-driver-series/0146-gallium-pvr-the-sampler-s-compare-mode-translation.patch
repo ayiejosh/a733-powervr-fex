@@ -1,0 +1,120 @@
+From f4a253b165213233abe846e6a8219da973eb4e60 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 19:00:21 +0800
+Subject: [PATCH 146/269] gallium/pvr: the sampler's compare-mode translation
+
+  csb: compare modes: 8 functions all distinct
+  --- ALL PASS        (real open kernel)
+
+Eight gallium compare functions onto eight hardware values, one-to-one, no arithmetic - the
+third of the sampler's unambiguous translations after the wrap modes and the filters, and the
+one a depth texture needs.
+
+The check asserts one-to-one rather than the values: a collision would make two different depth
+tests behave identically, and a check comparing a few expected pairs would not notice.
+
+Documents an INFERENCE rather than asserting it: the hardware enum has no "no comparison"
+member, so the sampler's disabled case has no dedicated encoding. ALWAYS is the sensible
+reading - a comparison that always passes is one that does not filter - but that is a claim
+about the reference's intent, not a value read from it, so it is stated in the header as needing
+the reference's usage rather than encoded as though it were known.
+
+Also notes where the general sampler construction lives (pvr_arch_cmd_buffer.c:6660/6696) and
+that dadjust has a named value (DADJUST_ZERO_UINT), so the remaining reading is bounded.
+---
+ src/gallium/drivers/pvr/pvr_csb.c   | 17 +++++++++++++++++
+ src/gallium/drivers/pvr/pvr_csb.h   | 10 ++++++++++
+ src/gallium/drivers/pvr/pvr_probe.c | 28 ++++++++++++++++++++++++++++
+ 3 files changed, 55 insertions(+)
+
+diff --git a/src/gallium/drivers/pvr/pvr_csb.c b/src/gallium/drivers/pvr/pvr_csb.c
+index e45db116..44622644 100644
+--- a/src/gallium/drivers/pvr/pvr_csb.c
++++ b/src/gallium/drivers/pvr/pvr_csb.c
+@@ -295,6 +295,23 @@ pvr_filter_from_pipe(enum pipe_tex_filter filter, enum ROGUE_TEXSTATE_FILTER *ou
+    }
+ }
+ 
++bool
++pvr_cmp_mode_from_pipe(enum pipe_compare_func func, enum ROGUE_TEXSTATE_CMP_MODE *out)
++{
++   switch (func) {
++   case PIPE_FUNC_NEVER:    *out = ROGUE_TEXSTATE_CMP_MODE_NEVER; return true;
++   case PIPE_FUNC_LESS:     *out = ROGUE_TEXSTATE_CMP_MODE_LESS; return true;
++   case PIPE_FUNC_EQUAL:    *out = ROGUE_TEXSTATE_CMP_MODE_EQUAL; return true;
++   case PIPE_FUNC_LEQUAL:   *out = ROGUE_TEXSTATE_CMP_MODE_LESSEQUAL; return true;
++   case PIPE_FUNC_GREATER:  *out = ROGUE_TEXSTATE_CMP_MODE_GREATER; return true;
++   case PIPE_FUNC_GEQUAL:   *out = ROGUE_TEXSTATE_CMP_MODE_GREATEREQUAL; return true;
++   case PIPE_FUNC_NOTEQUAL: *out = ROGUE_TEXSTATE_CMP_MODE_NOTEQUAL; return true;
++   case PIPE_FUNC_ALWAYS:   *out = ROGUE_TEXSTATE_CMP_MODE_ALWAYS; return true;
++   default:
++      return false;
++   }
++}
++
+ bool
+ pvr_csb_emit_tex_desc(struct pvr_csb *csb, const struct pvr_tex_desc *desc)
+ {
+diff --git a/src/gallium/drivers/pvr/pvr_csb.h b/src/gallium/drivers/pvr/pvr_csb.h
+index d30aaed3..a0cd87c1 100644
+--- a/src/gallium/drivers/pvr/pvr_csb.h
++++ b/src/gallium/drivers/pvr/pvr_csb.h
+@@ -198,6 +198,16 @@ bool pvr_csb_emit_tex_desc(struct pvr_csb *csb, const struct pvr_tex_desc *desc)
+ bool pvr_addrmode_from_pipe(enum pipe_tex_wrap mode, enum ROGUE_TEXSTATE_ADDRMODE *out);
+ bool pvr_filter_from_pipe(enum pipe_tex_filter filter, enum ROGUE_TEXSTATE_FILTER *out);
+ 
++/* Comparison function, for a sampler used with a depth texture. Eight gallium functions onto
++ * eight hardware values, one-to-one, no arithmetic.
++ *
++ * Note what is NOT here: the hardware enum has no "no comparison" member, so the disabled case
++ * has no dedicated encoding. ALWAYS would be the sensible reading - a comparison that always
++ * passes is a comparison that does not filter - but that is an INFERENCE about the reference's
++ * intent and is deliberately not asserted in code. The sampler's disabled case needs the
++ * reference's usage read, exactly as the lod encoding does. */
++bool pvr_cmp_mode_from_pipe(enum pipe_compare_func func, enum ROGUE_TEXSTATE_CMP_MODE *out);
++
+ /* Dwords a stream link occupies - what the guard must be at minimum. */
+ #define PVR_CSB_LINK_DWORDS (ROGUE_VDMCTRL_STREAM_LINK0_length + \
+                              ROGUE_VDMCTRL_STREAM_LINK1_length)
+diff --git a/src/gallium/drivers/pvr/pvr_probe.c b/src/gallium/drivers/pvr/pvr_probe.c
+index e6e0360d..28911c54 100644
+--- a/src/gallium/drivers/pvr/pvr_probe.c
++++ b/src/gallium/drivers/pvr/pvr_probe.c
+@@ -1320,6 +1320,34 @@ csb_check(int fd, struct pipe_screen *pscreen)
+             goto out;
+          }
+ 
++         /* Eight functions onto eight values: assert one-to-one, because a collision would
++          * make two different depth tests behave identically and nothing would report it. */
++         {
++            const enum pipe_compare_func funcs[] = {
++               PIPE_FUNC_NEVER, PIPE_FUNC_LESS, PIPE_FUNC_EQUAL, PIPE_FUNC_LEQUAL,
++               PIPE_FUNC_GREATER, PIPE_FUNC_GEQUAL, PIPE_FUNC_NOTEQUAL, PIPE_FUNC_ALWAYS,
++            };
++            enum ROGUE_TEXSTATE_CMP_MODE cmps[ARRAY_SIZE(funcs)];
++
++            for (unsigned i = 0; i < ARRAY_SIZE(funcs); i++) {
++               if (!pvr_cmp_mode_from_pipe(funcs[i], &cmps[i])) {
++                  printf("csb:           FAIL: compare function %u has no hardware "
++                         "equivalent\n", funcs[i]);
++                  goto out;
++               }
++               for (unsigned j = 0; j < i; j++) {
++                  if (cmps[j] == cmps[i]) {
++                     printf("csb:           FAIL: compare functions %u and %u collapsed\n",
++                            funcs[j], funcs[i]);
++                     goto out;
++                  }
++               }
++            }
++
++            printf("csb:           compare modes: %zu functions all distinct\n",
++                   ARRAY_SIZE(funcs));
++         }
++
+          printf("csb:           sampler translations: %zu wrap modes all distinct, nearest "
+                 "and linear distinct; sampler emission itself NOT implemented\n",
+                 ARRAY_SIZE(wraps));
+-- 
+2.47.3
+

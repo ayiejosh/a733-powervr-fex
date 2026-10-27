@@ -1,0 +1,205 @@
+From 4b483199f25c5c48d675c3da040460af6eaa8f05 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 17:53:26 +0800
+Subject: [PATCH 138/269] gallium/pvr: the VDM state update - a group whose
+ length its own flags decide
+
+  csb: VDM state: length follows its own flags (1/2/2/3 dwords for the four flag
+       combinations), fields verified in place
+  --- ALL PASS        (real open kernel)
+
+VDMCTRL_VDM_STATE0 carries flags saying which of STATE1..N follow it, and the presence
+packets are emitted only for the flags that are set: STATE1 when a cut index is needed,
+STATE2 when the vertex-shader PDS data address changes. So this is not a fixed-shape group
+like the PDS and PPP ones already landed.
+
+That is the reason to do it now rather than later: it is the shape nearly all remaining
+state emission uses - one flag packet, then whichever data packets the flags called for.
+Emitting a fixed sequence would write packets the hardware is not expecting, and omitting a
+flagged one writes state that never arrives; both are silent. The length is computed from
+the same flags the packets are emitted from, inside one function, so the stream cannot be a
+different size than what was written - that pairing is why it is one function and not three
+emissions at the call site.
+
+The check tests the shape rather than the packing: all four flag combinations, asserting the
+length AND that the flags unpacked from the first packet agree with the packets that
+followed. A check that only packed the fields would pass for a fixed-length emission that
+ignored its flags.
+
+Not yet set: STATE0's cam_size, flatshade_control and uvs_scratch_size_select, which belong
+to draw-state handling that does not exist. They are zero - wrong but visible in the stream -
+rather than guessed at. VDM_STATE3/4 are likewise not emitted.
+---
+ src/gallium/drivers/pvr/pvr_csb.c   | 44 ++++++++++++++++++
+ src/gallium/drivers/pvr/pvr_csb.h   | 18 ++++++++
+ src/gallium/drivers/pvr/pvr_probe.c | 70 +++++++++++++++++++++++++++++
+ 3 files changed, 132 insertions(+)
+
+diff --git a/src/gallium/drivers/pvr/pvr_csb.c b/src/gallium/drivers/pvr/pvr_csb.c
+index 57a6c517..5e1be70a 100644
+--- a/src/gallium/drivers/pvr/pvr_csb.c
++++ b/src/gallium/drivers/pvr/pvr_csb.c
+@@ -141,6 +141,50 @@ pvr_csb_emit_ppp_state(struct pvr_csb *csb, uint64_t state_addr, uint32_t word_c
+    return true;
+ }
+ 
++bool
++pvr_csb_emit_vdm_state(struct pvr_csb *csb, bool cut_index_enable,
++                       uint32_t cut_index, bool have_vs_data_addr,
++                       uint64_t vs_pds_data_base_addr, uint32_t *words_out)
++{
++   struct ROGUE_VDMCTRL_VDM_STATE0 state0 = {
++      ROGUE_VDMCTRL_VDM_STATE0_header,
++      .cut_index_enable = cut_index_enable,
++      .cut_index_present = cut_index_enable,
++      .vs_data_addr_present = have_vs_data_addr,
++   };
++   struct ROGUE_VDMCTRL_VDM_STATE1 state1 = { .cut_index = cut_index };
++   struct ROGUE_VDMCTRL_VDM_STATE2 state2 = {
++      .vs_pds_data_base_addr = vs_pds_data_base_addr,
++   };
++   const uint32_t words = ROGUE_VDMCTRL_VDM_STATE0_length +
++                          (cut_index_enable ? ROGUE_VDMCTRL_VDM_STATE1_length : 0) +
++                          (have_vs_data_addr ? ROGUE_VDMCTRL_VDM_STATE2_length : 0);
++   uint32_t *dw = pvr_csb_emit(csb, words);
++   uint32_t at = ROGUE_VDMCTRL_VDM_STATE0_length;
++
++   if (dw == NULL)
++      return false;
++
++   ROGUE_VDMCTRL_VDM_STATE0_pack(dw, &state0);
++
++   /* Only the flagged packets, and in the order the flags imply. The length was computed
++    * from the same flags, so the stream cannot be a different size than what was written -
++    * that pairing is the whole reason this is one function rather than three emissions at
++    * the call site. */
++   if (cut_index_enable) {
++      ROGUE_VDMCTRL_VDM_STATE1_pack(dw + at, &state1);
++      at += ROGUE_VDMCTRL_VDM_STATE1_length;
++   }
++
++   if (have_vs_data_addr)
++      ROGUE_VDMCTRL_VDM_STATE2_pack(dw + at, &state2);
++
++   if (words_out != NULL)
++      *words_out = words;
++
++   return true;
++}
++
+ uint32_t
+ pvr_csb_switch_buffer(struct pvr_csb *csb, void *map, uint32_t size_bytes,
+                       uint32_t guard_dwords)
+diff --git a/src/gallium/drivers/pvr/pvr_csb.h b/src/gallium/drivers/pvr/pvr_csb.h
+index 06c76474..45fb9483 100644
+--- a/src/gallium/drivers/pvr/pvr_csb.h
++++ b/src/gallium/drivers/pvr/pvr_csb.h
+@@ -96,6 +96,24 @@ bool pvr_csb_emit_pds_state_update(struct pvr_csb *csb, uint64_t program_addr,
+ bool pvr_csb_emit_ppp_state(struct pvr_csb *csb, uint64_t state_addr,
+                             uint32_t word_count);
+ 
++/* The VDM state update, which is a CONDITIONALLY VARIABLE-LENGTH group rather than a fixed
++ * shape: VDMCTRL_VDM_STATE0 carries flags saying which of STATE1..N follow it, and the
++ * presence packs are only emitted for the flags that are set. VDM_STATE1 appears when a
++ * cut index is needed, VDM_STATE2 when the vertex-shader PDS data address changes.
++ *
++ * This is the shape nearly all of the remaining state emission uses - one flag packet, then
++ * whichever data packets the flags called for - so getting the pattern right here is worth
++ * more than the two packets themselves. Emitting a fixed sequence instead would write data
++ * packets the hardware is not expecting, and omitting a flagged one writes state that never
++ * arrives; both are silent.
++ *
++ * STATE0's remaining fields (cam_size, flatshade_control, uvs_scratch_size_select) are not
++ * set yet: they belong to draw-state handling that does not exist. They are zero, which is
++ * wrong-but-visible in the stream, rather than guessed at. */
++bool pvr_csb_emit_vdm_state(struct pvr_csb *csb, bool cut_index_enable,
++                            uint32_t cut_index, bool have_vs_data_addr,
++                            uint64_t vs_pds_data_base_addr, uint32_t *words_out);
++
+ /* Dwords a stream link occupies - what the guard must be at minimum. */
+ #define PVR_CSB_LINK_DWORDS (ROGUE_VDMCTRL_STREAM_LINK0_length + \
+                              ROGUE_VDMCTRL_STREAM_LINK1_length)
+diff --git a/src/gallium/drivers/pvr/pvr_probe.c b/src/gallium/drivers/pvr/pvr_probe.c
+index 3e69b78c..3ae8240a 100644
+--- a/src/gallium/drivers/pvr/pvr_probe.c
++++ b/src/gallium/drivers/pvr/pvr_probe.c
+@@ -1115,6 +1115,76 @@ csb_check(int fd, struct pipe_screen *pscreen)
+     * together, checked against a locally packed reference and read back with the
+     * generated unpacker - the same pattern as the packet check, but this is content the
+     * GPU follows rather than a packet it merely reads. */
++   /* The VDM state update, whose length depends on its own flags. The property to check
++    * is not that three packets can be packed - it is that the sequence emitted matches what
++    * the flags said, in length and in order. A fixed-length emission with a flag packet
++    * saying otherwise is state the hardware reads wrongly and nothing reports. */
++   {
++      struct {
++         bool cut_index_enable;
++         bool have_vs_data_addr;
++         uint32_t expect_words;
++      } cases[] = {
++         { false, false, 1 },
++         { true, false, 2 },
++         { false, true, 2 },
++         { true, true, 3 },
++      };
++      const uint32_t cut_index = 7;
++      const uint64_t vs_addr = 0x9ff0200000ULL;
++
++      for (unsigned c = 0; c < ARRAY_SIZE(cases); c++) {
++         struct ROGUE_VDMCTRL_VDM_STATE0 s0 = { 0 };
++         uint32_t words = 0;
++
++         pvr_csb_reset(&csb);
++
++         if (!pvr_csb_emit_vdm_state(&csb, cases[c].cut_index_enable, cut_index,
++                                     cases[c].have_vs_data_addr, vs_addr, &words)) {
++            printf("csb:           FAIL: VDM state case %u did not emit\n", c);
++            goto out;
++         }
++
++         if (words != cases[c].expect_words ||
++             pvr_csb_size(&csb) != words * 4) {
++            printf("csb:           FAIL: VDM state case %u (cut %u, vs %u) emitted %u "
++                   "dwords, expected %u\n", c, cases[c].cut_index_enable,
++                   cases[c].have_vs_data_addr, words, cases[c].expect_words);
++            goto out;
++         }
++
++         ROGUE_VDMCTRL_VDM_STATE0_unpack(bo.map, &s0);
++
++         /* The flags in the first packet must agree with the packets that followed,
++          * or the hardware reads a sequence the driver did not write. */
++         if (s0.cut_index_present != cases[c].cut_index_enable ||
++             s0.vs_data_addr_present != cases[c].have_vs_data_addr ||
++             s0.block_type != ROGUE_VDMCTRL_BLOCK_TYPE_VDM_STATE_UPDATE) {
++            printf("csb:           FAIL: VDM state case %u has flags cut %u vs %u, "
++                   "emitted cut %u vs %u\n", c, cases[c].cut_index_enable,
++                   cases[c].have_vs_data_addr, s0.cut_index_present,
++                   s0.vs_data_addr_present);
++            goto out;
++         }
++
++         if (cases[c].cut_index_enable) {
++            struct ROGUE_VDMCTRL_VDM_STATE1 s1 = { 0 };
++
++            ROGUE_VDMCTRL_VDM_STATE1_unpack((uint32_t *)bo.map +
++                                               ROGUE_VDMCTRL_VDM_STATE0_length,
++                                            &s1);
++            if (s1.cut_index != cut_index) {
++               printf("csb:           FAIL: VDM state case %u cut index %u, expected "
++                      "%u\n", c, s1.cut_index, cut_index);
++               goto out;
++            }
++         }
++      }
++
++      printf("csb:           VDM state: length follows its own flags (1/2/2/3 dwords for "
++             "the four flag combinations), fields verified in place\n");
++   }
++
+    /* Pointing the hardware at a state block. The address is split across the two packets
+     * the same way the stream link's is, so this check reconstructs it rather than
+     * asserting each half against a hand-computed shift - the mistake that cost three
+-- 
+2.47.3
+

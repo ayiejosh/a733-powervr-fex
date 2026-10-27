@@ -1,0 +1,44 @@
+From 6ac4750af60a5275cccda2577b9bace083bf85df Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sun, 25 Oct 2026 05:59:57 +0800
+Subject: [PATCH 238/269] gallium/pvr: FS PDS program byte dump; segment layout
+ vs the reference
+
+Added PVR_DUMP_FS_PROG to print the generated fragment PDS launcher bytes. The launcher (and Mesa's
+pvr_pds_kick_usc in MODE_CODEDATA) writes the 8-dword data segment first, then the 1-dword DOUTU code
+segment, contiguously - our TA block sets SHADERBASE to the buffer base (the data segment) and
+TEXUNICODE to 0. The reference driver instead uploads the two segments with separate 16-byte-aligned
+PDS allocations (pvr_gpu_upload_pds(data,16, code,16)) and sets SHADERBASE/TEXUNICODE to those two
+different addresses with a nonzero UNIFORMDATABASE, and its SIZEINFO words carry real sizes (ours are
+zero because the probe's fragment shader uses no coefficients).
+
+Round-32 experiment: pointing SHADERBASE at the code segment (0x3004) and TEXUNICODE at the data
+segment (0x3000) does not change the TA stall. Next: separate the two segments into 16-byte-aligned
+placements like the reference and retest; also compare the launcher bytes against the reference's
+device NOP program (pvr_arch_device.c, pvr_pds_generate_pixel_shader_program).
+
+Verification: probe ALL PASS under the shim.
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index a314dd2f..e4dfaf35 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -2049,6 +2049,12 @@ shader_compile_check(struct pipe_screen *pscreen)
+ 
+             if (flen > 0 && probe_map_bo_at(scr->fd, &scr->vm, pds_next, fprog, flen, &fpo)) {
+                g_fs_pds_base_offset = pds_next - pds->base;
++               if (getenv("PVR_DUMP_FS_PROG")) {
++                  printf("FSBYTES %u:", flen);
++                  for (uint32_t _i = 0; _i < flen; _i++)
++                     printf(" %02x", fprog[_i]);
++                  printf("\n");
++               }
+                printf("shader:        FS PDS program at PDS+0x%" PRIx64
+                       " (%u B = %u data + %u code dwords)\n", g_fs_pds_base_offset, flen,
+                       g_fs_prog_info.data_dwords, g_fs_prog_info.code_dwords);
+-- 
+2.47.3
+

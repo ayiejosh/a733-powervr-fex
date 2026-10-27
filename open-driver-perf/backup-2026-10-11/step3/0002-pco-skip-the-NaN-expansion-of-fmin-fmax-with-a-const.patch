@@ -1,0 +1,109 @@
+From c390cb9de7514fc81d01da7c4e6bacda953e3cb9 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Tue, 13 Oct 2026 23:12:13 +0800
+Subject: [PATCH 2/3] pco: skip the NaN expansion of fmin/fmax with a constant
+ operand
+
+All hardware comparisons are false when an operand is NaN, so NaN
+preserving fmin/fmax was expanded to a min/max plus two isnan selects:
+three serial groups, for example for max(x, 0.0) in a lighting shader.
+
+With a non NaN constant as the second operand the compare already gives
+the NaN preserving result: a NaN in the other operand makes it false and
+the constant is selected. Skip the expansion for scalar min/max with such
+a constant, keep the preserve flag so later passes (for example the
+min/max to fsat patterns) still see the NaN semantics, and put the
+constant second when translating.
+
+shading phong goes from 52 to 48 groups and 15 to 14 temporaries.
+glmark2 through zink, off-screen: +1% to +3% on shading, bump, ideas,
+texture and shadow.
+---
+ src/imagination/pco/pco_nir_alu.c   | 18 ++++++++++++++++++
+ src/imagination/pco/pco_trans_nir.c | 20 ++++++++++++++++++++
+ 2 files changed, 38 insertions(+)
+
+diff --git a/src/imagination/pco/pco_nir_alu.c b/src/imagination/pco/pco_nir_alu.c
+index ba4540d..8c2eab3 100644
+--- a/src/imagination/pco/pco_nir_alu.c
++++ b/src/imagination/pco/pco_nir_alu.c
+@@ -17,6 +17,8 @@
+ #include "nir_defines.h"
+ #include "pco_internal.h"
+ 
++#include <math.h>
++
+ /**
+  * \brief Lowers ALU instructions with float_controls2 decorations.
+  *
+@@ -47,6 +49,22 @@ pco_nir_lower_alu_instr(nir_builder *b, nir_alu_instr *alu, void *cb_data)
+       if (!nir_alu_instr_is_nan_preserve(alu))
+          break;
+ 
++      /* With a constant, non-NaN operand the hardware compare already gives
++       * the NaN preserving result (a NaN operand makes the compare false,
++       * which selects the second operand), so the expansion is skipped. The
++       * flag stays set so later passes keep the NaN semantics, and
++       * trans_min_max puts the constant second.
++       */
++      if (alu->def.num_components == 1) {
++         for (unsigned i = 0; i < 2; i++) {
++            nir_scalar c = nir_scalar_resolved(alu->src[i].src.ssa,
++                                               alu->src[i].swizzle[0]);
++            if (nir_scalar_is_const(c) && !isnan(nir_scalar_as_float(c)))
++               return false;
++         }
++      }
++
++
+       b->cursor = nir_after_instr(&alu->instr);
+       b->fp_math_ctrl = alu->fp_math_ctrl;
+       alu->fp_math_ctrl &= ~nir_fp_preserve_nan;
+diff --git a/src/imagination/pco/pco_trans_nir.c b/src/imagination/pco/pco_trans_nir.c
+index 914e1e7..3339b72 100644
+--- a/src/imagination/pco/pco_trans_nir.c
++++ b/src/imagination/pco/pco_trans_nir.c
+@@ -15,6 +15,8 @@
+ #include "pco.h"
+ #include "pco_builder.h"
+ #include "pco_internal.h"
++
++#include <math.h>
+ #include "pvr_iface.h"
+ #include "util/bitset.h"
+ #include "util/list.h"
+@@ -3643,6 +3645,14 @@ static inline bool is_min(nir_op op)
+  * \param[in] src Instruction source.
+  * \return The translated PCO instruction.
+  */
++/* Whether an ALU source resolves to a constant that is not NaN. */
++static bool alu_src_is_nonnan_const(const nir_alu_instr *alu, unsigned i)
++{
++   nir_scalar c =
++      nir_scalar_resolved(alu->src[i].src.ssa, alu->src[i].swizzle[0]);
++   return nir_scalar_is_const(c) && !isnan(nir_scalar_as_float(c));
++}
++
+ static pco_instr *trans_min_max(trans_ctx *tctx,
+                                 nir_op op,
+                                 pco_ref dest,
+@@ -4332,6 +4342,16 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
+ 
+    case nir_op_umin:
+    case nir_op_umax:
++      /* A constant goes second: the hardware compare is false for a NaN
++       * operand, which selects the second one.
++       */
++      if ((alu->op == nir_op_fmin || alu->op == nir_op_fmax) &&
++          alu_src_is_nonnan_const(alu, 0) && !alu_src_is_nonnan_const(alu, 1)) {
++         pco_ref tmp_src = src[0];
++         src[0] = src[1];
++         src[1] = tmp_src;
++      }
++
+       instr = trans_min_max(tctx, alu->op, dest, src[0], src[1]);
+       break;
+ 
+-- 
+2.47.3
+

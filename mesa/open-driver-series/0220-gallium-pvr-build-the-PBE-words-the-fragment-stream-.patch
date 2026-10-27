@@ -1,0 +1,266 @@
+From f8f96704027bef7645c4574245f9cc757a4ff0c4 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sun, 25 Oct 2026 00:06:09 +0800
+Subject: [PATCH 220/269] gallium/pvr: build the PBE words the fragment stream
+ needs, and trace what the kernel kicks
+
+Kernel-side tracing (temporary prints in the out-of-tree powervr module, reverted after use; logs
+archived in open-driver-perf/captures/real-runs/) settled the previous round's open question: the
+kernel runs and kicks every job this driver submits, including the combined geom+frag kick, and the
+parsed geometry command is dword-identical to the working Vulkan driver's. So the stall is on the
+firmware side of the kick, and the fragment command is where ours differs.
+
+That difference had a concrete cause: the probe built the fragment firmware stream over the same
+buffer that held its PBE words, so the stream header replaced the PBE register data and the fragment
+job described no render target (parsed command mostly zeros vs the reference's frame state). The
+reference builds three 64-bit PBE register words per attachment (STATE_WORD0/1, REG_WORD0/1), so
+pvr_csb_pbe_words() now does the same: target address/format from the pipe format, linear layout,
+encoded stride, channel swizzles, pack mode. The probe builds the words first and passes them to the
+stream builder.
+
+Also marked the context-state buffers and the SR buffer the way the reference does: state buffers
+bypass the device cache (GPU_UNCACHED|CPU_ACCESS) and the SR buffer is cache-line aligned - a cached
+context-save buffer can hand the firmware stale state across a switch.
+
+Verification: probe exits 0 ALL PASS under the noop shim. On the real driver the kicks still do not
+complete; the remaining delta is inside the kick (context-switch task/program words and HWRT data the
+firmware reads), which the archived kernel traces and reference dumps now make diffable.
+---
+ src/gallium/drivers/pvr_native/pvr_csb.c    | 76 +++++++++++++++++++++
+ src/gallium/drivers/pvr_native/pvr_csb.h    | 13 ++++
+ src/gallium/drivers/pvr_native/pvr_probe.c  | 36 ++++++----
+ src/gallium/drivers/pvr_native/pvr_static.c | 23 +++++--
+ 4 files changed, 129 insertions(+), 19 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_csb.c b/src/gallium/drivers/pvr_native/pvr_csb.c
+index cb8d95a9..940af838 100644
+--- a/src/gallium/drivers/pvr_native/pvr_csb.c
++++ b/src/gallium/drivers/pvr_native/pvr_csb.c
+@@ -777,6 +777,82 @@ pvr_pbe_memlayout_linear(void)
+    return ROGUE_PBESTATE_MEMLAYOUT_LINEAR;
+ }
+ 
++bool
++pvr_csb_pbe_words(enum pipe_format format, uint64_t addr, uint32_t mrt_index,
++                  uint32_t stride_bytes, uint64_t words[3])
++{
++   const struct util_format_description *desc = util_format_description(format);
++   const int chan = util_format_get_first_non_void_channel(format);
++   struct pvr_format_layout layout;
++   struct ROGUE_PBESTATE_STATE_WORD0 sw0 = { .address_low = addr };
++   struct ROGUE_PBESTATE_STATE_WORD1 sw1 = {
++      .address_high = addr,
++      .source_format = pvr_pbe_source_format_from_pipe(
++         format, true /* with_packed_usc_channel */),
++      .mrt_index = mrt_index,
++      .source_pos = ROGUE_PBESTATE_SOURCE_POS_START_BIT0,
++      .norm = chan >= 0 && desc->channel[chan].normalized,
++   };
++   struct ROGUE_PBESTATE_REG_WORD0 reg0 = {
++      .tilerelative = true,
++      .memlayout = ROGUE_PBESTATE_MEMLAYOUT_LINEAR,
++      .rotation = ROGUE_PBESTATE_ROTATION_TYPE_0_DEG,
++      .linestride = pvr_pbe_linestride(stride_bytes),
++   };
++   struct ROGUE_PBESTATE_REG_WORD1 reg1 = { 0 };
++   uint32_t cs[2];
++
++   if (chan < 0 || !pvr_format_layout_from_pipe(format, &layout))
++      return false;
++
++   /* The reference derives the pack mode from the output format's channel layout. Only the
++    * layouts this driver can describe are encoded; anything else is refused. */
++   if (desc->channel[chan].type == UTIL_FORMAT_TYPE_FLOAT) {
++      sw1.packmode = desc->channel[chan].size == 16
++                        ? ROGUE_PBESTATE_PACKMODE_F16F16F16F16
++                        : ROGUE_PBESTATE_PACKMODE_F32F32F32F32;
++   } else if (desc->channel[chan].size == 8) {
++      sw1.packmode = desc->channel[chan].type == UTIL_FORMAT_TYPE_SIGNED
++                        ? ROGUE_PBESTATE_PACKMODE_S8S8S8S8
++                        : ROGUE_PBESTATE_PACKMODE_U8U8U8U8;
++   } else if (desc->channel[chan].size == 16) {
++      sw1.packmode = desc->channel[chan].type == UTIL_FORMAT_TYPE_SIGNED
++                        ? ROGUE_PBESTATE_PACKMODE_S16S16S16S16
++                        : ROGUE_PBESTATE_PACKMODE_U16U16U16U16;
++   } else {
++      return false;
++   }
++
++   /* Channel swizzles: output channel n reads the source channel named by swizzle[n]. */
++   for (unsigned i = 0; i < 4; i++) {
++      enum ROGUE_PBESTATE_SWIZ swiz;
++      uint8_t pipe = layout.swizzle[i];
++
++      if (pipe == PIPE_SWIZZLE_0 || pipe == PIPE_SWIZZLE_NONE) {
++         swiz = ROGUE_PBESTATE_SWIZ_ZERO;
++      } else if (pipe == PIPE_SWIZZLE_1) {
++         swiz = ROGUE_PBESTATE_SWIZ_ONE;
++      } else if (!pvr_pbe_swizzle_from_pipe(pipe, &swiz)) {
++         return false;
++      }
++
++      switch (i) {
++      case 0: reg0.swiz_chan0 = swiz; break;
++      case 1: reg0.swiz_chan1 = swiz; break;
++      case 2: reg0.swiz_chan2 = swiz; break;
++      case 3: reg0.swiz_chan3 = swiz; break;
++      }
++   }
++
++   ROGUE_PBESTATE_STATE_WORD0_pack(&cs[0], &sw0);
++   ROGUE_PBESTATE_STATE_WORD1_pack(&cs[1], &sw1);
++   words[0] = (uint64_t)cs[0] | ((uint64_t)cs[1] << 32);
++   ROGUE_PBESTATE_REG_WORD0_pack(&words[1], &reg0);
++   ROGUE_PBESTATE_REG_WORD1_pack(&words[2], &reg1);
++
++   return true;
++}
++
+ bool
+ pvr_csb_emit_pbe_target(struct pvr_csb *csb, const struct pvr_pbe_target *target)
+ {
+diff --git a/src/gallium/drivers/pvr_native/pvr_csb.h b/src/gallium/drivers/pvr_native/pvr_csb.h
+index 0fd29859..9fc46add 100644
+--- a/src/gallium/drivers/pvr_native/pvr_csb.h
++++ b/src/gallium/drivers/pvr_native/pvr_csb.h
+@@ -508,6 +508,19 @@ struct pvr_pds_sizes {
+ bool pvr_csb_emit_ta_pds_sizeinfo(struct pvr_csb *csb, const struct pvr_pds_sizes *sizes,
+                                   bool tri_merge_disable, uint32_t batchnum);
+ 
++/* Builds the three 64-bit PBE register words a fragment job's firmware stream carries per colour
++ * attachment, in the reference's encoding (pvr_arch_job_common.c pvr_pbe_state_words):
++ *
++ *   words[0] = PBESTATE_STATE_WORD0 in the low dword, STATE_WORD1 in the high one
++ *   words[1] = PBESTATE_REG_WORD0   (memory layout, stride, channel swizzles)
++ *   words[2] = PBESTATE_REG_WORD1   (size/clip words; zero for a linear target)
++ *
++ * A fragment stream built without them configures no render target at all - the PBE slots are
++ * zeros - and the firmware cannot run the fragment job. Returns false for formats whose PBE
++ * packmode this function does not encode rather than emitting a plausible wrong one. */
++bool pvr_csb_pbe_words(enum pipe_format format, uint64_t addr, uint32_t mrt_index,
++                       uint32_t stride_bytes, uint64_t words[3]);
++
+ /* The PBE (pixel backend) render-target address: PBESTATE_STATE_WORD0 + STATE_WORD1.
+  *
+  * The generated pack places the two halves like this:
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index 205a979e..4c770885 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -788,28 +788,27 @@ real_job_done:
+ 
+          if (ok2) {
+             struct pvr_pbe_target t = { 0 };
+-            struct pvr_csb csb;
++            uint64_t pbe_words[3] = { 0 };
+             uint8_t *rt = rtbo.map;
+             const uint32_t before = *(uint32_t *)rt;
+ 
+             /* Fill the target with a known pattern so any GPU write is visible. */
+             memset(rt, 0x5a, RTW * RTH * 4);
+ 
++            /* The three PBE register words per attachment the fragment stream must carry. They
++             * have to be built BEFORE the stream, and into their own buffer: building the stream
++             * over its own PBE source (which this did) replaces the words with the stream header and
++             * leaves the fragment job describing no render target at all. */
+             if (!pvr_pbe_target_from_format(PIPE_FORMAT_R8G8B8A8_UNORM, rtaddr, 0, true, &t)) {
+                printf("hwrt:          could not describe the render target\n");
+                ok2 = false;
+-            } else {
+-               pvr_csb_init(&csb, rtcsb.map, rtcsb.size, PVR_CSB_LINK_DWORDS);
+-               if (!pvr_csb_emit_pbe_target(&csb, &t)) {
+-                  printf("hwrt:          could not emit the PBE target\n");
+-                  ok2 = false;
+-               }
++            } else if (!pvr_csb_pbe_words(PIPE_FORMAT_R8G8B8A8_UNORM, rtaddr, 0, RTW * 4,
++                                          pbe_words)) {
++               printf("hwrt:          could not encode the PBE words\n");
++               ok2 = false;
+             }
+ 
+             if (ok2) {
+-               const uint32_t flen = pvr_frag_static_stream(rtcsb.map, rtcsb.size,
+-                                                           (const uint64_t *)rtcsb.map, 1, 0x2780,
+-                                                           false);
+                /* Assemble the draw stream with the shape the captured working draw has:
+                 * PPP state block pointer -> VDM state -> index list -> terminate block -> STREAM
+                 * TERMINATE. The TA state lives in a memory block, not in stream packets. */
+@@ -1058,15 +1057,24 @@ real_job_done:
+                 * nothing is drawn. completeonterminate and usc_common_size are the capture's
+                 * values (TE_PSG bit 17, PDS_STATE0 = 0x20010000). */
+                _Alignas(8) static uint8_t gstream[1024];
++               const bool dump_streams = getenv("PVR_DUMP_STREAM") != NULL;
+                const uint32_t glen = pvr_geom_static_stream(gstream, sizeof(gstream), rctladdr,
+                                                            rbctaddr, true, 0, false, 1, 0,
+                                                            PVR_HAS_QUIRK(dev_info, 49927));
+                /* The fragment stream has to live in its own buffer, so rebuild it there. */
+                _Alignas(8) static uint8_t fstream[1024];
+-               const uint32_t f2 = pvr_frag_static_stream(fstream, sizeof(fstream),
+-                                                         (const uint64_t *)rtcsb.map, 1, 0x2780,
+-                                                         false);
+-               (void)flen;
++               const uint32_t f2 = pvr_frag_static_stream(fstream, sizeof(fstream), pbe_words, 1,
++                                                         0x2780, false);
++               if (dump_streams) {
++                  printf("OURFW: geom len=%u:", glen);
++                  for (unsigned i = 0; i < glen / 4; i++)
++                     printf(" %08x", ((const uint32_t *)gstream)[i]);
++                  printf("\nOURFW: frag len=%u:", f2);
++                  for (unsigned i = 0; i < f2 / 4; i++)
++                     printf(" %08x", ((const uint32_t *)fstream)[i]);
++                  printf("\n");
++               }
++
+                if (pvr_job_submit_render(&vm, gpu_ctx.handle, gstream, glen, fstream, f2,
+                                          dset_handle, 0)) {
+                   uint32_t changed = 0;
+diff --git a/src/gallium/drivers/pvr_native/pvr_static.c b/src/gallium/drivers/pvr_native/pvr_static.c
+index 5d43aa5b..723838c0 100644
+--- a/src/gallium/drivers/pvr_native/pvr_static.c
++++ b/src/gallium/drivers/pvr_native/pvr_static.c
+@@ -303,24 +303,37 @@ pvr_static_ctx_switch_init(struct pvr_vm *vm, const struct pvr_device_info *dev_
+ 
+    memset(cs, 0, sizeof(*cs));
+ 
++   /* The firmware writes context state through DMA and reads it back after a switch; both buffers
++    * therefore have to bypass the device cache, as the reference marks them (GPU_UNCACHED|CPU_ACCESS).
++    * A cached buffer can hand the firmware stale state and stall the switch. */
++   const uint64_t state_flags =
++      DRM_PVR_BO_BYPASS_DEVICE_CACHE | DRM_PVR_BO_ALLOW_CPU_USERSPACE_ACCESS;
++
+    cs->vdm_state_addr = pvr_vm_alloc(vm, ROGUE_LLS_VDM_CONTEXT_RESUME_BUFFER_SIZE,
+                                      ROGUE_LLS_VDM_CONTEXT_RESUME_BUFFER_ALIGNMENT);
+    if (cs->vdm_state_addr == 0 ||
+-       !pvr_bo_create(vm->fd, ROGUE_LLS_VDM_CONTEXT_RESUME_BUFFER_SIZE,
+-                      ROGUE_LLS_VDM_CONTEXT_RESUME_BUFFER_ALIGNMENT, &cs->vdm_state_bo) ||
++       !pvr_bo_create_flags(vm->fd, ROGUE_LLS_VDM_CONTEXT_RESUME_BUFFER_SIZE,
++                            ROGUE_LLS_VDM_CONTEXT_RESUME_BUFFER_ALIGNMENT, state_flags,
++                            &cs->vdm_state_bo) ||
+        !pvr_vm_map(vm, cs->vdm_state_addr, cs->vdm_state_bo.handle, cs->vdm_state_bo.size))
+       return false;
+ 
+    cs->geom_state_addr = pvr_vm_alloc(vm, ROGUE_LLS_TA_STATE_BUFFER_SIZE,
+                                       ROGUE_LLS_TA_STATE_BUFFER_ALIGNMENT);
+    if (cs->geom_state_addr == 0 ||
+-       !pvr_bo_create(vm->fd, ROGUE_LLS_TA_STATE_BUFFER_SIZE,
+-                      ROGUE_LLS_TA_STATE_BUFFER_ALIGNMENT, &cs->geom_state_bo) ||
++       !pvr_bo_create_flags(vm->fd, ROGUE_LLS_TA_STATE_BUFFER_SIZE,
++                            ROGUE_LLS_TA_STATE_BUFFER_ALIGNMENT, state_flags,
++                            &cs->geom_state_bo) ||
+        !pvr_vm_map(vm, cs->geom_state_addr, cs->geom_state_bo.handle, cs->geom_state_bo.size))
+       return false;
+ 
+    /* The USC shared-register save buffer (DOUTW target) and the persistent-temps buffer. */
+-   cs->sr_buffer_addr = pvr_vm_heap_alloc(vm, DRM_PVR_HEAP_PDS_CODE_DATA, sr_size, 16, &sr_bo);
++   /* The buffer the SR store/load PDS programs DMA to/from is cache-line aligned in the
++    * reference (slc_cache_line_size_bits / 8, 64 on this device). */
++   cs->sr_buffer_addr =
++      pvr_vm_heap_alloc(vm, DRM_PVR_HEAP_PDS_CODE_DATA, sr_size,
++                        PVR_GET_FEATURE_VALUE(dev_info, slc_cache_line_size_bits, 8U) / 8U,
++                        &sr_bo);
+    if (cs->sr_buffer_addr == 0)
+       return false;
+    cs->pt_buffer_addr = pvr_vm_heap_alloc(vm, DRM_PVR_HEAP_PDS_CODE_DATA,
+-- 
+2.47.3
+

@@ -1,0 +1,219 @@
+From ca19bc6fee37be012255fb94ac56bbc72eb1f167 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 19:56:05 +0800
+Subject: [PATCH 147/269] gallium/pvr: the sampler descriptor - the texture
+ sampling pair is complete
+
+  csb: sampler descriptor: cmp_mode 0 (reference never assigns it), lod fixed-point 6 bits
+       (1.0 -> 64), wrap/filter fields verified
+  --- ALL PASS        (real open kernel)
+
+With round 36's image descriptor this completes what the hardware needs to read a texture: the
+image says what the memory holds, the sampler says how to read it.
+
+Two things the reference settled that reasoning had got wrong or left open:
+
+1. cmp_mode. Round 38 noted the hardware enum has no "no comparison" member and reasoned that
+   ALWAYS would be the sensible reading for a disabled comparison. pvr_arch_sampler.c NEVER
+   ASSIGNS cmp_mode at all, so every sampler the working Vulkan driver creates carries 0 -
+   CMP_MODE_NEVER. The inference was wrong and the field is now set to 0 with that citation.
+   Recording it because the reasoning was plausible and would have shipped silently: 0 and 63
+   differ in a field a non-shadow sampler never exercises, so nothing would have reported it
+   until a shadow sampler existed.
+
+2. The filter helper takes dev_info and IGNORES it. It is a plain two-value switch, so filters
+   are not device-dependent as the signature suggested - worth stating because a signature is
+   evidence about a function's inputs, not proof it uses them.
+
+Also confirmed: lod is FIXED-POINT via util_unsigned_fixed with ROGUE_TEXSTATE_CLAMP_FRACTIONAL_BITS
+= 6, and the members of that enum ARE bit counts (INTEGER_BITS = 4) - which is why they read like
+names. The check asserts 1.0 encodes as 64, so a dropped encoding cannot pass as a plain integer.
+
+Nothing samples yet: no job carries either descriptor and no pipeline binds them.
+---
+ src/gallium/drivers/pvr/pvr_csb.c   | 49 ++++++++++++++++++++++
+ src/gallium/drivers/pvr/pvr_csb.h   | 26 ++++++++++++
+ src/gallium/drivers/pvr/pvr_probe.c | 63 +++++++++++++++++++++++++++++
+ 3 files changed, 138 insertions(+)
+
+diff --git a/src/gallium/drivers/pvr/pvr_csb.c b/src/gallium/drivers/pvr/pvr_csb.c
+index 44622644..02e5518b 100644
+--- a/src/gallium/drivers/pvr/pvr_csb.c
++++ b/src/gallium/drivers/pvr/pvr_csb.c
+@@ -6,6 +6,7 @@
+ #include "pipe/p_defines.h"
+ #include "util/format/u_format.h"
+ #include "util/log.h"
++#include "util/u_math.h"
+ 
+ void
+ pvr_csb_init(struct pvr_csb *csb, void *map, uint32_t size_bytes,
+@@ -295,6 +296,54 @@ pvr_filter_from_pipe(enum pipe_tex_filter filter, enum ROGUE_TEXSTATE_FILTER *ou
+    }
+ }
+ 
++bool
++pvr_csb_emit_sampler_desc(struct pvr_csb *csb, const struct pvr_sampler_desc *desc)
++{
++   const uint32_t words = ROGUE_TEXSTATE_SAMPLER_WORD0_length +
++                          ROGUE_TEXSTATE_SAMPLER_WORD1_length;
++   struct ROGUE_TEXSTATE_SAMPLER_WORD0 word0 = {
++      /* Never assigned by the reference, so 0 is what every sampler it creates carries. */
++      .cmp_mode = ROGUE_TEXSTATE_CMP_MODE_NEVER,
++      .mipfilter = desc->mip_filter,
++      /* Zero adjustment: DADJUST_ZERO_UINT is the encoding of 0.0, not an absent value. */
++      .dadjust = ROGUE_TEXSTATE_DADJUST_ZERO_UINT,
++      .anisoctl = ROGUE_TEXSTATE_ANISOCTL_DISABLED,
++      .bordercolor_index = 0,
++      .non_normalized_coords = false,
++      .lumakey = false,
++      .lumakey_alphamult = false,
++   };
++   struct ROGUE_TEXSTATE_SAMPLER_WORD1 word1 = { 0 };
++   uint32_t *dw;
++
++   if (!pvr_addrmode_from_pipe(desc->wrap_s, &word0.addrmode_u) ||
++       !pvr_addrmode_from_pipe(desc->wrap_t, &word0.addrmode_v) ||
++       !pvr_addrmode_from_pipe(desc->wrap_r, &word0.addrmode_w) ||
++       !pvr_filter_from_pipe(desc->min_filter, &word0.minfilter) ||
++       !pvr_filter_from_pipe(desc->mag_filter, &word0.magfilter)) {
++      mesa_loge("pvr: sampler state has no hardware equivalent");
++      return false;
++   }
++
++   /* Clamped then encoded, in that order, as the reference does - the encoding of an
++    * out-of-range float would wrap rather than saturate. */
++   word0.minlod = util_unsigned_fixed(CLAMP(desc->min_lod, 0.0f,
++                                            ROGUE_TEXSTATE_CLAMP_MAX),
++                                      ROGUE_TEXSTATE_CLAMP_FRACTIONAL_BITS);
++   word0.maxlod = util_unsigned_fixed(CLAMP(desc->max_lod, 0.0f,
++                                            ROGUE_TEXSTATE_CLAMP_MAX),
++                                      ROGUE_TEXSTATE_CLAMP_FRACTIONAL_BITS);
++
++   dw = pvr_csb_emit(csb, words);
++   if (dw == NULL)
++      return false;
++
++   ROGUE_TEXSTATE_SAMPLER_WORD0_pack(dw, &word0);
++   ROGUE_TEXSTATE_SAMPLER_WORD1_pack(dw + ROGUE_TEXSTATE_SAMPLER_WORD0_length, &word1);
++
++   return true;
++}
++
+ bool
+ pvr_cmp_mode_from_pipe(enum pipe_compare_func func, enum ROGUE_TEXSTATE_CMP_MODE *out)
+ {
+diff --git a/src/gallium/drivers/pvr/pvr_csb.h b/src/gallium/drivers/pvr/pvr_csb.h
+index a0cd87c1..ef1103ff 100644
+--- a/src/gallium/drivers/pvr/pvr_csb.h
++++ b/src/gallium/drivers/pvr/pvr_csb.h
+@@ -208,6 +208,32 @@ bool pvr_filter_from_pipe(enum pipe_tex_filter filter, enum ROGUE_TEXSTATE_FILTE
+  * reference's usage read, exactly as the lod encoding does. */
+ bool pvr_cmp_mode_from_pipe(enum pipe_compare_func func, enum ROGUE_TEXSTATE_CMP_MODE *out);
+ 
++/* A sampler descriptor, for what this driver supports: no mips, no anisotropic filtering, no
++ * border colour, no depth comparison, normalized coordinates.
++ *
++ * Some fields are set to a constant because the REFERENCE never assigns them, which is a fact
++ * about the working driver rather than an inference about the hardware:
++ *   cmp_mode is never assigned by pvr_arch_sampler.c, so every sampler the Vulkan driver creates
++ *   carries 0 (CMP_MODE_NEVER). Round 38 reasoned that ALWAYS would be "sensible" for a disabled
++ *   comparison - the reference does not agree, and 0 is what demonstrably works.
++ *
++ * lod is FIXED-POINT: util_unsigned_fixed(value, ROGUE_TEXSTATE_CLAMP_FRACTIONAL_BITS), and that
++ * constant's value is 6 - the members of that enum ARE bit counts (INTEGER_BITS is 4), which is
++ * why they read like names. Fourth member of the units family. */
++struct pvr_sampler_desc {
++   enum pipe_tex_wrap wrap_s;
++   enum pipe_tex_wrap wrap_t;
++   enum pipe_tex_wrap wrap_r;
++   enum pipe_tex_filter min_filter;
++   enum pipe_tex_filter mag_filter;
++   bool mip_filter;
++   float min_lod;
++   float max_lod;
++};
++
++bool pvr_csb_emit_sampler_desc(struct pvr_csb *csb,
++                               const struct pvr_sampler_desc *desc);
++
+ /* Dwords a stream link occupies - what the guard must be at minimum. */
+ #define PVR_CSB_LINK_DWORDS (ROGUE_VDMCTRL_STREAM_LINK0_length + \
+                              ROGUE_VDMCTRL_STREAM_LINK1_length)
+diff --git a/src/gallium/drivers/pvr/pvr_probe.c b/src/gallium/drivers/pvr/pvr_probe.c
+index 28911c54..3b62d7b3 100644
+--- a/src/gallium/drivers/pvr/pvr_probe.c
++++ b/src/gallium/drivers/pvr/pvr_probe.c
+@@ -1353,6 +1353,69 @@ csb_check(int fd, struct pipe_screen *pscreen)
+                 ARRAY_SIZE(wraps));
+       }
+ 
++      /* The sampler descriptor, read back through the generated unpacker. The values asserted
++       * are the ones that carry traps rather than the ones that were convenient:
++       *   - cmp_mode must be 0, matching the reference which never assigns it. Round 38's
++       *     "ALWAYS would be sensible" was an inference, and this is the evidence against it.
++       *   - the lod fields are fixed-point with 6 fractional bits, so a lod of 1.0 encodes as
++       *     64, not 1. Asserting 64 is what makes the encoding visible rather than assumed. */
++      {
++         struct pvr_sampler_desc sd = {
++            .wrap_s = PIPE_TEX_WRAP_REPEAT,
++            .wrap_t = PIPE_TEX_WRAP_CLAMP_TO_EDGE,
++            .wrap_r = PIPE_TEX_WRAP_MIRROR_REPEAT,
++            .min_filter = PIPE_TEX_FILTER_LINEAR,
++            .mag_filter = PIPE_TEX_FILTER_NEAREST,
++            .mip_filter = false,
++            .min_lod = 0.0f,
++            .max_lod = 1.0f,
++         };
++         struct ROGUE_TEXSTATE_SAMPLER_WORD0 s0 = { 0 };
++
++         pvr_csb_reset(&csb);
++
++         if (!pvr_csb_emit_sampler_desc(&csb, &sd) ||
++             pvr_csb_size(&csb) != (ROGUE_TEXSTATE_SAMPLER_WORD0_length +
++                                    ROGUE_TEXSTATE_SAMPLER_WORD1_length) * 4) {
++            printf("csb:           FAIL: the sampler descriptor did not emit\n");
++            goto out;
++         }
++
++         ROGUE_TEXSTATE_SAMPLER_WORD0_unpack(bo.map, &s0);
++
++         if (s0.cmp_mode != ROGUE_TEXSTATE_CMP_MODE_NEVER) {
++            printf("csb:           FAIL: cmp_mode is %u - the reference never assigns it, so 0 "
++                   "is what the working driver sends\n", s0.cmp_mode);
++            goto out;
++         }
++
++         /* 1.0 with 6 fractional bits is 64. If this ever reads 1, the encoding has been
++          * dropped and every lod would be off by a factor of 64. */
++         if (s0.minlod != 0 || s0.maxlod != 64) {
++            printf("csb:           FAIL: lod is not fixed-point at 6 fractional bits (min %u, "
++                   "max %u, expected 0 and 64)\n", s0.minlod, s0.maxlod);
++            goto out;
++         }
++
++         if (s0.addrmode_u != ROGUE_TEXSTATE_ADDRMODE_REPEAT ||
++             s0.addrmode_v != ROGUE_TEXSTATE_ADDRMODE_CLAMP_TO_EDGE ||
++             s0.addrmode_w != ROGUE_TEXSTATE_ADDRMODE_FLIP ||
++             s0.minfilter != ROGUE_TEXSTATE_FILTER_LINEAR ||
++             s0.magfilter != ROGUE_TEXSTATE_FILTER_POINT) {
++            printf("csb:           FAIL: a sampler field did not survive packing\n");
++            goto out;
++         }
++
++         if (s0.anisoctl != ROGUE_TEXSTATE_ANISOCTL_DISABLED ||
++             s0.dadjust != ROGUE_TEXSTATE_DADJUST_ZERO_UINT || s0.mipfilter) {
++            printf("csb:           FAIL: a disabled sampler feature is not disabled\n");
++            goto out;
++         }
++
++         printf("csb:           sampler descriptor: cmp_mode 0 (reference never assigns it), "
++                "lod fixed-point 6 bits (1.0 -> 64), wrap/filter fields verified\n");
++      }
++
+       printf("csb:           texture descriptor: %u dwords, STRIDE/linear, extents as "
+              "value-minus-one, smpcnt 0 (log2 of one sample), zero extent refused\n",
+              ROGUE_TEXSTATE_IMAGE_WORD0_length +
+-- 
+2.47.3
+

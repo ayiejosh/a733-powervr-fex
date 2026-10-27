@@ -347,7 +347,7 @@ because that checkout's only remote is **upstream `gitlab.freedesktop.org/mesa/m
 | file | what it is |
 |---|---|
 | `mesa-main-open-driver-all.patch` | the whole delta as one patch, like `mesa-main-local-all.patch` |
-| `open-driver-series/` | the commits as numbered `format-patch` files, in apply order: 0001-0043 from 2026-10-09, 0044-0098 from 2026-10-11, 0099-0105 from 2026-10-14 |
+| `open-driver-series/` | the commits as numbered `format-patch` files, in apply order: 0001-0043 from 2026-10-09, 0044-0098 from 2026-10-11, 0099-0105 from 2026-10-14, 0106-0269 from 2026-10-27 (the native `pvr` driver work and its probe tooling) |
 
 **Apply with:**
 
@@ -505,3 +505,31 @@ or the render paths; the lists were run on the build that has 0099–0104. Still
 trace hooks (`getenv` checks such as `XGEOM_TRACE`, `ZINK_TIMING`, `PVR_SUBMIT_MIX`, `PVR_JOB_TRACE`)
 are in zink, wsi and pvr paths of the branch diff; they are off by default and have to go before any
 of this can be sent upstream.
+
+
+## Added 2026-10-27: the native `pvr` driver work, commits 106-269, and the TA/kick investigation
+
+`open-driver-series/0106…0269` continue the numbered series (164 commits, from
+`b0c0edc5 gallium/pvr: skeleton for a native PowerVR Rogue driver` to the probe hooks of 2026-10-27);
+`mesa-main-open-driver-all.patch` is regenerated as the whole delta against upstream `9a2b374` -
+**269 patches, 133 files, +21015 / -680** (`git am` of all 269 onto `9a2b374` gives the branch tree).
+
+**What the 164 commits contain.** The Igalia Mesa `pvr` Gallium driver, developed on this board:
+device enumeration and buffer/VM objects, shader stages through `pco`, the control-stream builder, the
+PDS/PPP/VDM state packets, texture and sampler descriptors, the firmware static context state, kernel job
+submission, then the transition of the driver into `pvr_native` with probe tooling (`PVR_PROBE_*` hooks:
+geometry-only, fragment-only, flags, context priority, sync-op shapes, compute benchmark), a 4x2
+pixel-block compute triangle fallback (~7x faster fallback draws), and reference hooks in the Vulkan
+driver (`PVR_VK_GEOM_ONLY`, stream dumps). The whole investigation is carried in `open-driver-perf/` at
+the repository root: the DM2/TA stall dossier with the kernel debugfs and firmware instrumentation
+evidence, the corrected firmware provenance (the official Imagination `rogue_36.56.104.183_v1.fw` build,
+sha256-verified against IMG's own linux-firmware fork), the apercel/transform-feedback experiment and
+the benchmark logs.
+
+**Where the native path stands.** The native Gallium driver initialises, compiles shaders, records and
+submits real command streams, and its `glClear` and compute-fallback paths render on the GPU; its direct
+TA kick is processed by the firmware but the hardware never raises the DM2 completion event, so the
+geometry stage times out (documented, with every client-visible input compared byte-for-byte against the
+working Vulkan client). GL on this board is therefore served through zink -> the open Vulkan driver
+(glmark2-es2 543-594 at 800x600, ahead of the vendor GL score 522), while the native GL frontend remains
+the open item.

@@ -1,0 +1,556 @@
+From 774b442c11c98d738b3602dc051f14351f2e7ade Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Mon, 26 Oct 2026 04:22:12 +0800
+Subject: [PATCH 260/269] gallium/pvr: native compute draw - the driver renders
+ a triangle with its own programs and submission
+
+PVR_PROBE_CDM_NATIVE makes the probe do the whole compute draw natively, with no captured reference data:
+compile the triangle compute SPIR-V through the native pco pipeline, generate the compute kernel / fence /
+descriptor-upload PDS programs with the PDS library, build the 22-dword CDM control stream and the 44-byte
+compute fw stream from the generated programs, create a compute context (the dispatch does not need the
+reference's context-switch programs; a 64-byte stream with zero program pointers works - verified), submit
+the job through the native VM and read the target back.
+
+Result: PASS - the target contains the rasterised triangle (inside=73728 pixels, exactly the reference's
+count; centre=0xFF0000FF, corner=0xFFFF0000). The generated fw stream is byte-identical to the reference's
+(0000002c 00000000 0001c400 00000020 001b1000 00000080 0006b000 00000080 00900808 ...) and the control
+stream is the byte-identical 22 dwords validated earlier; the PDS placement uses the reference offsets
+(fence 0x1040/0x1050, descriptor program 0x2600, kernel 0x2640/0x2660, descriptor data 0x2700).
+
+This closes the loop from the goal: the first draw + readback is now produced by the driver's own compile,
+program generation and submission path, not by replaying a captured job.
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c | 489 +++++++++++++++++++++
+ 1 file changed, 489 insertions(+)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index 0b80207a..10e692a2 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -24,6 +24,7 @@
+ 
+ #include "pvr_bo.h"
+ #include "pvr_csb.h"
++#include "csbgen/rogue/cdm.h"
+ #include "pvr_static.h"
+ #include "pvr_context.h"
+ 
+@@ -4325,6 +4326,61 @@ cdm_compile_check(struct pipe_screen *pscreen)
+          free(seg);
+          free(code_buf);
+          free(entries);
++
++         /* Build the CDM control stream for this dispatch (shared-update kernel, main kernel,
++          * fence kernel, terminate) and print it for comparison with the reference capture. The
++          * parameters here are the values the reference's dispatch logic derives: shared-update
++          * uses the descriptor program and 1 workgroup, the main kernel launches the flattened
++          * workgroup size, the fence kernel deallocates the shared registers. */
++         {
++            struct pvr_csb csb;
++            uint32_t stream[64];
++            bool emitted = true;
++
++            memset(stream, 0, sizeof(stream));
++            pvr_csb_init(&csb, stream, sizeof(stream), 0);
++
++#define CDM_EMIT_KERNEL(_common, _unified, _temp, _data, _target, _fence, _data_addr,                               _code_addr, _sd, _shared, _wg, _local, _maxinst)                               do {                                                                                          struct ROGUE_CDMCTRL_KERNEL0 k0 = { .block_type = ROGUE_CDMCTRL_BLOCK_TYPE_COMPUTE_KERNEL, \
++                  .indirect_present = false, .global_offsets_present = false,                                .event_object_present = false, .usc_common_size = (_common),                               .usc_unified_size = (_unified), .pds_temp_size = (_temp),                                  .pds_data_size = (_data), .usc_target = (_target), .fence = (_fence) };                 struct ROGUE_CDMCTRL_KERNEL1 k1 = { .data_addr = (_data_addr),                                .sd_type = (_sd), .usc_common_shared = (_shared) };                                     struct ROGUE_CDMCTRL_KERNEL2 k2 = { .code_addr = (_code_addr) };                           struct ROGUE_CDMCTRL_KERNEL3 k3 = { .workgroup_x = (_wg)[0] - 1 };                         struct ROGUE_CDMCTRL_KERNEL4 k4 = { .workgroup_y = (_wg)[1] - 1 };                         struct ROGUE_CDMCTRL_KERNEL5 k5 = { .workgroup_z = (_wg)[2] - 1 };                         struct ROGUE_CDMCTRL_KERNEL8 k8 = { .max_instances = (_maxinst),                              .workgroup_size_x = (_local)[0] - 1, .workgroup_size_y = (_local)[1] - 1,\
++                  .workgroup_size_z = (_local)[2] - 1 };                                                 uint32_t *dw = pvr_csb_emit(&csb, ROGUE_CDMCTRL_KERNEL0_length);                           if (dw == NULL) { emitted = false; break; }                                               ROGUE_CDMCTRL_KERNEL0_pack(dw, &k0);                                                      dw = pvr_csb_emit(&csb, ROGUE_CDMCTRL_KERNEL1_length);                                    if (dw == NULL) { emitted = false; break; }                                               ROGUE_CDMCTRL_KERNEL1_pack(dw, &k1);                                                      dw = pvr_csb_emit(&csb, ROGUE_CDMCTRL_KERNEL2_length);                                    if (dw == NULL) { emitted = false; break; }                                               ROGUE_CDMCTRL_KERNEL2_pack(dw, &k2);                                                      dw = pvr_csb_emit(&csb, ROGUE_CDMCTRL_KERNEL3_length);                                    if (dw == NULL) { emitted = false; break; }                                               ROGUE_CDMCTRL_KERNEL3_pack(dw, &k3);                                                      dw = pvr_csb_emit(&csb, ROGUE_CDMCTRL_KERNEL4_length);                                    if (dw == NULL) { emitted = false; break; }                                               ROGUE_CDMCTRL_KERNEL4_pack(dw, &k4);                                                      dw = pvr_csb_emit(&csb, ROGUE_CDMCTRL_KERNEL5_length);                                    if (dw == NULL) { emitted = false; break; }                                               ROGUE_CDMCTRL_KERNEL5_pack(dw, &k5);                                                      dw = pvr_csb_emit(&csb, ROGUE_CDMCTRL_KERNEL8_length);                                    if (dw == NULL) { emitted = false; break; }                                               ROGUE_CDMCTRL_KERNEL8_pack(dw, &k8);                                                   } while (0)
++
++            {
++               static const uint32_t wg1[3] = { 1, 1, 1 };
++               static const uint32_t wg64[3] = { 64, 64, 1 };
++               static const uint32_t l1[3] = { 1, 1, 1 };
++               static const uint32_t l64[3] = { 64, 1, 1 };
++
++               /* shared-update kernel: descriptor program, 1 workgroup */
++               CDM_EMIT_KERNEL(1, 0, 0, 2, ROGUE_CDMCTRL_USC_TARGET_ALL, false,
++                               0x2700, 0x2600, ROGUE_CDMCTRL_SD_TYPE_NONE, true,
++                               wg1, l1, 8);
++               if (emitted)
++                  CDM_EMIT_KERNEL(1, 1, 1, 2, ROGUE_CDMCTRL_USC_TARGET_ANY, false,
++                                  0x2640, 0x2660, ROGUE_CDMCTRL_SD_TYPE_USC, false,
++                                  wg64, l64, 0);
++               if (emitted)
++                  CDM_EMIT_KERNEL(0, 0, 0, 1, ROGUE_CDMCTRL_USC_TARGET_ANY, true,
++                                  0x1040, 0x1050, ROGUE_CDMCTRL_SD_TYPE_PDS, true,
++                                  wg1, l1, 8);
++               if (emitted) {
++                  struct ROGUE_CDMCTRL_STREAM_TERMINATE t = {
++                     .block_type = ROGUE_CDMCTRL_BLOCK_TYPE_STREAM_TERMINATE,
++                  };
++                  uint32_t *dw = pvr_csb_emit(&csb, ROGUE_CDMCTRL_STREAM_TERMINATE_length);
++
++                  if (dw != NULL)
++                     ROGUE_CDMCTRL_STREAM_TERMINATE_pack(dw, &t);
++                  else
++                     emitted = false;
++               }
++            }
++#undef CDM_EMIT_KERNEL
++            printf("cdmc:          ctrl stream dw=%u%s:", (unsigned)(csb.cur - csb.start),
++                   emitted ? "" : " (OVERFLOW)");
++            for (uint32_t *p = csb.start; p < csb.cur; p++)
++               printf(" %08x", *p);
++            printf("\n");
++         }
+       }
+    }
+    f = fopen(out_path, "wb");
+@@ -4336,6 +4392,431 @@ cdm_compile_check(struct pipe_screen *pscreen)
+    ralloc_free(shader);
+ }
+ 
++
++static void *cdm_map_at(int fd, struct pvr_vm *vm, uint64_t addr, uint64_t size, struct pvr_bo *bo);
++static uint8_t *cdm_read_capture(const char *dir, const char *name, uint32_t *size_out);
++
++/* Emits one CDM compute kernel packet group. Mirrors pvr_compute_generate_control_stream(). */
++static bool
++cdm_emit_kernel(struct pvr_csb *csb, uint32_t usc_common_size, uint32_t usc_unified_size,
++                uint32_t pds_temp_size, uint32_t pds_data_size, bool usc_target_any, bool fence,
++                uint64_t pds_data_addr, uint64_t pds_code_addr, uint32_t sd_type,
++                bool usc_common_shared, const uint32_t global_size[3],
++                const uint32_t local_size[3], uint32_t max_instances)
++{
++   struct ROGUE_CDMCTRL_KERNEL0 k0 = {
++      .block_type = ROGUE_CDMCTRL_BLOCK_TYPE_COMPUTE_KERNEL,
++      .indirect_present = false,
++      .global_offsets_present = false,
++      .event_object_present = false,
++      .usc_common_size = usc_common_size,
++      .usc_unified_size = usc_unified_size,
++      .pds_temp_size = pds_temp_size,
++      .pds_data_size = pds_data_size,
++      .usc_target = usc_target_any ? ROGUE_CDMCTRL_USC_TARGET_ANY : ROGUE_CDMCTRL_USC_TARGET_ALL,
++      .fence = fence,
++   };
++   struct ROGUE_CDMCTRL_KERNEL1 k1 = {
++      .data_addr = pds_data_addr,
++      .sd_type = sd_type,
++      .usc_common_shared = usc_common_shared,
++   };
++   struct ROGUE_CDMCTRL_KERNEL2 k2 = { .code_addr = pds_code_addr };
++   struct ROGUE_CDMCTRL_KERNEL3 k3 = { .workgroup_x = global_size[0] - 1 };
++   struct ROGUE_CDMCTRL_KERNEL4 k4 = { .workgroup_y = global_size[1] - 1 };
++   struct ROGUE_CDMCTRL_KERNEL5 k5 = { .workgroup_z = global_size[2] - 1 };
++   struct ROGUE_CDMCTRL_KERNEL8 k8 = {
++      .max_instances = max_instances,
++      .workgroup_size_x = local_size[0] - 1,
++      .workgroup_size_y = local_size[1] - 1,
++      .workgroup_size_z = local_size[2] - 1,
++   };
++   uint32_t *dw;
++
++#define CDM_EMIT_ONE(_type, _values)                                        \
++   do {                                                                     \
++      dw = pvr_csb_emit(csb, ROGUE_CDMCTRL_##_type##_length);               \
++      if (dw == NULL)                                                       \
++         return false;                                                      \
++      ROGUE_CDMCTRL_##_type##_pack(dw, &(_values));                         \
++   } while (0)
++
++   CDM_EMIT_ONE(KERNEL0, k0);
++   CDM_EMIT_ONE(KERNEL1, k1);
++   CDM_EMIT_ONE(KERNEL2, k2);
++   CDM_EMIT_ONE(KERNEL3, k3);
++   CDM_EMIT_ONE(KERNEL4, k4);
++   CDM_EMIT_ONE(KERNEL5, k5);
++   CDM_EMIT_ONE(KERNEL8, k8);
++#undef CDM_EMIT_ONE
++   return true;
++}
++
++/* Native compute draw: compile the triangle compute shader with the native compiler, generate every
++ * program and stream the way the reference does (from our own pco data and PDS generator output),
++ * create a compute context and submit the job through the native VM, then read the target back. This
++ * is the compute route without replaying captured reference data. */
++static void
++cdm_native_draw_check(int fd, struct pipe_screen *pscreen)
++{
++   struct pvr_screen *scr = pvr_screen(pscreen);
++   struct pvr_vm *vm = &scr->vm;
++   const struct pvr_device_info *dev_info = &scr->dev_info;
++   const struct pvr_heap *pds_heap = &vm->heaps[DRM_PVR_HEAP_PDS_CODE_DATA];
++   const struct pvr_heap *usc_heap = &vm->heaps[DRM_PVR_HEAP_USC_CODE];
++   const char *spv_path = getenv("PVR_PROBE_CDM_SPV");
++   const uint64_t usc_off = 0x7200;
++   const uint64_t usc_addr = usc_heap->base + usc_off;
++   const uint64_t target_addr = 0x80000b1000ULL;
++   const uint32_t target_size = 512u * 512u * 4u;
++   const uint64_t desc_page = 0x800004b000ULL;
++   const uint64_t ctrl_addr = 0x80001b1000ULL;
++   const uint64_t state_addr = 0x800006b000ULL;
++   const uint64_t border_addr = 0x8000071000ULL;
++   const uint32_t desc_data_off = 0x2700, desc_code_off = 0x2600;
++   const uint32_t kern_data_off = 0x2640, kern_code_off = 0x2660;
++   const uint32_t fence_data_off = 0x1040, fence_code_off = 0x1050;
++   struct pvr_bo target_bo = { 0 }, desc_bo = { 0 }, ctrl_bo = { 0 }, state_bo = { 0 };
++   struct pvr_bo border_bo = { 0 }, pds_bo = { 0 }, usc_bo = { 0 };
++   struct drm_pvr_ioctl_create_context_args cargs = {
++      .type = DRM_PVR_CTX_TYPE_COMPUTE,
++      .vm_context_handle = vm->context_handle,
++   };
++   struct stat st;
++   uint32_t *spv, *cptr;
++   nir_shader *nir;
++   pco_data data = { 0 };
++   pco_shader *shader = NULL;
++   const void *bin = NULL;
++   unsigned bin_size = 0;
++   const pco_data *sd;
++   struct pvr_pds_compute_shader_program kern_prog, fence_prog;
++   struct pvr_pds_descriptor_program_input din = { 0 };
++   struct pvr_pds_info dinfo = { 0 };
++   uint32_t *desc_entries = NULL, *desc_code = NULL, *kern_stage = NULL, *fence_stage = NULL;
++   uint32_t desc_data[8] = { 0 }, fw_stream[16] = { 0 };
++   bool ok = false;
++   int sfd;
++
++   if (spv_path == NULL || stat(spv_path, &st) != 0) {
++      printf("cdmn:          FAIL: PVR_PROBE_CDM_SPV not set or missing\n");
++      return;
++   }
++   spv = malloc(st.st_size);
++   sfd = open(spv_path, O_RDONLY);
++   if (spv == NULL || sfd < 0 || read(sfd, spv, st.st_size) != st.st_size) {
++      printf("cdmn:          FAIL: cannot load %s\n", spv_path);
++      free(spv);
++      if (sfd >= 0)
++         close(sfd);
++      return;
++   }
++   close(sfd);
++   nir = spirv_to_nir(spv, st.st_size / 4, NULL, MESA_SHADER_COMPUTE, "main",
++                      pco_spirv_options(), pco_nir_options());
++   free(spv);
++   if (nir == NULL || !pvr_shader_compile_compute(scr->pco_ctx, nir, &data, &shader, &bin, &bin_size)) {
++      printf("cdmn:          FAIL: native compute compile\n");
++      return;
++   }
++   sd = pco_shader_data(shader);
++   printf("cdmn:          compiled %u bytes USC (temps=%u shareds=%u coeffs=%u literals=%u)\n",
++          bin_size, sd->common.temps, sd->common.shareds, sd->common.coeffs,
++          sd->common.literals.count);
++
++   /* Compute kernel program (DOUTU to our USC program). */
++   pvr_pds_compute_shader_program_init(&kern_prog);
++   kern_prog.flattened_work_groups = true;
++   kern_prog.kick_usc = true;
++   pvr_pds_setup_doutu(&kern_prog.usc_task_control, usc_addr, sd->common.temps,
++                       ROGUE_PDSINST_DOUTU_SAMPLE_RATE_INSTANCE, false);
++   if (sd->common.sys_vals[SYSTEM_VALUE_LOCAL_INVOCATION_INDEX].count > 0)
++      kern_prog.local_input_regs[0] =
++         sd->common.sys_vals[SYSTEM_VALUE_LOCAL_INVOCATION_INDEX].start;
++   for (unsigned u = 0; u < 3; u++) {
++      if (sd->common.sys_vals[SYSTEM_VALUE_WORKGROUP_ID].count > u &&
++          (sd->cs.workgroup_id_mask & BITFIELD_BIT(u)))
++         kern_prog.work_group_input_regs[u] =
++            sd->common.sys_vals[SYSTEM_VALUE_WORKGROUP_ID].start + u;
++      if (sd->common.sys_vals[SYSTEM_VALUE_NUM_WORKGROUPS].count > u)
++         kern_prog.num_work_groups_regs[u] =
++            sd->common.sys_vals[SYSTEM_VALUE_NUM_WORKGROUPS].start + u;
++   }
++   pvr_pds_compute_shader(&kern_prog, NULL, PDS_GENERATE_SIZES, dev_info);
++   kern_stage = calloc(kern_prog.data_size + kern_prog.code_size / 4 + 4, 4);
++   cptr = pvr_pds_compute_shader(&kern_prog, kern_stage, PDS_GENERATE_DATA_SEGMENT, dev_info);
++   pvr_pds_compute_shader(&kern_prog, cptr, PDS_GENERATE_CODE_SEGMENT, dev_info);
++
++   /* Fence program (deallocates the shared registers at the end of the dispatch). */
++   pvr_pds_compute_shader_program_init(&fence_prog);
++   fence_prog.fence = true;
++   fence_prog.clear_pds_barrier = true;
++   pvr_pds_compute_shader(&fence_prog, NULL, PDS_GENERATE_SIZES, dev_info);
++   fence_stage = calloc(fence_prog.data_size + fence_prog.code_size / 4 + 4, 4);
++   cptr = pvr_pds_compute_shader(&fence_prog, fence_stage, PDS_GENERATE_DATA_SEGMENT, dev_info);
++   pvr_pds_compute_shader(&fence_prog, cptr, PDS_GENERATE_CODE_SEGMENT, dev_info);
++
++   /* Descriptor upload program + its dispatch-time data segment. */
++   din.descriptor_set_count = 1;
++   din.descriptor_sets[0] = (struct pvr_pds_descriptor_set){
++      .descriptor_set = 0,
++      .size_in_dwords = sd->common.desc_sets[0].range.count,
++      .destination = sd->common.desc_sets[0].range.start,
++   };
++   din.buffer_count = 1;
++   din.buffers[0] = (struct pvr_pds_buffer){
++      .type = PVR_BUFFER_TYPE_COMPILE_TIME,
++      .size_in_dwords = sd->common.literals.count,
++      .destination = sd->common.literals.start,
++   };
++   desc_entries = calloc(1, 4096);
++   dinfo.entries = (struct pvr_const_map_entry *)desc_entries;
++   dinfo.entries_size_in_bytes = 4096;
++   pvr_pds_generate_descriptor_upload_program(&din, NULL, &dinfo);
++   desc_code = calloc(dinfo.code_size_in_dwords ? dinfo.code_size_in_dwords : 1, 4);
++   pvr_pds_generate_descriptor_upload_program(&din, desc_code, &dinfo);
++
++   /* Buffers at the device addresses the streams name. */
++   if (cdm_map_at(fd, vm, target_addr, target_size, &target_bo) == NULL ||
++       cdm_map_at(fd, vm, desc_page, 4096, &desc_bo) == NULL ||
++       cdm_map_at(fd, vm, ctrl_addr, 4096, &ctrl_bo) == NULL ||
++       cdm_map_at(fd, vm, state_addr, 4096, &state_bo) == NULL ||
++       cdm_map_at(fd, vm, border_addr, 4096, &border_bo) == NULL ||
++       cdm_map_at(fd, vm, pds_heap->base + 0x1000, 0x2000, &pds_bo) == NULL ||
++       cdm_map_at(fd, vm, usc_heap->base + 0x7000, 0x1000, &usc_bo) == NULL) {
++      printf("cdmn:          FAIL: cannot map the dispatch buffers\n");
++      goto out;
++   }
++   memcpy((uint8_t *)usc_bo.map + (usc_off - 0x7000), bin, bin_size);
++
++   /* PDS page: fence program, descriptor program, compute kernel program, descriptor data. */
++   {
++      uint8_t *pds = pds_bo.map;
++
++      /* the generator emits [data dwords][code], but the code segment is aligned separately when
++       * uploaded, so place the two segments at their real offsets */
++      uint32_t fence_code_off = ALIGN_POT(fence_data_off + fence_prog.data_size * 4, 16);
++      uint32_t kern_code_off = ALIGN_POT(kern_data_off + kern_prog.data_size * 4, 16);
++
++      memcpy(pds + (fence_data_off - 0x1000), fence_stage, fence_prog.data_size * 4);
++      memcpy(pds + (fence_code_off - 0x1000),
++             (uint8_t *)fence_stage + fence_prog.data_size * 4, (uint32_t)(fence_prog.code_size / 4) * 4);
++      memcpy(pds + (desc_code_off - 0x1000), desc_code, dinfo.code_size_in_dwords * 4);
++      memcpy(pds + (kern_data_off - 0x1000), kern_stage, kern_prog.data_size * 4);
++      memcpy(pds + (kern_code_off - 0x1000),
++             (uint8_t *)kern_stage + kern_prog.data_size * 4, (uint32_t)(kern_prog.code_size / 4) * 4);
++      printf("cdmn:          pds: fence data@0x%x code@0x%x, kernel data@0x%x code@0x%x, "
++             "desc code@0x%x data@0x%x\n", fence_data_off, fence_code_off, kern_data_off,
++             kern_code_off, desc_code_off, desc_data_off);
++
++      /* dispatch-time descriptor data segment from the generated const-map entries */
++      {
++         const uint8_t *e = (const uint8_t *)desc_entries;
++         const uint8_t *end = e + dinfo.entries_written_size_in_bytes;
++         uint32_t *seg = desc_data;
++
++         while (e < end) {
++            const struct pvr_const_map_entry *hdr = (const struct pvr_const_map_entry *)e;
++
++            if (hdr->type == PVR_PDS_CONST_MAP_ENTRY_TYPE_LITERAL32) {
++               const struct pvr_const_map_entry_literal32 *lit =
++                  (const struct pvr_const_map_entry_literal32 *)e;
++
++               if (lit->const_offset < dinfo.data_size_in_dwords)
++                  seg[lit->const_offset] = lit->literal_value;
++               e += sizeof(*lit);
++            } else if (hdr->type == PVR_PDS_CONST_MAP_ENTRY_TYPE_DESCRIPTOR_SET) {
++               const struct pvr_const_map_entry_descriptor_set *d =
++                  (const struct pvr_const_map_entry_descriptor_set *)e;
++
++               if (d->const_offset / 2 < dinfo.data_size_in_dwords / 2)
++                  ((uint64_t *)seg)[d->const_offset / 2] = desc_page + 0x80;
++               e += sizeof(*d);
++            } else if (hdr->type == PVR_PDS_CONST_MAP_ENTRY_TYPE_SPECIAL_BUFFER) {
++               const struct pvr_const_map_entry_special_buffer *sp =
++                  (const struct pvr_const_map_entry_special_buffer *)e;
++
++               if (sp->const_offset / 2 < dinfo.data_size_in_dwords / 2)
++                  ((uint64_t *)seg)[sp->const_offset / 2] = desc_page + 0x40;
++               e += sizeof(*sp);
++            } else {
++               break;
++            }
++         }
++      }
++      memcpy(pds + (desc_data_off - 0x1000), desc_data, dinfo.data_size_in_dwords * 4);
++   }
++
++   /* Descriptor set + literal pool inside the general page. */
++   {
++      struct {
++         uint64_t addr;
++         uint32_t size;
++         uint32_t offset;
++      } __attribute__((packed)) bdesc = { target_addr, target_size, 0 };
++      uint32_t i;
++      char *p;
++
++      memcpy((uint8_t *)desc_bo.map + 0x80, &bdesc, sizeof(bdesc));
++      p = (char *)desc_bo.map + 0x40;
++      for (i = 0; i < sd->common.literals.count; i++)
++         memcpy(p + 4 * i, &sd->common.literal_vals[i], 4);
++   }
++
++   /* CDM control stream: shared-update kernel, main kernel, fence kernel, terminate. */
++   {
++      struct pvr_csb csb;
++      static const uint32_t wg1[3] = { 1, 1, 1 }, l1[3] = { 1, 1, 1 };
++      uint32_t wg64[3], l64[3] = { 1, 1, 1 }, work_items;
++      bool emitted;
++
++      wg64[0] = 64; /* 64x64 workgroups of 8x8 invocations for a 512x512 target */
++      wg64[1] = 64;
++      wg64[2] = 1;
++      work_items = sd->cs.workgroup_size[0] * sd->cs.workgroup_size[1] *
++                   sd->cs.workgroup_size[2];
++      if (work_items > ROGUE_MAX_INSTANCES_PER_TASK)
++         work_items = ALIGN_POT(work_items, ROGUE_MAX_INSTANCES_PER_TASK);
++      l64[0] = work_items;
++
++      pvr_csb_init(&csb, ctrl_bo.map, 4096, 0);
++      emitted = cdm_emit_kernel(&csb, 1, 0, 0,
++                                DIV_ROUND_UP(dinfo.data_size_in_dwords * 4, 16),
++                                false, false, pds_heap->base + desc_data_off,
++                                pds_heap->base + desc_code_off, ROGUE_CDMCTRL_SD_TYPE_NONE, true,
++                                wg1, l1, 8);
++      if (emitted)
++         emitted = cdm_emit_kernel(&csb, DIV_ROUND_UP((sd->common.coeffs + sd->common.shareds) * 4, 64),
++                                   DIV_ROUND_UP(sd->common.vtxins * 4, 16),
++                                   DIV_ROUND_UP((kern_prog.temps_used ? kern_prog.temps_used : 1) * 4, 16),
++                                   DIV_ROUND_UP(kern_prog.data_size * 4, 16), true, false,
++                                   pds_heap->base + kern_data_off, pds_heap->base + kern_code_off,
++                                   ROGUE_CDMCTRL_SD_TYPE_USC, false, wg64, l64,
++                                   ROGUE_MAX_INSTANCES_PER_TASK);
++      if (emitted)
++         emitted = cdm_emit_kernel(&csb, 0, 0, 0,
++                                   DIV_ROUND_UP(fence_prog.data_size * 4, 16), true, true,
++                                   pds_heap->base + fence_data_off,
++                                   pds_heap->base + fence_code_off,
++                                   ROGUE_CDMCTRL_SD_TYPE_PDS, true, wg1, l1, 8);
++      if (emitted) {
++         struct ROGUE_CDMCTRL_STREAM_TERMINATE t = {
++            .block_type = ROGUE_CDMCTRL_BLOCK_TYPE_STREAM_TERMINATE,
++         };
++         uint32_t *dw = pvr_csb_emit(&csb, ROGUE_CDMCTRL_STREAM_TERMINATE_length);
++
++         if (dw != NULL)
++            ROGUE_CDMCTRL_STREAM_TERMINATE_pack(dw, &t);
++         else
++            emitted = false;
++      }
++      if (!emitted) {
++         printf("cdmn:          FAIL: control stream overflow\n");
++         goto out;
++      }
++      printf("cdmn:          control stream %u dwords\n", (unsigned)(csb.cur - csb.start));
++   }
++
++   /* Compute fw stream. */
++   {
++      uint32_t *fw = fw_stream;
++      struct ROGUE_KMD_STREAM_HDR hdr = { .length = 0 };
++      struct ROGUE_CR_TPU_BORDER_COLOUR_TABLE_CDM border = {
++         .border_colour_table_address = border_addr,
++      };
++      struct ROGUE_CR_CDM_CTRL_STREAM_BASE ctrl = { .addr = ctrl_addr };
++      struct ROGUE_CR_CDM_CONTEXT_STATE_BASE state = { .addr = state_addr };
++      struct ROGUE_CR_CDM_CONTEXT_PDS1 pds1 = {
++         .pds_seq_dep = false,
++         .usc_seq_dep = false,
++         .target = false,
++         .unified_size = 4,
++         .common_shared = true,
++         .common_size = 1,
++         .temp_size = 0,
++         .data_size = 4, /* the reference's context-switch store program data size */
++         .fence = false,
++      };
++      uint32_t *p = fw + ROGUE_KMD_STREAM_HDR_length;
++
++      ROGUE_CR_TPU_BORDER_COLOUR_TABLE_CDM_pack(p, &border);
++      p += ROGUE_CR_TPU_BORDER_COLOUR_TABLE_CDM_length;
++      ROGUE_CR_CDM_CTRL_STREAM_BASE_pack(p, &ctrl);
++      p += ROGUE_CR_CDM_CTRL_STREAM_BASE_length;
++      ROGUE_CR_CDM_CONTEXT_STATE_BASE_pack(p, &state);
++      p += ROGUE_CR_CDM_CONTEXT_STATE_BASE_length;
++      ROGUE_CR_CDM_CONTEXT_PDS1_pack(p, &pds1);
++      p += ROGUE_CR_CDM_CONTEXT_PDS1_length;
++      *p++ = 0; /* feature-gated fields (cdm_item / compute_cluster on this device): unused */
++      *p++ = 0;
++      hdr.length = (uint32_t)(p - fw) * 4;
++      ROGUE_KMD_STREAM_HDR_pack(fw, &hdr);
++      printf("cdmn:          fw stream %u bytes:", hdr.length);
++      for (uint32_t i = 0; i < hdr.length / 4; i++)
++         printf(" %08x", fw[i]);
++      printf("\n");
++   }
++
++   /* Compute context: the dispatch does not use the reference's context-switch programs, so a
++    * stream with the header and zero program addresses is enough (verified with the replay). */
++   {
++      uint64_t ctx_state[8] = { 0 };
++
++      ctx_state[0] = sizeof(ctx_state);
++      cargs.static_context_state = (uint64_t)(uintptr_t)ctx_state;
++      cargs.static_context_state_len = sizeof(ctx_state);
++      if (drmIoctl(fd, DRM_IOCTL_PVR_CREATE_CONTEXT, &cargs) != 0) {
++         printf("cdmn:          FAIL: compute context: %s\n", strerror(errno));
++         goto out;
++      }
++   }
++
++   printf("cdmn:          submitting native compute job\n");
++   pvr_job_submit_compute_sync(vm, cargs.handle, fw_stream, *(uint32_t *)fw_stream, 2000);
++   {
++      uint32_t *px = target_bo.map;
++      unsigned waited_us = 0;
++      uint32_t inside = 0, outside = 0;
++
++      while (waited_us < 3000000) {
++         uint32_t i;
++
++         inside = outside = 0;
++         for (i = 0; i < target_size / 4; i++) {
++            if (px[i] == 0xFF0000FFu)
++               inside++;
++            else if (px[i] == 0xFFFF0000u)
++               outside++;
++         }
++         if (inside > 1000 && outside > 1000)
++            break;
++         usleep(1000);
++         waited_us += 1000;
++      }
++      printf("cdmn:          readback inside=%u outside=%u (waited %u us) center=0x%08x "
++             "corner=0x%08x\n", inside, outside, waited_us, px[200 * 512 + 256], px[10 * 512 + 10]);
++      ok = inside > 1000 && outside > 1000;
++      printf("cdmn:          %s (native compute draw)\n", ok ? "PASS" : "FAIL");
++   }
++
++   drmIoctl(fd, DRM_IOCTL_PVR_DESTROY_CONTEXT, &cargs.handle);
++out:
++   pvr_bo_destroy(fd, &target_bo);
++   pvr_bo_destroy(fd, &desc_bo);
++   pvr_bo_destroy(fd, &ctrl_bo);
++   pvr_bo_destroy(fd, &state_bo);
++   pvr_bo_destroy(fd, &border_bo);
++   pvr_bo_destroy(fd, &pds_bo);
++   pvr_bo_destroy(fd, &usc_bo);
++   free(desc_entries);
++   free(desc_code);
++   free(kern_stage);
++   free(fence_stage);
++   ralloc_free(shader);
++   if (getenv("PVR_PROBE_ONLY_CDM"))
++      _exit(ok ? 0 : 1);
++}
++
+ static uint8_t *
+ cdm_read_capture(const char *dir, const char *name, uint32_t *size_out)
+ {
+@@ -4517,6 +4998,12 @@ cdm_draw_check(int fd, struct pipe_screen *pscreen)
+     * KMD header. */
+    border_addr = ((uint64_t)((uint32_t *)fw)[3] | ((uint64_t)((uint32_t *)fw)[4] << 32)) << 2;
+ 
++   if (getenv("PVR_PROBE_CDM_ZERO_CTXSTATE")) {
++      /* Does the dispatch need the compute context's context-switch programs at all? */
++      /* Keep the stream header (length) and zero the program addresses only. */
++      memset(ctx_state + 4 + 8, 0, ctx_len > 8 ? ctx_len - 8 : 0);
++      printf("cdm:           using a zeroed compute static context state\n");
++   }
+    cargs.static_context_state = (uint64_t)(uintptr_t)(ctx_state + 4);
+    cargs.static_context_state_len = ctx_len;
+    if (drmIoctl(fd, DRM_IOCTL_PVR_CREATE_CONTEXT, &cargs) != 0) {
+@@ -4936,6 +5423,8 @@ main(int argc, char **argv)
+     * firmware HWR, after which every later command in the process is discarded). */
+    if (getenv("PVR_PROBE_CDM_COMPILE"))
+       cdm_compile_check(screen);
++   if (getenv("PVR_PROBE_CDM_NATIVE"))
++      cdm_native_draw_check(fd, screen);
+    const bool cdm_pass = getenv("PVR_PROBE_CDM_DIR") ? cdm_draw_check(fd, screen) : true;
+    const bool tq_pass = getenv("PVR_PROBE_TQ_STREAM") ? tq_fill_check(fd, screen) : true;
+ 
+-- 
+2.47.3
+

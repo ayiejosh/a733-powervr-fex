@@ -1,0 +1,159 @@
+From 8ed8b5b1931e57b4428312c0d9620b3aa6deecae Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 15:31:17 +0800
+Subject: [PATCH 124/269] gallium/pvr: keep the firmware static-data areas, not
+ just their total
+
+The VM setup summed the kernel's static-data areas to work out the carveout and then
+threw the table away. The static context state that a render context needs names the
+firmware's fence area, YUV CSC coefficients and sync programs BY ADDRESS, so the table
+has to be kept - a total is not enough to write state that points at them.
+
+  vm: 5 firmware areas; fence 128 bytes at +0x0, yuv csc 1024 bytes at +0x80,
+      total 1152 == carveout
+  vm: PASS
+
+Two numbers that reach the code by different routes now have to agree: the carveout
+subtracted from the usable heap range, and the sum of the general heap's areas. If the
+areas were being parsed wrongly the check fails rather than silently producing plausible
+addresses. The per-area sizes are what the kernel's table states (fence 128 at offset 0,
+YUV CSC 1024 at offset 128), and the total matches the 1152 measured independently when
+the carveout was first found.
+
+Also corrects a recommendation I made last round. I proposed a CPU-side draw path using
+the in-tree draw module as a route to an "actually drawn frame" without the CSB. On
+checking, it cannot deliver that: the draw module does vertex processing and clipping
+only - it hands primitives to a rasteriser the driver must supply - and this tree has no
+CPU-side NIR interpreter, so a CPU path could not execute an application's shaders. It
+would draw geometry the driver invented while ignoring the shaders, which for glmark2 is
+wrong output dressed up as a frame. The GPU path is the only honest route, so this round
+went back to it. The prerequisite chain is now explicit: render context creation needs
+the static context state and a VDM callstack address, which need these areas.
+---
+ src/gallium/drivers/pvr/pvr_probe.c | 31 +++++++++++++++++++++++++++++
+ src/gallium/drivers/pvr/pvr_vm.c    | 18 +++++++++++++++++
+ src/gallium/drivers/pvr/pvr_vm.h    | 16 +++++++++++++++
+ 3 files changed, 65 insertions(+)
+
+diff --git a/src/gallium/drivers/pvr/pvr_probe.c b/src/gallium/drivers/pvr/pvr_probe.c
+index af44fe62..19835207 100644
+--- a/src/gallium/drivers/pvr/pvr_probe.c
++++ b/src/gallium/drivers/pvr/pvr_probe.c
+@@ -166,6 +166,37 @@ vm_roundtrip(int fd)
+       goto out;
+    }
+ 
++   /* The firmware areas, now kept rather than only summed. This cross-checks the parse:
++    * the carveout subtracted from the usable range and the sum of the general heap's
++    * areas reach the code by different routes, so if the areas are being read wrongly
++    * the two stop agreeing. The per-area sizes are what the kernel's table states. */
++   {
++      const struct drm_pvr_static_data_area *fence =
++         pvr_vm_static_area(&vm, DRM_PVR_STATIC_DATA_AREA_FENCE, DRM_PVR_HEAP_GENERAL);
++      const struct drm_pvr_static_data_area *yuv =
++         pvr_vm_static_area(&vm, DRM_PVR_STATIC_DATA_AREA_YUV_CSC, DRM_PVR_HEAP_GENERAL);
++      uint64_t area_total = 0;
++      const uint64_t carveout = vm.general.size - vm.general.usable_size;
++
++      for (unsigned i = 0; i < vm.nr_areas; i++) {
++         if (vm.areas[i].location_heap_id == DRM_PVR_HEAP_GENERAL)
++            area_total += vm.areas[i].size;
++      }
++
++      if (area_total != carveout || fence == NULL || yuv == NULL ||
++          fence->size != 128 || yuv->size != 1024) {
++         printf("vm:            FAIL: %u areas total %" PRIu64 " but carveout is %" PRIu64
++                " (fence %s, yuv %s)\n", vm.nr_areas, area_total, carveout,
++                fence ? "found" : "missing", yuv ? "found" : "missing");
++         goto out;
++      }
++
++      printf("vm:            %u firmware areas; fence %u bytes at +0x%" PRIx64
++             ", yuv csc %u bytes at +0x%" PRIx64 ", total %" PRIu64 " == carveout\n",
++             vm.nr_areas, fence->size, (uint64_t)fence->offset, yuv->size,
++             (uint64_t)yuv->offset, area_total);
++   }
++
+    printf("vm:            mapped and unmapped 0x%" PRIx64 " (%" PRIu64 " bytes); "
+           "second address 0x%" PRIx64 "\n", addr_a, size, addr_b);
+    ok = true;
+diff --git a/src/gallium/drivers/pvr/pvr_vm.c b/src/gallium/drivers/pvr/pvr_vm.c
+index e39400ba..acadd0af 100644
+--- a/src/gallium/drivers/pvr/pvr_vm.c
++++ b/src/gallium/drivers/pvr/pvr_vm.c
+@@ -159,6 +159,13 @@ pvr_vm_init(int fd, struct pvr_vm *vm)
+       goto out;
+    }
+ 
++   /* Keep the areas themselves, not just their total: the static context state has to
++    * name the firmware's fence area, YUV CSC coefficients and sync programs by address,
++    * and those addresses are only in this table. */
++   vm->nr_areas = 0;
++   for (uint32_t i = 0; i < area_count && vm->nr_areas < ARRAY_SIZE(vm->areas); i++)
++      vm->areas[vm->nr_areas++] = areas[i];
++
+    vm->general.usable_base = general->base + carveout;
+    vm->general.usable_size = general->size - carveout;
+ 
+@@ -212,6 +219,17 @@ pvr_vm_finish(struct pvr_vm *vm)
+    vm->context_handle = 0;
+ }
+ 
++const struct drm_pvr_static_data_area *
++pvr_vm_static_area(const struct pvr_vm *vm, uint16_t usage, uint16_t heap_id)
++{
++   for (unsigned i = 0; i < vm->nr_areas; i++) {
++      if (vm->areas[i].area_usage == usage && vm->areas[i].location_heap_id == heap_id)
++         return &vm->areas[i];
++   }
++
++   return NULL;
++}
++
+ uint64_t
+ pvr_vm_alloc(struct pvr_vm *vm, uint64_t size, uint64_t alignment)
+ {
+diff --git a/src/gallium/drivers/pvr/pvr_vm.h b/src/gallium/drivers/pvr/pvr_vm.h
+index 76c6bdb2..a9a805c0 100644
+--- a/src/gallium/drivers/pvr/pvr_vm.h
++++ b/src/gallium/drivers/pvr/pvr_vm.h
+@@ -15,6 +15,8 @@
+ 
+ #include "util/vma.h"
+ 
++#include "drm-uapi/pvr_drm.h"
++
+ struct pvr_heap {
+    uint64_t base;        /* as the kernel reports it */
+    uint64_t size;
+@@ -23,13 +25,27 @@ struct pvr_heap {
+    uint32_t page_size;   /* the heap's own page size, from page_size_log2 */
+ };
+ 
++/* Up to DRM_PVR_STATIC_DATA_AREA_MAX entries, kept because the firmware addresses for
++ * the fence area, the YUV CSC coefficients and the sync programs live in the first
++ * bytes of the heaps and the static context state has to point at them. Summing their
++ * sizes (all an earlier round needed) is not enough to write that state. */
+ struct pvr_vm {
+    int fd;
+    uint32_t context_handle; /* from DRM_IOCTL_PVR_CREATE_VM_CONTEXT */
+    struct pvr_heap general; /* DRM_PVR_HEAP_GENERAL - the only heap v1 uses */
+    struct util_vma_heap vma;
++
++   /* The UAPI has four areas (EOT, FENCE, VDM_SYNC, YUV_CSC) but does not export a
++  * count, so the array is sized with room to spare and nr_areas is what is trusted. */
++   struct drm_pvr_static_data_area areas[8];
++   unsigned nr_areas;
+ };
+ 
++/* Returns the area serving `usage`, or NULL. The kernel's table is authoritative for
++ * where these live - the driver only reads it. */
++const struct drm_pvr_static_data_area *
++pvr_vm_static_area(const struct pvr_vm *vm, uint16_t usage, uint16_t heap_id);
++
+ bool pvr_vm_init(int fd, struct pvr_vm *vm);
+ void pvr_vm_finish(struct pvr_vm *vm);
+ 
+-- 
+2.47.3
+

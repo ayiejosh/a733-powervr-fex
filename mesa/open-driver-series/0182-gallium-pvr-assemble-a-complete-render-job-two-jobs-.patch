@@ -1,0 +1,120 @@
+From 1c8b7b27fb0364250b7353fcff638ffb66d34076 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 23 Oct 2026 13:46:39 +0800
+Subject: [PATCH 182/269] gallium/pvr: assemble a complete render job (two
+ jobs, one submit)
+
+A render pass is TWO kernel jobs - geometry then fragment - in ONE submit, and the driver only had a
+single-job pvr_job_submit(). Adds pvr_job_submit_render() carrying both, and a probe check that
+assembles the pair from the two verified stream builders: geometry 40 B + fragment 384 B, with each
+stream's header matching its length.
+
+Both streams are real because the kernel validates each job individually (pvr_job.c:411: non-zero
+cmd_stream AND cmd_stream_len) - a zero-length stream is refused, which is what the previous probe
+demonstrated and what made it useless as a test.
+
+This is the userspace half of job assembly. Submitting it needs the real kernel rather than the DRM
+shim, which accepts ioctls without validating them.
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c | 21 ++++++++++++
+ src/gallium/drivers/pvr_native/pvr_vm.c    | 37 ++++++++++++++++++++++
+ src/gallium/drivers/pvr_native/pvr_vm.h    |  3 ++
+ 3 files changed, 61 insertions(+)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index 28103921..f3bf1cea 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -2233,6 +2233,27 @@ csb_check(int fd, struct pipe_screen *pscreen)
+                 gd[7], cg[7], gd[8], cg[8]);
+       }
+ 
++      /* A render pass is TWO jobs in ONE submit: geometry then fragment. Both streams must be real,
++       * because the kernel validates each one (pvr_job.c:411 requires non-zero cmd_stream AND
++       * cmd_stream_len). This assembles the pair and checks the headers agree with the lengths - the
++       * userspace half of job assembly. Submitting it needs the real kernel, not the shim. */
++      {
++         uint8_t gjob[256], fjob[1024];
++         static const uint64_t pbe1[3] = { 0x0200003c68800000ull, 0x0000001f0000001full, 0 };
++         const uint32_t gl = pvr_geom_static_stream(gjob, sizeof(gjob), 0x80003bf000ull,
++                                                    0x8000071000ull, false, 0, false, 0, 0);
++         const uint32_t fl = pvr_frag_static_stream(fjob, sizeof(fjob), pbe1, 1, 0x2780, false);
++
++         if (gl != 40 || fl != 384 || ((uint32_t *)gjob)[0] != gl || ((uint32_t *)fjob)[0] != fl) {
++            printf("csb:           FAIL: cannot assemble a render job: geometry %u B (hdr %u), "
++                   "fragment %u B (hdr %u)\n", gl, ((uint32_t *)gjob)[0], fl,
++                   ((uint32_t *)fjob)[0]);
++            goto out;
++         }
++         printf("csb:           render job assembles: geometry %u B + fragment %u B, both headers match "
++                "their lengths (two jobs, one submit)\n", gl, fl);
++      }
++
+       printf("csb:           region headers: 64x64 -> 1, 256x64 -> 2, 2x2 macrotiles -> 4, "
+                 "800x600 -> %u units, zero tile size refused\n", d);
+       }
+diff --git a/src/gallium/drivers/pvr_native/pvr_vm.c b/src/gallium/drivers/pvr_native/pvr_vm.c
+index 3a6e4123..12d0f011 100644
+--- a/src/gallium/drivers/pvr_native/pvr_vm.c
++++ b/src/gallium/drivers/pvr_native/pvr_vm.c
+@@ -370,6 +370,43 @@ pvr_job_submit(struct pvr_vm *vm, uint32_t context_handle, uint32_t job_type,
+    return true;
+ }
+ 
++/* A render pass is TWO jobs - geometry then fragment - in ONE submit. The kernel validates each job
++ * (pvr_job.c:411: a non-zero cmd_stream AND cmd_stream_len), so both streams have to be real. */
++bool
++pvr_job_submit_render(struct pvr_vm *vm, uint32_t context_handle,
++                      uint64_t geom_stream, uint32_t geom_len,
++                      uint64_t frag_stream, uint32_t frag_len)
++{
++   struct drm_pvr_job jobs[2] = {
++      {
++         .type = DRM_PVR_JOB_TYPE_GEOMETRY,
++         .context_handle = context_handle,
++         .cmd_stream = geom_stream,
++         .cmd_stream_len = geom_len,
++      }, {
++         .type = DRM_PVR_JOB_TYPE_FRAGMENT,
++         .context_handle = context_handle,
++         .cmd_stream = frag_stream,
++         .cmd_stream_len = frag_len,
++      },
++   };
++   struct drm_pvr_ioctl_submit_jobs_args args = {
++      .jobs = {
++         .stride = sizeof(jobs[0]),
++         .count = ARRAY_SIZE(jobs),
++         .array = (__u64)(uintptr_t)jobs,
++      },
++   };
++
++   if (drmIoctl(vm->fd, DRM_IOCTL_PVR_SUBMIT_JOBS, &args) != 0) {
++      mesa_loge("pvr: SUBMIT_JOBS render (geom %u B at 0x%" PRIx64 ", frag %u B at 0x%" PRIx64
++                ") failed: %s", geom_len, geom_stream, frag_len, frag_stream, strerror(errno));
++      return false;
++   }
++
++   return true;
++}
++
+ void
+ pvr_vm_finish(struct pvr_vm *vm)
+ {
+diff --git a/src/gallium/drivers/pvr_native/pvr_vm.h b/src/gallium/drivers/pvr_native/pvr_vm.h
+index 25c027ba..921515a7 100644
+--- a/src/gallium/drivers/pvr_native/pvr_vm.h
++++ b/src/gallium/drivers/pvr_native/pvr_vm.h
+@@ -100,6 +100,9 @@ void pvr_gpu_context_destroy(struct pvr_vm *vm, struct pvr_gpu_context *ctx);
+  * GPU sees. A job with no sync operations is submitted without any: the driver has no
+  * fences yet, and inventing a wait it cannot signal would be worse than submitting
+  * unsynchronised work it cannot yet produce. */
++bool pvr_job_submit_render(struct pvr_vm *vm, uint32_t context_handle,
++                            uint64_t geom_stream, uint32_t geom_len,
++                            uint64_t frag_stream, uint32_t frag_len);
+ bool pvr_job_submit(struct pvr_vm *vm, uint32_t context_handle, uint32_t job_type,
+                     uint64_t cmd_stream, uint32_t cmd_stream_len);
+ 
+-- 
+2.47.3
+

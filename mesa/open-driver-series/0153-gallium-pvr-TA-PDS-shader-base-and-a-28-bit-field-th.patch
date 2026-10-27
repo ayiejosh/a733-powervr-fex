@@ -1,0 +1,153 @@
+From bb6ea971ff3ecceeb5ddc24efcd537a33912fd8f Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 21:02:29 +0800
+Subject: [PATCH 153/269] gallium/pvr: TA PDS shader base, and a 28-bit field
+ that will not hold a device address
+
+  csb: TA PDS shader base: 0x400000 round-trips; a full 40-bit address refused rather than
+       truncated
+  --- ALL PASS        (real open kernel)
+
+TA_STATE_PDS_SHADERBASE looks like a whole-address packet and is not: the field is bits [4:31], a
+28-bit window carrying address bits 4 to 31. This device has a 40-bit address space (PVR_DEV_ADDR_FMT
+is 0x%010PRIx64), so a full device address does not fit, and the generated pack shifts by 4 and
+keeps 28 bits - everything above is dropped without complaint.
+
+Found by asserting the FULL address round-trips rather than one half, which is how this family of
+field has been caught every time (round 20's link address was the first, and the same check written
+as two separate half-assertions failed there three times).
+
+Out-of-window addresses are refused at the call site rather than truncated: a silently truncated
+address sends the TA to fetch a program from somewhere else entirely, and nothing below reports it.
+The check asserts both directions - a fitting address round-trips, and a 40-bit one is refused.
+
+This is also a reminder about the reference: it passes PVR_DEV_ADDR(offset), an offset that fits,
+which is why the truncation never shows up there.
+---
+ src/gallium/drivers/pvr/pvr_csb.c   | 25 +++++++++++++++++++
+ src/gallium/drivers/pvr/pvr_csb.h   | 17 +++++++++++++
+ src/gallium/drivers/pvr/pvr_probe.c | 37 ++++++++++++++++++++++++++++-
+ 3 files changed, 78 insertions(+), 1 deletion(-)
+
+diff --git a/src/gallium/drivers/pvr/pvr_csb.c b/src/gallium/drivers/pvr/pvr_csb.c
+index 6c055688..14d0738d 100644
+--- a/src/gallium/drivers/pvr/pvr_csb.c
++++ b/src/gallium/drivers/pvr/pvr_csb.c
+@@ -1,6 +1,8 @@
+ /* Copyright 2026 The Mesa authors
+  * SPDX-License-Identifier: MIT
+  */
++#include <inttypes.h>
++
+ #include "pvr_csb.h"
+ 
+ #include "pipe/p_defines.h"
+@@ -297,6 +299,29 @@ pvr_filter_from_pipe(enum pipe_tex_filter filter, enum ROGUE_TEXSTATE_FILTER *ou
+    }
+ }
+ 
++bool
++pvr_csb_emit_ta_pds_shaderbase(struct pvr_csb *csb, uint64_t addr)
++{
++   struct ROGUE_TA_STATE_PDS_SHADERBASE shaderbase = { .addr = addr };
++   uint32_t *dw;
++
++   /* Bits [4:31] only. Refused rather than truncated - see the header. */
++   if (addr > 0xffffffffULL || (addr & 0xf) != 0) {
++      mesa_loge("pvr: PDS shader base 0x%" PRIx64 " does not fit the packet's bits [4:31] "
++                "(16-byte aligned, below 4GB)", addr);
++      return false;
++   }
++
++   dw = pvr_csb_emit(csb, ROGUE_TA_STATE_PDS_SHADERBASE_length);
++
++   if (dw == NULL)
++      return false;
++
++   ROGUE_TA_STATE_PDS_SHADERBASE_pack(dw, &shaderbase);
++
++   return true;
++}
++
+ bool
+ pvr_csb_emit_ta_wclamp(struct pvr_csb *csb, float min_w)
+ {
+diff --git a/src/gallium/drivers/pvr/pvr_csb.h b/src/gallium/drivers/pvr/pvr_csb.h
+index 9b918c61..25358635 100644
+--- a/src/gallium/drivers/pvr/pvr_csb.h
++++ b/src/gallium/drivers/pvr/pvr_csb.h
+@@ -326,6 +326,23 @@ bool pvr_csb_emit_ta_region_clip(struct pvr_csb *csb,
+ 
+ bool pvr_csb_emit_ta_wclamp(struct pvr_csb *csb, float min_w);
+ 
++/* TA_STATE_PDS_SHADERBASE: where the TA finds a PDS program.
++ *
++ * The field is bits **[4:31]** - a 28-bit field carrying address bits 4 to 31, so the address must
++ * be 16-byte aligned and fit in 32 bits. This device has a 40-bit address space
++ * (PVR_DEV_ADDR_FMT is 0x%010PRIx64), so a full device address DOES NOT FIT: the generated pack
++ * shifts by 4 and keeps 28 bits, and everything above is dropped without complaint.
++ *
++ * That was found by asserting the full address round-trips rather than one half, which is how this
++ * class of field has been caught every time (round 20's link address was the first).
++ *
++ * Out-of-window addresses are REFUSED rather than truncated: a silently truncated address would
++ * have the TA fetch a program from somewhere else entirely, and nothing below reports it.
++ *
++ * The address must also be one the GPU can read. Nothing validates that here, and the kernel does
++ * not either - it checks the command stream's own range, not what the stream later dereferences. */
++bool pvr_csb_emit_ta_pds_shaderbase(struct pvr_csb *csb, uint64_t addr);
++
+ /* Dwords a stream link occupies - what the guard must be at minimum. */
+ #define PVR_CSB_LINK_DWORDS (ROGUE_VDMCTRL_STREAM_LINK0_length + \
+                              ROGUE_VDMCTRL_STREAM_LINK1_length)
+diff --git a/src/gallium/drivers/pvr/pvr_probe.c b/src/gallium/drivers/pvr/pvr_probe.c
+index b60acd85..9914cf4f 100644
+--- a/src/gallium/drivers/pvr/pvr_probe.c
++++ b/src/gallium/drivers/pvr/pvr_probe.c
+@@ -1701,7 +1701,42 @@ csb_check(int fd, struct pipe_screen *pscreen)
+             goto out;
+          }
+ 
+-         printf("csb:           TA wclamp: 0x%08x, the float bit pattern of the reference's "
++         /* PDS shader base. The address is split by the generated pack, so the check reconstructs it
++       * rather than asserting a hand-computed shift - round 20's lesson, applied before being
++       * bitten this time. */
++      {
++         const uint64_t prog = 0x00400000ULL; /* fits bits [4:31] */
++         struct ROGUE_TA_STATE_PDS_SHADERBASE sb = { 0 };
++
++         pvr_csb_reset(&csb);
++
++         if (!pvr_csb_emit_ta_pds_shaderbase(&csb, prog) ||
++             pvr_csb_size(&csb) != ROGUE_TA_STATE_PDS_SHADERBASE_length * 4) {
++            printf("csb:           FAIL: the PDS shader base did not emit\n");
++            goto out;
++         }
++
++         ROGUE_TA_STATE_PDS_SHADERBASE_unpack(bo.map, &sb);
++
++         if ((uint64_t)sb.addr != prog) {
++            printf("csb:           FAIL: the PDS shader base reads back 0x%" PRIx64 ", wanted "
++                   "0x%" PRIx64 "\n", (uint64_t)sb.addr, prog);
++            goto out;
++         }
++
++         /* A full 40-bit device address must be REFUSED, not truncated into the packet's
++          * 28-bit field: it would send the TA to a different program entirely. */
++         if (pvr_csb_emit_ta_pds_shaderbase(&csb, 0x9ff0400000ULL)) {
++            printf("csb:           FAIL: a 40-bit address was accepted into a bits[4:31] field - "
++                   "it would be truncated and fetch from elsewhere\n");
++            goto out;
++         }
++
++         printf("csb:           TA PDS shader base: 0x%" PRIx64 " round-trips; a full 40-bit "
++                "address refused rather than truncated\n", prog);
++      }
++
++      printf("csb:           TA wclamp: 0x%08x, the float bit pattern of the reference's "
+                 "1.0e-13f (not an integer)\n", w.val);
+       }
+ 
+-- 
+2.47.3
+

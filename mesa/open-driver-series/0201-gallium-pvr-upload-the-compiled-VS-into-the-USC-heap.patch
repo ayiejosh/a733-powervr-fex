@@ -1,0 +1,75 @@
+From 8b4c954b53dd7d839c25613f380ebd7ffce5c7af Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sat, 24 Oct 2026 05:00:11 +0800
+Subject: [PATCH 201/269] gallium/pvr: upload the compiled VS into the USC heap
+ at the offset doutu names
+
+This was the first of the two blockers before a pixel, and it is closed:
+
+  shader: VS USC uploaded into the USC heap usable area at 0xe000001000; doutu offset = 0x1000
+
+The mechanism, established from the kernel-reported heap layout rather than assumed: a heap's firmware
+carveout is (size - usable_size), so the first byte user code may occupy is base + carveout, and the
+PDS launcher's doutu offset is the shader's offset from the heap BASE, not from the carveout.
+
+Two specifics that only showed up by running it:
+ - the usable area starts 0x80 into the heap on this device, i.e. NOT page aligned, and VM_MAP refuses
+   an unaligned address - so the destination is rounded up to a page and the offset follows the rounded
+   address (0x1000), not the carveout size (0x80);
+ - the USC heap is 0xe000000000 with only 0x80 of carveout, so there is room, but the check now refuses
+   a shader larger than usable_size instead of discovering it at map time.
+
+The launcher can now name a real offset. The remaining blocker is the second half of the same problem:
+binding the fragment program in the fragment job's stream.
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c | 34 ++++++++++++++++++++++
+ 1 file changed, 34 insertions(+)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index 96f4f654..a72b7965 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -1188,6 +1188,40 @@ shader_compile_check(struct pipe_screen *pscreen)
+       if (vobj != NULL) {
+          printf("shader:        pco encoded %u bytes of USC for a VERTEX shader; PDS kick needs "
+                 "temps=%u vtxins=%u\n", vobj->binary_size, vobj->temps, vobj->vtxins);
++      /* Upload the VS into the USC code heap's USABLE area, which is what the doutu offset is
++       * relative to. The firmware's static areas occupy the carveout at the heap base, so the first
++       * byte a shader may use is base + (size - usable_size), and that carveout size IS the offset the
++       * PDS launcher must name. */
++      if (vobj != NULL) {
++         struct pvr_screen *scr2 = pvr_screen(pscreen);
++         const struct pvr_heap *usc = &scr2->vm.heaps[DRM_PVR_HEAP_USC_CODE];
++         const uint64_t carveout = usc->size - usc->usable_size;
++         struct pvr_bo ubo = { 0 };
++
++         if (usc->size != 0 && carveout > 0 && vobj->binary_size <= usc->usable_size &&
++             pvr_bo_create(scr2->fd, vobj->binary_size, 1, &ubo)) {
++            /* VM_MAP needs a page-aligned address, and the usable area starts wherever the firmware
++             * carveout ends - 0x80 into the heap on this device - so round up. The doutu offset is
++             * then relative to the heap base, not the carveout size. */
++            const uint64_t dst = ALIGN_POT(usc->base + carveout, (uint64_t)usc->page_size);
++            const uint64_t doutu = dst - usc->base;
++
++            if (pvr_vm_map(&scr2->vm, dst, ubo.handle, ubo.size) && pvr_bo_map(scr2->fd, &ubo)) {
++               memcpy(ubo.map, vobj->binary, vobj->binary_size);
++               printf("shader:        VS USC uploaded into the USC heap usable area at 0x%" PRIx64
++                      "; doutu offset = 0x%" PRIx64 "\n", dst, doutu);
++            } else {
++               printf("shader:        FAIL: could not map the USC heap usable area (base 0x%" PRIx64
++                      " carveout 0x%" PRIx64 " dst 0x%" PRIx64 " size %" PRIu64
++                      " page %u - dst aligned %d)\n", usc->base, carveout, dst, ubo.size,
++                      usc->page_size, (dst % usc->page_size) == 0);
++            }
++         } else {
++            printf("shader:        FAIL: USC heap too small for the shader (%u B vs %" PRIu64
++                   " usable)\n", vobj->binary_size, usc->usable_size);
++         }
++      }
++
+          {
+             uint8_t launcher[256];
+             const uint32_t llen = pvr_shader_pds_launcher(vobj, 0, launcher, sizeof(launcher));
+-- 
+2.47.3
+

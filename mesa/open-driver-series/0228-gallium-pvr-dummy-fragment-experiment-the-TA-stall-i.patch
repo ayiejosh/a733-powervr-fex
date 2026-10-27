@@ -1,0 +1,56 @@
+From a62c4871e7e195b93b39891565002c31353a9021 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sun, 25 Oct 2026 01:33:06 +0800
+Subject: [PATCH 228/269] gallium/pvr: dummy-fragment experiment; the TA stall
+ is not the fragment stream either
+
+Round twelve ruled out two more suspects for the TA-never-starts stall:
+
+- Kernel optimizations are innocent: loading the powervr module with combine_pr=0 chain_frag=0
+  fw_code_cached=0 gives the same behaviour (kick logged, no TA interrupt, DM2 timeout).
+- The fragment stream's remaining unknown content (PDS background programs, TPU border table, USC
+  clear registers - still zeros in this driver) is innocent: PVR_PROBE_DUMMY_FRAG swaps in the
+  trivial dummy-PBE stream the liveness test uses, and the TA still never starts.
+- The kernel-side firmware render-context fields (fw_render_ctx_flags, both common contexts' CCB
+  addresses, context-state address, fw_com_ctx_flags, priority, DM) were dumped for this driver's
+  context and for the Vulkan one (temporary kernel print, reverted): identical apart from addresses.
+
+One observation to chase: "Received unknown FWCCB command 2abc0069" appears in dmesg around the
+submission window. 0x69/105 is ROGUE_FWIF_KCCB_CMD_SLCFLUSHINVAL - a firmware -> host command the
+kernel does not recognise. If the firmware issues an SLC flush/invalidate while handling our geometry
+job and waits for the kernel's reply, a job that never completes would follow exactly this shape.
+Next round: confirm it correlates with our draw and what the kernel's FWCCB handler does with it.
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c | 16 ++++++++++++++--
+ 1 file changed, 14 insertions(+), 2 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index 570d1d86..fda91cd6 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -1162,8 +1162,20 @@ real_job_done:
+                }
+                /* The fragment stream has to live in its own buffer, so rebuild it there. */
+                _Alignas(8) static uint8_t fstream[1024];
+-               const uint32_t f2 = pvr_frag_static_stream(fstream, sizeof(fstream), pbe_words, 1,
+-                                                         (uint32_t)eot_data_offset, false);
++               uint32_t f2 = pvr_frag_static_stream(fstream, sizeof(fstream), pbe_words, 1,
++                                                    (uint32_t)eot_data_offset, false);
++               /* Round-12 experiment: is the fragment stream's remaining "unknown" content (PDS
++                * background program words, TPU border table, USC clear registers - all still zeros
++                * here) what stops the combined kick? Swap in the trivial dummy-PBE stream (as the
++                * liveness test uses) and see whether the kick completes. */
++               if (getenv("PVR_PROBE_DUMMY_FRAG")) {
++                  static const uint64_t dpbe[3] = { 0x0200003c68800000ull,
++                                                    0x0000001f0000001full, 0 };
++                  f2 = pvr_frag_static_stream(fstream, sizeof(fstream), dpbe, 1,
++                                              (uint32_t)eot_data_offset, false);
++                  printf("hwrt:          dummy fragment stream (%u bytes) instead of the draw's\n",
++                         f2);
++               }
+                if (dump_streams) {
+                   printf("OURPBE: %016" PRIx64 " %016" PRIx64 " %016" PRIx64 "\n",
+                          pbe_words[0], pbe_words[1], pbe_words[2]);
+-- 
+2.47.3
+

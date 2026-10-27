@@ -1,0 +1,652 @@
+From 8adbe8c501ea7080517faa63b6fed4449c083177 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Mon, 26 Oct 2026 01:45:21 +0800
+Subject: [PATCH 253/269] wip: capture a Vulkan compute draw and replay it from
+ the native driver
+
+The reference now has a compute-based triangle draw (vktq_draw + tri.comp: a compute shader rasterises a
+512x512 triangle, self-verified: inside=73728, outside=188416, bad=0), and its CDM job is captured with
+dump hooks for the compute fw stream, control stream, context state BO, static context state, PDS
+programs, USC programs, descriptor-set constants and the descriptor set itself.
+
+The native probe gets a compute-draw replay (PVR_PROBE_CDM_DIR): it creates a compute context from the
+captured static state, reconstructs every buffer the captured job points at at the same device addresses
+(control stream, context state, border table, PDS kernel/fence/descriptor programs, USC programs,
+descriptor page with the target's pco buffer descriptor, and the target), submits the captured fw stream
+through a new pvr_job_submit_compute_sync(), and reads the target back looking for the triangle.
+
+Status: the submit is accepted and the firmware kicks DM4/CDM, but the job hangs the GPU (the firmware
+reports an HWR and sends an unhandled context-reset FWCCB notification); the target reads back all zero.
+Everything the job references is reconstructed, so the missing piece is in the reconstructed state (CDM
+context state / CSW programs / descriptor constants), not the submission plumbing. Captures are in
+open-driver-perf/captures/cdm/.
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c    | 330 +++++++++++++++++-
+ src/gallium/drivers/pvr_native/pvr_vm.c       |  48 +++
+ src/gallium/drivers/pvr_native/pvr_vm.h       |   2 +
+ src/imagination/vulkan/pvr_arch_cmd_buffer.c  |  14 +
+ .../vulkan/pvr_arch_descriptor_set.c          |  20 ++
+ src/imagination/vulkan/pvr_arch_job_compute.c |  44 +++
+ src/imagination/vulkan/pvr_device.c           |  29 ++
+ .../winsys/powervr/pvr_drm_job_compute.c      |  13 +
+ 8 files changed, 499 insertions(+), 1 deletion(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index c86f55e1..bba81075 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -4132,6 +4132,333 @@ out:
+ #define TQ_FILL_DST_SIZE (64u * 64u * 4u)
+ #define TQ_FILL_PATTERN 0xdeadbeefu
+ 
++
++/* Reads a capture file from the directory named by PVR_PROBE_CDM_DIR. */
++static uint8_t *
++cdm_read_capture(const char *dir, const char *name, uint32_t *size_out)
++{
++   char path[512];
++   struct stat st;
++   uint8_t *buf;
++   int fd;
++
++   snprintf(path, sizeof(path), "%s/%s", dir, name);
++   if (stat(path, &st) != 0 || st.st_size <= 0)
++      return NULL;
++   buf = malloc(st.st_size);
++   if (buf == NULL)
++      return NULL;
++   fd = open(path, O_RDONLY);
++   if (fd < 0 || read(fd, buf, st.st_size) != st.st_size) {
++      if (fd >= 0)
++         close(fd);
++      free(buf);
++      return NULL;
++   }
++   close(fd);
++   *size_out = st.st_size;
++   return buf;
++}
++
++/* Maps `size` bytes of the BO at device address `addr` and returns the CPU mapping. */
++static void *
++cdm_map_at(int fd, struct pvr_vm *vm, uint64_t addr, uint64_t size, struct pvr_bo *bo)
++{
++   if (!pvr_bo_create(fd, size, 4096, bo) || !pvr_vm_map(vm, addr, bo->handle, bo->size) ||
++       !pvr_bo_map(fd, bo))
++      return NULL;
++   memset(bo->map, 0, size);
++   return bo->map;
++}
++
++/* Fills one captured PDS/USC program page from the hook dumps. */
++static void
++cdm_parse_programs(const char *dir, const char *name, uint8_t *page, uint32_t page_off,
++                   uint32_t page_size, bool usc_format)
++{
++   uint32_t size = 0;
++   char *text = (char *)cdm_read_capture(dir, name, &size), *line, *save;
++   bool have_hdr = false;
++   uint32_t data_off = 0, code_off = 0;
++
++   if (text == NULL)
++      return;
++   for (line = strtok_r(text, "\n", &save); line; line = strtok_r(NULL, "\n", &save)) {
++      if (!usc_format && strncmp(line, "PDS data_off=", 13) == 0) {
++         unsigned off, ddw, coff, cdw;
++
++         if (sscanf(line, "PDS data_off=0x%x data_dw=%u code_off=0x%x code_dw=%u", &off, &ddw,
++                    &coff, &cdw) == 4) {
++            data_off = off;
++            code_off = coff;
++            have_hdr = true;
++         }
++         continue;
++      }
++      if (!usc_format && have_hdr && line[1] == 'D' && line[2] == ':') {
++         char *p = line + 3;
++
++         while (*p) {
++            char *end;
++            uint32_t w = (uint32_t)strtoul(p, &end, 16);
++
++            if (end == p)
++               break;
++            if (data_off >= page_off && data_off < page_off + page_size)
++               memcpy(page + (data_off - page_off), &w, 4);
++            data_off += 4;
++            p = end;
++         }
++         continue;
++      }
++      if (!usc_format && have_hdr && line[1] == 'C' && line[2] == ':') {
++         char *p = line + 3;
++
++         while (*p) {
++            char *end;
++            uint32_t w = (uint32_t)strtoul(p, &end, 16);
++
++            if (end == p)
++               break;
++            if (code_off >= page_off && code_off < page_off + page_size)
++               memcpy(page + (code_off - page_off), &w, 4);
++            code_off += 4;
++            p = end;
++         }
++         continue;
++      }
++      if (usc_format && strncmp(line, "USC off=", 8) == 0) {
++         unsigned off;
++         char *colon = strchr(line, ':');
++         char *p;
++
++         if (sscanf(line, "USC off=0x%x", &off) != 1 || colon == NULL)
++            continue;
++         p = colon + 1;
++         while (*p) {
++            char *end;
++            uint32_t w = (uint32_t)strtoul(p, &end, 16);
++
++            if (end == p)
++               break;
++            if (off >= page_off && off < page_off + page_size)
++               memcpy(page + (off - page_off), &w, 4);
++            off += 4;
++            p = end;
++         }
++      }
++   }
++   free(text);
++}
++
++/* Replays the captured Vulkan compute job that draws a triangle into a 512x512 storage buffer, from
++ * the native driver. Every buffer the job references is reconstructed at the device address the
++ * working reference used, so the captured command stream can be submitted verbatim: the CDM control
++ * stream, the compute context state, the PDS kernel/fence/descriptor programs, the USC shader, the
++ * descriptor set (whose buffer descriptor points at the target) and the target itself. The target is
++ * then read back and must contain the rendered triangle. */
++static bool
++cdm_draw_check(int fd, struct pipe_screen *pscreen)
++{
++   struct pvr_screen *scr = pvr_screen(pscreen);
++   struct pvr_vm *vm = &scr->vm;
++   const struct pvr_heap *pds_heap = &vm->heaps[DRM_PVR_HEAP_PDS_CODE_DATA];
++   const struct pvr_heap *usc_heap = &vm->heaps[DRM_PVR_HEAP_USC_CODE];
++   const char *dir = getenv("PVR_PROBE_CDM_DIR");
++   /* Captured from the reference run: the storage buffer's device address and size (the descriptor
++    * set's buffer descriptor says 0x80000b1000 / 1 MiB). */
++   const uint64_t target_addr = 0x80000b1000ULL;
++   const uint32_t target_size = 512u * 512u * 4u;
++   /* Both descriptor blocks are sub-allocations inside one page. */
++   const uint64_t desc_page_addr = 0x800004b000ULL;
++   struct pvr_bo target_bo = { 0 }, descset_bo = { 0 }, const_bo = { 0 };
++   struct pvr_bo ctrl_bo = { 0 }, state_bo = { 0 }, border_bo = { 0 };
++   struct pvr_bo pds_bo = { 0 }, usc_bo = { 0 };
++   struct drm_pvr_ioctl_create_context_args cargs = {
++      .type = DRM_PVR_CTX_TYPE_COMPUTE,
++      .vm_context_handle = vm->context_handle,
++   };
++   uint8_t *fw = NULL, *ctx_state = NULL, *ctrl = NULL, *state = NULL;
++   uint32_t fw_size = 0, ctx_state_size = 0, ctrl_size = 0, state_size = 0;
++   uint64_t ctrl_addr = 0, state_addr = 0, border_addr;
++   uint32_t fw_len, ctx_len, ctrl_len, state_len;
++   bool ok = false;
++
++   if (dir == NULL) {
++      printf("cdm:           FAIL: PVR_PROBE_CDM_DIR not set\n");
++      return false;
++   }
++
++   fw = cdm_read_capture(dir, "fw_stream.bin", &fw_size);
++   ctx_state = cdm_read_capture(dir, "ctxstate.bin", &ctx_state_size);
++   ctrl = cdm_read_capture(dir, "ctrl_stream.bin", &ctrl_size);
++   state = cdm_read_capture(dir, "state_bo.bin", &state_size);
++   if (fw == NULL || ctx_state == NULL || ctrl == NULL || state == NULL || ctrl_size < 12 ||
++       state_size < 12) {
++      printf("cdm:           FAIL: missing compute capture in %s\n", dir);
++      goto out;
++   }
++   memcpy(&fw_len, fw, 4);
++   memcpy(&ctx_len, ctx_state, 4);
++   memcpy(&ctrl_addr, ctrl, 8);
++   memcpy(&ctrl_len, ctrl + 8, 4);
++   memcpy(&state_addr, state, 8);
++   memcpy(&state_len, state + 8, 4);
++   if (fw_len + 4 > fw_size || ctx_len > ctx_state_size - 4 || ctrl_len > ctrl_size - 12 ||
++       state_len > state_size - 12 || fw_len > 4096) {
++      printf("cdm:           FAIL: bad capture sizes\n");
++      goto out;
++   }
++
++   /* The border colour table address is the first field of the compute stream (shifted 2); the
++    * capture file prefixes the stream with a 4-byte length, the stream itself starts with the 2-dword
++    * KMD header. */
++   border_addr = ((uint64_t)((uint32_t *)fw)[3] | ((uint64_t)((uint32_t *)fw)[4] << 32)) << 2;
++
++   cargs.static_context_state = (uint64_t)(uintptr_t)(ctx_state + 4);
++   cargs.static_context_state_len = ctx_len;
++   if (drmIoctl(fd, DRM_IOCTL_PVR_CREATE_CONTEXT, &cargs) != 0) {
++      printf("cdm:           FAIL: compute context: %s\n", strerror(errno));
++      goto out;
++   }
++
++   /* Everything the captured job points at, at the captured device addresses. */
++   if (cdm_map_at(fd, vm, target_addr, target_size, &target_bo) == NULL) {
++      printf("cdm:           FAIL: cannot map the target at 0x%llx\n",
++             (unsigned long long)target_addr);
++      goto out_ctx;
++   }
++   if (cdm_map_at(fd, vm, desc_page_addr, 4096, &descset_bo) == NULL) {
++      printf("cdm:           FAIL: cannot map the descriptor page at 0x%llx\n",
++             (unsigned long long)desc_page_addr);
++      goto out_ctx;
++   }
++   /* The descriptor set (at page+0x80) holds one pco buffer descriptor for the target:
++    * { addr, size, offset }; the constant block at page+0x40 stays zero. */
++   {
++      struct {
++         uint64_t addr;
++         uint32_t size;
++         uint32_t offset;
++      } __attribute__((packed)) bdesc = { target_addr, target_size, 0 };
++
++      memcpy((uint8_t *)descset_bo.map + 0x80, &bdesc, sizeof(bdesc));
++   }
++   if (cdm_map_at(fd, vm, ctrl_addr, ((ctrl_len + 0xfff) & ~0xfffu) + 0x1000, &ctrl_bo) == NULL) {
++      printf("cdm:           FAIL: cannot map control stream at 0x%llx\n",
++             (unsigned long long)ctrl_addr);
++      goto out_ctx;
++   }
++   if (cdm_map_at(fd, vm, state_addr, ((state_len + 0xfff) & ~0xfffu) + 0x1000,
++                  &state_bo) == NULL) {
++      printf("cdm:           FAIL: cannot map context state at 0x%llx\n",
++             (unsigned long long)state_addr);
++      goto out_ctx;
++   }
++   if (cdm_map_at(fd, vm, border_addr, 4096, &border_bo) == NULL) {
++      printf("cdm:           FAIL: cannot map border table at 0x%llx\n",
++             (unsigned long long)border_addr);
++      goto out_ctx;
++   }
++   memcpy(ctrl_bo.map, ctrl + 12, ctrl_len);
++   memcpy(state_bo.map, state + 12, state_len);
++
++   /* PDS programs: kernel program, fence program, descriptor data (all captured offsets >= 0x1000). */
++   if (cdm_map_at(fd, vm, pds_heap->base + 0x1000, 0x3000, &pds_bo) == NULL ||
++       cdm_map_at(fd, vm, usc_heap->base + 0x1000, 0x2000, &usc_bo) == NULL) {
++      printf("cdm:           FAIL: cannot map the PDS/USC program pages\n");
++      goto out_ctx;
++   }
++   cdm_parse_programs(dir, "pds.txt", pds_bo.map, 0x1000, 0x3000, false);
++   {
++      uint32_t desc_size = 0;
++      char *desc_text = (char *)cdm_read_capture(dir, "desc.txt", &desc_size);
++
++      if (desc_text) {
++         unsigned off, ndw;
++         char *colon = strchr(desc_text, ':');
++
++         if (sscanf(desc_text, "DESC off=0x%x size_dw=%u", &off, &ndw) >= 2 && colon) {
++            char *p = colon + 1;
++            unsigned i;
++
++            for (i = 0; i < ndw; i++) {
++               char *end;
++               uint32_t w = (uint32_t)strtoul(p, &end, 16);
++
++               if (end == p)
++                  break;
++               if (off >= 0x1000 && off < 0x4000)
++                  memcpy((uint8_t *)pds_bo.map + (off - 0x1000), &w, 4);
++               off += 4;
++               p = end;
++            }
++         }
++         free(desc_text);
++      }
++   }
++   cdm_parse_programs(dir, "usc.txt", usc_bo.map, 0x1000, 0x2000, true);
++
++   printf("cdm:           replaying captured compute job (fw stream %u B, ctrl stream @0x%llx, "
++          "state @0x%llx, programs installed)\n", fw_len, (unsigned long long)ctrl_addr,
++          (unsigned long long)state_addr);
++
++   /* Submit and poll the target; the job's user sync never signals (kernel-side issue), so the
++    * readback is the verification. */
++   pvr_job_submit_compute_sync(vm, cargs.handle, fw + 4, fw_len, 2000);
++   {
++      uint32_t *px = target_bo.map;
++      unsigned waited_us = 0;
++      uint32_t inside = 0, outside = 0, zeros = 0;
++
++      while (waited_us < 3000000) {
++         uint32_t i;
++
++         inside = outside = zeros = 0;
++         for (i = 0; i < target_size / 4; i++) {
++            if (px[i] == 0xFF0000FFu)
++               inside++;
++            else if (px[i] == 0xFFFF0000u)
++               outside++;
++            else if (px[i] == 0)
++               zeros++;
++         }
++         if (inside > 1000 && outside > 1000)
++            break;
++         usleep(1000);
++         waited_us += 1000;
++      }
++      printf("cdm:           readback inside=%u outside=%u zero=%u (waited %u us, target 0x%llx)\n",
++             inside, outside, zeros, waited_us, (unsigned long long)target_addr);
++      ok = inside > 1000 && outside > 1000;
++      if (ok) {
++         const uint32_t *p = px;
++         printf("cdm:           center=0x%08x corner=0x%08x\n", p[200 * 512 + 256], p[10 * 512 + 10]);
++      }
++      printf("cdm:           %s (native compute draw of the captured Vulkan triangle job)\n",
++             ok ? "PASS" : "FAIL");
++      if (getenv("PVR_PROBE_ONLY_CDM"))
++         _exit(ok ? 0 : 1);
++   }
++
++out_ctx:
++   drmIoctl(fd, DRM_IOCTL_PVR_DESTROY_CONTEXT, &cargs.handle);
++   pvr_bo_destroy(fd, &target_bo);
++   pvr_bo_destroy(fd, &descset_bo);
++   pvr_bo_destroy(fd, &const_bo);
++   pvr_bo_destroy(fd, &ctrl_bo);
++   pvr_bo_destroy(fd, &state_bo);
++   pvr_bo_destroy(fd, &border_bo);
++   pvr_bo_destroy(fd, &pds_bo);
++   pvr_bo_destroy(fd, &usc_bo);
++out:
++   free(fw);
++   free(ctx_state);
++   free(ctrl);
++   free(state);
++   return ok;
++}
++
+ static bool
+ tq_fill_check(int fd, struct pipe_screen *pscreen)
+ {
+@@ -4309,6 +4636,7 @@ main(int argc, char **argv)
+ 
+    /* Run the TQ fill replay first, before any job that can hang the TA (a failed draw triggers a
+     * firmware HWR, after which every later command in the process is discarded). */
++   const bool cdm_pass = getenv("PVR_PROBE_CDM_DIR") ? cdm_draw_check(fd, screen) : true;
+    const bool tq_pass = getenv("PVR_PROBE_TQ_STREAM") ? tq_fill_check(fd, screen) : true;
+ 
+    const bool enum_pass = strstr(screen->get_name(screen), expect) != NULL;
+@@ -4331,7 +4659,7 @@ main(int argc, char **argv)
+ 
+    const bool all = enum_pass && bo_pass && vm_pass && res_pass && ctx_pass &&
+                     shader_pass && state_pass && fb_pass && pipe_pass && csb_pass &&
+-                    clear_pass && tq_pass;
++                    clear_pass && tq_pass && cdm_pass;
+    printf("--- %s\n", all ? "ALL PASS" : "FAILURES ABOVE");
+    return all ? 0 : 1;
+ }
+diff --git a/src/gallium/drivers/pvr_native/pvr_vm.c b/src/gallium/drivers/pvr_native/pvr_vm.c
+index e459adda..fffbadc3 100644
+--- a/src/gallium/drivers/pvr_native/pvr_vm.c
++++ b/src/gallium/drivers/pvr_native/pvr_vm.c
+@@ -569,6 +569,54 @@ pvr_job_submit_transfer_sync(struct pvr_vm *vm, uint32_t context_handle,
+    return completed;
+ }
+ 
++bool
++pvr_job_submit_compute_sync(struct pvr_vm *vm, uint32_t context_handle,
++                             const void *stream, uint32_t stream_len, uint32_t timeout_ms)
++{
++   uint32_t done_sync = 0;
++   struct drm_pvr_sync_op ops[1];
++   struct drm_pvr_job job;
++   struct drm_pvr_ioctl_submit_jobs_args args = {
++      .jobs = { .stride = sizeof(job), .count = 1, .array = (__u64)(uintptr_t)&job },
++   };
++   bool completed;
++
++   if (drmSyncobjCreate(vm->fd, 0, &done_sync) != 0)
++      return false;
++
++   ops[0] = (struct drm_pvr_sync_op){
++      .handle = done_sync,
++      .flags = DRM_PVR_SYNC_OP_FLAG_SIGNAL |
++               DRM_PVR_SYNC_OP_FLAG_HANDLE_TYPE_TIMELINE_SYNCOBJ,
++      .value = 1,
++   };
++   job = (struct drm_pvr_job){
++      .type = DRM_PVR_JOB_TYPE_COMPUTE,
++      .context_handle = context_handle,
++      .cmd_stream = (uint64_t)(uintptr_t)stream,
++      .cmd_stream_len = stream_len,
++      .sync_ops = { .stride = sizeof(ops[0]), .count = 1, .array = (__u64)(uintptr_t)ops },
++   };
++
++   if (drmIoctl(vm->fd, DRM_IOCTL_PVR_SUBMIT_JOBS, &args) != 0) {
++      mesa_loge("pvr: SUBMIT_JOBS compute (%u B) failed: %s", stream_len, strerror(errno));
++      drmSyncobjDestroy(vm->fd, done_sync);
++      return false;
++   }
++
++   {
++      uint64_t wait_point = 1;
++
++      completed = drmSyncobjTimelineWait(vm->fd, &done_sync, &wait_point, 1,
++                                         (int64_t)timeout_ms * 1000000LL, 0, NULL) == 0;
++      if (!completed)
++         mesa_loge("pvr: compute job did not signal completion within %u ms", timeout_ms);
++   }
++
++   drmSyncobjDestroy(vm->fd, done_sync);
++   return completed;
++}
++
+ bool
+ pvr_job_submit_render(struct pvr_vm *vm, uint32_t context_handle,
+                       const void *geom_stream, uint32_t geom_len,
+diff --git a/src/gallium/drivers/pvr_native/pvr_vm.h b/src/gallium/drivers/pvr_native/pvr_vm.h
+index 6554e9c6..d32d0a32 100644
+--- a/src/gallium/drivers/pvr_native/pvr_vm.h
++++ b/src/gallium/drivers/pvr_native/pvr_vm.h
+@@ -155,6 +155,8 @@ bool pvr_job_submit_geom_sync(struct pvr_vm *vm, uint32_t context_handle,
+  * dispatch jobs at all when no geometry kick is involved. */
+ bool pvr_job_submit_transfer_sync(struct pvr_vm *vm, uint32_t context_handle,
+                                   const void *stream, uint32_t stream_len, uint32_t timeout_ms);
++bool pvr_job_submit_compute_sync(struct pvr_vm *vm, uint32_t context_handle,
++                                 const void *stream, uint32_t stream_len, uint32_t timeout_ms);
+ 
+ bool pvr_job_submit_frag_sync(struct pvr_vm *vm, uint32_t context_handle,
+                               const void *frag_stream, uint32_t frag_len,
+diff --git a/src/imagination/vulkan/pvr_arch_cmd_buffer.c b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
+index b9e6c29e..ce61eeff 100644
+--- a/src/imagination/vulkan/pvr_arch_cmd_buffer.c
++++ b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
+@@ -7026,6 +7026,20 @@ static VkResult pvr_setup_descriptor_mappings(
+       pvr_bo->dev_addr.addr -
+       device->heaps.pds_heap->base_addr.addr;
+ 
++   if (getenv("PVR_DUMP_COMPUTE_DESCRIPTORS") && stage == PVR_STAGE_ALLOCATION_COMPUTE) {
++      FILE *f = fopen(getenv("PVR_DUMP_COMPUTE_DESCRIPTORS"), "ab");
++      uint32_t i;
++
++      if (f) {
++         fprintf(f, "DESC off=0x%x size_dw=%u:", *descriptor_data_offset_out,
++                 pds_info->data_size_in_dwords);
++         for (i = 0; i < pds_info->data_size_in_dwords; i++)
++            fprintf(f, " %08x", dword_buffer[i]);
++         fprintf(f, "\n");
++         fclose(f);
++      }
++   }
++
+    return VK_SUCCESS;
+ }
+ 
+diff --git a/src/imagination/vulkan/pvr_arch_descriptor_set.c b/src/imagination/vulkan/pvr_arch_descriptor_set.c
+index e959cd62..b5bc6e39 100644
+--- a/src/imagination/vulkan/pvr_arch_descriptor_set.c
++++ b/src/imagination/vulkan/pvr_arch_descriptor_set.c
+@@ -4,6 +4,9 @@
+  * SPDX-License-Identifier: MIT
+  */
+ 
++#include <stdio.h>
++#include <stdlib.h>
++
+ #include "pvr_descriptor_set.h"
+ 
+ #include "vk_descriptor_update_template.h"
+@@ -46,6 +49,23 @@ write_buffer(const struct pvr_descriptor_set *set,
+    };
+ 
+    memcpy(desc_mapping, &buffer_desc, sizeof(buffer_desc));
++
++   if (getenv("PVR_DUMP_DESC_SET")) {
++      FILE *f = fopen(getenv("PVR_DUMP_DESC_SET"), "ab");
++
++      if (f) {
++         const uint32_t *dw = (const uint32_t *)((const uint8_t *)set->mapping + (desc_offset & ~3u));
++         uint32_t i;
++
++         fprintf(f, "SET addr=0x%llx size=%u desc_off=%u buffer_addr=0x%llx range=%u words:",
++                 (unsigned long long)set->dev_addr.addr, set->size, desc_offset,
++                 (unsigned long long)buffer_addr.addr, (unsigned)range);
++         for (i = 0; i < 4; i++)
++            fprintf(f, " %08x", dw[i]);
++         fprintf(f, "\n");
++         fclose(f);
++      }
++   }
+ }
+ 
+ static void
+diff --git a/src/imagination/vulkan/pvr_arch_job_compute.c b/src/imagination/vulkan/pvr_arch_job_compute.c
+index 75cb0c4b..5a31f64f 100644
+--- a/src/imagination/vulkan/pvr_arch_job_compute.c
++++ b/src/imagination/vulkan/pvr_arch_job_compute.c
+@@ -230,6 +230,50 @@ VkResult pvr_arch_compute_job_submit(struct pvr_compute_ctx *ctx,
+    }
+ #endif
+ 
++   if (getenv("PVR_DUMP_COMPUTE_JOB")) {
++      char path[512];
++      FILE *f;
++
++      snprintf(path, sizeof(path), "%s/fw_stream.bin", getenv("PVR_DUMP_COMPUTE_JOB"));
++      f = fopen(path, "wb");
++      if (f) {
++         uint32_t len = submit_info.fw_stream_len;
++
++         fwrite(&len, sizeof(len), 1, f);
++         fwrite(submit_info.fw_stream, 1, len, f);
++         fclose(f);
++      }
++
++      snprintf(path, sizeof(path), "%s/ctrl_stream.bin", getenv("PVR_DUMP_COMPUTE_JOB"));
++      f = fopen(path, "wb");
++      if (f) {
++         const struct pvr_csb *cs = &sub_cmd->control_stream;
++         uint64_t addr = pvr_csb_get_start_address(cs).addr;
++         uint32_t len = (uint32_t)((const uint8_t *)cs->next - (const uint8_t *)cs->start);
++
++         fwrite(&addr, sizeof(addr), 1, f);
++         fwrite(&len, sizeof(len), 1, f);
++         fwrite(cs->start, 1, len, f);
++         fclose(f);
++      }
++
++      snprintf(path, sizeof(path), "%s/state_bo.bin", getenv("PVR_DUMP_COMPUTE_JOB"));
++      f = fopen(path, "wb");
++      if (f) {
++         struct pvr_bo *bo = ctx->ctx_switch.compute_state_bo;
++         uint64_t addr = bo->vma->dev_addr.addr;
++         uint32_t size = bo->bo->size;
++         void *map = bo->bo->map;
++
++         fwrite(&addr, sizeof(addr), 1, f);
++         fwrite(&size, sizeof(size), 1, f);
++         if (map)
++            fwrite(map, 1, size, f);
++         fclose(f);
++      }
++      fprintf(stderr, "PVR_DUMP_COMPUTE_JOB: captured compute job to %s\n", getenv("PVR_DUMP_COMPUTE_JOB"));
++   }
++
+    return device->ws->ops->compute_submit(ctx->ws_ctx,
+                                           &submit_info,
+                                           &device->pdevice->dev_info,
+diff --git a/src/imagination/vulkan/pvr_device.c b/src/imagination/vulkan/pvr_device.c
+index 8c5f8bea..cdb8d446 100644
+--- a/src/imagination/vulkan/pvr_device.c
++++ b/src/imagination/vulkan/pvr_device.c
+@@ -1017,6 +1017,21 @@ VkResult pvr_gpu_upload_usc(struct pvr_device *device,
+    map = pvr_bo_suballoc_get_map_addr(suballoc_bo);
+    memcpy(map, code, code_size);
+ 
++   if (getenv("PVR_DUMP_USC_PROGRAMS")) {
++      FILE *f = fopen(getenv("PVR_DUMP_USC_PROGRAMS"), "a");
++      uint32_t off = (uint32_t)(suballoc_bo->dev_addr.addr - device->heaps.usc_heap->base_addr.addr);
++
++      if (f) {
++         const uint32_t *dw = code;
++         uint32_t i;
++
++         fprintf(f, "USC off=0x%x bytes=%zu:", off, code_size);
++         for (i = 0; i < (code_size + 3) / 4; i++) fprintf(f, " %08x", dw[i]);
++         fprintf(f, "\n");
++         fclose(f);
++      }
++   }
++
+    *pvr_bo_out = suballoc_bo;
+ 
+    return VK_SUCCESS;
+@@ -1106,6 +1121,20 @@ VkResult pvr_gpu_upload_pds(struct pvr_device *device,
+       pds_upload_out->code_size = 0;
+    }
+ 
++   if (getenv("PVR_DUMP_PDS_PROGRAMS")) {
++      FILE *f = fopen(getenv("PVR_DUMP_PDS_PROGRAMS"), "a");
++      uint32_t i;
++
++      if (f) {
++         fprintf(f, "PDS data_off=0x%x data_dw=%u code_off=0x%x code_dw=%u\n",
++                 pds_upload_out->data_offset, pds_upload_out->data_size,
++                 pds_upload_out->code_offset, pds_upload_out->code_size);
++         if (data) { fprintf(f, " D:"); for (i = 0; i < data_size_dwords; i++) fprintf(f, " %08x", data[i]); fprintf(f, "\n"); }
++         if (code) { fprintf(f, " C:"); for (i = 0; i < code_size_dwords; i++) fprintf(f, " %08x", code[i]); fprintf(f, "\n"); }
++         fclose(f);
++      }
++   }
++
+    return VK_SUCCESS;
+ }
+ 
+diff --git a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_compute.c b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_compute.c
+index 9aeba50e..0c9e7ac6 100644
+--- a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_compute.c
++++ b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_compute.c
+@@ -112,6 +112,19 @@ VkResult pvr_drm_winsys_compute_ctx_create(
+                                          static_ctx_state_fw_stream,
+                                          &ctx_args.static_context_state_len);
+ 
++   if (getenv("PVR_DUMP_COMPUTE_CTXSTATE")) {
++      FILE *f = fopen(getenv("PVR_DUMP_COMPUTE_CTXSTATE"), "wb");
++
++      if (f) {
++         uint32_t len = (uint32_t)ctx_args.static_context_state_len;
++
++         fwrite(&len, sizeof(len), 1, f);
++         fwrite((const void *)(uintptr_t)ctx_args.static_context_state, 1, len, f);
++         fclose(f);
++         fprintf(stderr, "PVR_DUMP_COMPUTE_CTXSTATE: %u bytes\n", len);
++      }
++   }
++
+    result = pvr_ioctlf(ws->render_fd,
+                        DRM_IOCTL_PVR_CREATE_CONTEXT,
+                        &ctx_args,
+-- 
+2.47.3
+

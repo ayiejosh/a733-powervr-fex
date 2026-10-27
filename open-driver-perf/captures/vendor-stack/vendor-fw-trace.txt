@@ -1,0 +1,1145 @@
+Device ID: 0
+Debug log type: trace ( main )
+438:T0-MAIN> Core clock set to 1104000000 Hz
+467:T0-MAIN> GPU init
+496:T0-MAIN> Host Sync Partition marker: 110
+679:T0-MAIN> cCCB Woff update = 8848, DM = 2, FWCtx = 0xc024f900
+750:T0-MAIN> cCCB Woff update = 31824, DM = 3, FWCtx = 0xc024f9d8
+783:T0-MAIN> UFO Checks for FWCtx 0xc024f9d8 @ 31424
+799:T0-MAIN> UFO PR-Check: [0xc02d00a0] is 0x0000000a requires >= 0x0000000b
+966:T0-MAIN> GPU Units init (# mask: 0x1)
+1157:T0-MAIN> Kick TA: FWCtx 0xc024f900 @ 8736, RTD 0xc0534c80, First kick:1, Last kick:1, CSW resume:0. (PID:155601, prio:1, frame:43, ext:0x00000c35, int:0x0000084e)
+1325:T0-MAIN> TA finished
+1349:T0-MAIN> Perform TPC flush.
+1395:T0-MAIN> UFO Updates for FWCtx 0xc024f900 @ 8816
+1410:T0-MAIN> UFO Update: [0xc02d00a0] = 0x0000000b
+1417:T0-MAIN> UFO Update: [0xc0042660] = 0x00000519
+1500:T0-MAIN> UFO Checks for FWCtx 0xc024f9d8 @ 31424
+1522:T0-MAIN> UFO PR-Check: [0xc02d00a0] is 0x0000000b requires >= 0x0000000b
+1741:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x80135000)
+1759:T0-MAIN>   Phantom 0: USCTiles=6
+1780:T0-MAIN> Kick 3D: FWCtx 0xc024f9d8 @ 31448, RTD 0xc0534c80, Partial render:0, CSW resume:0. (PID:155601, prio:1, frame:43, ext:0x00000c35, int:0x0000084e)
+2189:T0-MAIN> 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+2270:T0-MAIN> UFO Updates for FWCtx 0xc024f9d8 @ 31784
+2288:T0-MAIN> UFO Update: [0xc02d00a0] = 0x0000000c
+2298:T0-MAIN> UFO Update: [0xc00423b8] = 0x00000519
+2307:T0-MAIN> UFO Update: [0xc00423c0] = 0x00000519
+5407:T0-MAIN> cCCB Woff update = 112, DM = 2, FWCtx = 0xc0045040
+5480:T0-MAIN> cCCB Woff update = 26760, DM = 3, FWCtx = 0xc0045118
+5513:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 26360
+5531:T0-MAIN> UFO PR-Check: [0xc0097160] is 0x0000000e requires >= 0x0000000f
+5804:T0-MAIN> Kick TA: FWCtx 0xc0045040 @ 0, RTD 0xc0534880, First kick:1, Last kick:1, CSW resume:0. (PID:155324, prio:1, frame:25591, ext:0x0000024b, int:0x0000084f)
+5980:T0-MAIN> TA finished
+6002:T0-MAIN> Perform TPC flush.
+6046:T0-MAIN> UFO Updates for FWCtx 0xc0045040 @ 80
+6060:T0-MAIN> UFO Update: [0xc0097160] = 0x0000000f
+6066:T0-MAIN> UFO Update: [0xc00423b0] = 0x00000519
+6148:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 26360
+6166:T0-MAIN> UFO PR-Check: [0xc0097160] is 0x0000000f requires >= 0x0000000f
+6407:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x8001500f)
+6424:T0-MAIN>   Phantom 0: USCTiles=6
+6450:T0-MAIN> Kick 3D: FWCtx 0xc0045118 @ 26384, RTD 0xc0534880, Partial render:0, CSW resume:0. (PID:155324, prio:1, frame:25591, ext:0x0000024b, int:0x0000084f)
+6742:T0-MAIN> 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+6826:T0-MAIN> UFO Updates for FWCtx 0xc0045118 @ 26720
+6843:T0-MAIN> UFO Update: [0xc0097160] = 0x00000010
+6853:T0-MAIN> UFO Update: [0xc0042338] = 0x00000519
+6862:T0-MAIN> UFO Update: [0xc0042260] = 0x00000519
+12781:T0-MAIN> cCCB Woff update = 224, DM = 2, FWCtx = 0xc0045040
+12843:T0-MAIN> cCCB Woff update = 27160, DM = 3, FWCtx = 0xc0045118
+12876:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 26760
+12892:T0-MAIN> UFO PR-Check: [0xc0097020] is 0x0000001e requires >= 0x0000001f
+13128:T0-MAIN> Kick TA: FWCtx 0xc0045040 @ 112, RTD 0xc02d19c0, First kick:1, Last kick:1, CSW resume:0. (PID:155324, prio:1, frame:25591, ext:0x0000024c, int:0x00000850)
+13339:T0-MAIN> TA finished
+13362:T0-MAIN> Perform TPC flush.
+13404:T0-MAIN> UFO Updates for FWCtx 0xc0045040 @ 192
+13419:T0-MAIN> UFO Update: [0xc0097020] = 0x0000001f
+13425:T0-MAIN> UFO Update: [0xc00423d8] = 0x00000519
+13506:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 26760
+13526:T0-MAIN> UFO PR-Check: [0xc0097020] is 0x0000001f requires >= 0x0000001f
+13751:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x8001500f)
+13768:T0-MAIN>   Phantom 0: USCTiles=6
+13789:T0-MAIN> Kick 3D: FWCtx 0xc0045118 @ 26784, RTD 0xc02d19c0, Partial render:0, CSW resume:0. (PID:155324, prio:1, frame:25591, ext:0x0000024c, int:0x00000850)
+14036:T0-MAIN> cCCB Woff update = 360, DM = 2, FWCtx = 0xc0045040
+14074:T0-MAIN> UFO Checks for FWCtx 0xc0045040 @ 224
+14090:T0-MAIN> UFO Check: [0xc0042688] is 0x00000ac1 requires 0x00000519
+14123:T0-MAIN> cCCB Woff update = 27560, DM = 3, FWCtx = 0xc0045118
+14152:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 27160
+14168:T0-MAIN> UFO PR-Check: [0xc0097038] is 0x0000001c requires >= 0x0000001d
+14538:T0-MAIN> 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+14615:T0-MAIN> UFO Updates for FWCtx 0xc0045118 @ 27120
+14637:T0-MAIN> UFO Update: [0xc0097020] = 0x00000020
+14645:T0-MAIN> UFO Update: [0xc0042688] = 0x00000519
+14650:T0-MAIN> UFO Update: [0xc0042680] = 0x00000519
+14748:T0-MAIN> UFO Checks for FWCtx 0xc0045040 @ 224
+14766:T0-MAIN> UFO Check: [0xc0042688] is 0x00000519 requires 0x00000519
+14967:T0-MAIN> Kick TA: FWCtx 0xc0045040 @ 248, RTD 0xc03d7100, First kick:1, Last kick:1, CSW resume:0. (PID:155324, prio:1, frame:25592, ext:0x0000024d, int:0x00000851)
+15165:T0-MAIN> TA finished
+15186:T0-MAIN> Perform TPC flush.
+15234:T0-MAIN> UFO Updates for FWCtx 0xc0045040 @ 328
+15252:T0-MAIN> UFO Update: [0xc0097038] = 0x0000001d
+15262:T0-MAIN> UFO Update: [0xc0042010] = 0x00000519
+15348:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 27160
+15366:T0-MAIN> UFO PR-Check: [0xc0097038] is 0x0000001d requires >= 0x0000001d
+15587:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x8001500f)
+15603:T0-MAIN>   Phantom 0: USCTiles=6
+15623:T0-MAIN> Kick 3D: FWCtx 0xc0045118 @ 27184, RTD 0xc03d7100, Partial render:0, CSW resume:0. (PID:155324, prio:1, frame:25592, ext:0x0000024d, int:0x00000851)
+16100:T0-MAIN> 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+16173:T0-MAIN> UFO Updates for FWCtx 0xc0045118 @ 27520
+16189:T0-MAIN> UFO Update: [0xc0097038] = 0x0000001e
+16196:T0-MAIN> UFO Update: [0xc0042690] = 0x00000519
+16205:T0-MAIN> UFO Update: [0xc00423e8] = 0x00000519
+60010:T0-MAIN> GPU units deinit
+60074:T0-MAIN> GPU deinit
+564:T0-MAIN> State of firmware's private data at boot time: 1 (0 = uninitialised, 1 = initialised); Fw State Flags = 0x00000001
+580:T0-MAIN> State of firmware's private data at boot time: 1 (0 = uninitialised, 1 = initialised); Fw State Flags = 0x00000001
+596:T0-MAIN> Core clock set to 1104000000 Hz
+616:T0-MAIN> GPU init
+651:T0-MAIN> Host Sync Partition marker: 111
+1001:T0-MAIN> cCCB Woff update = 8960, DM = 2, FWCtx = 0xc024f900
+1070:T0-MAIN> cCCB Woff update = 32224, DM = 3, FWCtx = 0xc024f9d8
+1104:T0-MAIN> UFO Checks for FWCtx 0xc024f9d8 @ 31824
+1124:T0-MAIN> UFO PR-Check: [0xc02d0030] is 0x0000000c requires >= 0x0000000d
+1302:T0-MAIN> GPU Units init (# mask: 0x1)
+1482:T0-MAIN> Kick TA: FWCtx 0xc024f900 @ 8848, RTD 0xc0534300, First kick:1, Last kick:1, CSW resume:0. (PID:155601, prio:1, frame:44, ext:0x00000c3a, int:0x00000852)
+1668:T0-MAIN> TA finished
+1689:T0-MAIN> Perform TPC flush.
+1732:T0-MAIN> UFO Updates for FWCtx 0xc024f900 @ 8928
+1749:T0-MAIN> UFO Update: [0xc02d0030] = 0x0000000d
+1759:T0-MAIN> UFO Update: [0xc00423c8] = 0x00000519
+1842:T0-MAIN> UFO Checks for FWCtx 0xc024f9d8 @ 31824
+1861:T0-MAIN> UFO PR-Check: [0xc02d0030] is 0x0000000d requires >= 0x0000000d
+2085:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x80135000)
+2102:T0-MAIN>   Phantom 0: USCTiles=6
+2121:T0-MAIN> Kick 3D: FWCtx 0xc024f9d8 @ 31848, RTD 0xc0534300, Partial render:0, CSW resume:0. (PID:155601, prio:1, frame:44, ext:0x00000c3a, int:0x00000852)
+2536:T0-MAIN> 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+2619:T0-MAIN> UFO Updates for FWCtx 0xc024f9d8 @ 32184
+2638:T0-MAIN> UFO Update: [0xc02d0030] = 0x0000000e
+2649:T0-MAIN> UFO Update: [0xc0042698] = 0x00000519
+2657:T0-MAIN> UFO Update: [0xc0042000] = 0x00000519
+9628:T0-MAIN> cCCB Woff update = 472, DM = 2, FWCtx = 0xc0045040
+9699:T0-MAIN> cCCB Woff update = 27960, DM = 3, FWCtx = 0xc0045118
+9731:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 27560
+9748:T0-MAIN> UFO PR-Check: [0xc0097164] is 0x0000000e requires >= 0x0000000f
+9997:T0-MAIN> Kick TA: FWCtx 0xc0045040 @ 360, RTD 0xc0534980, First kick:1, Last kick:1, CSW resume:0. (PID:155324, prio:1, frame:26793, ext:0x0000024e, int:0x00000853)
+10184:T0-MAIN> TA finished
+10205:T0-MAIN> Perform TPC flush.
+10244:T0-MAIN> UFO Updates for FWCtx 0xc0045040 @ 440
+10258:T0-MAIN> UFO Update: [0xc0097164] = 0x0000000f
+10268:T0-MAIN> UFO Update: [0xc00426b0] = 0x00000519
+10355:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 27560
+10374:T0-MAIN> UFO PR-Check: [0xc0097164] is 0x0000000f requires >= 0x0000000f
+10616:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x8001500f)
+10635:T0-MAIN>   Phantom 0: USCTiles=6
+10657:T0-MAIN> Kick 3D: FWCtx 0xc0045118 @ 27584, RTD 0xc0534980, Partial render:0, CSW resume:0. (PID:155324, prio:1, frame:26793, ext:0x0000024e, int:0x00000853)
+10964:T0-MAIN> 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+11050:T0-MAIN> UFO Updates for FWCtx 0xc0045118 @ 27920
+11069:T0-MAIN> UFO Update: [0xc0097164] = 0x00000010
+11078:T0-MAIN> UFO Update: [0xc00426a0] = 0x00000519
+11088:T0-MAIN> UFO Update: [0xc0042200] = 0x00000519
+25139:T0-MAIN> cCCB Woff update = 584, DM = 2, FWCtx = 0xc0045040
+25205:T0-MAIN> cCCB Woff update = 28352, DM = 3, FWCtx = 0xc0045118
+25239:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 27960
+25260:T0-MAIN> UFO PR-Check: [0xc0097024] is 0x0000001e requires >= 0x0000001f
+25489:T0-MAIN> Kick TA: FWCtx 0xc0045040 @ 472, RTD 0xc02d1ac0, First kick:1, Last kick:1, CSW resume:0. (PID:155324, prio:1, frame:26793, ext:0x0000024f, int:0x00000854)
+25706:T0-MAIN> TA finished
+25728:T0-MAIN> Perform TPC flush.
+25777:T0-MAIN> UFO Updates for FWCtx 0xc0045040 @ 552
+25792:T0-MAIN> UFO Update: [0xc0097024] = 0x0000001f
+25800:T0-MAIN> UFO Update: [0xc00427d8] = 0x00000519
+25883:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 27960
+25901:T0-MAIN> UFO PR-Check: [0xc0097024] is 0x0000001f requires >= 0x0000001f
+26128:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x8001500f)
+26146:T0-MAIN>   Phantom 0: USCTiles=6
+26174:T0-MAIN> Kick 3D: FWCtx 0xc0045118 @ 27984, RTD 0xc02d1ac0, Partial render:0, CSW resume:0. (PID:155324, prio:1, frame:26793, ext:0x0000024f, int:0x00000854)
+26907:T0-MAIN> cCCB Woff update = 696, DM = 2, FWCtx = 0xc0045040
+26979:T0-MAIN> cCCB Woff update = 28752, DM = 3, FWCtx = 0xc0045118
+27011:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 28352
+27028:T0-MAIN> UFO PR-Check: [0xc009703c] is 0x0000001c requires >= 0x0000001d
+27096:T0-MAIN> 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+27168:T0-MAIN> UFO Updates for FWCtx 0xc0045118 @ 28320
+27184:T0-MAIN> UFO Update: [0xc0097024] = 0x00000020
+27192:T0-MAIN> UFO Update: [0xc00426c0] = 0x00000519
+27473:T0-MAIN> Kick TA: FWCtx 0xc0045040 @ 584, RTD 0xc03d7200, First kick:1, Last kick:1, CSW resume:0. (PID:155324, prio:1, frame:26794, ext:0x00000250, int:0x00000855)
+27697:T0-MAIN> TA finished
+27721:T0-MAIN> Perform TPC flush.
+27771:T0-MAIN> UFO Updates for FWCtx 0xc0045040 @ 664
+27791:T0-MAIN> UFO Update: [0xc009703c] = 0x0000001d
+27804:T0-MAIN> UFO Update: [0xc00426b8] = 0x00000519
+27891:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 28352
+27908:T0-MAIN> UFO PR-Check: [0xc009703c] is 0x0000001d requires >= 0x0000001d
+28152:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x8001500f)
+28169:T0-MAIN>   Phantom 0: USCTiles=6
+28189:T0-MAIN> Kick 3D: FWCtx 0xc0045118 @ 28376, RTD 0xc03d7200, Partial render:0, CSW resume:0. (PID:155324, prio:1, frame:26794, ext:0x00000250, int:0x00000855)
+28708:T0-MAIN> 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+28779:T0-MAIN> UFO Updates for FWCtx 0xc0045118 @ 28712
+28806:T0-MAIN> UFO Update: [0xc009703c] = 0x0000001e
+28816:T0-MAIN> UFO Update: [0xc0042038] = 0x00000519
+28826:T0-MAIN> UFO Update: [0xc0042020] = 0x00000519
+72432:T0-MAIN> GPU units deinit
+72495:T0-MAIN> GPU deinit
+277:T0-MAIN> State of firmware's private data at boot time: 1 (0 = uninitialised, 1 = initialised); Fw State Flags = 0x00000001
+294:T0-MAIN> State of firmware's private data at boot time: 1 (0 = uninitialised, 1 = initialised); Fw State Flags = 0x00000001
+309:T0-MAIN> Core clock set to 1104000000 Hz
+336:T0-MAIN> GPU init
+366:T0-MAIN> Host Sync Partition marker: 112
+673:T0-MAIN> cCCB Woff update = 112, DM = 2, FWCtx = 0xc0563340
+747:T0-MAIN> cCCB Woff update = 392, DM = 3, FWCtx = 0xc0563418
+781:T0-MAIN> UFO Checks for FWCtx 0xc0563418 @ 0
+797:T0-MAIN> UFO PR-Check: [0xc05c4010] is 0x00000000 requires >= 0x00000001
+977:T0-MAIN> GPU Units init (# mask: 0x1)
+1162:T0-MAIN> Kick TA: FWCtx 0xc0563340 @ 0, RTD 0xc0563e80, First kick:1, Last kick:1, CSW resume:0. (PID:168923, prio:1, frame:0, ext:0x00000001, int:0x00000856)
+1335:T0-MAIN> TA finished
+1358:T0-MAIN> Perform TPC flush.
+1403:T0-MAIN> UFO Updates for FWCtx 0xc0563340 @ 80
+1419:T0-MAIN> UFO Update: [0xc05c4010] = 0x00000001
+1426:T0-MAIN> UFO Update: [0xc00426c8] = 0x00000519
+1504:T0-MAIN> UFO Checks for FWCtx 0xc0563418 @ 0
+1526:T0-MAIN> UFO PR-Check: [0xc05c4010] is 0x00000001 requires >= 0x00000001
+1750:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x80035000)
+1767:T0-MAIN>   Phantom 0: USCTiles=6
+1790:T0-MAIN> Kick 3D: FWCtx 0xc0563418 @ 24, RTD 0xc0563e80, Partial render:0, CSW resume:0. (PID:168923, prio:1, frame:0, ext:0x00000001, int:0x00000856)
+2012:T0-MAIN> cCCB Woff update = 224, DM = 3, FWCtx = 0xc0534d80
+2080:T0-MAIN> UFO Checks for FWCtx 0xc0534d80 @ 0
+2115:T0-MAIN> UFO Check: [0xc00426d0] is 0x00000ac1 requires 0x00000519
+2211:T0-MAIN> 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+2294:T0-MAIN> UFO Updates for FWCtx 0xc0563418 @ 360
+2313:T0-MAIN> UFO Update: [0xc05c4010] = 0x00000002
+2322:T0-MAIN> UFO Update: [0xc00426d0] = 0x00000519
+2371:T0-MAIN> UFO Checks for FWCtx 0xc0534d80 @ 0
+2387:T0-MAIN> UFO Check: [0xc00426d0] is 0x00000519 requires 0x00000519
+2494:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x00025000)
+2508:T0-MAIN>   Phantom 0: USCTiles=6
+2525:T0-MAIN> Kick 3D TQ: FWCtx 0xc0534d80 @ 24, CSW resume:0. (PID:168923, prio:1, frame:0, ext:0x00000003, int:0x00000857)
+2731:T0-MAIN> cCCB Woff update = 224, DM = 2, FWCtx = 0xc0563340
+2834:T0-MAIN> cCCB Woff update = 784, DM = 3, FWCtx = 0xc0563418
+2887:T0-MAIN> UFO Checks for FWCtx 0xc0563418 @ 392
+2908:T0-MAIN> UFO PR-Check: [0xc05c4014] is 0x00000000 requires >= 0x00000001
+3266:T0-MAIN> Kick TA: FWCtx 0xc0563340 @ 112, RTD 0xc05c5000, First kick:1, Last kick:1, CSW resume:0. (PID:168923, prio:1, frame:0, ext:0x00000005, int:0x00000858)
+3478:T0-MAIN> TA finished
+3499:T0-MAIN> Perform TPC flush.
+3541:T0-MAIN> UFO Updates for FWCtx 0xc0563340 @ 192
+3558:T0-MAIN> UFO Update: [0xc05c4014] = 0x00000001
+3567:T0-MAIN> UFO Update: [0xc0042060] = 0x00000519
+3627:T0-MAIN> 3D Transfer finished
+3683:T0-MAIN> UFO Updates for FWCtx 0xc0534d80 @ 200
+3697:T0-MAIN> UFO Update: [0xc0042008] = 0x00000519
+3742:T0-MAIN> UFO Checks for FWCtx 0xc0563418 @ 392
+3759:T0-MAIN> UFO PR-Check: [0xc05c4014] is 0x00000001 requires >= 0x00000001
+3977:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x80035000)
+3996:T0-MAIN>   Phantom 0: USCTiles=6
+4015:T0-MAIN> Kick 3D: FWCtx 0xc0563418 @ 416, RTD 0xc05c5000, Partial render:0, CSW resume:0. (PID:168923, prio:1, frame:0, ext:0x00000005, int:0x00000858)
+4357:T0-MAIN> cCCB Woff update = 448, DM = 3, FWCtx = 0xc0534d80
+4399:T0-MAIN> UFO Checks for FWCtx 0xc0534d80 @ 224
+4415:T0-MAIN> UFO Check: [0xc0042058] is 0x00000ac1 requires 0x00000519
+4478:T0-MAIN> 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+4558:T0-MAIN> UFO Updates for FWCtx 0xc0563418 @ 752
+4576:T0-MAIN> UFO Update: [0xc05c4014] = 0x00000002
+4581:T0-MAIN> UFO Update: [0xc0042058] = 0x00000519
+4629:T0-MAIN> UFO Checks for FWCtx 0xc0534d80 @ 224
+4647:T0-MAIN> UFO Check: [0xc0042058] is 0x00000519 requires 0x00000519
+4737:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x00025000)
+4750:T0-MAIN>   Phantom 0: USCTiles=6
+4768:T0-MAIN> Kick 3D TQ: FWCtx 0xc0534d80 @ 248, CSW resume:0. (PID:168923, prio:1, frame:0, ext:0x00000007, int:0x00000859)
+5668:T0-MAIN> 3D Transfer finished
+5729:T0-MAIN> UFO Updates for FWCtx 0xc0534d80 @ 424
+5745:T0-MAIN> UFO Update: [0xc00426e0] = 0x00000519
+49349:T0-MAIN> GPU units deinit
+49413:T0-MAIN> GPU deinit
+444:T0-MAIN> State of firmware's private data at boot time: 1 (0 = uninitialised, 1 = initialised); Fw State Flags = 0x00000001
+461:T0-MAIN> State of firmware's private data at boot time: 1 (0 = uninitialised, 1 = initialised); Fw State Flags = 0x00000001
+483:T0-MAIN> Core clock set to 1104000000 Hz
+505:T0-MAIN> GPU init
+534:T0-MAIN> Host Sync Partition marker: 113
+44386:T0-MAIN> GPU units deinit
+44418:T0-MAIN> GPU deinit
+423:T0-MAIN> State of firmware's private data at boot time: 1 (0 = uninitialised, 1 = initialised); Fw State Flags = 0x00000001
+440:T0-MAIN> State of firmware's private data at boot time: 1 (0 = uninitialised, 1 = initialised); Fw State Flags = 0x00000001
+455:T0-MAIN> Core clock set to 1104000000 Hz
+475:T0-MAIN> GPU init
+507:T0-MAIN> Host Sync Partition marker: 114
+828:T0-MAIN> cCCB Woff update = 9072, DM = 2, FWCtx = 0xc024f900
+902:T0-MAIN> cCCB Woff update = 32624, DM = 3, FWCtx = 0xc024f9d8
+935:T0-MAIN> UFO Checks for FWCtx 0xc024f9d8 @ 32224
+952:T0-MAIN> UFO PR-Check: [0xc02d0034] is 0x0000000c requires >= 0x0000000d
+1124:T0-MAIN> GPU Units init (# mask: 0x1)
+1310:T0-MAIN> Kick TA: FWCtx 0xc024f900 @ 8960, RTD 0xc0536d80, First kick:1, Last kick:1, CSW resume:0. (PID:155601, prio:1, frame:45, ext:0x00000c3f, int:0x0000085a)
+1484:T0-MAIN> TA finished
+1507:T0-MAIN> Perform TPC flush.
+1549:T0-MAIN> UFO Updates for FWCtx 0xc024f900 @ 9040
+1562:T0-MAIN> UFO Update: [0xc02d0034] = 0x0000000d
+1572:T0-MAIN> UFO Update: [0xc0042630] = 0x00000519
+1662:T0-MAIN> UFO Checks for FWCtx 0xc024f9d8 @ 32224
+1681:T0-MAIN> UFO PR-Check: [0xc02d0034] is 0x0000000d requires >= 0x0000000d
+1926:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x80135000)
+1945:T0-MAIN>   Phantom 0: USCTiles=6
+1965:T0-MAIN> Kick 3D: FWCtx 0xc024f9d8 @ 32248, RTD 0xc0536d80, Partial render:0, CSW resume:0. (PID:155601, prio:1, frame:45, ext:0x00000c3f, int:0x0000085a)
+2375:T0-MAIN> 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+2463:T0-MAIN> UFO Updates for FWCtx 0xc024f9d8 @ 32584
+2480:T0-MAIN> UFO Update: [0xc02d0034] = 0x0000000e
+2489:T0-MAIN> UFO Update: [0xc0042050] = 0x00000519
+2498:T0-MAIN> UFO Update: [0xc00426f8] = 0x00000519
+5491:T0-MAIN> cCCB Woff update = 808, DM = 2, FWCtx = 0xc0045040
+5547:T0-MAIN> cCCB Woff update = 29152, DM = 3, FWCtx = 0xc0045118
+5576:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 28752
+5592:T0-MAIN> UFO PR-Check: [0xc0097168] is 0x0000000e requires >= 0x0000000f
+5829:T0-MAIN> Kick TA: FWCtx 0xc0045040 @ 696, RTD 0xc0534a80, First kick:1, Last kick:1, CSW resume:0. (PID:155324, prio:1, frame:27995, ext:0x00000251, int:0x0000085b)
+6004:T0-MAIN> TA finished
+6028:T0-MAIN> Perform TPC flush.
+6068:T0-MAIN> UFO Updates for FWCtx 0xc0045040 @ 776
+6082:T0-MAIN> UFO Update: [0xc0097168] = 0x0000000f
+6091:T0-MAIN> UFO Update: [0xc0042040] = 0x00000519
+6184:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 28752
+6206:T0-MAIN> UFO PR-Check: [0xc0097168] is 0x0000000f requires >= 0x0000000f
+6453:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x8001500f)
+6474:T0-MAIN>   Phantom 0: USCTiles=6
+6498:T0-MAIN> Kick 3D: FWCtx 0xc0045118 @ 28776, RTD 0xc0534a80, Partial render:0, CSW resume:0. (PID:155324, prio:1, frame:27995, ext:0x00000251, int:0x0000085b)
+6816:T0-MAIN> 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+6895:T0-MAIN> UFO Updates for FWCtx 0xc0045118 @ 29112
+6914:T0-MAIN> UFO Update: [0xc0097168] = 0x00000010
+6921:T0-MAIN> UFO Update: [0xc00426f0] = 0x00000519
+6930:T0-MAIN> UFO Update: [0xc00426e8] = 0x00000519
+15946:T0-MAIN> cCCB Woff update = 920, DM = 2, FWCtx = 0xc0045040
+16007:T0-MAIN> cCCB Woff update = 29552, DM = 3, FWCtx = 0xc0045118
+16039:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 29152
+16055:T0-MAIN> UFO PR-Check: [0xc0097028] is 0x0000001e requires >= 0x0000001f
+16292:T0-MAIN> Kick TA: FWCtx 0xc0045040 @ 808, RTD 0xc02d1bc0, First kick:1, Last kick:1, CSW resume:0. (PID:155324, prio:1, frame:27995, ext:0x00000252, int:0x0000085c)
+16519:T0-MAIN> TA finished
+16546:T0-MAIN> Perform TPC flush.
+16594:T0-MAIN> UFO Updates for FWCtx 0xc0045040 @ 888
+16612:T0-MAIN> UFO Update: [0xc0097028] = 0x0000001f
+16620:T0-MAIN> UFO Update: [0xc0042700] = 0x00000519
+16706:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 29152
+16725:T0-MAIN> UFO PR-Check: [0xc0097028] is 0x0000001f requires >= 0x0000001f
+16946:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x8001500f)
+16962:T0-MAIN>   Phantom 0: USCTiles=6
+16982:T0-MAIN> Kick 3D: FWCtx 0xc0045118 @ 29176, RTD 0xc02d1bc0, Partial render:0, CSW resume:0. (PID:155324, prio:1, frame:27995, ext:0x00000252, int:0x0000085c)
+17230:T0-MAIN> cCCB Woff update = 1056, DM = 2, FWCtx = 0xc0045040
+17272:T0-MAIN> UFO Checks for FWCtx 0xc0045040 @ 920
+17291:T0-MAIN> UFO Check: [0xc00423f0] is 0x00000ac1 requires 0x00000519
+17323:T0-MAIN> cCCB Woff update = 29952, DM = 3, FWCtx = 0xc0045118
+17352:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 29552
+17368:T0-MAIN> UFO PR-Check: [0xc0097030] is 0x0000001e requires >= 0x0000001f
+17746:T0-MAIN> 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+17818:T0-MAIN> UFO Updates for FWCtx 0xc0045118 @ 29512
+17837:T0-MAIN> UFO Update: [0xc0097028] = 0x00000020
+17845:T0-MAIN> UFO Update: [0xc00423f0] = 0x00000519
+17851:T0-MAIN> UFO Update: [0xc0042088] = 0x00000519
+17944:T0-MAIN> UFO Checks for FWCtx 0xc0045040 @ 920
+17960:T0-MAIN> UFO Check: [0xc00423f0] is 0x00000519 requires 0x00000519
+18165:T0-MAIN> Kick TA: FWCtx 0xc0045040 @ 944, RTD 0xc03d6f00, First kick:1, Last kick:1, CSW resume:0. (PID:155324, prio:1, frame:27996, ext:0x00000253, int:0x0000085d)
+18361:T0-MAIN> TA finished
+18384:T0-MAIN> Perform TPC flush.
+18430:T0-MAIN> UFO Updates for FWCtx 0xc0045040 @ 1024
+18447:T0-MAIN> UFO Update: [0xc0097030] = 0x0000001f
+18453:T0-MAIN> UFO Update: [0xc0042048] = 0x00000519
+18534:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 29552
+18553:T0-MAIN> UFO PR-Check: [0xc0097030] is 0x0000001f requires >= 0x0000001f
+18775:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x8001500f)
+18795:T0-MAIN>   Phantom 0: USCTiles=6
+18816:T0-MAIN> Kick 3D: FWCtx 0xc0045118 @ 29576, RTD 0xc03d6f00, Partial render:0, CSW resume:0. (PID:155324, prio:1, frame:27996, ext:0x00000253, int:0x0000085d)
+19299:T0-MAIN> 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+19368:T0-MAIN> UFO Updates for FWCtx 0xc0045118 @ 29912
+19391:T0-MAIN> UFO Update: [0xc0097030] = 0x00000020
+19398:T0-MAIN> UFO Update: [0xc0042018] = 0x00000519
+19411:T0-MAIN> UFO Update: [0xc0042710] = 0x00000519
+63188:T0-MAIN> GPU units deinit
+63243:T0-MAIN> GPU deinit
+418:T0-MAIN> State of firmware's private data at boot time: 1 (0 = uninitialised, 1 = initialised); Fw State Flags = 0x00000001
+435:T0-MAIN> State of firmware's private data at boot time: 1 (0 = uninitialised, 1 = initialised); Fw State Flags = 0x00000001
+450:T0-MAIN> Core clock set to 1104000000 Hz
+470:T0-MAIN> GPU init
+497:T0-MAIN> Host Sync Partition marker: 115
+828:T0-MAIN> cCCB Woff update = 9184, DM = 2, FWCtx = 0xc024f900
+897:T0-MAIN> cCCB Woff update = 33024, DM = 3, FWCtx = 0xc024f9d8
+934:T0-MAIN> UFO Checks for FWCtx 0xc024f9d8 @ 32624
+951:T0-MAIN> UFO PR-Check: [0xc02d0038] is 0x0000000c requires >= 0x0000000d
+1116:T0-MAIN> GPU Units init (# mask: 0x1)
+1298:T0-MAIN> Kick TA: FWCtx 0xc024f900 @ 9072, RTD 0xc0536e80, First kick:1, Last kick:1, CSW resume:0. (PID:155601, prio:1, frame:46, ext:0x00000c44, int:0x0000085e)
+1468:T0-MAIN> TA finished
+1490:T0-MAIN> Perform TPC flush.
+1530:T0-MAIN> UFO Updates for FWCtx 0xc024f900 @ 9152
+1544:T0-MAIN> UFO Update: [0xc02d0038] = 0x0000000d
+1552:T0-MAIN> UFO Update: [0xc0042718] = 0x00000519
+1632:T0-MAIN> UFO Checks for FWCtx 0xc024f9d8 @ 32624
+1650:T0-MAIN> UFO PR-Check: [0xc02d0038] is 0x0000000d requires >= 0x0000000d
+1879:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x80135000)
+1894:T0-MAIN>   Phantom 0: USCTiles=6
+1914:T0-MAIN> Kick 3D: FWCtx 0xc024f9d8 @ 32648, RTD 0xc0536e80, Partial render:0, CSW resume:0. (PID:155601, prio:1, frame:46, ext:0x00000c44, int:0x0000085e)
+2320:T0-MAIN> 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+2403:T0-MAIN> UFO Updates for FWCtx 0xc024f9d8 @ 32984
+2421:T0-MAIN> UFO Update: [0xc02d0038] = 0x0000000e
+2429:T0-MAIN> UFO Update: [0xc00423d0] = 0x00000519
+2438:T0-MAIN> UFO Update: [0xc00426a8] = 0x00000519
+5862:T0-MAIN> cCCB Woff update = 1168, DM = 2, FWCtx = 0xc0045040
+5926:T0-MAIN> cCCB Woff update = 30352, DM = 3, FWCtx = 0xc0045118
+5961:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 29952
+5979:T0-MAIN> UFO PR-Check: [0xc009716c] is 0x0000000e requires >= 0x0000000f
+6222:T0-MAIN> Kick TA: FWCtx 0xc0045040 @ 1056, RTD 0xc0534b80, First kick:1, Last kick:1, CSW resume:0. (PID:155324, prio:1, frame:29197, ext:0x00000254, int:0x0000085f)
+6390:T0-MAIN> TA finished
+6413:T0-MAIN> Perform TPC flush.
+6455:T0-MAIN> UFO Updates for FWCtx 0xc0045040 @ 1136
+6469:T0-MAIN> UFO Update: [0xc009716c] = 0x0000000f
+6477:T0-MAIN> UFO Update: [0xc0042728] = 0x00000519
+6555:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 29952
+6574:T0-MAIN> UFO PR-Check: [0xc009716c] is 0x0000000f requires >= 0x0000000f
+6820:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x8001500f)
+6835:T0-MAIN>   Phantom 0: USCTiles=6
+6858:T0-MAIN> Kick 3D: FWCtx 0xc0045118 @ 29976, RTD 0xc0534b80, Partial render:0, CSW resume:0. (PID:155324, prio:1, frame:29197, ext:0x00000254, int:0x0000085f)
+7172:T0-MAIN> 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+7252:T0-MAIN> UFO Updates for FWCtx 0xc0045118 @ 30312
+7270:T0-MAIN> UFO Update: [0xc009716c] = 0x00000010
+7278:T0-MAIN> UFO Update: [0xc0042080] = 0x00000519
+7287:T0-MAIN> UFO Update: [0xc0042030] = 0x00000519
+37356:T0-MAIN> cCCB Woff update = 1280, DM = 2, FWCtx = 0xc0045040
+37414:T0-MAIN> cCCB Woff update = 30752, DM = 3, FWCtx = 0xc0045118
+37447:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 30352
+37464:T0-MAIN> UFO PR-Check: [0xc009702c] is 0x0000001e requires >= 0x0000001f
+37709:T0-MAIN> Kick TA: FWCtx 0xc0045040 @ 1168, RTD 0xc02d1cc0, First kick:1, Last kick:1, CSW resume:0. (PID:155324, prio:1, frame:29197, ext:0x00000255, int:0x00000860)
+37913:T0-MAIN> TA finished
+37933:T0-MAIN> Perform TPC flush.
+37978:T0-MAIN> UFO Updates for FWCtx 0xc0045040 @ 1248
+37994:T0-MAIN> UFO Update: [0xc009702c] = 0x0000001f
+38000:T0-MAIN> UFO Update: [0xc0042028] = 0x00000519
+38082:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 30352
+38101:T0-MAIN> UFO PR-Check: [0xc009702c] is 0x0000001f requires >= 0x0000001f
+38333:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x8001500f)
+38350:T0-MAIN>   Phantom 0: USCTiles=6
+38370:T0-MAIN> Kick 3D: FWCtx 0xc0045118 @ 30376, RTD 0xc02d1cc0, Partial render:0, CSW resume:0. (PID:155324, prio:1, frame:29197, ext:0x00000255, int:0x00000860)
+39140:T0-MAIN> 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+39212:T0-MAIN> UFO Updates for FWCtx 0xc0045118 @ 30712
+39231:T0-MAIN> UFO Update: [0xc009702c] = 0x00000020
+39241:T0-MAIN> UFO Update: [0xc0042730] = 0x00000519
+39254:T0-MAIN> UFO Update: [0xc00420b8] = 0x00000519
+39558:T0-MAIN> cCCB Woff update = 1416, DM = 2, FWCtx = 0xc0045040
+39591:T0-MAIN> UFO Checks for FWCtx 0xc0045040 @ 1280
+39606:T0-MAIN> UFO Check: [0xc0042730] is 0x00000519 requires 0x00000519
+39661:T0-MAIN> cCCB Woff update = 31152, DM = 3, FWCtx = 0xc0045118
+39694:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 30752
+39709:T0-MAIN> UFO PR-Check: [0xc0097034] is 0x0000001e requires >= 0x0000001f
+39947:T0-MAIN> Kick TA: FWCtx 0xc0045040 @ 1304, RTD 0xc03d7000, First kick:1, Last kick:1, CSW resume:0. (PID:155324, prio:1, frame:29198, ext:0x00000256, int:0x00000861)
+40147:T0-MAIN> TA finished
+40172:T0-MAIN> Perform TPC flush.
+40219:T0-MAIN> UFO Updates for FWCtx 0xc0045040 @ 1384
+40235:T0-MAIN> UFO Update: [0xc0097034] = 0x0000001f
+40244:T0-MAIN> UFO Update: [0xc0042720] = 0x00000519
+40321:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 30752
+40342:T0-MAIN> UFO PR-Check: [0xc0097034] is 0x0000001f requires >= 0x0000001f
+40561:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x8001500f)
+40577:T0-MAIN>   Phantom 0: USCTiles=6
+40598:T0-MAIN> Kick 3D: FWCtx 0xc0045118 @ 30776, RTD 0xc03d7000, Partial render:0, CSW resume:0. (PID:155324, prio:1, frame:29198, ext:0x00000256, int:0x00000861)
+41076:T0-MAIN> 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+41151:T0-MAIN> UFO Updates for FWCtx 0xc0045118 @ 31112
+41168:T0-MAIN> UFO Update: [0xc0097034] = 0x00000020
+41175:T0-MAIN> UFO Update: [0xc0042738] = 0x00000519
+41185:T0-MAIN> UFO Update: [0xc00423a0] = 0x00000519
+84850:T0-MAIN> GPU units deinit
+84907:T0-MAIN> GPU deinit
+350:T0-MAIN> State of firmware's private data at boot time: 1 (0 = uninitialised, 1 = initialised); Fw State Flags = 0x00000001
+367:T0-MAIN> State of firmware's private data at boot time: 1 (0 = uninitialised, 1 = initialised); Fw State Flags = 0x00000001
+387:T0-MAIN> Core clock set to 1104000000 Hz
+411:T0-MAIN> GPU init
+443:T0-MAIN> Host Sync Partition marker: 116
+815:T0-MAIN> cCCB Woff update = 9296, DM = 2, FWCtx = 0xc024f900
+888:T0-MAIN> cCCB Woff update = 33424, DM = 3, FWCtx = 0xc024f9d8
+921:T0-MAIN> UFO Checks for FWCtx 0xc024f9d8 @ 33024
+939:T0-MAIN> UFO PR-Check: [0xc02d00a0] is 0x0000000c requires >= 0x0000000d
+1115:T0-MAIN> GPU Units init (# mask: 0x1)
+1300:T0-MAIN> Kick TA: FWCtx 0xc024f900 @ 9184, RTD 0xc0534c80, First kick:1, Last kick:1, CSW resume:0. (PID:155601, prio:1, frame:47, ext:0x00000c49, int:0x00000862)
+1473:T0-MAIN> TA finished
+1495:T0-MAIN> Perform TPC flush.
+1536:T0-MAIN> UFO Updates for FWCtx 0xc024f900 @ 9264
+1554:T0-MAIN> UFO Update: [0xc02d00a0] = 0x0000000d
+1562:T0-MAIN> UFO Update: [0xc00420a8] = 0x00000519
+1645:T0-MAIN> UFO Checks for FWCtx 0xc024f9d8 @ 33024
+1665:T0-MAIN> UFO PR-Check: [0xc02d00a0] is 0x0000000d requires >= 0x0000000d
+1895:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x80135000)
+1915:T0-MAIN>   Phantom 0: USCTiles=6
+1937:T0-MAIN> Kick 3D: FWCtx 0xc024f9d8 @ 33048, RTD 0xc0534c80, Partial render:0, CSW resume:0. (PID:155601, prio:1, frame:47, ext:0x00000c49, int:0x00000862)
+2357:T0-MAIN> 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+2441:T0-MAIN> UFO Updates for FWCtx 0xc024f9d8 @ 33384
+2466:T0-MAIN> UFO Update: [0xc02d00a0] = 0x0000000e
+2476:T0-MAIN> UFO Update: [0xc0042748] = 0x00000519
+2484:T0-MAIN> UFO Update: [0xc0042078] = 0x00000519
+23406:T0-MAIN> cCCB Woff update = 1528, DM = 2, FWCtx = 0xc0045040
+23470:T0-MAIN> cCCB Woff update = 31552, DM = 3, FWCtx = 0xc0045118
+23504:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 31152
+23521:T0-MAIN> UFO PR-Check: [0xc0097160] is 0x00000010 requires >= 0x00000011
+23765:T0-MAIN> Kick TA: FWCtx 0xc0045040 @ 1416, RTD 0xc0534880, First kick:1, Last kick:1, CSW resume:0. (PID:155324, prio:1, frame:30399, ext:0x00000257, int:0x00000863)
+23940:T0-MAIN> TA finished
+23962:T0-MAIN> Perform TPC flush.
+24005:T0-MAIN> UFO Updates for FWCtx 0xc0045040 @ 1496
+24020:T0-MAIN> UFO Update: [0xc0097160] = 0x00000011
+24030:T0-MAIN> UFO Update: [0xc0042758] = 0x00000519
+24112:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 31152
+24131:T0-MAIN> UFO PR-Check: [0xc0097160] is 0x00000011 requires >= 0x00000011
+24377:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x8001500f)
+24392:T0-MAIN>   Phantom 0: USCTiles=6
+24414:T0-MAIN> Kick 3D: FWCtx 0xc0045118 @ 31176, RTD 0xc0534880, Partial render:0, CSW resume:0. (PID:155324, prio:1, frame:30399, ext:0x00000257, int:0x00000863)
+24703:T0-MAIN> 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+24788:T0-MAIN> UFO Updates for FWCtx 0xc0045118 @ 31512
+24807:T0-MAIN> UFO Update: [0xc0097160] = 0x00000012
+24816:T0-MAIN> UFO Update: [0xc00426d8] = 0x00000519
+24824:T0-MAIN> UFO Update: [0xc0042760] = 0x00000519
+43506:T0-MAIN> cCCB Woff update = 1640, DM = 2, FWCtx = 0xc0045040
+43570:T0-MAIN> cCCB Woff update = 31952, DM = 3, FWCtx = 0xc0045118
+43602:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 31552
+43617:T0-MAIN> UFO PR-Check: [0xc0097020] is 0x00000020 requires >= 0x00000021
+43864:T0-MAIN> Kick TA: FWCtx 0xc0045040 @ 1528, RTD 0xc02d19c0, First kick:1, Last kick:1, CSW resume:0. (PID:155324, prio:1, frame:30399, ext:0x00000258, int:0x00000864)
+44077:T0-MAIN> TA finished
+44099:T0-MAIN> Perform TPC flush.
+44149:T0-MAIN> UFO Updates for FWCtx 0xc0045040 @ 1608
+44166:T0-MAIN> UFO Update: [0xc0097020] = 0x00000021
+44175:T0-MAIN> UFO Update: [0xc00420e0] = 0x00000519
+44261:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 31552
+44280:T0-MAIN> UFO PR-Check: [0xc0097020] is 0x00000021 requires >= 0x00000021
+44503:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x8001500f)
+44517:T0-MAIN>   Phantom 0: USCTiles=6
+44542:T0-MAIN> Kick 3D: FWCtx 0xc0045118 @ 31576, RTD 0xc02d19c0, Partial render:0, CSW resume:0. (PID:155324, prio:1, frame:30399, ext:0x00000258, int:0x00000864)
+44838:T0-MAIN> cCCB Woff update = 1776, DM = 2, FWCtx = 0xc0045040
+44872:T0-MAIN> UFO Checks for FWCtx 0xc0045040 @ 1640
+44889:T0-MAIN> UFO Check: [0xc0042750] is 0x00000ac1 requires 0x00000519
+44928:T0-MAIN> cCCB Woff update = 32352, DM = 3, FWCtx = 0xc0045118
+44963:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 31952
+44978:T0-MAIN> UFO PR-Check: [0xc0097038] is 0x0000001e requires >= 0x0000001f
+45320:T0-MAIN> 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+45401:T0-MAIN> UFO Updates for FWCtx 0xc0045118 @ 31912
+45416:T0-MAIN> UFO Update: [0xc0097020] = 0x00000022
+45423:T0-MAIN> UFO Update: [0xc0042750] = 0x00000519
+45432:T0-MAIN> UFO Update: [0xc0042358] = 0x00000519
+45525:T0-MAIN> UFO Checks for FWCtx 0xc0045040 @ 1640
+45542:T0-MAIN> UFO Check: [0xc0042750] is 0x00000519 requires 0x00000519
+45745:T0-MAIN> Kick TA: FWCtx 0xc0045040 @ 1664, RTD 0xc03d7100, First kick:1, Last kick:1, CSW resume:0. (PID:155324, prio:1, frame:30400, ext:0x00000259, int:0x00000865)
+45952:T0-MAIN> TA finished
+45975:T0-MAIN> Perform TPC flush.
+46023:T0-MAIN> UFO Updates for FWCtx 0xc0045040 @ 1744
+46041:T0-MAIN> UFO Update: [0xc0097038] = 0x0000001f
+46051:T0-MAIN> UFO Update: [0xc00420c0] = 0x00000519
+46140:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 31952
+46158:T0-MAIN> UFO PR-Check: [0xc0097038] is 0x0000001f requires >= 0x0000001f
+46382:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x8001500f)
+46399:T0-MAIN>   Phantom 0: USCTiles=6
+46422:T0-MAIN> Kick 3D: FWCtx 0xc0045118 @ 31976, RTD 0xc03d7100, Partial render:0, CSW resume:0. (PID:155324, prio:1, frame:30400, ext:0x00000259, int:0x00000865)
+46909:T0-MAIN> 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+46986:T0-MAIN> UFO Updates for FWCtx 0xc0045118 @ 32312
+47004:T0-MAIN> UFO Update: [0xc0097038] = 0x00000020
+47012:T0-MAIN> UFO Update: [0xc0042768] = 0x00000519
+47020:T0-MAIN> UFO Update: [0xc00420c8] = 0x00000519
+91279:T0-MAIN> GPU units deinit
+91338:T0-MAIN> GPU deinit
+439:T0-MAIN> State of firmware's private data at boot time: 1 (0 = uninitialised, 1 = initialised); Fw State Flags = 0x00000001
+458:T0-MAIN> State of firmware's private data at boot time: 1 (0 = uninitialised, 1 = initialised); Fw State Flags = 0x00000001
+475:T0-MAIN> Core clock set to 1104000000 Hz
+495:T0-MAIN> GPU init
+527:T0-MAIN> Host Sync Partition marker: 117
+844:T0-MAIN> cCCB Woff update = 9408, DM = 2, FWCtx = 0xc024f900
+913:T0-MAIN> cCCB Woff update = 33824, DM = 3, FWCtx = 0xc024f9d8
+950:T0-MAIN> UFO Checks for FWCtx 0xc024f9d8 @ 33424
+967:T0-MAIN> UFO PR-Check: [0xc02d0030] is 0x0000000e requires >= 0x0000000f
+1140:T0-MAIN> GPU Units init (# mask: 0x1)
+1328:T0-MAIN> Kick TA: FWCtx 0xc024f900 @ 9296, RTD 0xc0534300, First kick:1, Last kick:1, CSW resume:0. (PID:155601, prio:1, frame:48, ext:0x00000c4e, int:0x00000866)
+1502:T0-MAIN> TA finished
+1524:T0-MAIN> Perform TPC flush.
+1564:T0-MAIN> UFO Updates for FWCtx 0xc024f900 @ 9376
+1577:T0-MAIN> UFO Update: [0xc02d0030] = 0x0000000f
+1584:T0-MAIN> UFO Update: [0xc0042778] = 0x00000519
+1669:T0-MAIN> UFO Checks for FWCtx 0xc024f9d8 @ 33424
+1689:T0-MAIN> UFO PR-Check: [0xc02d0030] is 0x0000000f requires >= 0x0000000f
+1922:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x80135000)
+1940:T0-MAIN>   Phantom 0: USCTiles=6
+1962:T0-MAIN> Kick 3D: FWCtx 0xc024f9d8 @ 33448, RTD 0xc0534300, Partial render:0, CSW resume:0. (PID:155601, prio:1, frame:48, ext:0x00000c4e, int:0x00000866)
+2367:T0-MAIN> 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+2450:T0-MAIN> UFO Updates for FWCtx 0xc024f9d8 @ 33784
+2467:T0-MAIN> UFO Update: [0xc02d0030] = 0x00000010
+2475:T0-MAIN> UFO Update: [0xc0042110] = 0x00000519
+2483:T0-MAIN> UFO Update: [0xc0042780] = 0x00000519
+5076:T0-MAIN> cCCB Woff update = 1888, DM = 2, FWCtx = 0xc0045040
+5141:T0-MAIN> cCCB Woff update = 32752, DM = 3, FWCtx = 0xc0045118
+5177:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 32352
+5195:T0-MAIN> UFO PR-Check: [0xc0097164] is 0x00000010 requires >= 0x00000011
+5460:T0-MAIN> Kick TA: FWCtx 0xc0045040 @ 1776, RTD 0xc0534980, First kick:1, Last kick:1, CSW resume:0. (PID:155324, prio:1, frame:31601, ext:0x0000025a, int:0x00000867)
+5635:T0-MAIN> TA finished
+5657:T0-MAIN> Perform TPC flush.
+5698:T0-MAIN> UFO Updates for FWCtx 0xc0045040 @ 1856
+5714:T0-MAIN> UFO Update: [0xc0097164] = 0x00000011
+5722:T0-MAIN> UFO Update: [0xc0042708] = 0x00000519
+5804:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 32352
+5822:T0-MAIN> UFO PR-Check: [0xc0097164] is 0x00000011 requires >= 0x00000011
+6059:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x8001500f)
+6074:T0-MAIN>   Phantom 0: USCTiles=6
+6096:T0-MAIN> Kick 3D: FWCtx 0xc0045118 @ 32376, RTD 0xc0534980, Partial render:0, CSW resume:0. (PID:155324, prio:1, frame:31601, ext:0x0000025a, int:0x00000867)
+6402:T0-MAIN> 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+6489:T0-MAIN> UFO Updates for FWCtx 0xc0045118 @ 32712
+6507:T0-MAIN> UFO Update: [0xc0097164] = 0x00000012
+6519:T0-MAIN> UFO Update: [0xc00420b0] = 0x00000519
+6529:T0-MAIN> UFO Update: [0xc00420d0] = 0x00000519
+15890:T0-MAIN> cCCB Woff update = 2000, DM = 2, FWCtx = 0xc0045040
+15950:T0-MAIN> cCCB Woff update = 33144, DM = 3, FWCtx = 0xc0045118
+15983:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 32752
+15999:T0-MAIN> UFO PR-Check: [0xc0097024] is 0x00000020 requires >= 0x00000021
+16240:T0-MAIN> Kick TA: FWCtx 0xc0045040 @ 1888, RTD 0xc02d1ac0, First kick:1, Last kick:1, CSW resume:0. (PID:155324, prio:1, frame:31601, ext:0x0000025b, int:0x00000868)
+16463:T0-MAIN> TA finished
+16492:T0-MAIN> Perform TPC flush.
+16543:T0-MAIN> UFO Updates for FWCtx 0xc0045040 @ 1968
+16558:T0-MAIN> UFO Update: [0xc0097024] = 0x00000021
+16562:T0-MAIN> UFO Update: [0xc0042790] = 0x00000519
+16639:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 32752
+16659:T0-MAIN> UFO PR-Check: [0xc0097024] is 0x00000021 requires >= 0x00000021
+16896:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x8001500f)
+16915:T0-MAIN>   Phantom 0: USCTiles=6
+16943:T0-MAIN> Kick 3D: FWCtx 0xc0045118 @ 32776, RTD 0xc02d1ac0, Partial render:0, CSW resume:0. (PID:155324, prio:1, frame:31601, ext:0x0000025b, int:0x00000868)
+17209:T0-MAIN> cCCB Woff update = 2112, DM = 2, FWCtx = 0xc0045040
+17281:T0-MAIN> cCCB Woff update = 33544, DM = 3, FWCtx = 0xc0045118
+17312:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 33144
+17330:T0-MAIN> UFO PR-Check: [0xc009703c] is 0x0000001e requires >= 0x0000001f
+17580:T0-MAIN> Kick TA: FWCtx 0xc0045040 @ 2000, RTD 0xc03d7200, First kick:1, Last kick:1, CSW resume:0. (PID:155324, prio:1, frame:31602, ext:0x0000025c, int:0x00000869)
+17770:T0-MAIN> 3D finished, HWRTData0State=2, HWRTData1State=4
+17854:T0-MAIN> UFO Updates for FWCtx 0xc0045118 @ 33112
+17873:T0-MAIN> UFO Update: [0xc0097024] = 0x00000022
+17881:T0-MAIN> UFO Update: [0xc0042090] = 0x00000519
+18006:T0-MAIN> TA finished
+18028:T0-MAIN> Perform TPC flush.
+18072:T0-MAIN> UFO Updates for FWCtx 0xc0045040 @ 2080
+18086:T0-MAIN> UFO Update: [0xc009703c] = 0x0000001f
+18092:T0-MAIN> UFO Update: [0xc0042098] = 0x00000519
+18169:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 33144
+18187:T0-MAIN> UFO PR-Check: [0xc009703c] is 0x0000001f requires >= 0x0000001f
+18400:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x8001500f)
+18419:T0-MAIN>   Phantom 0: USCTiles=6
+18438:T0-MAIN> Kick 3D: FWCtx 0xc0045118 @ 33168, RTD 0xc03d7200, Partial render:0, CSW resume:0. (PID:155324, prio:1, frame:31602, ext:0x0000025c, int:0x00000869)
+18925:T0-MAIN> 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+18997:T0-MAIN> UFO Updates for FWCtx 0xc0045118 @ 33504
+19016:T0-MAIN> UFO Update: [0xc009703c] = 0x00000020
+19024:T0-MAIN> UFO Update: [0xc0042798] = 0x00000519
+19031:T0-MAIN> UFO Update: [0xc00427a0] = 0x00000519
+62701:T0-MAIN> GPU units deinit
+62780:T0-MAIN> GPU deinit
+563:T0-MAIN> State of firmware's private data at boot time: 1 (0 = uninitialised, 1 = initialised); Fw State Flags = 0x00000001
+580:T0-MAIN> State of firmware's private data at boot time: 1 (0 = uninitialised, 1 = initialised); Fw State Flags = 0x00000001
+595:T0-MAIN> Core clock set to 1104000000 Hz
+615:T0-MAIN> GPU init
+642:T0-MAIN> Host Sync Partition marker: 118
+1058:T0-MAIN> cCCB Woff update = 9520, DM = 2, FWCtx = 0xc024f900
+1127:T0-MAIN> cCCB Woff update = 34224, DM = 3, FWCtx = 0xc024f9d8
+1161:T0-MAIN> UFO Checks for FWCtx 0xc024f9d8 @ 33824
+1177:T0-MAIN> UFO PR-Check: [0xc02d0034] is 0x0000000e requires >= 0x0000000f
+1346:T0-MAIN> GPU Units init (# mask: 0x1)
+1532:T0-MAIN> Kick TA: FWCtx 0xc024f900 @ 9408, RTD 0xc0536d80, First kick:1, Last kick:1, CSW resume:0. (PID:155601, prio:1, frame:49, ext:0x00000c53, int:0x0000086a)
+1705:T0-MAIN> TA finished
+1727:T0-MAIN> Perform TPC flush.
+1767:T0-MAIN> UFO Updates for FWCtx 0xc024f900 @ 9488
+1782:T0-MAIN> UFO Update: [0xc02d0034] = 0x0000000f
+1792:T0-MAIN> UFO Update: [0xc00427a8] = 0x00000519
+1877:T0-MAIN> UFO Checks for FWCtx 0xc024f9d8 @ 33824
+1895:T0-MAIN> UFO PR-Check: [0xc02d0034] is 0x0000000f requires >= 0x0000000f
+2111:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x80135000)
+2128:T0-MAIN>   Phantom 0: USCTiles=6
+2149:T0-MAIN> Kick 3D: FWCtx 0xc024f9d8 @ 33848, RTD 0xc0536d80, Partial render:0, CSW resume:0. (PID:155601, prio:1, frame:49, ext:0x00000c53, int:0x0000086a)
+2552:T0-MAIN> 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+2636:T0-MAIN> UFO Updates for FWCtx 0xc024f9d8 @ 34184
+2654:T0-MAIN> UFO Update: [0xc02d0034] = 0x00000010
+2662:T0-MAIN> UFO Update: [0xc00420d8] = 0x00000519
+2670:T0-MAIN> UFO Update: [0xc00422c0] = 0x00000519
+8526:T0-MAIN> cCCB Woff update = 2224, DM = 2, FWCtx = 0xc0045040
+8589:T0-MAIN> cCCB Woff update = 33944, DM = 3, FWCtx = 0xc0045118
+8623:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 33544
+8639:T0-MAIN> UFO PR-Check: [0xc0097168] is 0x00000010 requires >= 0x00000011
+8891:T0-MAIN> Kick TA: FWCtx 0xc0045040 @ 2112, RTD 0xc0534a80, First kick:1, Last kick:1, CSW resume:0. (PID:155324, prio:1, frame:32803, ext:0x0000025d, int:0x0000086b)
+9060:T0-MAIN> TA finished
+9083:T0-MAIN> Perform TPC flush.
+9129:T0-MAIN> UFO Updates for FWCtx 0xc0045040 @ 2192
+9144:T0-MAIN> UFO Update: [0xc0097168] = 0x00000011
+9150:T0-MAIN> UFO Update: [0xc0042788] = 0x00000519
+9232:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 33544
+9253:T0-MAIN> UFO PR-Check: [0xc0097168] is 0x00000011 requires >= 0x00000011
+9496:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x8001500f)
+9516:T0-MAIN>   Phantom 0: USCTiles=6
+9537:T0-MAIN> Kick 3D: FWCtx 0xc0045118 @ 33568, RTD 0xc0534a80, Partial render:0, CSW resume:0. (PID:155324, prio:1, frame:32803, ext:0x0000025d, int:0x0000086b)
+9835:T0-MAIN> 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+9914:T0-MAIN> UFO Updates for FWCtx 0xc0045118 @ 33904
+9933:T0-MAIN> UFO Update: [0xc0097168] = 0x00000012
+9940:T0-MAIN> UFO Update: [0xc0042210] = 0x00000519
+9951:T0-MAIN> UFO Update: [0xc0042740] = 0x00000519
+21456:T0-MAIN> cCCB Woff update = 2336, DM = 2, FWCtx = 0xc0045040
+21517:T0-MAIN> cCCB Woff update = 34344, DM = 3, FWCtx = 0xc0045118
+21547:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 33944
+21567:T0-MAIN> UFO PR-Check: [0xc0097028] is 0x00000020 requires >= 0x00000021
+21813:T0-MAIN> Kick TA: FWCtx 0xc0045040 @ 2224, RTD 0xc02d1bc0, First kick:1, Last kick:1, CSW resume:0. (PID:155324, prio:1, frame:32803, ext:0x0000025e, int:0x0000086c)
+22024:T0-MAIN> TA finished
+22049:T0-MAIN> Perform TPC flush.
+22099:T0-MAIN> UFO Updates for FWCtx 0xc0045040 @ 2304
+22115:T0-MAIN> UFO Update: [0xc0097028] = 0x00000021
+22123:T0-MAIN> UFO Update: [0xc0042408] = 0x00000519
+22214:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 33944
+22237:T0-MAIN> UFO PR-Check: [0xc0097028] is 0x00000021 requires >= 0x00000021
+22468:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x8001500f)
+22485:T0-MAIN>   Phantom 0: USCTiles=6
+22512:T0-MAIN> Kick 3D: FWCtx 0xc0045118 @ 33968, RTD 0xc02d1bc0, Partial render:0, CSW resume:0. (PID:155324, prio:1, frame:32803, ext:0x0000025e, int:0x0000086c)
+22768:T0-MAIN> cCCB Woff update = 2472, DM = 2, FWCtx = 0xc0045040
+22810:T0-MAIN> UFO Checks for FWCtx 0xc0045040 @ 2336
+22826:T0-MAIN> UFO Check: [0xc00420e8] is 0x00000ac1 requires 0x00000519
+22855:T0-MAIN> cCCB Woff update = 34744, DM = 3, FWCtx = 0xc0045118
+22887:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 34344
+22905:T0-MAIN> UFO PR-Check: [0xc0097030] is 0x00000020 requires >= 0x00000021
+23284:T0-MAIN> 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+23357:T0-MAIN> UFO Updates for FWCtx 0xc0045118 @ 34304
+23374:T0-MAIN> UFO Update: [0xc0097028] = 0x00000022
+23380:T0-MAIN> UFO Update: [0xc00420e8] = 0x00000519
+23387:T0-MAIN> UFO Update: [0xc0042570] = 0x00000519
+23488:T0-MAIN> UFO Checks for FWCtx 0xc0045040 @ 2336
+23509:T0-MAIN> UFO Check: [0xc00420e8] is 0x00000519 requires 0x00000519
+23709:T0-MAIN> Kick TA: FWCtx 0xc0045040 @ 2360, RTD 0xc03d6f00, First kick:1, Last kick:1, CSW resume:0. (PID:155324, prio:1, frame:32804, ext:0x0000025f, int:0x0000086d)
+23916:T0-MAIN> TA finished
+23939:T0-MAIN> Perform TPC flush.
+23984:T0-MAIN> UFO Updates for FWCtx 0xc0045040 @ 2440
+23998:T0-MAIN> UFO Update: [0xc0097030] = 0x00000021
+24007:T0-MAIN> UFO Update: [0xc00427c0] = 0x00000519
+24096:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 34344
+24113:T0-MAIN> UFO PR-Check: [0xc0097030] is 0x00000021 requires >= 0x00000021
+24345:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x8001500f)
+24362:T0-MAIN>   Phantom 0: USCTiles=6
+24382:T0-MAIN> Kick 3D: FWCtx 0xc0045118 @ 34368, RTD 0xc03d6f00, Partial render:0, CSW resume:0. (PID:155324, prio:1, frame:32804, ext:0x0000025f, int:0x0000086d)
+24875:T0-MAIN> 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+24950:T0-MAIN> UFO Updates for FWCtx 0xc0045118 @ 34704
+24972:T0-MAIN> UFO Update: [0xc0097030] = 0x00000022
+24982:T0-MAIN> UFO Update: [0xc00427b8] = 0x00000519
+24990:T0-MAIN> UFO Update: [0xc0042410] = 0x00000519
+68793:T0-MAIN> GPU units deinit
+68855:T0-MAIN> GPU deinit
+268:T0-MAIN> State of firmware's private data at boot time: 1 (0 = uninitialised, 1 = initialised); Fw State Flags = 0x00000001
+285:T0-MAIN> State of firmware's private data at boot time: 1 (0 = uninitialised, 1 = initialised); Fw State Flags = 0x00000001
+300:T0-MAIN> Core clock set to 1104000000 Hz
+321:T0-MAIN> GPU init
+352:T0-MAIN> Host Sync Partition marker: 119
+672:T0-MAIN> cCCB Woff update = 112, DM = 2, FWCtx = 0xc0563340
+747:T0-MAIN> cCCB Woff update = 392, DM = 3, FWCtx = 0xc0563418
+781:T0-MAIN> UFO Checks for FWCtx 0xc0563418 @ 0
+797:T0-MAIN> UFO PR-Check: [0xc05c4010] is 0x00000000 requires >= 0x00000001
+970:T0-MAIN> GPU Units init (# mask: 0x1)
+1167:T0-MAIN> Kick TA: FWCtx 0xc0563340 @ 0, RTD 0xc0563e80, First kick:1, Last kick:1, CSW resume:0. (PID:172142, prio:1, frame:0, ext:0x00000001, int:0x0000086e)
+1333:T0-MAIN> TA finished
+1352:T0-MAIN> Perform TPC flush.
+1401:T0-MAIN> UFO Updates for FWCtx 0xc0563340 @ 80
+1420:T0-MAIN> UFO Update: [0xc05c4010] = 0x00000001
+1429:T0-MAIN> UFO Update: [0xc00427b0] = 0x00000519
+1511:T0-MAIN> UFO Checks for FWCtx 0xc0563418 @ 0
+1530:T0-MAIN> UFO PR-Check: [0xc05c4010] is 0x00000001 requires >= 0x00000001
+1747:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x80035000)
+1765:T0-MAIN>   Phantom 0: USCTiles=6
+1789:T0-MAIN> Kick 3D: FWCtx 0xc0563418 @ 24, RTD 0xc0563e80, Partial render:0, CSW resume:0. (PID:172142, prio:1, frame:0, ext:0x00000001, int:0x0000086e)
+2019:T0-MAIN> cCCB Woff update = 224, DM = 3, FWCtx = 0xc0534d80
+2080:T0-MAIN> UFO Checks for FWCtx 0xc0534d80 @ 0
+2118:T0-MAIN> UFO Check: [0xc0042138] is 0x00000ac1 requires 0x00000519
+2198:T0-MAIN> cCCB Woff update = 224, DM = 2, FWCtx = 0xc0563340
+2260:T0-MAIN> cCCB Woff update = 784, DM = 3, FWCtx = 0xc0563418
+2290:T0-MAIN> UFO Checks for FWCtx 0xc0563418 @ 392
+2306:T0-MAIN> UFO PR-Check: [0xc05c4014] is 0x00000000 requires >= 0x00000001
+2360:T0-MAIN> 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+2436:T0-MAIN> UFO Updates for FWCtx 0xc0563418 @ 360
+2462:T0-MAIN> UFO Update: [0xc05c4010] = 0x00000002
+2470:T0-MAIN> UFO Update: [0xc0042138] = 0x00000519
+2534:T0-MAIN> UFO Checks for FWCtx 0xc0534d80 @ 0
+2550:T0-MAIN> UFO Check: [0xc0042138] is 0x00000519 requires 0x00000519
+2635:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x00025000)
+2649:T0-MAIN>   Phantom 0: USCTiles=6
+2666:T0-MAIN> Kick 3D TQ: FWCtx 0xc0534d80 @ 24, CSW resume:0. (PID:172142, prio:1, frame:0, ext:0x00000003, int:0x0000086f)
+2997:T0-MAIN> Kick TA: FWCtx 0xc0563340 @ 112, RTD 0xc05c5000, First kick:1, Last kick:1, CSW resume:0. (PID:172142, prio:1, frame:0, ext:0x00000005, int:0x00000870)
+3261:T0-MAIN> TA finished
+3301:T0-MAIN> Perform TPC flush.
+3375:T0-MAIN> UFO Updates for FWCtx 0xc0563340 @ 192
+3402:T0-MAIN> UFO Update: [0xc05c4014] = 0x00000001
+3410:T0-MAIN> UFO Update: [0xc00427d0] = 0x00000519
+3631:T0-MAIN> 3D Transfer finished
+3693:T0-MAIN> UFO Updates for FWCtx 0xc0534d80 @ 200
+3707:T0-MAIN> UFO Update: [0xc0042418] = 0x00000519
+3755:T0-MAIN> UFO Checks for FWCtx 0xc0563418 @ 392
+3775:T0-MAIN> UFO PR-Check: [0xc05c4014] is 0x00000001 requires >= 0x00000001
+3998:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x80035000)
+4014:T0-MAIN>   Phantom 0: USCTiles=6
+4038:T0-MAIN> Kick 3D: FWCtx 0xc0563418 @ 416, RTD 0xc05c5000, Partial render:0, CSW resume:0. (PID:172142, prio:1, frame:0, ext:0x00000005, int:0x00000870)
+4349:T0-MAIN> cCCB Woff update = 448, DM = 3, FWCtx = 0xc0534d80
+4407:T0-MAIN> UFO Checks for FWCtx 0xc0534d80 @ 224
+4425:T0-MAIN> UFO Check: [0xc0042118] is 0x00000ac1 requires 0x00000519
+4489:T0-MAIN> 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+4573:T0-MAIN> UFO Updates for FWCtx 0xc0563418 @ 752
+4590:T0-MAIN> UFO Update: [0xc05c4014] = 0x00000002
+4594:T0-MAIN> UFO Update: [0xc0042118] = 0x00000519
+4642:T0-MAIN> UFO Checks for FWCtx 0xc0534d80 @ 224
+4657:T0-MAIN> UFO Check: [0xc0042118] is 0x00000519 requires 0x00000519
+4741:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x00025000)
+4754:T0-MAIN>   Phantom 0: USCTiles=6
+4773:T0-MAIN> Kick 3D TQ: FWCtx 0xc0534d80 @ 248, CSW resume:0. (PID:172142, prio:1, frame:0, ext:0x00000007, int:0x00000871)
+5679:T0-MAIN> 3D Transfer finished
+5741:T0-MAIN> UFO Updates for FWCtx 0xc0534d80 @ 424
+5756:T0-MAIN> UFO Update: [0xc0042770] = 0x00000519
+49344:T0-MAIN> GPU units deinit
+49407:T0-MAIN> GPU deinit
+435:T0-MAIN> State of firmware's private data at boot time: 1 (0 = uninitialised, 1 = initialised); Fw State Flags = 0x00000001
+451:T0-MAIN> State of firmware's private data at boot time: 1 (0 = uninitialised, 1 = initialised); Fw State Flags = 0x00000001
+467:T0-MAIN> Core clock set to 1104000000 Hz
+487:T0-MAIN> GPU init
+514:T0-MAIN> Host Sync Partition marker: 120
+44427:T0-MAIN> GPU units deinit
+44460:T0-MAIN> GPU deinit
+500:T0-MAIN> State of firmware's private data at boot time: 1 (0 = uninitialised, 1 = initialised); Fw State Flags = 0x00000001
+516:T0-MAIN> State of firmware's private data at boot time: 1 (0 = uninitialised, 1 = initialised); Fw State Flags = 0x00000001
+536:T0-MAIN> Core clock set to 1104000000 Hz
+563:T0-MAIN> GPU init
+597:T0-MAIN> Host Sync Partition marker: 121
+891:T0-MAIN> cCCB Woff update = 9632, DM = 2, FWCtx = 0xc024f900
+961:T0-MAIN> cCCB Woff update = 34624, DM = 3, FWCtx = 0xc024f9d8
+994:T0-MAIN> UFO Checks for FWCtx 0xc024f9d8 @ 34224
+1012:T0-MAIN> UFO PR-Check: [0xc02d0038] is 0x0000000e requires >= 0x0000000f
+1192:T0-MAIN> GPU Units init (# mask: 0x1)
+1377:T0-MAIN> Kick TA: FWCtx 0xc024f900 @ 9520, RTD 0xc0536e80, First kick:1, Last kick:1, CSW resume:0. (PID:155601, prio:1, frame:50, ext:0x00000c58, int:0x00000872)
+1556:T0-MAIN> TA finished
+1580:T0-MAIN> Perform TPC flush.
+1624:T0-MAIN> UFO Updates for FWCtx 0xc024f900 @ 9600
+1639:T0-MAIN> UFO Update: [0xc02d0038] = 0x0000000f
+1648:T0-MAIN> UFO Update: [0xc00427e0] = 0x00000519
+1734:T0-MAIN> UFO Checks for FWCtx 0xc024f9d8 @ 34224
+1752:T0-MAIN> UFO PR-Check: [0xc02d0038] is 0x0000000f requires >= 0x0000000f
+1969:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x80135000)
+1985:T0-MAIN>   Phantom 0: USCTiles=6
+2005:T0-MAIN> Kick 3D: FWCtx 0xc024f9d8 @ 34248, RTD 0xc0536e80, Partial render:0, CSW resume:0. (PID:155601, prio:1, frame:50, ext:0x00000c58, int:0x00000872)
+2418:T0-MAIN> 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+2501:T0-MAIN> UFO Updates for FWCtx 0xc024f9d8 @ 34584
+2519:T0-MAIN> UFO Update: [0xc02d0038] = 0x00000010
+2528:T0-MAIN> UFO Update: [0xc0042420] = 0x00000519
+2536:T0-MAIN> UFO Update: [0xc0042578] = 0x00000519
+5882:T0-MAIN> cCCB Woff update = 2584, DM = 2, FWCtx = 0xc0045040
+5938:T0-MAIN> cCCB Woff update = 35144, DM = 3, FWCtx = 0xc0045118
+5973:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 34744
+5989:T0-MAIN> UFO PR-Check: [0xc009716c] is 0x00000010 requires >= 0x00000011
+6229:T0-MAIN> Kick TA: FWCtx 0xc0045040 @ 2472, RTD 0xc0534b80, First kick:1, Last kick:1, CSW resume:0. (PID:155324, prio:1, frame:34005, ext:0x00000260, int:0x00000873)
+6403:T0-MAIN> TA finished
+6424:T0-MAIN> Perform TPC flush.
+6467:T0-MAIN> UFO Updates for FWCtx 0xc0045040 @ 2552
+6482:T0-MAIN> UFO Update: [0xc009716c] = 0x00000011
+6489:T0-MAIN> UFO Update: [0xc00427e8] = 0x00000519
+6571:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 34744
+6588:T0-MAIN> UFO PR-Check: [0xc009716c] is 0x00000011 requires >= 0x00000011
+6842:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x8001500f)
+6860:T0-MAIN>   Phantom 0: USCTiles=6
+6888:T0-MAIN> Kick 3D: FWCtx 0xc0045118 @ 34768, RTD 0xc0534b80, Partial render:0, CSW resume:0. (PID:155324, prio:1, frame:34005, ext:0x00000260, int:0x00000873)
+7190:T0-MAIN> 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+7275:T0-MAIN> UFO Updates for FWCtx 0xc0045118 @ 35104
+7294:T0-MAIN> UFO Update: [0xc009716c] = 0x00000012
+7302:T0-MAIN> UFO Update: [0xc0042128] = 0x00000519
+7312:T0-MAIN> UFO Update: [0xc0042130] = 0x00000519
+17647:T0-MAIN> cCCB Woff update = 2696, DM = 2, FWCtx = 0xc0045040
+17719:T0-MAIN> cCCB Woff update = 35544, DM = 3, FWCtx = 0xc0045118
+17755:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 35144
+17771:T0-MAIN> UFO PR-Check: [0xc009702c] is 0x00000020 requires >= 0x00000021
+18011:T0-MAIN> Kick TA: FWCtx 0xc0045040 @ 2584, RTD 0xc02d1cc0, First kick:1, Last kick:1, CSW resume:0. (PID:155324, prio:1, frame:34005, ext:0x00000261, int:0x00000874)
+18217:T0-MAIN> TA finished
+18241:T0-MAIN> Perform TPC flush.
+18288:T0-MAIN> UFO Updates for FWCtx 0xc0045040 @ 2664
+18302:T0-MAIN> UFO Update: [0xc009702c] = 0x00000021
+18310:T0-MAIN> UFO Update: [0xc0042430] = 0x00000519
+18388:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 35144
+18407:T0-MAIN> UFO PR-Check: [0xc009702c] is 0x00000021 requires >= 0x00000021
+18638:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x8001500f)
+18656:T0-MAIN>   Phantom 0: USCTiles=6
+18680:T0-MAIN> Kick 3D: FWCtx 0xc0045118 @ 35168, RTD 0xc02d1cc0, Partial render:0, CSW resume:0. (PID:155324, prio:1, frame:34005, ext:0x00000261, int:0x00000874)
+19236:T0-MAIN> cCCB Woff update = 2832, DM = 2, FWCtx = 0xc0045040
+19271:T0-MAIN> UFO Checks for FWCtx 0xc0045040 @ 2696
+19287:T0-MAIN> UFO Check: [0xc0042428] is 0x00000ac1 requires 0x00000519
+19318:T0-MAIN> cCCB Woff update = 35944, DM = 3, FWCtx = 0xc0045118
+19353:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 35544
+19374:T0-MAIN> UFO PR-Check: [0xc0097034] is 0x00000020 requires >= 0x00000021
+19463:T0-MAIN> 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+19548:T0-MAIN> UFO Updates for FWCtx 0xc0045118 @ 35504
+19566:T0-MAIN> UFO Update: [0xc009702c] = 0x00000022
+19570:T0-MAIN> UFO Update: [0xc0042428] = 0x00000519
+19579:T0-MAIN> UFO Update: [0xc0042438] = 0x00000519
+19678:T0-MAIN> UFO Checks for FWCtx 0xc0045040 @ 2696
+19695:T0-MAIN> UFO Check: [0xc0042428] is 0x00000519 requires 0x00000519
+19902:T0-MAIN> Kick TA: FWCtx 0xc0045040 @ 2720, RTD 0xc03d7000, First kick:1, Last kick:1, CSW resume:0. (PID:155324, prio:1, frame:34006, ext:0x00000262, int:0x00000875)
+20107:T0-MAIN> TA finished
+20133:T0-MAIN> Perform TPC flush.
+20174:T0-MAIN> UFO Updates for FWCtx 0xc0045040 @ 2800
+20191:T0-MAIN> UFO Update: [0xc0097034] = 0x00000021
+20201:T0-MAIN> UFO Update: [0xc0042808] = 0x00000519
+20283:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 35544
+20302:T0-MAIN> UFO PR-Check: [0xc0097034] is 0x00000021 requires >= 0x00000021
+20545:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x8001500f)
+20562:T0-MAIN>   Phantom 0: USCTiles=6
+20587:T0-MAIN> Kick 3D: FWCtx 0xc0045118 @ 35568, RTD 0xc03d7000, Partial render:0, CSW resume:0. (PID:155324, prio:1, frame:34006, ext:0x00000262, int:0x00000875)
+21093:T0-MAIN> 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+21162:T0-MAIN> UFO Updates for FWCtx 0xc0045118 @ 35904
+21177:T0-MAIN> UFO Update: [0xc0097034] = 0x00000022
+21184:T0-MAIN> UFO Update: [0xc0042168] = 0x00000519
+21196:T0-MAIN> UFO Update: [0xc0042450] = 0x00000519
+64778:T0-MAIN> GPU units deinit
+64839:T0-MAIN> GPU deinit
+550:T0-MAIN> State of firmware's private data at boot time: 1 (0 = uninitialised, 1 = initialised); Fw State Flags = 0x00000001
+567:T0-MAIN> State of firmware's private data at boot time: 1 (0 = uninitialised, 1 = initialised); Fw State Flags = 0x00000001
+582:T0-MAIN> Core clock set to 1104000000 Hz
+603:T0-MAIN> GPU init
+633:T0-MAIN> Host Sync Partition marker: 122
+1046:T0-MAIN> cCCB Woff update = 9744, DM = 2, FWCtx = 0xc024f900
+1114:T0-MAIN> cCCB Woff update = 35024, DM = 3, FWCtx = 0xc024f9d8
+1148:T0-MAIN> UFO Checks for FWCtx 0xc024f9d8 @ 34624
+1165:T0-MAIN> UFO PR-Check: [0xc02d00a0] is 0x0000000e requires >= 0x0000000f
+1330:T0-MAIN> GPU Units init (# mask: 0x1)
+1508:T0-MAIN> Kick TA: FWCtx 0xc024f900 @ 9632, RTD 0xc0534c80, First kick:1, Last kick:1, CSW resume:0. (PID:155601, prio:1, frame:51, ext:0x00000c5d, int:0x00000876)
+1678:T0-MAIN> TA finished
+1701:T0-MAIN> Perform TPC flush.
+1741:T0-MAIN> UFO Updates for FWCtx 0xc024f900 @ 9712
+1756:T0-MAIN> UFO Update: [0xc02d00a0] = 0x0000000f
+1766:T0-MAIN> UFO Update: [0xc0042820] = 0x00000519
+1841:T0-MAIN> UFO Checks for FWCtx 0xc024f9d8 @ 34624
+1862:T0-MAIN> UFO PR-Check: [0xc02d00a0] is 0x0000000f requires >= 0x0000000f
+2081:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x80135000)
+2096:T0-MAIN>   Phantom 0: USCTiles=6
+2122:T0-MAIN> Kick 3D: FWCtx 0xc024f9d8 @ 34648, RTD 0xc0534c80, Partial render:0, CSW resume:0. (PID:155601, prio:1, frame:51, ext:0x00000c5d, int:0x00000876)
+2526:T0-MAIN> 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+2604:T0-MAIN> UFO Updates for FWCtx 0xc024f9d8 @ 34984
+2623:T0-MAIN> UFO Update: [0xc02d00a0] = 0x00000010
+2631:T0-MAIN> UFO Update: [0xc0042400] = 0x00000519
+2640:T0-MAIN> UFO Update: [0xc00420a0] = 0x00000519
+8567:T0-MAIN> cCCB Woff update = 2944, DM = 2, FWCtx = 0xc0045040
+8633:T0-MAIN> cCCB Woff update = 36344, DM = 3, FWCtx = 0xc0045118
+8667:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 35944
+8683:T0-MAIN> UFO PR-Check: [0xc0097160] is 0x00000012 requires >= 0x00000013
+8927:T0-MAIN> Kick TA: FWCtx 0xc0045040 @ 2832, RTD 0xc0534880, First kick:1, Last kick:1, CSW resume:0. (PID:155324, prio:1, frame:35207, ext:0x00000263, int:0x00000877)
+9106:T0-MAIN> TA finished
+9127:T0-MAIN> Perform TPC flush.
+9169:T0-MAIN> UFO Updates for FWCtx 0xc0045040 @ 2912
+9183:T0-MAIN> UFO Update: [0xc0097160] = 0x00000013
+9191:T0-MAIN> UFO Update: [0xc0042448] = 0x00000519
+9272:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 35944
+9290:T0-MAIN> UFO PR-Check: [0xc0097160] is 0x00000013 requires >= 0x00000013
+9534:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x8001500f)
+9550:T0-MAIN>   Phantom 0: USCTiles=6
+9576:T0-MAIN> Kick 3D: FWCtx 0xc0045118 @ 35968, RTD 0xc0534880, Partial render:0, CSW resume:0. (PID:155324, prio:1, frame:35207, ext:0x00000263, int:0x00000877)
+9913:T0-MAIN> 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+9994:T0-MAIN> UFO Updates for FWCtx 0xc0045118 @ 36304
+10015:T0-MAIN> UFO Update: [0xc0097160] = 0x00000014
+10022:T0-MAIN> UFO Update: [0xc0042818] = 0x00000519
+10032:T0-MAIN> UFO Update: [0xc0042828] = 0x00000519
+26051:T0-MAIN> cCCB Woff update = 3056, DM = 2, FWCtx = 0xc0045040
+26112:T0-MAIN> cCCB Woff update = 36744, DM = 3, FWCtx = 0xc0045118
+26140:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 36344
+26154:T0-MAIN> UFO PR-Check: [0xc0097020] is 0x00000022 requires >= 0x00000023
+26389:T0-MAIN> Kick TA: FWCtx 0xc0045040 @ 2944, RTD 0xc02d19c0, First kick:1, Last kick:1, CSW resume:0. (PID:155324, prio:1, frame:35207, ext:0x00000264, int:0x00000878)
+26597:T0-MAIN> TA finished
+26618:T0-MAIN> Perform TPC flush.
+26661:T0-MAIN> UFO Updates for FWCtx 0xc0045040 @ 3024
+26676:T0-MAIN> UFO Update: [0xc0097020] = 0x00000023
+26683:T0-MAIN> UFO Update: [0xc0042458] = 0x00000519
+26765:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 36344
+26785:T0-MAIN> UFO PR-Check: [0xc0097020] is 0x00000023 requires >= 0x00000023
+27002:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x8001500f)
+27017:T0-MAIN>   Phantom 0: USCTiles=6
+27039:T0-MAIN> Kick 3D: FWCtx 0xc0045118 @ 36368, RTD 0xc02d19c0, Partial render:0, CSW resume:0. (PID:155324, prio:1, frame:35207, ext:0x00000264, int:0x00000878)
+27666:T0-MAIN> cCCB Woff update = 3192, DM = 2, FWCtx = 0xc0045040
+27698:T0-MAIN> UFO Checks for FWCtx 0xc0045040 @ 3056
+27715:T0-MAIN> UFO Check: [0xc0042120] is 0x00000ac1 requires 0x00000519
+27749:T0-MAIN> cCCB Woff update = 37144, DM = 3, FWCtx = 0xc0045118
+27783:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 36744
+27799:T0-MAIN> UFO PR-Check: [0xc0097038] is 0x00000020 requires >= 0x00000021
+27859:T0-MAIN> 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+27933:T0-MAIN> UFO Updates for FWCtx 0xc0045118 @ 36704
+27951:T0-MAIN> UFO Update: [0xc0097020] = 0x00000024
+27959:T0-MAIN> UFO Update: [0xc0042120] = 0x00000519
+27968:T0-MAIN> UFO Update: [0xc00421c0] = 0x00000519
+28072:T0-MAIN> UFO Checks for FWCtx 0xc0045040 @ 3056
+28088:T0-MAIN> UFO Check: [0xc0042120] is 0x00000519 requires 0x00000519
+28289:T0-MAIN> Kick TA: FWCtx 0xc0045040 @ 3080, RTD 0xc03d7100, First kick:1, Last kick:1, CSW resume:0. (PID:155324, prio:1, frame:35208, ext:0x00000265, int:0x00000879)
+28484:T0-MAIN> TA finished
+28506:T0-MAIN> Perform TPC flush.
+28550:T0-MAIN> UFO Updates for FWCtx 0xc0045040 @ 3160
+28564:T0-MAIN> UFO Update: [0xc0097038] = 0x00000021
+28572:T0-MAIN> UFO Update: [0xc0042140] = 0x00000519
+28651:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 36744
+28669:T0-MAIN> UFO PR-Check: [0xc0097038] is 0x00000021 requires >= 0x00000021
+28883:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x8001500f)
+28900:T0-MAIN>   Phantom 0: USCTiles=6
+28921:T0-MAIN> Kick 3D: FWCtx 0xc0045118 @ 36768, RTD 0xc03d7100, Partial render:0, CSW resume:0. (PID:155324, prio:1, frame:35208, ext:0x00000265, int:0x00000879)
+29398:T0-MAIN> 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+29465:T0-MAIN> UFO Updates for FWCtx 0xc0045118 @ 37104
+29482:T0-MAIN> UFO Update: [0xc0097038] = 0x00000022
+29490:T0-MAIN> UFO Update: [0xc0042810] = 0x00000519
+29498:T0-MAIN> UFO Update: [0xc0042830] = 0x00000519
+73319:T0-MAIN> GPU units deinit
+73376:T0-MAIN> GPU deinit
+528:T0-MAIN> State of firmware's private data at boot time: 1 (0 = uninitialised, 1 = initialised); Fw State Flags = 0x00000001
+543:T0-MAIN> State of firmware's private data at boot time: 1 (0 = uninitialised, 1 = initialised); Fw State Flags = 0x00000001
+561:T0-MAIN> Core clock set to 1104000000 Hz
+580:T0-MAIN> GPU init
+610:T0-MAIN> Host Sync Partition marker: 123
+1021:T0-MAIN> cCCB Woff update = 9856, DM = 2, FWCtx = 0xc024f900
+1089:T0-MAIN> cCCB Woff update = 35424, DM = 3, FWCtx = 0xc024f9d8
+1121:T0-MAIN> UFO Checks for FWCtx 0xc024f9d8 @ 35024
+1136:T0-MAIN> UFO PR-Check: [0xc02d0030] is 0x00000010 requires >= 0x00000011
+1307:T0-MAIN> GPU Units init (# mask: 0x1)
+1492:T0-MAIN> Kick TA: FWCtx 0xc024f900 @ 9744, RTD 0xc0534300, First kick:1, Last kick:1, CSW resume:0. (PID:155601, prio:1, frame:52, ext:0x00000c62, int:0x0000087a)
+1662:T0-MAIN> TA finished
+1683:T0-MAIN> Perform TPC flush.
+1728:T0-MAIN> UFO Updates for FWCtx 0xc024f900 @ 9824
+1742:T0-MAIN> UFO Update: [0xc02d0030] = 0x00000011
+1753:T0-MAIN> UFO Update: [0xc0042838] = 0x00000519
+1834:T0-MAIN> UFO Checks for FWCtx 0xc024f9d8 @ 35024
+1853:T0-MAIN> UFO PR-Check: [0xc02d0030] is 0x00000011 requires >= 0x00000011
+2070:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x80135000)
+2090:T0-MAIN>   Phantom 0: USCTiles=6
+2111:T0-MAIN> Kick 3D: FWCtx 0xc024f9d8 @ 35048, RTD 0xc0534300, Partial render:0, CSW resume:0. (PID:155601, prio:1, frame:52, ext:0x00000c62, int:0x0000087a)
+2516:T0-MAIN> 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+2598:T0-MAIN> UFO Updates for FWCtx 0xc024f9d8 @ 35384
+2616:T0-MAIN> UFO Update: [0xc02d0030] = 0x00000012
+2625:T0-MAIN> UFO Update: [0xc0042468] = 0x00000519
+2633:T0-MAIN> UFO Update: [0xc00427c8] = 0x00000519
+8055:T0-MAIN> cCCB Woff update = 3304, DM = 2, FWCtx = 0xc0045040
+8114:T0-MAIN> cCCB Woff update = 37544, DM = 3, FWCtx = 0xc0045118
+8149:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 37144
+8167:T0-MAIN> UFO PR-Check: [0xc0097164] is 0x00000012 requires >= 0x00000013
+8411:T0-MAIN> Kick TA: FWCtx 0xc0045040 @ 3192, RTD 0xc0534980, First kick:1, Last kick:1, CSW resume:0. (PID:155324, prio:1, frame:36409, ext:0x00000266, int:0x0000087b)
+8575:T0-MAIN> TA finished
+8598:T0-MAIN> Perform TPC flush.
+8636:T0-MAIN> UFO Updates for FWCtx 0xc0045040 @ 3272
+8651:T0-MAIN> UFO Update: [0xc0097164] = 0x00000013
+8659:T0-MAIN> UFO Update: [0xc0042470] = 0x00000519
+8744:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 37144
+8762:T0-MAIN> UFO PR-Check: [0xc0097164] is 0x00000013 requires >= 0x00000013
+8999:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x8001500f)
+9014:T0-MAIN>   Phantom 0: USCTiles=6
+9035:T0-MAIN> Kick 3D: FWCtx 0xc0045118 @ 37168, RTD 0xc0534980, Partial render:0, CSW resume:0. (PID:155324, prio:1, frame:36409, ext:0x00000266, int:0x0000087b)
+9331:T0-MAIN> 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+9415:T0-MAIN> UFO Updates for FWCtx 0xc0045118 @ 37504
+9437:T0-MAIN> UFO Update: [0xc0097164] = 0x00000014
+9451:T0-MAIN> UFO Update: [0xc00421d8] = 0x00000519
+9458:T0-MAIN> UFO Update: [0xc0042840] = 0x00000519
+48032:T0-MAIN> cCCB Woff update = 3416, DM = 2, FWCtx = 0xc0045040
+48092:T0-MAIN> cCCB Woff update = 37936, DM = 3, FWCtx = 0xc0045118
+48126:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 37544
+48142:T0-MAIN> UFO PR-Check: [0xc0097024] is 0x00000022 requires >= 0x00000023
+48380:T0-MAIN> Kick TA: FWCtx 0xc0045040 @ 3304, RTD 0xc02d1ac0, First kick:1, Last kick:1, CSW resume:0. (PID:155324, prio:1, frame:36409, ext:0x00000267, int:0x0000087c)
+48586:T0-MAIN> TA finished
+48610:T0-MAIN> Perform TPC flush.
+48657:T0-MAIN> UFO Updates for FWCtx 0xc0045040 @ 3384
+48670:T0-MAIN> UFO Update: [0xc0097024] = 0x00000023
+48677:T0-MAIN> UFO Update: [0xc0042198] = 0x00000519
+48758:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 37544
+48774:T0-MAIN> UFO PR-Check: [0xc0097024] is 0x00000023 requires >= 0x00000023
+48997:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x8001500f)
+49015:T0-MAIN>   Phantom 0: USCTiles=6
+49035:T0-MAIN> Kick 3D: FWCtx 0xc0045118 @ 37568, RTD 0xc02d1ac0, Partial render:0, CSW resume:0. (PID:155324, prio:1, frame:36409, ext:0x00000267, int:0x0000087c)
+49799:T0-MAIN> 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+49872:T0-MAIN> UFO Updates for FWCtx 0xc0045118 @ 37904
+49891:T0-MAIN> UFO Update: [0xc0097024] = 0x00000024
+49899:T0-MAIN> UFO Update: [0xc00422e8] = 0x00000519
+50351:T0-MAIN> cCCB Woff update = 3528, DM = 2, FWCtx = 0xc0045040
+50408:T0-MAIN> cCCB Woff update = 38336, DM = 3, FWCtx = 0xc0045118
+50442:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 37936
+50458:T0-MAIN> UFO PR-Check: [0xc009703c] is 0x00000020 requires >= 0x00000021
+50701:T0-MAIN> Kick TA: FWCtx 0xc0045040 @ 3416, RTD 0xc03d7200, First kick:1, Last kick:1, CSW resume:0. (PID:155324, prio:1, frame:36410, ext:0x00000268, int:0x0000087d)
+50913:T0-MAIN> TA finished
+50939:T0-MAIN> Perform TPC flush.
+50984:T0-MAIN> UFO Updates for FWCtx 0xc0045040 @ 3496
+51000:T0-MAIN> UFO Update: [0xc009703c] = 0x00000021
+51008:T0-MAIN> UFO Update: [0xc0042850] = 0x00000519
+51091:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 37936
+51109:T0-MAIN> UFO PR-Check: [0xc009703c] is 0x00000021 requires >= 0x00000021
+51330:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x8001500f)
+51351:T0-MAIN>   Phantom 0: USCTiles=6
+51374:T0-MAIN> Kick 3D: FWCtx 0xc0045118 @ 37960, RTD 0xc03d7200, Partial render:0, CSW resume:0. (PID:155324, prio:1, frame:36410, ext:0x00000268, int:0x0000087d)
+51869:T0-MAIN> 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+51941:T0-MAIN> UFO Updates for FWCtx 0xc0045118 @ 38296
+51961:T0-MAIN> UFO Update: [0xc009703c] = 0x00000022
+51968:T0-MAIN> UFO Update: [0xc0042548] = 0x00000519
+51976:T0-MAIN> UFO Update: [0xc0042480] = 0x00000519
+96075:T0-MAIN> GPU units deinit
+96135:T0-MAIN> GPU deinit
+479:T0-MAIN> State of firmware's private data at boot time: 1 (0 = uninitialised, 1 = initialised); Fw State Flags = 0x00000001
+495:T0-MAIN> State of firmware's private data at boot time: 1 (0 = uninitialised, 1 = initialised); Fw State Flags = 0x00000001
+517:T0-MAIN> Core clock set to 1104000000 Hz
+537:T0-MAIN> GPU init
+566:T0-MAIN> Host Sync Partition marker: 124
+877:T0-MAIN> cCCB Woff update = 9968, DM = 2, FWCtx = 0xc024f900
+947:T0-MAIN> cCCB Woff update = 35824, DM = 3, FWCtx = 0xc024f9d8
+979:T0-MAIN> UFO Checks for FWCtx 0xc024f9d8 @ 35424
+997:T0-MAIN> UFO PR-Check: [0xc02d0034] is 0x00000010 requires >= 0x00000011
+1173:T0-MAIN> GPU Units init (# mask: 0x1)
+1365:T0-MAIN> Kick TA: FWCtx 0xc024f900 @ 9856, RTD 0xc0536d80, First kick:1, Last kick:1, CSW resume:0. (PID:155601, prio:1, frame:53, ext:0x00000c67, int:0x0000087e)
+1541:T0-MAIN> TA finished
+1560:T0-MAIN> Perform TPC flush.
+1601:T0-MAIN> UFO Updates for FWCtx 0xc024f900 @ 9936
+1618:T0-MAIN> UFO Update: [0xc02d0034] = 0x00000011
+1626:T0-MAIN> UFO Update: [0xc0042478] = 0x00000519
+1711:T0-MAIN> UFO Checks for FWCtx 0xc024f9d8 @ 35424
+1733:T0-MAIN> UFO PR-Check: [0xc02d0034] is 0x00000011 requires >= 0x00000011
+1962:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x80135000)
+1977:T0-MAIN>   Phantom 0: USCTiles=6
+1996:T0-MAIN> Kick 3D: FWCtx 0xc024f9d8 @ 35448, RTD 0xc0536d80, Partial render:0, CSW resume:0. (PID:155601, prio:1, frame:53, ext:0x00000c67, int:0x0000087e)
+2418:T0-MAIN> 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+2508:T0-MAIN> UFO Updates for FWCtx 0xc024f9d8 @ 35784
+2530:T0-MAIN> UFO Update: [0xc02d0034] = 0x00000012
+2540:T0-MAIN> UFO Update: [0xc0042848] = 0x00000519
+2549:T0-MAIN> UFO Update: [0xc00421f8] = 0x00000519
+5699:T0-MAIN> cCCB Woff update = 3640, DM = 2, FWCtx = 0xc0045040
+5763:T0-MAIN> cCCB Woff update = 38736, DM = 3, FWCtx = 0xc0045118
+5795:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 38336
+5811:T0-MAIN> UFO PR-Check: [0xc0097168] is 0x00000012 requires >= 0x00000013
+6049:T0-MAIN> Kick TA: FWCtx 0xc0045040 @ 3528, RTD 0xc0534a80, First kick:1, Last kick:1, CSW resume:0. (PID:155324, prio:1, frame:37611, ext:0x00000269, int:0x0000087f)
+6232:T0-MAIN> TA finished
+6253:T0-MAIN> Perform TPC flush.
+6293:T0-MAIN> UFO Updates for FWCtx 0xc0045040 @ 3608
+6306:T0-MAIN> UFO Update: [0xc0097168] = 0x00000013
+6317:T0-MAIN> UFO Update: [0xc0042860] = 0x00000519
+6402:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 38336
+6421:T0-MAIN> UFO PR-Check: [0xc0097168] is 0x00000013 requires >= 0x00000013
+6666:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x8001500f)
+6683:T0-MAIN>   Phantom 0: USCTiles=6
+6707:T0-MAIN> Kick 3D: FWCtx 0xc0045118 @ 38360, RTD 0xc0534a80, Partial render:0, CSW resume:0. (PID:155324, prio:1, frame:37611, ext:0x00000269, int:0x0000087f)
+7020:T0-MAIN> 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+7107:T0-MAIN> UFO Updates for FWCtx 0xc0045118 @ 38696
+7123:T0-MAIN> UFO Update: [0xc0097168] = 0x00000014
+7132:T0-MAIN> UFO Update: [0xc00427f0] = 0x00000519
+7140:T0-MAIN> UFO Update: [0xc0042180] = 0x00000519
+16855:T0-MAIN> cCCB Woff update = 3752, DM = 2, FWCtx = 0xc0045040
+16913:T0-MAIN> cCCB Woff update = 39136, DM = 3, FWCtx = 0xc0045118
+16947:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 38736
+16961:T0-MAIN> UFO PR-Check: [0xc0097028] is 0x00000022 requires >= 0x00000023
+17203:T0-MAIN> Kick TA: FWCtx 0xc0045040 @ 3640, RTD 0xc02d1bc0, First kick:1, Last kick:1, CSW resume:0. (PID:155324, prio:1, frame:37611, ext:0x0000026a, int:0x00000880)
+17417:T0-MAIN> TA finished
+17443:T0-MAIN> Perform TPC flush.
+17485:T0-MAIN> UFO Updates for FWCtx 0xc0045040 @ 3720
+17503:T0-MAIN> UFO Update: [0xc0097028] = 0x00000023
+17511:T0-MAIN> UFO Update: [0xc0042490] = 0x00000519
+17595:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 38736
+17612:T0-MAIN> UFO PR-Check: [0xc0097028] is 0x00000023 requires >= 0x00000023
+17853:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x8001500f)
+17873:T0-MAIN>   Phantom 0: USCTiles=6
+17900:T0-MAIN> Kick 3D: FWCtx 0xc0045118 @ 38760, RTD 0xc02d1bc0, Partial render:0, CSW resume:0. (PID:155324, prio:1, frame:37611, ext:0x0000026a, int:0x00000880)
+18141:T0-MAIN> cCCB Woff update = 3888, DM = 2, FWCtx = 0xc0045040
+18183:T0-MAIN> UFO Checks for FWCtx 0xc0045040 @ 3752
+18201:T0-MAIN> UFO Check: [0xc0042858] is 0x00000ac1 requires 0x00000519
+18236:T0-MAIN> cCCB Woff update = 39536, DM = 3, FWCtx = 0xc0045118
+18271:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 39136
+18290:T0-MAIN> UFO PR-Check: [0xc0097030] is 0x00000022 requires >= 0x00000023
+18679:T0-MAIN> 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+18758:T0-MAIN> UFO Updates for FWCtx 0xc0045118 @ 39096
+18774:T0-MAIN> UFO Update: [0xc0097028] = 0x00000024
+18779:T0-MAIN> UFO Update: [0xc0042858] = 0x00000519
+18788:T0-MAIN> UFO Update: [0xc0042868] = 0x00000519
+18880:T0-MAIN> UFO Checks for FWCtx 0xc0045040 @ 3752
+18902:T0-MAIN> UFO Check: [0xc0042858] is 0x00000519 requires 0x00000519
+19099:T0-MAIN> Kick TA: FWCtx 0xc0045040 @ 3776, RTD 0xc03d6f00, First kick:1, Last kick:1, CSW resume:0. (PID:155324, prio:1, frame:37612, ext:0x0000026b, int:0x00000881)
+19302:T0-MAIN> TA finished
+19326:T0-MAIN> Perform TPC flush.
+19372:T0-MAIN> UFO Updates for FWCtx 0xc0045040 @ 3856
+19386:T0-MAIN> UFO Update: [0xc0097030] = 0x00000023
+19392:T0-MAIN> UFO Update: [0xc0042488] = 0x00000519
+19477:T0-MAIN> UFO Checks for FWCtx 0xc0045118 @ 39136
+19498:T0-MAIN> UFO PR-Check: [0xc0097030] is 0x00000023 requires >= 0x00000023
+19716:T0-MAIN> Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x8001500f)
+19733:T0-MAIN>   Phantom 0: USCTiles=6
+19753:T0-MAIN> Kick 3D: FWCtx 0xc0045118 @ 39160, RTD 0xc03d6f00, Partial render:0, CSW resume:0. (PID:155324, prio:1, frame:37612, ext:0x0000026b, int:0x00000881)
+20249:T0-MAIN> 3D finished, HWRTData0State=7fffffff, HWRTData1State=4
+20323:T0-MAIN> UFO Updates for FWCtx 0xc0045118 @ 39496
+20343:T0-MAIN> UFO Update: [0xc0097030] = 0x00000024
+20352:T0-MAIN> UFO Update: [0xc00425c0] = 0x00000519
+20358:T0-MAIN> UFO Update: [0xc00421e0] = 0x00000519
+63980:T0-MAIN> GPU units deinit
+64043:T0-MAIN> GPU deinit

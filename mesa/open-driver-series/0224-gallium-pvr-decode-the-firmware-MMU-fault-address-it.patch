@@ -1,0 +1,103 @@
+From 4b06a620ec07d748a70455ef5e064d059ed86828 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sun, 25 Oct 2026 01:01:57 +0800
+Subject: [PATCH 224/269] gallium/pvr: decode the firmware MMU fault address;
+ it is the PDS heap base
+
+The BIF0 fault status the firmware prints contains the faulting address in its low 40 bits: with a
+deliberately patched (unmapped) control-stream base 0x8000500000 the status became
+Req Status 0x0010098000500000, i.e. exactly that address. Decoding the real fault the same way gives
+0x000000da00000000 - the PDS heap base with offset 0. So the TA is dereferencing a PDS pointer that
+this driver left at zero.
+
+Round-eight diagnostics added to the probe (all env-gated, harmless by default):
+- PVR_PROBE_PATCH_CTRL: replace the geometry stream's control-stream base, used to label a fault;
+- PVR_DUMP_TA: dump the 25-word TA state block - its PDS group maps to [SHADERBASE, TEXUNICODEBASE,
+  SIZEINFO1, SIZEINFO2, UNIFORMDATABASE], and against the capture only those five words differ (the
+  reference points TEXUNICODE and UNIFORM at real nop programs, 0x2780/0x28c0);
+- PVR_DUMP_HEAPS: the heap map (PDS 0xda00000000, USC 0xe000000000, RGNHDR 0xdbf0000000).
+
+Ruling out the obvious candidate: pointing TEXUNICODE/UNIFORMDATABASE at a real PDS offset does not
+move the fault, so the zero pointer is elsewhere - most likely in the context-switch resume/store
+task state rather than the draw's state block. Verification: probe still ALL PASS under the shim;
+traces archived in open-driver-perf/captures/real-runs/fwtrace-r8-labelled.txt.
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c | 34 ++++++++++++++++++++++
+ 1 file changed, 34 insertions(+)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index 98af47a4..9c2323fc 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -167,6 +167,14 @@ vm_roundtrip(int fd, struct pipe_screen *pscreen)
+    uint64_t addr_a = 0, addr_b = 0, size = 0;
+    bool ok = false;
+ 
++   if (getenv("PVR_DUMP_HEAPS")) {
++      static const char *names[6] = { "general", "pds", "usc", "rgnhdr", "vis", "transfer" };
++      for (unsigned h = 0; h < 6; h++)
++         printf("HEAPS: %u %s base 0x%" PRIx64 " size 0x%" PRIx64 " usable_base 0x%"
++                PRIx64 " usable 0x%" PRIx64 " page %u\n", h, names[h],
++                vm->heaps[h].base, vm->heaps[h].size, vm->heaps[h].usable_base,
++                vm->heaps[h].usable_size, vm->heaps[h].page_size);
++   }
+    printf("vm:            general heap 0x%" PRIx64 "+%" PRIu64 " bytes, "
+           "carveout %" PRIu64 ", usable 0x%" PRIx64 "+%" PRIu64 ", page %u\n",
+           vm->general.base, vm->general.size, vm->general.base - vm->general.base +
+@@ -918,6 +926,11 @@ real_job_done:
+ 
+                         pvr_region_clip_from_rect(0, 0, RTW, RTH, 16, &clip);
+ 
++                        if (getenv("PVR_DUMP_TA")) {
++                           /* The TA state block is written into pbo after building; dump at the
++                            * end of this block (see below). */
++                        }
++
+                         pvr_csb_init(&block, pbo.map, pbo.size, 0);
+                         built = pvr_csb_emit_ta_state_header(&block, &pres) &&
+                                 pvr_csb_emit_ta_ispctl(&block, NULL, true, &ispctl) &&
+@@ -926,6 +939,12 @@ real_job_done:
+                                 pvr_csb_emit_ta_isp_dbsc(&block, &dbsc) &&
+                                 pvr_csb_emit_ta_pds_base(&block, PVR_PDS_BASE_SHADER,
+                                                          g_fs_pds_base_offset) &&
++                                /* The reference gives these a real (nop) program. Pointing them
++                                 * at our fragment program data instead was tried in round 8 and
++                                 * did NOT move the fault (still exactly the PDS heap base), so the
++                                 * zero PDS pointer the TA dereferences is elsewhere - see the
++                                 * handoff. Kept at the reference-capture value 0 here until that
++                                 * pointer is identified. */
+                                 pvr_csb_emit_ta_pds_base(&block, PVR_PDS_BASE_TEXUNICODE, 0) &&
+                                 pvr_csb_emit_ta_pds_sizeinfo(&block, &pds_sizes, true, 0) &&
+                                 pvr_csb_emit_ta_pds_base(&block, PVR_PDS_BASE_UNIFORMDATA, 0) &&
+@@ -1057,6 +1076,13 @@ real_job_done:
+                            } else {
+                               const uint32_t *cw = (const uint32_t *)rctl.map;
+ 
++                              if (getenv("PVR_DUMP_TA")) {
++                                 const uint32_t *aw = (const uint32_t *)pbo.map;
++                                 printf("OURTA: TA block %u words:", pvr_csb_size(&block) / 4);
++                                 for (unsigned i = 0; i < pvr_csb_size(&block) / 4; i++)
++                                    printf(" %08x", aw[i]);
++                                 printf("\n");
++                              }
+                               printf("hwrt:          draw stream: TA block (%u w) + VDM state "
+                                      "(%u dw) + 3 indices + terminate; first dwords:",
+                                      pvr_csb_size(&block) / 4, vdm_words);
+@@ -1080,6 +1106,14 @@ real_job_done:
+                const uint32_t glen = pvr_geom_static_stream(gstream, sizeof(gstream), rctladdr,
+                                                            rbctaddr, true, 0, false, 1, 0,
+                                                            PVR_HAS_QUIRK(dev_info, 49927));
++               /* Diagnostic: replace the VDM control-stream base the firmware is told to use, to
++                * learn how the BIF0 fault status encodes an address (one labelled fault). */
++               if (getenv("PVR_PROBE_PATCH_CTRL") && glen >= 16) {
++                  const uint64_t bad = strtoull(getenv("PVR_PROBE_PATCH_CTRL"), NULL, 0);
++                  ((uint32_t *)gstream)[2] = (uint32_t)bad;
++                  ((uint32_t *)gstream)[3] = (uint32_t)(bad >> 32);
++                  printf("hwrt:          PATCHED control-stream base to 0x%" PRIx64 "\n", bad);
++               }
+                /* The fragment stream has to live in its own buffer, so rebuild it there. */
+                _Alignas(8) static uint8_t fstream[1024];
+                const uint32_t f2 = pvr_frag_static_stream(fstream, sizeof(fstream), pbe_words, 1,
+-- 
+2.47.3
+

@@ -1,0 +1,116 @@
+From b7c004edbac4d03a5f0489e27c0c36f8b746b4f6 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 23 Oct 2026 14:11:58 +0800
+Subject: [PATCH 183/269] gallium/pvr: submit a real geometry job to the
+ kernel; it needs HWRT, not just a stream
+
+Added a test that allocates the three BOs the geometry stream points at (command stream, ctrl stream,
+border colour table), builds the stream into the mapped command stream and submits it with its real
+40-byte length. Run against the REAL kernel with the open driver bound (gated switch, refcount gate,
+switched back before restarting the desktop - the procedure the repo's harnesses use and that I failed
+to follow earlier when I crashed the board).
+
+Result, and it is a clean negative:
+
+  SUBMIT_JOBS type 0 len 0  at 0x9ffffde000 failed: Invalid argument
+  SUBMIT_JOBS type 0 len 40 at 0x9ffffde000 failed: Invalid argument
+
+So the path is exercised end to end and the kernel answers with a reason rather than crashing - exactly
+the distinction the probe is meant to make. A non-zero stream is NOT sufficient: geometry is a RENDER
+job, and the UAPI requires drm_pvr_job.hwrt to reference a HWRT data set for render jobs ("must be zero
+for non-render jobs" implies the converse). pvr_job_submit_render() and pvr_job_submit() both leave it
+zero.
+
+Creating one needs DRM_IOCTL_PVR_CREATE_HWRT_DATASET with tpc_dev_addr/tpc_size/tpc_stride,
+vheap_table_dev_addr, rtc_dev_addr and the RT data's pm_mlist_dev_addr - i.e. the render-target
+infrastructure (tail pointer cache, VHEAP table, render target cache, PM MLIST) which the driver does
+not allocate yet. That is the next piece, not a shim.
+
+Also fixed my own insertion error: the test first landed inside the callstack-failure branch, where it
+never ran, and reported nothing at all. The diagnostics added to find that are what turned "silent
+nothing" into "allocations fine, kernel says EINVAL".
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c | 60 +++++++++++++++++++++-
+ 1 file changed, 59 insertions(+), 1 deletion(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index f3bf1cea..e622e07a 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -425,7 +425,8 @@ vm_roundtrip(int fd, const struct pvr_device_info *dev_info)
+        * real kernel's value is checked by observation in the verification run. */
+       if (gpu_ctx.callstack_addr == 0) {
+          printf("vm:            FAIL: no callstack address for the GPU context\n");
+-         pvr_gpu_context_destroy(&vm, &gpu_ctx);
++   
++      pvr_gpu_context_destroy(&vm, &gpu_ctx);
+          goto out;
+       }
+ 
+@@ -477,6 +478,63 @@ vm_roundtrip(int fd, const struct pvr_device_info *dev_info)
+          }
+       }
+ 
++      /* A REAL geometry job. Three small BOs: the command stream itself, the ctrl stream the VDM
++       * writes into, and the border colour table the stream points at. Geometry only - no fragment
++       * job - so nothing references a render target yet. This asks the kernel whether the 40-byte
++       * stream is a valid job description; it is NOT a claim that the GPU can execute it, and the
++       * probe keeps those two answers separate. */
++      {
++         struct pvr_bo rcsb = { 0 }, ctl = { 0 }, bct = { 0 };
++         uint64_t rcsb_addr = 0, ctl_addr = 0, bct_addr = 0;
++
++         if (!pvr_bo_create(pvm_fd_for_probe, 4096, 1, &rcsb)) {
++            printf("vm:            real job: could not create the command-stream BO\n");
++            goto real_job_done;
++         }
++         if (!pvr_bo_create(pvm_fd_for_probe, 4096, 1, &ctl)) {
++            printf("vm:            real job: could not create the ctrl-stream BO\n");
++            goto real_job_done;
++         }
++         if (!pvr_bo_create(pvm_fd_for_probe, 4096, 1, &bct)) {
++            printf("vm:            real job: could not create the border-colour-table BO\n");
++            goto real_job_done;
++         }
++         {
++            rcsb_addr = pvr_vm_alloc(&vm, rcsb.size, vm.general.page_size);
++            ctl_addr = pvr_vm_alloc(&vm, ctl.size, vm.general.page_size);
++            bct_addr = pvr_vm_alloc(&vm, bct.size, vm.general.page_size);
++            if (!rcsb_addr || !ctl_addr || !bct_addr) {
++               printf("vm:            real job: address allocation failed (0x%" PRIx64 ", 0x%" PRIx64
++                      ", 0x%" PRIx64 ")\n", rcsb_addr, ctl_addr, bct_addr);
++            } else if (!pvr_vm_map(&vm, rcsb_addr, rcsb.handle, rcsb.size) ||
++                       !pvr_vm_map(&vm, ctl_addr, ctl.handle, ctl.size) ||
++                       !pvr_vm_map(&vm, bct_addr, bct.handle, bct.size)) {
++               printf("vm:            real job: VM mapping failed\n");
++            } else if (!pvr_bo_map(pvm_fd_for_probe, &rcsb)) {
++               printf("vm:            real job: CPU mapping of the command stream failed\n");
++            } else {
++               const uint32_t gl = pvr_geom_static_stream(rcsb.map, rcsb.size, ctl_addr, bct_addr,
++                                                          false, 0, false, 0, 0);
++               if (pvr_job_submit(&vm, gpu_ctx.handle, DRM_PVR_JOB_TYPE_GEOMETRY, rcsb_addr, gl)) {
++                  printf("vm:            SUBMIT_JOBS ACCEPTED a real %u-byte geometry job at "
++                         "0x%" PRIx64 " (ctrl 0x%" PRIx64 ", border table 0x%" PRIx64 ") - the "
++                         "kernel validated the stream it was given\n",
++                         gl, rcsb_addr, ctl_addr, bct_addr);
++               } else {
++                  printf("vm:            SUBMIT_JOBS refused the real geometry job - the error above "
++                         "is the kernel's reason\n");
++               }
++               pvr_bo_unmap(&rcsb);
++            }
++            if (bct_addr) { pvr_vm_unmap(&vm, bct_addr, bct.size); pvr_vm_free(&vm, bct_addr, bct.size); }
++            if (ctl_addr) { pvr_vm_unmap(&vm, ctl_addr, ctl.size); pvr_vm_free(&vm, ctl_addr, ctl.size); }
++            if (rcsb_addr) { pvr_vm_unmap(&vm, rcsb_addr, rcsb.size); pvr_vm_free(&vm, rcsb_addr, rcsb.size); }
++         }
++         pvr_bo_destroy(pvm_fd_for_probe, &bct);
++         pvr_bo_destroy(pvm_fd_for_probe, &ctl);
++         pvr_bo_destroy(pvm_fd_for_probe, &rcsb);
++      }
++real_job_done:
+       pvr_gpu_context_destroy(&vm, &gpu_ctx);
+    }
+ 
+-- 
+2.47.3
+

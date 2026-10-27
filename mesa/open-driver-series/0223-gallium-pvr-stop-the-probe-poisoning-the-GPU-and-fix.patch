@@ -1,0 +1,259 @@
+From 796337efa9126b9758d1fefecd5a6879bd7a9fa8 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sun, 25 Oct 2026 00:54:27 +0800
+Subject: [PATCH 223/269] gallium/pvr: stop the probe poisoning the GPU, and
+ fix the free-list roles the trace exposed
+
+Firmware tracing (fw_trace_mask through debugfs) finally shows what the firmware does with our
+submissions, and the first thing it showed was that the probe was invalidating its own experiment:
+its early synthetic geometry jobs submitted a ZEROED control stream (and one submitted the captured
+40-byte stream whose CR_VDM_CTRL_STREAM_BASE is the reference driver's unmapped address). The
+firmware trace for such a run reads:
+
+  Kick TA: FWCtx 0xc005f000 @ 0, RTD 0xc0063000, First kick:1, Last kick:1, CSW resume:0
+  DM2 timed out / MMU fault event: 0x200 / GPU-0 has locked up
+  Discarded cmd on DM3 ... FWCtx 0xc005f098
+
+So one bad job locks the TA up, the firmware hardware-resets the GPU, and EVERY later submission in
+the same process is discarded - including the draw. None of the earlier "the firmware never completes
+our jobs" observations were valid.
+
+The probe now:
+- submits the real draw first, while the GPU is known-good;
+- gates all synthetic/liveness submissions behind PVR_PROBE_DIAGNOSTIC;
+- gives every synthetic geometry job a real control stream (STREAM_TERMINATE) and the captured
+  completeonterminate/usc_common_size values (TE_PSG bit 17, PDS_STATE0 0x20010000);
+- no longer submits speculative stream lengths or the captured stream.
+
+Also from the trace: kernel free-list slot 0 is the LOCAL list and slot 1 the GLOBAL one (the
+firmware prints "type: 0 (0:local,1:global)"). The probe had them swapped, and its local list was a
+1024-page global-shaped one; now local is the runtime minimum aligned to the free-list size
+alignment (32 pages, fixed) and global starts at 2 MiB growing to 256 MiB. The trace confirms:
+"Load Freelist ... type: 0 ... FL Total Pages 32 ... type: 1 ... 448 (max=65536, grow 256)".
+
+Everything the driver creates is CPU-written and GPU-read, so BOs now bypass the device cache by
+default instead of relying on an unissued flush.
+
+Verification: probe exits 0 ALL PASS under the noop shim. On the real driver the first real draw
+geometry job now kicks the TA and faults once (MMU page fault, BIF0 status 0x2001, req
+0x001018da00000000, then GPU lockup) - a single, reproducible failure instead of a stream of
+self-inflicted ones. Firmware traces are archived in open-driver-perf/captures/real-runs/.
+---
+ src/gallium/drivers/pvr_native/pvr_bo.c    |   8 +-
+ src/gallium/drivers/pvr_native/pvr_probe.c | 131 ++++++++-------------
+ 2 files changed, 55 insertions(+), 84 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_bo.c b/src/gallium/drivers/pvr_native/pvr_bo.c
+index ae8f8629..99e69b73 100644
+--- a/src/gallium/drivers/pvr_native/pvr_bo.c
++++ b/src/gallium/drivers/pvr_native/pvr_bo.c
+@@ -116,5 +116,11 @@ pvr_bo_destroy(int fd, struct pvr_bo *bo)
+ bool
+ pvr_bo_create(int fd, uint64_t size, uint64_t alignment, struct pvr_bo *bo)
+ {
+-   return pvr_bo_create_flags(fd, size, alignment, DRM_PVR_BO_ALLOW_CPU_USERSPACE_ACCESS, bo);
++   /* Everything this driver creates is written by the CPU and read by the GPU (command streams,
++    * firmware programs, vertex data, TA state blocks). Bypassing the device cache makes those writes
++    * visible to the firmware without relying on a flush the driver does not issue yet; a cached
++    * buffer can hand the firmware stale contents. */
++   return pvr_bo_create_flags(fd, size, alignment,
++                              DRM_PVR_BO_ALLOW_CPU_USERSPACE_ACCESS |
++                                 DRM_PVR_BO_BYPASS_DEVICE_CACHE, bo);
+ }
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index 3b123769..98af47a4 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -158,6 +158,10 @@ vm_roundtrip(int fd, struct pipe_screen *pscreen)
+     * so the firmware reading its programs through the job's context found nothing. One VM context
+     * for the whole test - the same one the driver places its programs in. */
+    struct pvr_vm *vm = &scr->vm;
++   /* Jobs that exist only to interrogate the submission path (synthetic streams, liveness
++    * renders) are off by default: on the real driver an invalid one hangs the TA, the GPU locks
++    * up and every later submission in this process is discarded. The draw test must come first. */
++   const bool diag = getenv("PVR_PROBE_DIAGNOSTIC") != NULL;
+    const int pvm_fd_for_probe = fd;
+    struct pvr_bo a = { 0 }, b = { 0 };
+    uint64_t addr_a = 0, addr_b = 0, size = 0;
+@@ -571,7 +575,10 @@ vm_roundtrip(int fd, struct pipe_screen *pscreen)
+           * (1536 B) per render-target data set, no RTC and no macrotile array for one layer.
+           * The global free list needs room for its maximum page count (4 bytes per PM page): the
+           * reference grows it 2 MiB -> 256 MiB, so 65536 pages means a 256 KiB table. */
+-         const uint64_t sz[11] = { 65536 * 4, 4096, 4096, 1536, 4096, 4096, 4096, 4096, 4096, 4096, 256 };
++         /* Kernel slot 0 is the LOCAL free list, slot 1 the GLOBAL one (firmware trace: "Load
++          * Freelist ... type: 0 (0:local,1:global)"). The local list only needs entries for its 32
++          * pages; the global list needs entries for its 65536-page maximum. */
++         const uint64_t sz[11] = { 4096, 65536 * 4, 4096, 1536, 4096, 4096, 4096, 4096, 4096, 4096, 256 };
+          /* Free-list size alignment, from the reference: entries must respect the SLC cache line,
+           * i.e. sizes are multiples of (max(base align, cache line)/4) * PM page size = 64 KiB. */
+          struct pvr_bo *bos[11] = { &flbo[0], &flbo[1], &tpcbo, &vhbo, &mlibo, &mtabo, &rgnbo, &mli2, &mta2, &rgn2, &rtcbo };
+@@ -608,10 +615,10 @@ vm_roundtrip(int fd, struct pipe_screen *pscreen)
+                       global_max_pages, global_grow_pages, local_pages);
+             /* UAPI: with grow_num_pages == 0 the initial count must equal the maximum (local). */
+             okb = flmin && local_pages >= flmin &&
+-                  pvr_free_list_create(vm, fladdr[0], global_initial_pages, global_max_pages,
+-                                       global_grow_pages, 13, &flhandle[0]) &&
+-                  pvr_free_list_create(vm, fladdr[1], local_pages, local_pages, 0, 0,
+-                                       &flhandle[1]);
++                  pvr_free_list_create(vm, fladdr[0], local_pages, local_pages, 0, 0,
++                                       &flhandle[0]) &&
++                  pvr_free_list_create(vm, fladdr[1], global_initial_pages, global_max_pages,
++                                       global_grow_pages, 13, &flhandle[1]);
+             if (okb) {
+                struct pvr_hwrt_dataset_desc d = {
+                   .tpc_dev_addr = tpcaddr, .tpc_size = 2048, .tpc_stride = 0,
+@@ -644,7 +651,7 @@ vm_roundtrip(int fd, struct pipe_screen *pscreen)
+        * job - so nothing references a render target yet. This asks the kernel whether the 40-byte
+        * stream is a valid job description; it is NOT a claim that the GPU can execute it, and the
+        * probe keeps those two answers separate. */
+-      {
++      if (diag) {
+          struct pvr_bo rcsb = { 0 }, ctl = { 0 }, bct = { 0 };
+          uint64_t rcsb_addr = 0, ctl_addr = 0, bct_addr = 0;
+ 
+@@ -671,70 +678,37 @@ vm_roundtrip(int fd, struct pipe_screen *pscreen)
+                        !pvr_vm_map(vm, ctl_addr, ctl.handle, ctl.size) ||
+                        !pvr_vm_map(vm, bct_addr, bct.handle, bct.size)) {
+                printf("vm:            real job: VM mapping failed\n");
+-            } else if (!pvr_bo_map(pvm_fd_for_probe, &rcsb)) {
++            } else if (!pvr_bo_map(pvm_fd_for_probe, &rcsb) ||
++                       !pvr_bo_map(pvm_fd_for_probe, &ctl)) {
+                printf("vm:            real job: CPU mapping of the command stream failed\n");
+             } else {
++               /* A geometry job's control stream must contain at least a STREAM_TERMINATE. A zeroed
++                * control stream makes the TA walk off the end and page-fault, which locks the GPU
++                * up and makes every later submission in this process be discarded - so a probe that
++                * submits one poisons all of its own subsequent tests. */
++               struct pvr_csb ctrl_csb;
++
++               pvr_csb_init(&ctrl_csb, ctl.map, ctl.size, PVR_CSB_LINK_DWORDS);
++               pvr_csb_emit_stream_terminate(&ctrl_csb);
++
++               /* geometry_terminate must be set: it is TE_PSG's completeonterminate bit, and
++                * without it a TA whose control stream ends in STREAM_TERMINATE waits for more work
++                * instead of completing. The firmware trace of the previous run shows exactly that -
++                * the TA kick times out with zero USC slots used, then the GPU locks up and every
++                * later submission is discarded. usc_common_size=1 is the capture's PDS_STATE0 value
++                * (0x20010000). */
+                const uint32_t gl = pvr_geom_static_stream(rcsb.map, rcsb.size, ctl_addr, bct_addr,
+-                                                          false, 0, false, 0, 0, PVR_HAS_QUIRK(dev_info, 49927));
+-               /* The kernel's stream parser is strict about length: probe which size it accepts. The main
+-                * stream keeps its own length in dw0; only the submitted size varies. */
+-               for (uint32_t try_len = 40; try_len <= 64; try_len += 4) {
+-                  if (pvr_job_submit(vm, gpu_ctx.handle, DRM_PVR_JOB_TYPE_GEOMETRY, rcsb.map,
+-                                     try_len, dset_handle, 0))
+-                     printf("vm:            SUBMIT_JOBS ACCEPTED the geometry stream at %u bytes\n",
+-                            try_len);
+-               }
+-               /* Control experiment: submit the CAPTURED bytes verbatim - exactly what the working
+-                * driver sent for this job. If this is rejected too, the stream is not the problem and
+-                * the failure is the context or hwrt lookup. */
+-               {
+-                  static const uint32_t cap40[10] = {
+-                     0x00000028u, 0x00000000u, 0x003bf000u, 0x00000080u, 0x0001c400u,
+-                     0x00000020u, 0x00000202u, 0x00020000u, 0x20010000u, 0x00000000u,
+-                  };
+-                  if (pvr_job_submit(vm, gpu_ctx.handle, DRM_PVR_JOB_TYPE_GEOMETRY, cap40, 40,
+-                                     dset_handle, 0))
+-                     printf("vm:            the CAPTURED 40-byte stream was ACCEPTED\n");
+-                  else
+-                     printf("vm:            the CAPTURED 40-byte stream was refused too - so the "
+-                            "stream content is not the problem\n");
+-               }
+-               /* Same context, same hwrt, different job type: a fragment job. If this is accepted
+-                * the failure is geometry-specific; if it fails identically the problem is the context
+-                * or hwrt lookup rather than anything about the stream. */
+-               {
+-                  _Alignas(8) uint8_t fbuf[1024];
+-                  static const uint64_t pbe2[3] = { 0x0200003c68800000ull, 0x0000001f0000001full, 0 };
+-                  const uint32_t fl2 = pvr_frag_static_stream(fbuf, sizeof(fbuf), pbe2, 1, 0x2780,
+-                                                              false);
+-                  if (pvr_job_submit(vm, gpu_ctx.handle, DRM_PVR_JOB_TYPE_FRAGMENT, fbuf, fl2,
+-                                     dset_handle, 0))
+-                     printf("vm:            a FRAGMENT job was ACCEPTED (%u bytes) - the context and "
+-                            "hwrt lookups work, so the geometry failure is geometry-specific\n", fl2);
+-                  else
+-                     printf("vm:            the FRAGMENT job was refused too - the failure is in the "
+-                            "context or hwrt lookup, not in the stream\n");
+-               }
+-               /* The smallest possible geometry job: 40-byte firmware stream, empty control
+-                * stream. If this does not complete, nothing about the draw stream is involved. */
+-               {
+-                  const bool mindone = pvr_job_submit_geom_sync(vm, gpu_ctx.handle, rcsb.map,
+-                                                                gl, dset_handle, 0, 2000);
+-
+-                  printf("vm:            minimal geometry job (empty control stream) %s\n",
+-                         mindone ? "COMPLETED" : "did not complete in 2 s");
+-               }
+-
+-               if (pvr_job_submit(vm, gpu_ctx.handle, DRM_PVR_JOB_TYPE_GEOMETRY, rcsb.map, gl, dset_handle, 0)) {
+-                  printf("vm:            SUBMIT_JOBS ACCEPTED a real %u-byte geometry job at "
+-                         "0x%" PRIx64 " (ctrl 0x%" PRIx64 ", border table 0x%" PRIx64 ") - the "
+-                         "kernel validated the stream it was given\n",
+-                         gl, rcsb_addr, ctl_addr, bct_addr);
+-               } else {
+-                  printf("vm:            SUBMIT_JOBS refused the real geometry job - the error above "
+-                         "is the kernel's reason\n");
+-               }
+-               pvr_bo_unmap(&rcsb);
++                                                          true, 0, false, 1, 0,
++                                                          PVR_HAS_QUIRK(dev_info, 49927));
++               /* Only the length the stream declares is submitted. Sending longer lengths makes the
++                * kernel parse dwords beyond it as further commands, and a stream the firmware cannot
++                * execute page-faults the TA and locks the GPU up - every later submission in this
++                * process would then be discarded, so the probe must never submit speculative
++                * lengths before its real tests. */
++               /* (The captured 40-byte stream is NOT submitted: its CR_VDM_CTRL_STREAM_BASE is
++                * the reference driver's device address, unmapped in this VM context. Submitting it
++                * makes the TA page-fault and locks the GPU up, which is exactly what the captured
++                * stream's acceptance test used to do to every test after it.) */
+             }
+             if (bct_addr) { pvr_vm_unmap(vm, bct_addr, bct.size); pvr_vm_free(vm, bct_addr, bct.size); }
+             if (ctl_addr) { pvr_vm_unmap(vm, ctl_addr, ctl.size); pvr_vm_free(vm, ctl_addr, ctl.size); }
+@@ -799,11 +773,11 @@ real_job_done:
+             }
+          }
+ 
+-         /* Firmware liveness check, before the draw: a geometry job whose control stream is only
+-          * a STREAM_TERMINATE must complete. If it does not, the firmware is not completing our
+-          * submissions at all and no draw state can render; if it does, the draw stream is what
+-          * stalls it. */
+-         if (ok2) {
++         /* Firmware liveness check: a render whose control stream is only a STREAM_TERMINATE. It
++          * must complete before anything else can be trusted; keep it behind the diagnostic switch
++          * because it runs AFTER the draw (a terminating-only TA job is a guess at a minimal job,
++          * not something the reference is ever known to submit). */
++         if (ok2 && diag) {
+             struct pvr_bo dbo = { 0 }, dfw = { 0 };
+             uint64_t daddr = 0;
+             _Alignas(8) static uint8_t dfw_buf[1024];
+@@ -1110,17 +1084,6 @@ real_job_done:
+                _Alignas(8) static uint8_t fstream[1024];
+                const uint32_t f2 = pvr_frag_static_stream(fstream, sizeof(fstream), pbe_words, 1,
+                                                          (uint32_t)eot_data_offset, false);
+-               /* Which half of the combined kick is stuck? A geometry-only submission uses the
+-                * same firmware stream and control stream as the draw; if it completes, the geometry
+-                * phase is fine and the fragment job is what never finishes. */
+-               {
+-                  const bool gdone = pvr_job_submit_geom_sync(vm, gpu_ctx.handle, gstream, glen,
+-                                                              dset_handle, 0, 2000);
+-
+-                  printf("hwrt:          geometry-only submission %s\n",
+-                         gdone ? "COMPLETED" : "did not complete in 2 s");
+-               }
+-
+                if (dump_streams) {
+                   printf("OURPBE: %016" PRIx64 " %016" PRIx64 " %016" PRIx64 "\n",
+                          pbe_words[0], pbe_words[1], pbe_words[2]);
+@@ -1133,6 +1096,8 @@ real_job_done:
+                   printf("\n");
+                }
+ 
++               /* The real thing runs FIRST, while the GPU is known-good. Diagnostics that submit
++                * speculative shapes go after it. */
+                if (pvr_job_submit_render(vm, gpu_ctx.handle, gstream, glen, fstream, f2,
+                                          dset_handle, 0)) {
+                   uint32_t changed = 0;
+-- 
+2.47.3
+

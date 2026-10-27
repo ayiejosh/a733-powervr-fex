@@ -1,0 +1,134 @@
+From c726bd84291c003d28349a86b8ff750cf65bf006 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sat, 17 Oct 2026 10:12:25 +0800
+Subject: [PATCH 161/269] gallium/pvr: the PBE register encodings - linestride
+ and memlayout
+
+  csb: PBE encodings: linestride (stride-1)/2 -> 0/1/2 for strides 2/4/6, memlayout LINEAR
+  --- ALL PASS        (real open kernel)
+
+The two PBE register fields that carry an ENCODING rather than a value, landed as functions with
+checks instead of being buried in a twenty-field packet:
+
+  linestride = (stride - 1) / ROGUE_PBESTATE_REG_WORD0_LINESTRIDE_UNIT_SIZE   (unit = 2)
+  memlayout  = LINEAR, because this driver's resources are linear
+
+linestride is the fourth "minus one" field here, after width, height and stride, and it divides as
+well. The unit is the generated header's constant, not a number transcribed from the reference.
+
+memlayout offers only LINEAR. The twiddled modes exist and are deliberately not offered: a target
+described as twiddled while its memory is linear would be read with the wrong addressing, and that
+is the kind of wrong that produces a picture rather than an error.
+
+A zero stride is refused rather than returning a value derived from underflow, the same shape as the
+texture descriptor's zero-extent case.
+
+The check uses CONCRETE expectations (strides 2, 4, 6 -> 0, 1, 2) rather than restating the formula,
+which would agree with any implementation using the same formula - including a wrong one. My first
+version asserted stride 5 -> 1 and failed against correct code: (5-1)/2 is 2. That is the third time
+a hand-computed expectation of mine has disagreed with correct code, and the third time the check -
+not a rereading - is what settled it.
+---
+ src/gallium/drivers/pvr/pvr_csb.c   | 19 +++++++++++++++++++
+ src/gallium/drivers/pvr/pvr_csb.h   | 14 ++++++++++++++
+ src/gallium/drivers/pvr/pvr_probe.c | 29 ++++++++++++++++++++++++++++-
+ 3 files changed, 61 insertions(+), 1 deletion(-)
+
+diff --git a/src/gallium/drivers/pvr/pvr_csb.c b/src/gallium/drivers/pvr/pvr_csb.c
+index 969cf45a..a9f7a2f5 100644
+--- a/src/gallium/drivers/pvr/pvr_csb.c
++++ b/src/gallium/drivers/pvr/pvr_csb.c
+@@ -370,6 +370,25 @@ pvr_csb_emit_ta_output_sel(struct pvr_csb *csb, const struct pvr_ta_output_sel *
+    return true;
+ }
+ 
++uint32_t
++pvr_pbe_linestride(uint32_t stride_bytes)
++{
++   /* A zero stride would underflow into a huge value rather than fail - the same shape as the
++    * texture descriptor's zero-extent case. */
++   if (stride_bytes == 0) {
++      mesa_loge("pvr: PBE linestride from a zero stride");
++      return 0;
++   }
++
++   return (stride_bytes - 1) / ROGUE_PBESTATE_REG_WORD0_LINESTRIDE_UNIT_SIZE;
++}
++
++enum ROGUE_PBESTATE_MEMLAYOUT
++pvr_pbe_memlayout_linear(void)
++{
++   return ROGUE_PBESTATE_MEMLAYOUT_LINEAR;
++}
++
+ bool
+ pvr_csb_emit_pbe_target(struct pvr_csb *csb, const struct pvr_pbe_target *target)
+ {
+diff --git a/src/gallium/drivers/pvr/pvr_csb.h b/src/gallium/drivers/pvr/pvr_csb.h
+index e06fd143..5a4fa24a 100644
+--- a/src/gallium/drivers/pvr/pvr_csb.h
++++ b/src/gallium/drivers/pvr/pvr_csb.h
+@@ -442,6 +442,20 @@ struct pvr_pbe_target {
+ 
+ bool pvr_csb_emit_pbe_target(struct pvr_csb *csb, const struct pvr_pbe_target *target);
+ 
++/* PBE register encodings that are not plain values.
++ *
++ * linestride is MINUS ONE divided by a unit:
++ *   reg.linestride = (stride - 1) / ROGUE_PBESTATE_REG_WORD0_LINESTRIDE_UNIT_SIZE
++ * - the fourth "minus one" field in this driver after width, height and stride, and the unit is the
++ * generated header's constant rather than a number transcribed from the reference.
++ *
++ * memlayout maps directly: this driver's resources are linear (round 1's choice, recorded as a
++ * ceiling), so targets are LINEAR and the twiddled modes are deliberately not offered - a target
++ * described as twiddled while its memory is linear would be read with the wrong addressing, and
++ * that is the kind of wrong that produces a picture rather than an error. */
++uint32_t pvr_pbe_linestride(uint32_t stride_bytes);
++enum ROGUE_PBESTATE_MEMLAYOUT pvr_pbe_memlayout_linear(void);
++
+ /* Dwords a stream link occupies - what the guard must be at minimum. */
+ #define PVR_CSB_LINK_DWORDS (ROGUE_VDMCTRL_STREAM_LINK0_length + \
+                              ROGUE_VDMCTRL_STREAM_LINK1_length)
+diff --git a/src/gallium/drivers/pvr/pvr_probe.c b/src/gallium/drivers/pvr/pvr_probe.c
+index 4a953de7..460fd3ac 100644
+--- a/src/gallium/drivers/pvr/pvr_probe.c
++++ b/src/gallium/drivers/pvr/pvr_probe.c
+@@ -1819,7 +1819,34 @@ csb_check(int fd, struct pipe_screen *pscreen)
+             goto out;
+          }
+ 
+-         printf("csb:           PBE target: bits [0:31]+[34:39]; a real 2^39 heap address "
++         /* PBE encodings. linestride is minus-one-divided-by-unit, so a stride of one unit must give
++       * zero and a stride of two units must give one - values that a missing minus-one or a
++       * missing division would get wrong differently. */
++      {
++         const uint32_t unit = ROGUE_PBESTATE_REG_WORD0_LINESTRIDE_UNIT_SIZE;
++
++         /* Concrete expected values rather than a restatement of the formula, which would agree
++          * with any implementation that used the same formula - including a wrong one. Unit 2:
++          * stride 2 -> 0, stride 4 -> 1, stride 6 -> 2. */
++         if (pvr_pbe_linestride(unit) != 0 || pvr_pbe_linestride(2 * unit) != 1 ||
++             pvr_pbe_linestride(3 * unit) != 2) {
++            printf("csb:           FAIL: PBE linestride is not minus-one-then-divide (unit %u: "
++                   "stride %u gave %u, %u gave %u, %u gave %u)\n", unit, unit,
++                   pvr_pbe_linestride(unit), 2 * unit, pvr_pbe_linestride(2 * unit), 3 * unit,
++                   pvr_pbe_linestride(3 * unit));
++            goto out;
++         }
++
++         if (pvr_pbe_memlayout_linear() != ROGUE_PBESTATE_MEMLAYOUT_LINEAR) {
++            printf("csb:           FAIL: the linear memlayout mapping is not LINEAR\n");
++            goto out;
++         }
++
++         printf("csb:           PBE encodings: linestride (stride-1)/%u -> 0/1/2 for strides "
++                "2/4/6, memlayout LINEAR\n", unit);
++      }
++
++      printf("csb:           PBE target: bits [0:31]+[34:39]; a real 2^39 heap address "
+                 "round-trips, bit-32 addresses refused\n");
+       }
+ 
+-- 
+2.47.3
+

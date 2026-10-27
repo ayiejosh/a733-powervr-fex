@@ -1,0 +1,9 @@
+#version 450
+layout(local_size_x = 1) in;
+layout(set = 0, binding = 0) uniform sampler2D a;
+layout(set = 0, binding = 1) uniform sampler2D b[2];
+layout(set = 0, binding = 2) buffer O { vec4 v; } o;
+void main() {
+   vec2 c = vec2(0.5);
+   o.v = vec4(textureLod(a, c, 0.0).r, textureLod(b[0], c, 0.0).r, textureLod(b[1], c, 0.0).r, 1.0);
+}

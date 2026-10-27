@@ -1,0 +1,246 @@
+From 17a11dda42aa54e8d2ad30da3f749d65de9078fa Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 18:45:38 +0800
+Subject: [PATCH 144/269] gallium/pvr: the texture descriptor - the first
+ complete hardware descriptor
+
+  csb: texture descriptor: 4 dwords, STRIDE/linear, extents as value-minus-one, smpcnt 0
+       (log2 of one sample), zero extent refused
+  --- ALL PASS        (real open kernel)
+
+IMAGE_WORD0 plus STRIDE_IMAGE_WORD1 for a colour, 2D, linear texture - which is everything
+this driver can currently describe. This is the piece round 28 identified as blocked on a
+format mapping; three rounds of reading found the mapping was cheaper than its surroundings
+suggested, and this closes it.
+
+Every field follows round 35's spec, and the three traps it names are the ones the check
+asserts by VALUE:
+
+  * textype is STRIDE, which IS linear. A twiddled descriptor would read linear memory
+    correctly-shaped but wrongly-ordered, and nothing would report it.
+  * width, height and stride are all minus-one.
+  * smpcnt is log2 of the sample count, so one sample is 0 rather than 1.
+
+Deliberate methodological change: this check does NOT compare against a locally built
+reference the way the packet checks have. A reference would reproduce all three mistakes
+identically and the bytes would still match - it would verify that the code does what the code
+does. Reading back through the generated unpacker and asserting the values that carry the traps
+is the only version of this check that can fail for the right reason.
+
+A zero extent is refused rather than emitted: the hardware stores value-minus-one, so a width
+of 0 would underflow into a very large extent instead of failing.
+---
+ src/gallium/drivers/pvr/pvr_csb.c   | 54 +++++++++++++++++++
+ src/gallium/drivers/pvr/pvr_csb.h   | 30 +++++++++++
+ src/gallium/drivers/pvr/pvr_probe.c | 82 +++++++++++++++++++++++++++++
+ 3 files changed, 166 insertions(+)
+
+diff --git a/src/gallium/drivers/pvr/pvr_csb.c b/src/gallium/drivers/pvr/pvr_csb.c
+index 8c3796f5..7e4ff755 100644
+--- a/src/gallium/drivers/pvr/pvr_csb.c
++++ b/src/gallium/drivers/pvr/pvr_csb.c
+@@ -4,6 +4,7 @@
+ #include "pvr_csb.h"
+ 
+ #include "util/format/u_format.h"
++#include "util/log.h"
+ 
+ void
+ pvr_csb_init(struct pvr_csb *csb, void *map, uint32_t size_bytes,
+@@ -265,6 +266,59 @@ pvr_format_layout_from_pipe(enum pipe_format format, struct pvr_format_layout *l
+    return true;
+ }
+ 
++bool
++pvr_csb_emit_tex_desc(struct pvr_csb *csb, const struct pvr_tex_desc *desc)
++{
++   const uint32_t words = ROGUE_TEXSTATE_IMAGE_WORD0_length +
++                          ROGUE_TEXSTATE_STRIDE_IMAGE_WORD1_length;
++   struct ROGUE_TEXSTATE_IMAGE_WORD0 word0 = {
++      .textype = ROGUE_TEXSTATE_TEXTYPE_STRIDE,
++      .texformat = desc->components,
++      .width = desc->width - 1,
++      .height = desc->height - 1,
++      .smpcnt = 0,
++      .minlod = 0,
++      .texformat_compressed = 0,
++      .twocomp_gamma = 0,
++   };
++   struct ROGUE_TEXSTATE_STRIDE_IMAGE_WORD1 word1 = {
++      .stride = desc->stride - 1,
++      .texaddr = desc->addr,
++      .num_mip_levels = 0,
++      .mipmaps_present = false,
++      .alpha_msb = false,
++      .tile_size = false,
++      .index_lookup = false,
++      .frame_buffer_compression = false,
++      .frame_buffer_compression_addressing_mode = false,
++   };
++   uint32_t *dw;
++
++   if (desc->width < 1 || desc->height < 1 || desc->stride < 1) {
++      mesa_loge("pvr: texture descriptor with a zero extent (w %u h %u stride %u) - the "
++                "hardware stores value-minus-one", desc->width, desc->height, desc->stride);
++      return false;
++   }
++
++   for (unsigned c = 0; c < 4; c++) {
++      if (!pvr_swizzle_from_pipe(desc->swizzle[c],
++                                 c == 0 ? &word0.swiz0 : c == 1 ? &word0.swiz1 :
++                                 c == 2 ? &word0.swiz2 : &word0.swiz3)) {
++         mesa_loge("pvr: channel %u has no hardware swizzle (%u)", c, desc->swizzle[c]);
++         return false;
++      }
++   }
++
++   dw = pvr_csb_emit(csb, words);
++   if (dw == NULL)
++      return false;
++
++   ROGUE_TEXSTATE_IMAGE_WORD0_pack(dw, &word0);
++   ROGUE_TEXSTATE_STRIDE_IMAGE_WORD1_pack(dw + ROGUE_TEXSTATE_IMAGE_WORD0_length, &word1);
++
++   return true;
++}
++
+ uint32_t
+ pvr_csb_switch_buffer(struct pvr_csb *csb, void *map, uint32_t size_bytes,
+                       uint32_t guard_dwords)
+diff --git a/src/gallium/drivers/pvr/pvr_csb.h b/src/gallium/drivers/pvr/pvr_csb.h
+index ed905ba6..2c4321a7 100644
+--- a/src/gallium/drivers/pvr/pvr_csb.h
++++ b/src/gallium/drivers/pvr/pvr_csb.h
+@@ -152,6 +152,36 @@ bool pvr_format_layout_from_pipe(enum pipe_format format,
+  * Returns false for anything it cannot represent exactly. */
+ bool pvr_swizzle_from_pipe(uint8_t pipe_swizzle, enum ROGUE_TEXSTATE_SWIZ *out);
+ 
++/* A texture descriptor for what this driver can actually describe: a colour format, 2D,
++ * linear memory.
++ *
++ * Every field follows round 35's closed spec. Three points are load-bearing and each was a
++ * trap when read off the field names rather than the reference's usage:
++ *
++ *  - textype is STRIDE, which IS the linear layout - and STRIDE permits only 2D views, so
++ *    this function has no 1D/cube/3D case to give. Linear was chosen in round 1; the packet
++ *    follows from it.
++ *  - width, height and stride are all MINUS ONE. Fields of this shape come in families here.
++ *  - smpcnt is log2 of the sample count, so one sample is 0. Multi-sampling is not supported,
++ *    so it is 0 and there is nothing to compute.
++ *
++ * The STRIDE_IMAGE_WORD1 variant carries `stride` and has no depth/baselevel/border; those
++ * belong to the twiddled variant and to geometry this driver does not describe.
++ *
++ * width, height and stride must be at least 1 - the hardware stores value-minus-one, so a 0
++ * would underflow into a very large extent rather than fail. Refused rather than masked. */
++struct pvr_tex_desc {
++   enum ROGUE_TEXSTATE_FORMAT components;
++   uint8_t swizzle[4];
++
++   uint32_t width;
++   uint32_t height;
++   uint32_t stride;
++   uint64_t addr;
++};
++
++bool pvr_csb_emit_tex_desc(struct pvr_csb *csb, const struct pvr_tex_desc *desc);
++
+ /* Dwords a stream link occupies - what the guard must be at minimum. */
+ #define PVR_CSB_LINK_DWORDS (ROGUE_VDMCTRL_STREAM_LINK0_length + \
+                              ROGUE_VDMCTRL_STREAM_LINK1_length)
+diff --git a/src/gallium/drivers/pvr/pvr_probe.c b/src/gallium/drivers/pvr/pvr_probe.c
+index 9a727f3c..2eb21f63 100644
+--- a/src/gallium/drivers/pvr/pvr_probe.c
++++ b/src/gallium/drivers/pvr/pvr_probe.c
+@@ -1207,6 +1207,88 @@ csb_check(int fd, struct pipe_screen *pscreen)
+              rgba.swizzle[0], bgra.swizzle[0]);
+    }
+ 
++   /* The texture descriptor. The check reads it back through the generated unpacker and
++    * asserts the fields whose VALUES carry the traps, because a byte-comparison against a
++    * locally built reference would pass with the same mistake in both:
++    *   - textype must be STRIDE (a twiddled descriptor would read linear memory wrongly)
++    *   - width/height/stride must come back as value-minus-one
++    *   - smpcnt must be log2, i.e. 0 for one sample rather than 1
++    * A reference pack would have made all three mistakes identically and still matched. */
++   {
++      struct pvr_tex_desc desc = {
++         .components = ROGUE_TEXSTATE_FORMAT_U8U8U8U8,
++         .swizzle = { PIPE_SWIZZLE_X, PIPE_SWIZZLE_Y, PIPE_SWIZZLE_Z, PIPE_SWIZZLE_W },
++         .width = 64,
++         .height = 32,
++         .stride = 256,
++         .addr = 0x9ff0300000ULL,
++      };
++      struct ROGUE_TEXSTATE_IMAGE_WORD0 w0 = { 0 };
++      struct ROGUE_TEXSTATE_STRIDE_IMAGE_WORD1 w1 = { 0 };
++
++      pvr_csb_reset(&csb);
++
++      if (!pvr_csb_emit_tex_desc(&csb, &desc) ||
++          pvr_csb_size(&csb) != (ROGUE_TEXSTATE_IMAGE_WORD0_length +
++                                 ROGUE_TEXSTATE_STRIDE_IMAGE_WORD1_length) * 4) {
++         printf("csb:           FAIL: the texture descriptor did not emit\n");
++         goto out;
++      }
++
++      ROGUE_TEXSTATE_IMAGE_WORD0_unpack(bo.map, &w0);
++      ROGUE_TEXSTATE_STRIDE_IMAGE_WORD1_unpack(
++         (uint32_t *)bo.map + ROGUE_TEXSTATE_IMAGE_WORD0_length, &w1);
++
++      if (w0.textype != ROGUE_TEXSTATE_TEXTYPE_STRIDE) {
++         printf("csb:           FAIL: descriptor textype is not STRIDE - linear memory would "
++                "be read as twiddled\n");
++         goto out;
++      }
++
++      if (w0.width != desc.width - 1 || w0.height != desc.height - 1 ||
++          w1.stride != desc.stride - 1) {
++         printf("csb:           FAIL: extents are not value-minus-one (w %u h %u stride "
++                "%u)\n", w0.width, w0.height, w1.stride);
++         goto out;
++      }
++
++      if (w0.smpcnt != 0) {
++         printf("csb:           FAIL: smpcnt is %u - it must be log2 of the sample count, so "
++                "0 for one sample\n", w0.smpcnt);
++         goto out;
++      }
++
++      if (w0.texformat != ROGUE_TEXSTATE_FORMAT_U8U8U8U8 ||
++          w0.swiz0 != ROGUE_TEXSTATE_SWIZ_SRCCHAN_0 ||
++          w0.swiz3 != ROGUE_TEXSTATE_SWIZ_SRCCHAN_3) {
++         printf("csb:           FAIL: format or swizzle did not survive the descriptor\n");
++         goto out;
++      }
++
++      if (w1.texaddr != desc.addr) {
++         printf("csb:           FAIL: the descriptor's address did not round-trip\n");
++         goto out;
++      }
++
++      /* A zero extent must be refused: the hardware stores value-minus-one, so 0 would
++       * underflow into a very large extent rather than fail. */
++      pvr_csb_reset(&csb);
++      {
++         struct pvr_tex_desc bad = desc;
++
++         bad.width = 0;
++         if (pvr_csb_emit_tex_desc(&csb, &bad)) {
++            printf("csb:           FAIL: a zero width was accepted and would underflow\n");
++            goto out;
++         }
++      }
++
++      printf("csb:           texture descriptor: %u dwords, STRIDE/linear, extents as "
++             "value-minus-one, smpcnt 0 (log2 of one sample), zero extent refused\n",
++             ROGUE_TEXSTATE_IMAGE_WORD0_length +
++             ROGUE_TEXSTATE_STRIDE_IMAGE_WORD1_length);
++   }
++
+    /* The VDM state update, whose length depends on its own flags. The property to check
+     * is not that three packets can be packed - it is that the sequence emitted matches what
+     * the flags said, in length and in order. A fixed-length emission with a flag packet
+-- 
+2.47.3
+

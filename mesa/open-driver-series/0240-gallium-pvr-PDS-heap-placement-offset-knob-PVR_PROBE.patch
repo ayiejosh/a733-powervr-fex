@@ -1,0 +1,37 @@
+From 3d889c562672e487c7bcf2f371e8709d2edcdd80 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sun, 25 Oct 2026 06:22:08 +0800
+Subject: [PATCH 240/269] gallium/pvr: PDS heap placement offset knob
+ (PVR_PROBE_PDS_OFFSET)
+
+Lets the probe place the attribute/fragment PDS programs at a configurable offset in the PDS heap, to
+test for clashes with firmware-reserved PDS addresses. Tested 0x1000/0x10000 and low-VA builds:
+the TA kick still hangs, so a reserved-address clash is not the cause.
+
+Verification: probe ALL PASS under the shim.
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index 236a2bcc..780246b4 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -1997,7 +1997,13 @@ shader_compile_check(struct pipe_screen *pscreen)
+        * (data + code contiguous). Every address the VDM/TA state names is an offset from the PDS
+        * heap base, exactly as the captured draw's are. */
+       if (ok && pds->size != 0) {
+-         uint64_t pds_next = probe_heap_usable_page(pds);
++         /* Round-36: place the programs at a configurable offset in the PDS heap, to test whether
++          * they clash with firmware-reserved PDS addresses (the static VDM sync / PT store-resume
++          * programs live in the first page; maybe more is reserved on this device). */
++         uint64_t pds_next =
++            probe_heap_usable_page(pds) +
++            (getenv("PVR_PROBE_PDS_OFFSET") ? strtoull(getenv("PVR_PROBE_PDS_OFFSET"), NULL, 0)
++                                            : 0);
+          uint8_t vprog[1024] = { 0 }, vdata[256] = { 0 };
+          const uint32_t vlen = pvr_shader_vertex_program(&scr->dev_info, vprog, sizeof(vprog),
+                                                          12, 12, 0, &g_vertex_prog_info);
+-- 
+2.47.3
+

@@ -1,0 +1,175 @@
+From d14b076dd87aa8ca1838ba8bb5dcd576728b8a23 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 23 Oct 2026 21:03:05 +0800
+Subject: [PATCH 190/269] gallium/pvr: render submission path; allocator
+ honours alignment; PBE address constraint
+
+Builds the full render path on top of the working submit:
+
+ - pvr_job_submit_render() now carries the hwrt reference on BOTH jobs (the kernel requires it for
+   every render job, geometry and fragment alike).
+ - a probe test that allocates a real 512x512 RGBA8 target, describes it with the driver's own
+   pvr_pbe_target_from_format(), emits the PBE words into a CSB and submits geometry + fragment in one
+   go, then reads the target back to see whether the GPU wrote to it.
+
+Found a real bug in the allocator while doing it: pvr_vm_alloc() computed an alignment and then passed
+page_size to util_vma_heap_alloc(), so every caller's alignment request was silently dropped. Fixed.
+
+That matters because the PBE encodes a target address in bits [0:31] and [34:39] - bits 32 and 33 have
+no field, so an address that sets either cannot be described at all. The current allocation lands on
+0x100000000 (bit 32 set) and the PBE emitter refuses it, correctly, rather than re-encoding it to a
+different address. The next step is to place the target where the encoding allows: the general heap runs
+0x8000000480..0x9FFFFFF400, and every address in it whose (addr >> 32) & 3 == 0 is describable, so a
+16 GiB-aligned allocation inside that range works - the allocator now honours the request, the remaining
+question is why this one came back at 4 GiB.
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c | 88 ++++++++++++++++++++++
+ src/gallium/drivers/pvr_native/pvr_vm.c    |  5 +-
+ src/gallium/drivers/pvr_native/pvr_vm.h    |  3 +-
+ 3 files changed, 94 insertions(+), 2 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index 406694e6..e5c1818a 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -657,6 +657,94 @@ vm_roundtrip(int fd, const struct pvr_device_info *dev_info)
+          pvr_bo_destroy(pvm_fd_for_probe, &rcsb);
+       }
+ real_job_done:
++      /* A full render submission: a real 512x512 RGBA8 render target, a PBE description for it, the
++       * fragment static stream carrying those PBE words, and both jobs (geometry + fragment) in ONE
++       * submit. Then read the target back. Any change at all means the GPU executed the stream; a
++       * clear in the right colour means the PBE description was right too. */
++      {
++         const uint32_t RTW = 512, RTH = 512;
++         struct pvr_bo rtbo = { 0 }, rtcsb = { 0 }, rctl = { 0 }, rbct = { 0 };
++         uint64_t rtaddr = 0, rctladdr = 0, rbctaddr = 0;
++         bool ok2 = true;
++
++         if (!pvr_bo_create(pvm_fd_for_probe, (uint64_t)RTW * RTH * 4, 1, &rtbo)) {
++            printf("hwrt:          RT BO create failed\n"); ok2 = false;
++         } else if (!pvr_bo_create(pvm_fd_for_probe, 4096, 1, &rtcsb) ||
++                    !pvr_bo_create(pvm_fd_for_probe, 4096, 1, &rctl) ||
++                    !pvr_bo_create(pvm_fd_for_probe, 4096, 1, &rbct)) {
++            printf("hwrt:          stream BO create failed\n"); ok2 = false;
++         }
++
++         if (ok2) {
++            /* The PBE encodes the target address in bits [0:31] and [34:39]: bits 32 and 33 have no
++             * field, so a target whose address sets either cannot be described at all. A 16 GiB
++             * alignment guarantees both are clear. */
++            rtaddr = pvr_vm_alloc(&vm, rtbo.size, 1ULL << 34);
++            rctladdr = pvr_vm_alloc(&vm, rctl.size, vm.general.page_size);
++            rbctaddr = pvr_vm_alloc(&vm, rbct.size, vm.general.page_size);
++            if (!rtaddr || !rctladdr || !rbctaddr)
++               printf("hwrt:          VM alloc failed (0x%" PRIx64 ", 0x%" PRIx64 ", 0x%" PRIx64 ")\n",
++                      rtaddr, rctladdr, rbctaddr);
++            ok2 = rtaddr && rctladdr && rbctaddr &&
++                  pvr_vm_map(&vm, rtaddr, rtbo.handle, rtbo.size) &&
++                  pvr_vm_map(&vm, rctladdr, rctl.handle, rctl.size) &&
++                  pvr_vm_map(&vm, rbctaddr, rbct.handle, rbct.size) &&
++                  pvr_bo_map(pvm_fd_for_probe, &rtbo) &&
++                  pvr_bo_map(pvm_fd_for_probe, &rtcsb);
++            if (!ok2)
++               printf("hwrt:          VM map or CPU map failed (rt 0x%" PRIx64 ")\n", rtaddr);
++         }
++
++         if (ok2) {
++            struct pvr_pbe_target t = { 0 };
++            struct pvr_csb csb;
++            uint8_t *rt = rtbo.map;
++            const uint32_t before = *(uint32_t *)rt;
++
++            /* Fill the target with a known pattern so any GPU write is visible. */
++            memset(rt, 0x5a, RTW * RTH * 4);
++
++            if (!pvr_pbe_target_from_format(PIPE_FORMAT_R8G8B8A8_UNORM, rtaddr, 0, true, &t)) {
++               printf("hwrt:          could not describe the render target\n");
++               ok2 = false;
++            } else {
++               pvr_csb_init(&csb, rtcsb.map, rtcsb.size, PVR_CSB_LINK_DWORDS);
++               if (!pvr_csb_emit_pbe_target(&csb, &t)) {
++                  printf("hwrt:          could not emit the PBE target\n");
++                  ok2 = false;
++               }
++            }
++
++            if (ok2) {
++               const uint32_t flen = pvr_frag_static_stream(rtcsb.map, rtcsb.size,
++                                                           (const uint64_t *)rtcsb.map, 1, 0x2780,
++                                                           false);
++               const uint32_t glen = pvr_geom_static_stream(rctl.map, rctl.size, rctladdr,
++                                                           rbctaddr, false, 0, false, 0, 0,
++                                                           PVR_HAS_QUIRK(dev_info, 49927));
++               /* The fragment stream has to live in its own buffer, so rebuild it there. */
++               _Alignas(8) static uint8_t fstream[1024];
++               const uint32_t f2 = pvr_frag_static_stream(fstream, sizeof(fstream),
++                                                         (const uint64_t *)rtcsb.map, 1, 0x2780,
++                                                         false);
++               (void)flen;
++               if (pvr_job_submit_render(&vm, gpu_ctx.handle, rctl.map, glen, fstream, f2,
++                                         dset_handle, 0)) {
++                  uint32_t changed = 0;
++                  for (uint32_t i = 0; i < RTW * RTH; i++)
++                     if (rt[i] != 0x5a) { changed = 1; break; }
++                  printf("hwrt:          RENDER SUBMIT ACCEPTED (geom %u B + frag %u B) - target %s "
++                         "(first word 0x%08x, was 0x%08x)\n", glen, f2,
++                         changed ? "CHANGED BY THE GPU" : "unchanged", *(uint32_t *)rt, before);
++               } else {
++                  printf("hwrt:          the render submit was refused\n");
++               }
++            }
++         }
++         if (!ok2)
++            printf("hwrt:          render target setup failed\n");
++      }
++
+       pvr_gpu_context_destroy(&vm, &gpu_ctx);
+    }
+ 
+diff --git a/src/gallium/drivers/pvr_native/pvr_vm.c b/src/gallium/drivers/pvr_native/pvr_vm.c
+index efd7f98d..1f42fd06 100644
+--- a/src/gallium/drivers/pvr_native/pvr_vm.c
++++ b/src/gallium/drivers/pvr_native/pvr_vm.c
+@@ -386,7 +386,8 @@ pvr_job_submit(struct pvr_vm *vm, uint32_t context_handle, uint32_t job_type,
+ bool
+ pvr_job_submit_render(struct pvr_vm *vm, uint32_t context_handle,
+                       const void *geom_stream, uint32_t geom_len,
+-                      const void *frag_stream, uint32_t frag_len)
++                      const void *frag_stream, uint32_t frag_len,
++                      uint32_t hwrt_set_handle, uint32_t hwrt_data_index)
+ {
+    struct drm_pvr_job jobs[2] = {
+       {
+@@ -395,12 +396,14 @@ pvr_job_submit_render(struct pvr_vm *vm, uint32_t context_handle,
+          .cmd_stream = (uint64_t)(uintptr_t)geom_stream,
+          .cmd_stream_len = geom_len,
+          .sync_ops = { .stride = sizeof(struct drm_pvr_sync_op), .count = 0 },
++         .hwrt = { .set_handle = hwrt_set_handle, .data_index = hwrt_data_index },
+       }, {
+          .type = DRM_PVR_JOB_TYPE_FRAGMENT,
+          .context_handle = context_handle,
+          .cmd_stream = (uint64_t)(uintptr_t)frag_stream,
+          .cmd_stream_len = frag_len,
+          .sync_ops = { .stride = sizeof(struct drm_pvr_sync_op), .count = 0 },
++         .hwrt = { .set_handle = hwrt_set_handle, .data_index = hwrt_data_index },
+       },
+    };
+    struct drm_pvr_ioctl_submit_jobs_args args = {
+diff --git a/src/gallium/drivers/pvr_native/pvr_vm.h b/src/gallium/drivers/pvr_native/pvr_vm.h
+index 710522cd..5534a09b 100644
+--- a/src/gallium/drivers/pvr_native/pvr_vm.h
++++ b/src/gallium/drivers/pvr_native/pvr_vm.h
+@@ -128,7 +128,8 @@ bool pvr_hwrt_dataset_create(struct pvr_vm *vm, const struct pvr_hwrt_dataset_de
+ 
+ bool pvr_job_submit_render(struct pvr_vm *vm, uint32_t context_handle,
+                             const void *geom_stream, uint32_t geom_len,
+-                            const void *frag_stream, uint32_t frag_len);
++                            const void *frag_stream, uint32_t frag_len,
++                            uint32_t hwrt_set_handle, uint32_t hwrt_data_index);
+ bool pvr_job_submit(struct pvr_vm *vm, uint32_t context_handle, uint32_t job_type,
+                     const void *cmd_stream, uint32_t cmd_stream_len,
+                     uint32_t hwrt_set_handle, uint32_t hwrt_data_index);
+-- 
+2.47.3
+

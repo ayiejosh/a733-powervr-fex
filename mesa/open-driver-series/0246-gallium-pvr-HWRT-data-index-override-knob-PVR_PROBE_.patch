@@ -1,0 +1,80 @@
+From f82a4fd4f3fef0b56c237ba549dfb6805fa04c6b Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sun, 25 Oct 2026 09:47:27 +0800
+Subject: [PATCH 246/269] gallium/pvr: HWRT data-index override knob
+ (PVR_PROBE_HWRT_IDX) - negative
+
+The probe can now force the job's hwrt.data_index (0 or 1 for the double-buffered dataset). Submitting
+the geometry job with data_index 1 still gives "Kick TA" -> "DM2 timed out", so the firmware's rt-data
+slot state is not the trigger either.
+---
+ src/gallium/drivers/pvr_native/pvr_vm.c | 25 ++++++++++++++++++++-----
+ 1 file changed, 20 insertions(+), 5 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_vm.c b/src/gallium/drivers/pvr_native/pvr_vm.c
+index fd4eb135..c9964a41 100644
+--- a/src/gallium/drivers/pvr_native/pvr_vm.c
++++ b/src/gallium/drivers/pvr_native/pvr_vm.c
+@@ -424,7 +424,10 @@ pvr_job_submit_geom_sync(struct pvr_vm *vm, uint32_t context_handle,
+       .flags = DRM_PVR_SUBMIT_JOB_GEOM_CMD_FIRST | DRM_PVR_SUBMIT_JOB_GEOM_CMD_LAST,
+       .sync_ops = { .stride = sizeof(sync_ops[0]), .count = 1,
+                     .array = (__u64)(uintptr_t)sync_ops },
+-      .hwrt = { .set_handle = hwrt_set_handle, .data_index = hwrt_data_index },
++      .hwrt = { .set_handle = hwrt_set_handle,
++                .data_index = getenv("PVR_PROBE_HWRT_IDX")
++                                 ? (uint32_t)strtoul(getenv("PVR_PROBE_HWRT_IDX"), NULL, 0)
++                                 : hwrt_data_index },
+    };
+    struct drm_pvr_ioctl_submit_jobs_args args = {
+       .jobs = { .stride = sizeof(job), .count = 1,
+@@ -481,7 +484,10 @@ pvr_job_submit_frag_sync(struct pvr_vm *vm, uint32_t context_handle,
+       .cmd_stream = (uint64_t)(uintptr_t)frag_stream,
+       .cmd_stream_len = frag_len,
+       .sync_ops = { .stride = sizeof(ops[0]), .count = 1, .array = (__u64)(uintptr_t)ops },
+-      .hwrt = { .set_handle = hwrt_set_handle, .data_index = hwrt_data_index },
++      .hwrt = { .set_handle = hwrt_set_handle,
++                .data_index = getenv("PVR_PROBE_HWRT_IDX")
++                                 ? (uint32_t)strtoul(getenv("PVR_PROBE_HWRT_IDX"), NULL, 0)
++                                 : hwrt_data_index },
+    };
+ 
+    if (drmIoctl(vm->fd, DRM_IOCTL_PVR_SUBMIT_JOBS, &args) != 0) {
+@@ -556,7 +562,10 @@ pvr_job_submit_render(struct pvr_vm *vm, uint32_t context_handle,
+       .flags = DRM_PVR_SUBMIT_JOB_GEOM_CMD_FIRST | DRM_PVR_SUBMIT_JOB_GEOM_CMD_LAST,
+       .sync_ops = { .stride = sizeof(geom_ops[0]), .count = 1,
+                     .array = (__u64)(uintptr_t)geom_ops },
+-      .hwrt = { .set_handle = hwrt_set_handle, .data_index = hwrt_data_index },
++      .hwrt = { .set_handle = hwrt_set_handle,
++                .data_index = getenv("PVR_PROBE_HWRT_IDX")
++                                 ? (uint32_t)strtoul(getenv("PVR_PROBE_HWRT_IDX"), NULL, 0)
++                                 : hwrt_data_index },
+    };
+    jobs[1] = (struct drm_pvr_job){
+       .type = DRM_PVR_JOB_TYPE_FRAGMENT,
+@@ -566,7 +575,10 @@ pvr_job_submit_render(struct pvr_vm *vm, uint32_t context_handle,
+       .flags = DRM_PVR_SUBMIT_JOB_FRAG_CMD_PARTIAL_RENDER,
+       .sync_ops = { .stride = sizeof(pr_ops[0]), .count = ARRAY_SIZE(pr_ops),
+                     .array = (__u64)(uintptr_t)pr_ops },
+-      .hwrt = { .set_handle = hwrt_set_handle, .data_index = hwrt_data_index },
++      .hwrt = { .set_handle = hwrt_set_handle,
++                .data_index = getenv("PVR_PROBE_HWRT_IDX")
++                                 ? (uint32_t)strtoul(getenv("PVR_PROBE_HWRT_IDX"), NULL, 0)
++                                 : hwrt_data_index },
+    };
+    jobs[2] = (struct drm_pvr_job){
+       .type = DRM_PVR_JOB_TYPE_FRAGMENT,
+@@ -575,7 +587,10 @@ pvr_job_submit_render(struct pvr_vm *vm, uint32_t context_handle,
+       .cmd_stream_len = frag_len,
+       .sync_ops = { .stride = sizeof(frag_ops[0]), .count = 1,
+                     .array = (__u64)(uintptr_t)frag_ops },
+-      .hwrt = { .set_handle = hwrt_set_handle, .data_index = hwrt_data_index },
++      .hwrt = { .set_handle = hwrt_set_handle,
++                .data_index = getenv("PVR_PROBE_HWRT_IDX")
++                                 ? (uint32_t)strtoul(getenv("PVR_PROBE_HWRT_IDX"), NULL, 0)
++                                 : hwrt_data_index },
+    };
+ 
+    submitted = drmIoctl(vm->fd, DRM_IOCTL_PVR_SUBMIT_JOBS, &args) == 0;
+-- 
+2.47.3
+

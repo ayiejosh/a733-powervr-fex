@@ -1,0 +1,352 @@
+From 65147e3e64644a27876379b8d3dab3ee9a56dc1b Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 07:12:46 +0800
+Subject: [PATCH 113/269] gallium/pvr: buffer objects - create, CPU map, unmap,
+ close
+
+First real capability beyond enumeration: the driver can now get memory from the
+kernel and read and write it, through the same UAPI the Vulkan driver uses
+(DRM_IOCTL_PVR_CREATE_BO, _GET_BO_MMAP_OFFSET, GEM_CLOSE). The sequences follow
+src/imagination/vulkan/winsys/powervr/pvr_drm_bo.c, which is the working
+reference for this interface.
+
+Deliberately four functions, not a winsys abstraction: one implementation, one
+caller. GPU address-space mapping needs the heap query and a VM context and is a
+separate step - none of these four require either.
+
+Two things worth recording, both read out of the kernel:
+
+* The kernel does NOT round a size up. pvr_drv.c rejects a size that is not a
+  whole number of device pages with -EINVAL; the "will be rounded up" prose in
+  pvr_gem.c is unreachable through the ioctl because the alignment check fires
+  first. So the driver rounds, and the probe asks for 1000 bytes to exercise it.
+
+* DRM_PVR_BO_CPU_CACHED is deliberately NOT used. Mesa's synced header defines
+  bit 3, but the DEPLOYED powervr module masks flags to bits 0..2 and returns
+  -EINVAL for it - indistinguishable from a size error. The header is ahead of
+  the loaded module. Passing it would send you hunting the wrong bug. The default
+  write-combined mapping is the coherent one here anyway: WC reads are uncached,
+  so the CPU sees GPU writes, and this tree has no userspace cache-maintenance
+  path at all.
+
+Runnable check, added to pvr-probe: allocate two buffers (one unaligned size, to
+exercise the round-up), map both, confirm a new object arrives zeroed, fill them
+with different patterns, verify each reads back only its own bytes, then unmap and
+close. Two live mappings with different patterns is what catches confused mmap
+offsets - which would otherwise be a silently wrong buffer much later.
+
+Verified on the real open kernel module, not just the shim (the shim does not
+implement these ioctls faithfully - it ignores size validation):
+
+  bo: created handles 1 (4096 bytes, asked 1000) and 2 (65536 bytes)
+  bo: PASS (create, map, read back, unmap, close)
+  --- ALL PASS     exit 0
+
+The check also caught a bug on its first run - in the check itself: it indexed
+one buffer's mapping with the other's larger size, reading past the end. Fixed to
+verify each mapping over its own length, which still detects aliasing.
+---
+ src/gallium/drivers/pvr/meson.build |   1 +
+ src/gallium/drivers/pvr/pvr_bo.c    | 113 ++++++++++++++++++++++++++++
+ src/gallium/drivers/pvr/pvr_bo.h    |  28 +++++++
+ src/gallium/drivers/pvr/pvr_probe.c |  98 ++++++++++++++++++++++--
+ 4 files changed, 234 insertions(+), 6 deletions(-)
+ create mode 100644 src/gallium/drivers/pvr/pvr_bo.c
+ create mode 100644 src/gallium/drivers/pvr/pvr_bo.h
+
+diff --git a/src/gallium/drivers/pvr/meson.build b/src/gallium/drivers/pvr/meson.build
+index 32ccb43d..ed2c04cf 100644
+--- a/src/gallium/drivers/pvr/meson.build
++++ b/src/gallium/drivers/pvr/meson.build
+@@ -5,6 +5,7 @@
+ # enumerates the device. The pieces below are linked and reused, not rewritten.
+ 
+ files_pvr = files(
++  'pvr_bo.c',
+   'pvr_screen.c',
+ )
+ 
+diff --git a/src/gallium/drivers/pvr/pvr_bo.c b/src/gallium/drivers/pvr/pvr_bo.c
+new file mode 100644
+index 00000000..7112efba
+--- /dev/null
++++ b/src/gallium/drivers/pvr/pvr_bo.c
+@@ -0,0 +1,113 @@
++/* Copyright 2026 The Mesa authors
++ * SPDX-License-Identifier: MIT
++ *
++ * Buffer objects via DRM_IOCTL_PVR_CREATE_BO / _GET_BO_MMAP_OFFSET / GEM_CLOSE.
++ * The sequences follow the Vulkan driver's winsys (src/imagination/vulkan/winsys/
++ * powervr/pvr_drm_bo.c), which is the working reference for this UAPI.
++ */
++#include "pvr_bo.h"
++
++#include <errno.h>
++#include <inttypes.h>
++#include <string.h>
++#include <sys/mman.h>
++
++#include <xf86drm.h>
++
++#include "drm-uapi/pvr_drm.h"
++
++#include "util/log.h"
++#include "util/macros.h"
++#include "util/os_misc.h"
++
++bool
++pvr_bo_create(int fd, uint64_t size, uint64_t alignment, struct pvr_bo *bo)
++{
++   uint64_t page_size = 4096;
++   if (!os_get_page_size(&page_size) || page_size == 0)
++      page_size = 4096; /* an mmap-able default beats refusing to allocate */
++
++   /* The kernel rejects a size that is not a whole number of device pages
++    * (pvr_drv.c: `args->size & (PVR_DEVICE_PAGE_SIZE - 1)` -> -EINVAL). It does NOT
++    * round up, whatever the prose in pvr_gem.c suggests, so round here.
++    *
++    * Flags: ALLOW_CPU_USERSPACE_ACCESS is what makes mmap() legal later; without it
++    * CREATE_BO still succeeds and only the mmap fails. DRM_PVR_BO_CPU_CACHED is
++    * deliberately NOT passed: Mesa's synced header defines bit 3, but the deployed
++    * powervr module masks flags to bits 0..2 and returns -EINVAL for it - which reads
++    * exactly like a size error and would send you hunting the wrong bug. The default
++    * write-combined mapping is the coherent one here anyway: WC reads are uncached, so
++    * the CPU sees GPU writes, and this tree has no userspace cache-maintenance path. */
++   const uint64_t aligned_size = ALIGN_POT(size, MAX2(alignment, page_size));
++
++   struct drm_pvr_ioctl_create_bo_args args = {
++      .size = aligned_size,
++      .flags = DRM_PVR_BO_ALLOW_CPU_USERSPACE_ACCESS,
++   };
++
++   if (drmIoctl(fd, DRM_IOCTL_PVR_CREATE_BO, &args) != 0) {
++      mesa_loge("pvr: CREATE_BO size=%" PRIu64 " failed: %s", aligned_size,
++                strerror(errno));
++      return false;
++   }
++
++   bo->handle = args.handle;
++   bo->size = aligned_size;
++   bo->map = NULL;
++
++   return true;
++}
++
++bool
++pvr_bo_map(int fd, struct pvr_bo *bo)
++{
++   assert(bo->map == NULL);
++
++   struct drm_pvr_ioctl_get_bo_mmap_offset_args args = {
++      .handle = bo->handle,
++   };
++
++   if (drmIoctl(fd, DRM_IOCTL_PVR_GET_BO_MMAP_OFFSET, &args) != 0) {
++      mesa_loge("pvr: GET_BO_MMAP_OFFSET handle=%u failed: %s", bo->handle,
++                strerror(errno));
++      return false;
++   }
++
++   /* args.offset is a drm_vma_node fake offset, NOT a GPU address - the GPU address
++    * comes from VM_MAP and is a different number entirely. MAP_SHARED is required. */
++   void *map = mmap(NULL, bo->size, PROT_READ | PROT_WRITE, MAP_SHARED, fd,
++                    args.offset);
++   if (map == MAP_FAILED) {
++      mesa_loge("pvr: mmap of %" PRIu64 " bytes failed: %s", bo->size,
++                strerror(errno));
++      return false;
++   }
++
++   bo->map = map;
++
++   return true;
++}
++
++void
++pvr_bo_unmap(struct pvr_bo *bo)
++{
++   if (bo->map == NULL)
++      return;
++
++   /* The exact mapped length, not the user's requested size. */
++   munmap(bo->map, bo->size);
++   bo->map = NULL;
++}
++
++void
++pvr_bo_destroy(int fd, struct pvr_bo *bo)
++{
++   pvr_bo_unmap(bo);
++
++   /* There is no PVR_DESTROY_BO; GEM_CLOSE is the teardown. */
++   if (bo->handle != 0)
++      drmCloseBufferHandle(fd, bo->handle);
++
++   bo->handle = 0;
++   bo->size = 0;
++}
+diff --git a/src/gallium/drivers/pvr/pvr_bo.h b/src/gallium/drivers/pvr/pvr_bo.h
+new file mode 100644
+index 00000000..ae3c3568
+--- /dev/null
++++ b/src/gallium/drivers/pvr/pvr_bo.h
+@@ -0,0 +1,28 @@
++/* Copyright 2026 The Mesa authors
++ * SPDX-License-Identifier: MIT
++ *
++ * Buffer objects, via the same kernel UAPI the Vulkan driver uses.
++ *
++ * Deliberately minimal: create, CPU map, unmap, destroy. This is what a gallium
++ * pipe_resource needs first. GPU address-space mapping (DRM_IOCTL_PVR_VM_MAP) needs
++ * the heap query and a VM context, and is a separate step - none of the four
++ * functions here require it.
++ */
++#ifndef PVR_BO_H
++#define PVR_BO_H
++
++#include <stdbool.h>
++#include <stdint.h>
++
++struct pvr_bo {
++   uint32_t handle; /* GEM handle */
++   uint64_t size;   /* page-aligned size, as created and as mapped */
++   void *map;       /* CPU mapping, NULL while unmapped */
++};
++
++bool pvr_bo_create(int fd, uint64_t size, uint64_t alignment, struct pvr_bo *bo);
++bool pvr_bo_map(int fd, struct pvr_bo *bo);
++void pvr_bo_unmap(struct pvr_bo *bo);
++void pvr_bo_destroy(int fd, struct pvr_bo *bo);
++
++#endif /* PVR_BO_H */
+diff --git a/src/gallium/drivers/pvr/pvr_probe.c b/src/gallium/drivers/pvr/pvr_probe.c
+index d01f26b7..2dde4caa 100644
+--- a/src/gallium/drivers/pvr/pvr_probe.c
++++ b/src/gallium/drivers/pvr/pvr_probe.c
+@@ -1,21 +1,101 @@
+ /* Copyright 2026 The Mesa authors
+  * SPDX-License-Identifier: MIT
+  *
+- * The one runnable check for the skeleton: open the render node, create the
+- * screen, print what it reports. Run against the DRM shim so it needs no GPU:
++ * The runnable checks for the driver: enumerate the device, then prove the buffer
++ * object path actually works (create, map, write, read back, tear down).
++ *
++ * Enumeration needs no GPU - run it against the DRM shim:
+  *
+  *   PVR_SHIM_DEVICE_BVNC=36.56.104.183 \
+  *   LD_PRELOAD=build/src/imagination/drm-shim/libpowervr_noop_drm_shim.so \
+  *   build/src/gallium/drivers/pvr/pvr-probe
++ *
++ * The BO check needs the real open kernel module bound, because the shim does not
++ * implement CREATE_BO/GET_BO_MMAP_OFFSET. There it just runs against
++ * /dev/dri/renderD128 in an X-free window.
+  */
++#include <inttypes.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
+ #include <fcntl.h>
+ 
++#include "pvr_bo.h"
+ #include "pvr_public.h"
+ #include "pipe/p_screen.h"
+ 
++/* Requests a deliberately unaligned size for one of the two so the round-up rule is
++ * exercised: the kernel rejects a size that is not a whole number of device pages
++ * rather than rounding it, so the driver has to do it. */
++#define BO_A_REQUESTED 1000
++#define BO_B_REQUESTED (64 * 1024)
++
++static bool
++bo_roundtrip(int fd)
++{
++   struct pvr_bo a = { 0 }, b = { 0 };
++   bool ok = false;
++
++   if (!pvr_bo_create(fd, BO_A_REQUESTED, 4096, &a) ||
++       !pvr_bo_create(fd, BO_B_REQUESTED, 4096, &b)) {
++      printf("bo:            FAIL: CREATE_BO failed\n");
++      goto out;
++   }
++
++   printf("bo:            created handles %u (%" PRIu64 " bytes, asked %d) and "
++          "%u (%" PRIu64 " bytes)\n",
++          a.handle, a.size, BO_A_REQUESTED, b.handle, b.size);
++
++   if (a.size % 4096 != 0 || a.size < BO_A_REQUESTED) {
++      printf("bo:            FAIL: size not rounded to a device page\n");
++      goto out;
++   }
++
++   if (!pvr_bo_map(fd, &a) || !pvr_bo_map(fd, &b)) {
++      printf("bo:            FAIL: could not map\n");
++      goto out;
++   }
++
++   /* A new object arrives zeroed (the kernel zeroes it on creation), which doubles as
++    * proof that the mapping really is this buffer and not some other window. */
++   for (uint64_t i = 0; i < a.size; i++) {
++      if (((uint8_t *)a.map)[i] != 0) {
++         printf("bo:            FAIL: object not zeroed at byte %" PRIu64 "\n", i);
++         goto out;
++      }
++   }
++
++   memset(a.map, 0xAA, a.size);
++   memset(b.map, 0x55, b.size);
++
++   /* Each mapping is verified over its OWN length - indexing one buffer with the
++    * other's size reads past the end of a smaller mapping, which is a bug in the test
++    * rather than in the driver. Verifying both after both writes still catches aliasing:
++    * if the mmap offsets were confused, b's 0x55 fill would have overwritten a's 0xAA. */
++   for (uint64_t i = 0; i < a.size; i++) {
++      if (((uint8_t *)a.map)[i] != 0xAA) {
++         printf("bo:            FAIL: buffer a wrong at byte %" PRIu64 " (aliased?)\n", i);
++         goto out;
++      }
++   }
++   for (uint64_t i = 0; i < b.size; i++) {
++      if (((uint8_t *)b.map)[i] != 0x55) {
++         printf("bo:            FAIL: buffer b wrong at byte %" PRIu64 " (aliased?)\n", i);
++         goto out;
++      }
++   }
++
++   ok = true;
++
++out:
++   pvr_bo_destroy(fd, &a);
++   pvr_bo_destroy(fd, &b);
++
++   printf("bo:            %s (create, map, read back, unmap, close)\n",
++          ok ? "PASS" : "FAIL");
++   return ok;
++}
++
+ int
+ main(int argc, char **argv)
+ {
+@@ -38,9 +118,15 @@ main(int argc, char **argv)
+    printf("vendor:        %s\n", screen->get_vendor(screen));
+    printf("device vendor: %s\n", screen->get_device_vendor(screen));
+ 
+-   bool pass = strstr(screen->get_name(screen), expect) != NULL;
+-   screen->destroy(screen); /* takes the fd with it */
++   const bool enum_pass = strstr(screen->get_name(screen), expect) != NULL;
++   printf("enumeration:   %s (expected substring %s)\n",
++          enum_pass ? "PASS" : "FAIL", expect);
++
++   /* Before destroying the screen, which closes the fd. */
++   const bool bo_pass = bo_roundtrip(fd);
++
++   screen->destroy(screen);
+ 
+-   printf("enumeration:   %s (expected substring %s)\n", pass ? "PASS" : "FAIL", expect);
+-   return pass ? 0 : 1;
++   printf("--- %s\n", (enum_pass && bo_pass) ? "ALL PASS" : "FAILURES ABOVE");
++   return (enum_pass && bo_pass) ? 0 : 1;
+ }
+-- 
+2.47.3
+

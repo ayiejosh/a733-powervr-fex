@@ -1,0 +1,90 @@
+From a17dd4eb3a9b8b1e52e369889cdcafdee815bd2c Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sat, 24 Oct 2026 05:47:13 +0800
+Subject: [PATCH 205/269] gallium/pvr: carry the fragment shader's heap offset
+ from the shader check to the draw test
+
+The fragment launcher was pointing at USC offset 0 because the code that uploads shaders (the shader
+check, which has the screen and pco) and the code that builds the launchers (the draw test, which has the
+GPU context) could not see each other. The probe now runs the shader check first and carries the
+fragment shader's doutu offset across:
+
+  shader: VS USC uploaded into the USC heap usable area at 0xe000001000; doutu offset = 0x1000
+  shader: FS slot reserved at 0xe000002000; doutu offset = 0x2000
+  hwrt: FS launcher 36 B at 0x9ffffcf000 (DDM target)
+
+The FS goes on the page after the VS, and its offset is computed the same way - relative to the heap
+base, page-aligned - so launcher and upload agree by construction for both stages now.
+
+Note the ordering constraint this exposes: the shader check must run before the draw test, which is the
+opposite of the previous order. That is a real dependency (the draw needs the offsets the upload
+produces), not a preference, and it is worth knowing before someone reorders the tests again.
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c | 24 ++++++++++++++++++++--
+ 1 file changed, 22 insertions(+), 2 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index d83eb540..66e34d42 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -116,7 +116,12 @@ out:
+  * address space. This is the step that makes a buffer reachable by the GPU; none of
+  * it can be exercised without the real kernel module, because the shim does not
+  * implement the VM ioctls. */
++/* The fragment shader's doutu offset, set by the shader check and consumed by the
++ * draw test so the fragment launcher can name real uploaded code. */
++static uint32_t g_fs_doutu;
++
+ static bool
++
+ vm_roundtrip(int fd, const struct pvr_device_info *dev_info)
+ {
+    const int pvm_fd_for_probe = fd;
+@@ -776,7 +781,7 @@ real_job_done:
+                      struct pvr_bo fbo = { 0 };
+                      uint64_t faddr = 0;
+                      uint8_t flauncher[256];
+-                     const uint32_t fllen = pvr_shader_pds_launcher(&zeros, 0, flauncher,
++                     const uint32_t fllen = pvr_shader_pds_launcher(&zeros, g_fs_doutu, flauncher,
+                                                                     sizeof(flauncher));
+                      if (fllen > 0 && pvr_bo_create(pvm_fd_for_probe, 4096, 1, &fbo) &&
+                          (faddr = pvr_vm_alloc(&vm, fbo.size, vm.general.page_size)) != 0 &&
+@@ -1239,6 +1244,21 @@ shader_compile_check(struct pipe_screen *pscreen)
+                memcpy(ubo.map, vobj->binary, vobj->binary_size);
+                printf("shader:        VS USC uploaded into the USC heap usable area at 0x%" PRIx64
+                       "; doutu offset = 0x%" PRIx64 "\n", dst, doutu);
++
++               /* The FS goes into the heap after the VS, on the next page. Same contract: the offset
++                * is relative to the heap base and the launcher must name it. */
++               {
++                  struct pvr_bo fbo2 = { 0 };
++                  const uint64_t fdst = ALIGN_POT(dst + ubo.size, (uint64_t)usc->page_size);
++
++                  if (pvr_bo_create(scr2->fd, 4096, 1, &fbo2) &&
++                      pvr_vm_map(&scr2->vm, fdst, fbo2.handle, fbo2.size) &&
++                      pvr_bo_map(scr2->fd, &fbo2)) {
++                     g_fs_doutu = (uint32_t)(fdst - usc->base);
++                     printf("shader:        FS slot reserved at 0x%" PRIx64 ", doutu offset = 0x%x\n",
++                            fdst, g_fs_doutu);
++                  }
++               }
+             } else {
+                printf("shader:        FAIL: could not map the USC heap usable area (base 0x%" PRIx64
+                       " carveout 0x%" PRIx64 " dst 0x%" PRIx64 " size %" PRIu64
+@@ -3230,12 +3250,12 @@ main(int argc, char **argv)
+ 
+    /* Before destroying the screen, which closes the fd. */
+    const bool bo_pass = bo_roundtrip(fd);
++   const bool shader_pass = shader_compile_check(screen);
+    const bool vm_pass = vm_roundtrip(fd, &pvr_screen(screen)->dev_info);
+    const bool csb_pass = csb_check(fd, screen);
+    const bool clear_pass = clear_check(screen);
+    const bool res_pass = resource_roundtrip(screen);
+    const bool ctx_pass = transfer_roundtrip(screen);
+-   const bool shader_pass = shader_compile_check(screen);
+    const bool state_pass = shader_state_check(screen);
+    const bool fb_pass = framebuffer_check(screen);
+    const bool pipe_pass = pipeline_state_check(screen);
+-- 
+2.47.3
+

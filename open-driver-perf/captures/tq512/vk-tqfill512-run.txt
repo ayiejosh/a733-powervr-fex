@@ -1,0 +1,9 @@
+MESA: warning: ../src/imagination/vulkan/winsys/powervr/pvr_drm.c:352: FINISHME: Core count fetching is unimplemented. Setting 1 for now.
+WARNING: powervr is not a conformant Vulkan implementation, testing use only.
+TRANSFER_ADDR dst=0x80000b1000 w=2048 h=128 layout=1 sources=0
+PVR_DUMP_TRANSFER_STREAM: wrote 176 bytes to /home/radxa/vk-tqfill512.bin
+device: PowerVR B-Series BXM-4-64 MC1
+fill buffer device address: 0x0
+fence wait: 0
+fill: 262144 dwords, changed=1, mismatched=0, first=0xdeadbeef
+RESULT: PASS

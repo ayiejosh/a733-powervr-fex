@@ -1,0 +1,56 @@
+[135065.500707] [     T66] audit: type=1106 audit(1792857253.201:16193): pid=1503380 uid=1000 auid=1000 ses=1 msg='op=PAM:session_close grantors=pam_limits,pam_permit,pam_umask,pam_unix acct="root" exe="/usr/bin/sudo" hostname=? addr=? terminal=? res=success'
+[135065.500886] [     T66] audit: type=1104 audit(1792857253.205:16194): pid=1503380 uid=1000 auid=1000 ses=1 msg='op=PAM:setcred grantors=pam_permit acct="root" exe="/usr/bin/sudo" hostname=? addr=? terminal=? res=success'
+[135065.521350] [T1503383] PVRDBG: open
+[135065.521398] [T1503383] PVRDBG: postclose
+[135065.521419] [T1503383] PVRDBG: open
+[135065.521436] [T1503383] PVRDBG: postclose
+[135065.521511] [T1503383] PVRDBG: open
+[135065.521593] [T1503383] PVRDBG: ioctl dev_query
+[135065.521599] [T1503383] PVRDBG: dev_query gpu_info enter
+[135065.521602] [T1503383] PVRDBG: dev_query gpu_info phantoms=1
+[135065.521608] [T1503383] PVRDBG: ioctl create_vm_context
+[135065.521731] [T1503383] PVRDBG: ioctl dev_query
+[135065.521738] [T1503383] PVRDBG: ioctl dev_query
+[135065.521744] [T1503383] PVRDBG: ioctl dev_query
+[135065.521748] [T1503383] PVRDBG: ioctl dev_query
+[135065.522126] [T1503383] PVRDBG: ioctl dev_query
+[135065.522134] [T1503383] PVRDBG: ioctl dev_query
+[135065.522140] [T1503383] PVRDBG: ioctl dev_query
+[135065.522214] [T1503383] PVRDBG: ioctl dev_query
+[135065.522217] [T1503383] PVRDBG: dev_query gpu_info enter
+[135065.522220] [T1503383] PVRDBG: dev_query gpu_info phantoms=1
+[135065.522225] [T1503383] PVRDBG: ioctl dev_query
+[135065.524739] [T1503383] PVRDBG: open
+[135065.524794] [T1503383] PVRDBG: ioctl dev_query
+[135065.524798] [T1503383] PVRDBG: dev_query gpu_info enter
+[135065.524800] [T1503383] PVRDBG: dev_query gpu_info phantoms=1
+[135065.524807] [T1503383] PVRDBG: ioctl create_vm_context
+[135065.524973] [T1503383] PVRDBG: ioctl dev_query
+[135065.524983] [T1503383] PVRDBG: ioctl dev_query
+[135065.524988] [T1503383] PVRDBG: ioctl dev_query
+[135065.524992] [T1503383] PVRDBG: ioctl dev_query
+[135065.525886] [T1503383] PVRDBG: ioctl create_free_list
+[135065.547387] [T1503383] PVRDBG: ioctl create_context
+[135065.548179] [T1503383] PVRDBG: ioctl create_context
+[135065.548441] [T1503383] PVRDBG: ioctl create_context
+[135065.548777] [T1503383] PVRDBG: ioctl create_context
+[135065.554423] [T1503383] PVRDBG: ioctl create_free_list
+[135065.554642] [T1503383] PVRDBG: ioctl create_hwrt_dataset
+[135065.555087] [T1503388] powervr 1800000.gpu: PVRDBGPROBE: run job type=0 ctx=3996145536 hwrt=1 paired=1 chained=1 cmd_len=112 ccb_type=716996809
+[135065.555114] [T1503388] powervr 1800000.gpu: PVRDBGCMD: type=0 len=112: 00000000 c0088000 00000000 00000000 003bf000 00000080 0001c400 00000020 00000000 00000000 00000000 00000202 00020000 00000000 20010000 00000000 00000000 00000000 00000000 00000000 00000003 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+[135065.555133] [T1503388] powervr 1800000.gpu: PVRDBGPROBE: combined kick geom_cctx=c0085000 geom_woff=000000c8 frag_cctx=c0085098 frag_woff=00000268 pr=1 frag_hwrt=0
+[135065.555157] [T1503389] powervr 1800000.gpu: PVRDBGPROBE: run job type=1 ctx=3996145536 hwrt=1 paired=1 chained=0 cmd_len=480 ccb_type=716996812
+[135065.555178] [T1503389] powervr 1800000.gpu: PVRDBGCMD: type=1 len=480: 00000000 c0088000 00000000 00000000 00007ff8 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 3f800000 000003ff 00000000 00000000 80035000 00000000 00000201 00000000 00000000 00002940 00000000 00000000 00000000 00000000 00000000
+[135065.555186] [T1503389] powervr 1800000.gpu: PVRDBGPROBE: run: paired frag skipped (done fence already initialized)
+[135065.555193] [T1503389] powervr 1800000.gpu: PVRDBGPROBE: run job type=1 ctx=3996145536 hwrt=1 paired=0 chained=1 cmd_len=480 ccb_type=716996811
+[135065.555208] [T1503389] powervr 1800000.gpu: PVRDBGCMD: type=1 len=480: 00000000 c0088000 00000000 00000000 00007ff8 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 3f800000 000003ff 00000000 00000000 80035000 00000000 00000201 00000000 00000000 00002940 00000000 00000000 00000000 00000000 00000000
+[135065.555215] [T1503389] powervr 1800000.gpu: PVRDBGPROBE: run: paired frag skipped (done fence already initialized)
+[135065.555686] [T1503385] powervr 1800000.gpu: PVRDBGPROBE: run job type=3 ctx=3996145280 hwrt=0 paired=0 chained=0 cmd_len=192 ccb_type=716996810
+[135065.555705] [T1503385] powervr 1800000.gpu: PVRDBGCMD: type=3 len=192: 00000000 00000000 00000200 00007ff8 00000000 00000000 00000000 00000000 00200020 00000000 00025000 00000000 00000000 00000202 00002a60 00002a40 00000003 00000000 01ff01ff 00000000 00041000 00001e40 00000000 00002a00 00010001 01000000 00000000 00000000
+[135065.555716] [T1503385] powervr 1800000.gpu: PVRDBGPROBE: kick cctx=c0031000 woff=00000118 wrap=00007fff hwrt=0
+[135065.578349] [T1503383] PVRDBG: postclose
+[135065.581553] [T1503383] PVRDBG: postclose
+[135065.607876] [     T66] audit: type=1101 audit(1792857253.309:16195): pid=1503391 uid=1000 auid=1000 ses=1 msg='op=PAM:accounting grantors=pam_permit acct="radxa" exe="/usr/bin/sudo" hostname=? addr=? terminal=? res=success'
+[135065.609255] [     T66] audit: type=1123 audit(1792857253.313:16196): pid=1503391 uid=1000 auid=1000 ses=1 msg='cwd="/home/radxa/open-perf" cmd="dmesg" exe="/usr/bin/sudo" terminal=? res=success'
+[135065.610667] [     T66] audit: type=1110 audit(1792857253.313:16197): pid=1503391 uid=1000 auid=1000 ses=1 msg='op=PAM:setcred grantors=pam_permit,pam_cap acct="root" exe="/usr/bin/sudo" hostname=? addr=? terminal=? res=success'
+[135065.610904] [     T66] audit: type=1105 audit(1792857253.313:16198): pid=1503391 uid=1000 auid=1000 ses=1 msg='op=PAM:session_open grantors=pam_limits,pam_permit,pam_umask,pam_unix acct="root" exe="/usr/bin/sudo" hostname=? addr=? terminal=? res=success'

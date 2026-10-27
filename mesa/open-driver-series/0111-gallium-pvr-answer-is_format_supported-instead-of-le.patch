@@ -1,0 +1,72 @@
+From ebba60699bf418c33f4a22f3fa5875b48630bb34 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 05:39:41 +0800
+Subject: [PATCH 111/269] gallium/pvr: answer is_format_supported instead of
+ leaving it NULL
+
+The state tracker calls is_format_supported unconditionally in a 32-format loop
+while building its tables, so a NULL hook made every client that selected this
+driver die with SIGSEGV inside st_init_extensions(). Located exactly rather than
+guessed: the faulting instruction is `ldr x7, [x24, #1800]; blr x7`, and
+offsetof(struct pipe_screen, is_format_supported) is 1800.
+
+The answer is false - none - and that is the honest one. There is no resource
+management yet (explicitly out of scope for this milestone); claiming formats
+here would have the state tracker build tables for resources this driver cannot
+create, moving the failure somewhere less honest rather than removing it.
+
+Effect, verified with a real client under the drm-shim:
+
+  before: enumerated, then SIGSEGV (exit 139)
+  after:  enumerated, then "egl: failed to create dri2 screen" / "eglInitialize()
+          failed" (exit 255)
+
+So the opt-in path is no longer dangerous to a client, which is what the
+PVR_NATIVE_GL gate was protecting against. The default path is untouched:
+without the variable, powervr still resolves to zink and no pvr line appears.
+
+This is the ceiling of the milestone's scope. The next thing the driver needs is
+resource management, which these rounds exclude, so it cannot get further without
+leaving that scope.
+---
+ src/gallium/drivers/pvr/pvr_screen.c | 17 +++++++++++++++++
+ 1 file changed, 17 insertions(+)
+
+diff --git a/src/gallium/drivers/pvr/pvr_screen.c b/src/gallium/drivers/pvr/pvr_screen.c
+index cae6ba84..719daffd 100644
+--- a/src/gallium/drivers/pvr/pvr_screen.c
++++ b/src/gallium/drivers/pvr/pvr_screen.c
+@@ -49,6 +49,22 @@ pvr_get_device_vendor(struct pipe_screen *pscreen)
+    return "Imagination Technologies";
+ }
+ 
++/* The state tracker calls this unconditionally while building its format tables,
++ * so it has to exist. The answer is "none": there is no resource management yet
++ * (explicitly out of scope for this milestone), and claiming support here would
++ * have the tracker build tables for resources this driver cannot create. Lying
++ * would move the failure somewhere less honest. */
++static bool
++pvr_is_format_supported(UNUSED struct pipe_screen *pscreen,
++                        UNUSED enum pipe_format format,
++                        UNUSED enum pipe_texture_target target,
++                        UNUSED unsigned sample_count,
++                        UNUSED unsigned storage_sample_count,
++                        UNUSED unsigned bindings)
++{
++   return false;
++}
++
+ static void
+ pvr_destroy_screen(struct pipe_screen *pscreen)
+ {
+@@ -108,6 +124,7 @@ pvr_screen_create(int fd, const struct pipe_screen_config *config,
+    screen->base.get_name = pvr_get_name;
+    screen->base.get_vendor = pvr_get_vendor;
+    screen->base.get_device_vendor = pvr_get_device_vendor;
++   screen->base.is_format_supported = pvr_is_format_supported;
+ 
+    return &screen->base;
+ }
+-- 
+2.47.3
+

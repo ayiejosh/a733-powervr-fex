@@ -1,0 +1,74 @@
+From 8ea2504a0598bb0e47321c782047335a98abcb22 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Mon, 26 Oct 2026 01:50:39 +0800
+Subject: [PATCH 254/269] gallium/pvr: compute replay now completes on hardware
+ (no HWR); shader stores still missing
+
+Extend the reconstructed USC page to 0x1000..0x7fff so the compute shader's real program at USC+0x7200
+(captured, 408 bytes) is present: the CDM kick's MMU fault at 0x7200 is gone and the firmware now logs
+"Kick Compute" -> EVENT_STATUS=0x4 -> "Compute finished" with a UFO update - the native compute job
+completes on hardware with no lock-up. The target still reads back untouched, so the remaining gap is that
+the USC shader task does not run or its stores do not land (all reconstructed buffers - target, descriptor
+page, control stream, context state, PDS and USC pages - are still unchanged after the job).
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c | 30 ++++++++++++++++++++--
+ 1 file changed, 28 insertions(+), 2 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index bba81075..5cafb996 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -4365,7 +4365,7 @@ cdm_draw_check(int fd, struct pipe_screen *pscreen)
+ 
+    /* PDS programs: kernel program, fence program, descriptor data (all captured offsets >= 0x1000). */
+    if (cdm_map_at(fd, vm, pds_heap->base + 0x1000, 0x3000, &pds_bo) == NULL ||
+-       cdm_map_at(fd, vm, usc_heap->base + 0x1000, 0x2000, &usc_bo) == NULL) {
++       cdm_map_at(fd, vm, usc_heap->base + 0x1000, 0x7000, &usc_bo) == NULL) {
+       printf("cdm:           FAIL: cannot map the PDS/USC program pages\n");
+       goto out_ctx;
+    }
+@@ -4397,7 +4397,7 @@ cdm_draw_check(int fd, struct pipe_screen *pscreen)
+          free(desc_text);
+       }
+    }
+-   cdm_parse_programs(dir, "usc.txt", usc_bo.map, 0x1000, 0x2000, true);
++   cdm_parse_programs(dir, "usc.txt", usc_bo.map, 0x1000, 0x7000, true);
+ 
+    printf("cdm:           replaying captured compute job (fw stream %u B, ctrl stream @0x%llx, "
+           "state @0x%llx, programs installed)\n", fw_len, (unsigned long long)ctrl_addr,
+@@ -4430,6 +4430,32 @@ cdm_draw_check(int fd, struct pipe_screen *pscreen)
+       }
+       printf("cdm:           readback inside=%u outside=%u zero=%u (waited %u us, target 0x%llx)\n",
+              inside, outside, zeros, waited_us, (unsigned long long)target_addr);
++      {
++         struct {
++            const char *name;
++            const void *map;
++            uint32_t size;
++         } areas[] = {
++            { "target", target_bo.map, target_size },
++            { "desc page", descset_bo.map, 4096 },
++            { "ctrl stream", ctrl_bo.map, (ctrl_len + 0xfff) & ~0xfffu },
++            { "ctx state", state_bo.map, 4096 },
++            { "border table", border_bo.map, 4096 },
++            { "pds page", pds_bo.map, 0x3000 },
++            { "usc page", usc_bo.map, 0x7000 },
++         };
++         unsigned i;
++
++         for (i = 0; i < ARRAY_SIZE(areas); i++) {
++            const uint32_t *w = areas[i].map;
++            uint32_t j, nz = 0, words = areas[i].size / 4;
++
++            for (j = 0; j < words; j++)
++               if (w[j])
++                  nz++;
++            printf("cdm:           %s: %u/%u nonzero dwords\n", areas[i].name, nz, words);
++         }
++      }
+       ok = inside > 1000 && outside > 1000;
+       if (ok) {
+          const uint32_t *p = px;
+-- 
+2.47.3
+

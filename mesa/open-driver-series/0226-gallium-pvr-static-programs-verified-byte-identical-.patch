@@ -1,0 +1,125 @@
+From c77824c1939c909b3dfde6114c8a6cf3ed4ca2a0 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sun, 25 Oct 2026 01:18:56 +0800
+Subject: [PATCH 226/269] gallium/pvr: static programs verified byte-identical
+ to the reference; HWRT BO flags aligned
+
+Round-ten evidence while chasing the remaining TA timeout (the MMU fault itself is fixed):
+
+- Dumped the three static firmware programs this driver writes (PDS VDM sync at PDS+0, USC
+  VS_NOP binary at USC+0, PDS pixel-event code at PDS+0x80) and the working Vulkan driver's
+  equivalents from the winsys helper (temporary dump, reverted). They are BYTE-IDENTICAL, so the
+  static programs are not the problem any more.
+- HWRT buffer flags now match the reference: free lists and the PM mlist are PM_FW_PROTECT, the
+  TPC/vheap/macrotile/region-header buffers have no CPU access (reference uses flag 0). Behaviour
+  unchanged, but the memory is now described the way the PM expects.
+- New bisect: PVR_PROBE_MINIMAL_GEOM submits the geometry stream with a STREAM_TERMINATE-only
+  control stream as the very first job. It still times out: the firmware prints
+  "Kick TA: ... First kick:1, Last kick:1" and then no TA event at all, while the reference's
+  identical kick produces "Irq Task (EVENT_STATUS=0x00000020)" and "TA finished" within ~120 ticks.
+  So the TA never starts/finishes for our job even with nothing but a terminate in its stream.
+- Diagnostics: PVR_DUMP_STATIC (static program bytes), PVR_DUMP_TA now also dumps the terminate
+  block, PVR_PROBE_MINIMAL_GEOM, and the per-heap static data area log.
+
+Next: the TA state block's PDS values are the only remaining difference in hardware-visible state
+(ours 0x3000/0x0/0x0 for SHADERBASE/TEXUNICODE/UNIFORM vs the reference's 0x2900/0x2780/0x28c0,
+which point at dedicated nop programs and descriptor state). Building the reference's nop program
+(pvr_device_init_nop_program: pco FS_NOP + pvr_pds_generate_pixel_shader_program) and pointing those
+bases at it is the next experiment.
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c | 57 +++++++++++++++++++---
+ 1 file changed, 50 insertions(+), 7 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index c29b3300..ad715b63 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -421,6 +421,22 @@ vm_roundtrip(int fd, struct pipe_screen *pscreen)
+          }
+       }
+ 
++      if (getenv("PVR_DUMP_STATIC")) {
++         const uint64_t pds_sync = vm->offsets[DRM_PVR_HEAP_PDS_CODE_DATA].vdm_sync;
++         const uint64_t pds_eot = vm->offsets[DRM_PVR_HEAP_PDS_CODE_DATA].eot;
++         const uint64_t usc_sync = vm->offsets[DRM_PVR_HEAP_USC_CODE].vdm_sync;
++
++         printf("OURSTATIC: pds_vdm_sync at 0x%" PRIx64 ":", pds_sync);
++         for (unsigned i = 0; i < 128; i++)
++            printf(" %02x", ((const uint8_t *)sm.map[1])[pds_sync + i]);
++         printf("\nOURSTATIC: usc_vdm_sync at 0x%" PRIx64 ":", usc_sync);
++         for (unsigned i = 0; i < 128; i++)
++            printf(" %02x", ((const uint8_t *)sm.map[2])[usc_sync + i]);
++         printf("\nOURSTATIC: pds_eot at 0x%" PRIx64 ":", pds_eot);
++         for (unsigned i = 0; i < 128; i++)
++            printf(" %02x", ((const uint8_t *)sm.map[1])[pds_eot + i]);
++         printf("\n");
++      }
+       printf("vm:            firmware programs: VDM sync verified at the kernel's USC "
+              "vdm_sync offset, PDS launcher and pixel-event programs generated "
+              "(%u bytes counted)\n", sm.program_bytes);
+@@ -596,10 +612,22 @@ vm_roundtrip(int fd, struct pipe_screen *pscreen)
+          struct pvr_bo *bos[11] = { &flbo[0], &flbo[1], &tpcbo, &vhbo, &mlibo, &mtabo, &rgnbo, &mli2, &mta2, &rgn2, &rtcbo };
+          uint64_t *ads[11] = { &fladdr[0], &fladdr[1], &tpcaddr, &vhaddr, &mliaddr, &mtaaddr, &rgnaddr, &mli2addr, &mta2addr, &rgn2addr, &rtcaddr };
+ 
++         /* Device-only HWRT memory, with the same flags the reference gives it: the free lists and
++          * the PM mlist are PM_FW_PROTECT (the PM writes them; userspace must not), and the TPC,
++          * vheap, macrotile-array and region-header buffers need no CPU access at all
++          * (PVR_RT_DATA_BO_FLAGS is 0 in the reference). */
++         static const uint64_t hwrt_flags[11] = {
++            DRM_PVR_BO_PM_FW_PROTECT, DRM_PVR_BO_PM_FW_PROTECT, /* free lists */
++            0, 0,                                               /* tpc, vheap */
++            DRM_PVR_BO_PM_FW_PROTECT,                           /* pm mlist */
++            0, 0,                                               /* macrotile array, rgn headers */
++            DRM_PVR_BO_PM_FW_PROTECT,                           /* pm mlist 2 */
++            0, 0,                                               /* macrotile array 2, rgn headers 2 */
++            0,                                                  /* rtc */
++         };
++
+          for (unsigned i = 0; i < 11; i++) {
+-            /* Free lists are PM firmware protected: no userspace CPU access, and the PM flag set. */
+-            const uint64_t flags = (i < 2) ? DRM_PVR_BO_PM_FW_PROTECT
+-                                           : DRM_PVR_BO_ALLOW_CPU_USERSPACE_ACCESS;
++            const uint64_t flags = hwrt_flags[i];
+             if (!pvr_bo_create_flags(pvm_fd_for_probe, sz[i], 1, flags, bos[i])) { okb = false; break; }
+             *ads[i] = pvr_vm_alloc(vm, bos[i]->size, vm->general.page_size);
+             if (!*ads[i] || !pvr_vm_map(vm, *ads[i], bos[i]->handle, bos[i]->size)) { okb = false; break; }
+@@ -1087,6 +1115,13 @@ real_job_done:
+                                     printf(" %08x", aw[i]);
+                                  printf("\n");
+                               }
++                              if (getenv("PVR_DUMP_TA")) {
++                                 const uint32_t *tw = (const uint32_t *)tbo.map;
++                                 printf("OURTERM: terminate block:");
++                                 for (unsigned i = 0; i < 8; i++)
++                                    printf(" %08x", tw[i]);
++                                 printf("\n");
++                              }
+                               printf("hwrt:          draw stream: TA block (%u w) + VDM state "
+                                      "(%u dw) + 3 indices + terminate; first dwords:",
+                                      pvr_csb_size(&block) / 4, vdm_words);
+@@ -1134,10 +1169,18 @@ real_job_done:
+                   printf("\n");
+                }
+ 
+-               /* Round-9 bisect: the same geometry stream alone. If this completes, the geometry
+-                * phase is sound and the fault seen with the combined kick comes from the fragment
+-                * side (its PDS background-program words are still zero). */
+-               if (getenv("PVR_PROBE_GEOM_ONLY")) {
++               /* Round-10 bisect: a geometry job whose control stream is only STREAM_TERMINATE.
++                * If even this times out, the TA fails before it reads any of our draw state. */
++               if (getenv("PVR_PROBE_MINIMAL_GEOM")) {
++                  uint32_t *ctl_words = rctl.map;
++                  bool gdone;
++
++                  ctl_words[0] = 0xc0000000u; /* STREAM_TERMINATE */
++                  gdone = pvr_job_submit_geom_sync(vm, gpu_ctx.handle, gstream, glen,
++                                                   dset_handle, 0, 2000);
++                  printf("hwrt:          minimal geometry job (terminate-only control) %s\n",
++                         gdone ? "COMPLETED" : "did not complete in 2 s");
++               } else if (getenv("PVR_PROBE_GEOM_ONLY")) {
+                   const bool gdone = pvr_job_submit_geom_sync(vm, gpu_ctx.handle, gstream, glen,
+                                                               dset_handle, 0, 2000);
+ 
+-- 
+2.47.3
+

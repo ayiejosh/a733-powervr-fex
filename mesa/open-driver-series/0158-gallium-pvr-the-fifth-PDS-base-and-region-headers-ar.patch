@@ -1,0 +1,84 @@
+From 8cd2a50505d96672ab3600c4b4cec6f285a5a66a Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sat, 17 Oct 2026 09:49:32 +0800
+Subject: [PATCH 158/269] gallium/pvr: the fifth PDS base, and region headers
+ are an allocation not content
+
+  csb: TA PDS bases: all five fit bits[4:31] and round-trip; a 40-bit address refused on each
+  --- ALL PASS        (real open kernel)
+
+TEXUNICODEBASE joined the other four PDS bases through the same path, with its window checked in
+the generated header rather than assumed from its siblings - it is [4:31] like them, which is now
+verified rather than likely.
+
+And a correction to round 18's plan note. That entry said the region header "belongs with
+render-target state emission, not the generated-packet layer", which sent the next reader looking
+for raw dwords to emit. There are none: pvr_arch_job_render.c states plainly that "Render target
+data (vheap/RTC, TPC, MTA, MList, region headers) is only accessed by the device (written by the
+TA/PM, read back by the ISP)". The driver RESERVES space for region headers per tile group; the
+hardware writes them.
+
+So the driver-side piece is an allocation size, not content - pvr_rt_get_isp_region_size() - and it
+needs per-tile geometry (tiles per mtile, mtiles per target) that this driver does not compute yet,
+because no render-target state exists. Doing it now would mean building the mtile calculator before
+the state it is computed from: the wrong order, so it waits.
+---
+ src/gallium/drivers/pvr/pvr_csb.c   | 7 +++++++
+ src/gallium/drivers/pvr/pvr_csb.h   | 1 +
+ src/gallium/drivers/pvr/pvr_probe.c | 3 ++-
+ 3 files changed, 10 insertions(+), 1 deletion(-)
+
+diff --git a/src/gallium/drivers/pvr/pvr_csb.c b/src/gallium/drivers/pvr/pvr_csb.c
+index 8e4ea4a8..104f1d8a 100644
+--- a/src/gallium/drivers/pvr/pvr_csb.c
++++ b/src/gallium/drivers/pvr/pvr_csb.c
+@@ -409,6 +409,13 @@ pvr_csb_emit_ta_pds_base(struct pvr_csb *csb, enum pvr_pds_base which, uint64_t
+       ROGUE_TA_STATE_PDS_UNIFORMDATABASE_pack(dw, &v);
+       return true;
+    }
++   case PVR_PDS_BASE_TEXUNICODE: {
++      struct ROGUE_TA_STATE_PDS_TEXUNICODEBASE v = { .addr = addr };
++      uint32_t *dw = pvr_csb_emit(csb, ROGUE_TA_STATE_PDS_TEXUNICODEBASE_length);
++      if (dw == NULL) return false;
++      ROGUE_TA_STATE_PDS_TEXUNICODEBASE_pack(dw, &v);
++      return true;
++   }
+    }
+ 
+    return false;
+diff --git a/src/gallium/drivers/pvr/pvr_csb.h b/src/gallium/drivers/pvr/pvr_csb.h
+index 6b2fc119..08794327 100644
+--- a/src/gallium/drivers/pvr/pvr_csb.h
++++ b/src/gallium/drivers/pvr/pvr_csb.h
+@@ -350,6 +350,7 @@ enum pvr_pds_base {
+    PVR_PDS_BASE_VARYING,
+    PVR_PDS_BASE_TEXTUREDATA,
+    PVR_PDS_BASE_UNIFORMDATA,
++   PVR_PDS_BASE_TEXUNICODE,
+ };
+ 
+ bool pvr_csb_emit_ta_pds_base(struct pvr_csb *csb, enum pvr_pds_base which, uint64_t addr);
+diff --git a/src/gallium/drivers/pvr/pvr_probe.c b/src/gallium/drivers/pvr/pvr_probe.c
+index 9fe74039..8b8283f0 100644
+--- a/src/gallium/drivers/pvr/pvr_probe.c
++++ b/src/gallium/drivers/pvr/pvr_probe.c
+@@ -1752,6 +1752,7 @@ csb_check(int fd, struct pipe_screen *pscreen)
+             { PVR_PDS_BASE_VARYING, "varying", ROGUE_TA_STATE_PDS_VARYINGBASE_length },
+             { PVR_PDS_BASE_TEXTUREDATA, "texturedata", ROGUE_TA_STATE_PDS_TEXTUREDATABASE_length },
+             { PVR_PDS_BASE_UNIFORMDATA, "uniformdata", ROGUE_TA_STATE_PDS_UNIFORMDATABASE_length },
++            { PVR_PDS_BASE_TEXUNICODE, "texunicode", ROGUE_TA_STATE_PDS_TEXUNICODEBASE_length },
+          };
+          const uint64_t prog = 0x00400000ULL; /* fits bits [4:31] */
+ 
+@@ -1773,7 +1774,7 @@ csb_check(int fd, struct pipe_screen *pscreen)
+             }
+          }
+ 
+-      printf("csb:           TA PDS bases: all four fit bits[4:31] and round-trip; a 40-bit "
++      printf("csb:           TA PDS bases: all five fit bits[4:31] and round-trip; a 40-bit "
+              "address refused on each rather than truncated\n");
+       }
+ 
+-- 
+2.47.3
+

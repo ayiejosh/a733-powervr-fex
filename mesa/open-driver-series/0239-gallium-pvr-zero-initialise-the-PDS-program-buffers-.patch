@@ -1,0 +1,47 @@
+From e13be3266153dfa640af84b47ff5ca95733d0674 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sun, 25 Oct 2026 06:09:14 +0800
+Subject: [PATCH 239/269] gallium/pvr: zero-initialise the PDS program buffers
+ before generation
+
+The fragment/vertex PDS program generators only write the constants and instructions they know
+about; the rest of the buffer was uninitialised stack memory (the reference driver's staging buffers
+come from vk_alloc, which zero-fills). The fragment launcher now contains a clean data segment
+(`00002000 00000008 00000000 00000000 00000000 00000000 00000000 00000000` + DOUTU `f4000002`)
+instead of garbage like `88521000 0000ffff f86fedc0 0000aaaa`.
+
+This does not by itself fix the TA stall (tested on hardware), but it removes a real source of
+nondeterministic hardware input.
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c | 8 ++++++--
+ 1 file changed, 6 insertions(+), 2 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index e4dfaf35..236a2bcc 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -1998,7 +1998,7 @@ shader_compile_check(struct pipe_screen *pscreen)
+        * heap base, exactly as the captured draw's are. */
+       if (ok && pds->size != 0) {
+          uint64_t pds_next = probe_heap_usable_page(pds);
+-         uint8_t vprog[1024], vdata[256];
++         uint8_t vprog[1024] = { 0 }, vdata[256] = { 0 };
+          const uint32_t vlen = pvr_shader_vertex_program(&scr->dev_info, vprog, sizeof(vprog),
+                                                          12, 12, 0, &g_vertex_prog_info);
+          const uint32_t dlen = vlen > 0
+@@ -2042,7 +2042,11 @@ shader_compile_check(struct pipe_screen *pscreen)
+          /* The fragment stage's PDS program: the kick program the TA runs at pixel stage, generated
+           * data+code contiguous and named by the TA state's SHADERBASE. */
+          if (ok) {
+-            uint8_t fprog[1024];
++            /* The launcher only writes the constants it knows about; the rest of the data
++             * segment must be zero, exactly like the reference (its staging buffer comes from
++             * vk_alloc, which zero-fills). A garbage data segment is something the hardware
++             * walks and stalls on. */
++            uint8_t fprog[1024] = { 0 };
+             struct pvr_bo fpo = { 0 };
+             const uint32_t flen = pvr_shader_pds_launcher(g_fs_shader, g_fs_usc_offset, fprog,
+                                                           sizeof(fprog), &g_fs_prog_info);
+-- 
+2.47.3
+

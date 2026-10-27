@@ -1,0 +1,341 @@
+From 4a3f5980656dff5528aed9eb972d00f6ae8b801a Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 15:11:58 +0800
+Subject: [PATCH 122/269] gallium/pvr: the control stream builder, reusing
+ csbgen's packet layouts
+
+The first piece of the command stream: a writer that reserves slots in a buffer the
+GPU will execute, with the packet layouts coming from csbgen - the same generator the
+Vulkan driver uses - rather than being restated here.
+
+  csb: packet at the right slot (word 0xffff0000), readback matches the generated
+       pack/unpack, 4096 bytes fills exactly, one more word refused
+  csb: PASS
+
+csbgen gives a field struct plus a pack AND an unpack per packet, generated from
+csbgen/rogue/*.xml. That unpacker is what makes the check meaningful: the packet is
+written into the buffer, then read back out of the buffer with the generated reader,
+which is reading the memory the GPU would read. dep_csbgen carries the include path,
+and the helpers need __pvr_address_type/__pvr_get_address/__pvr_make_address defined
+first - device addresses are plain uint64_t here, so they pass through.
+
+Overflow is refused rather than truncated. This is not defensive habit: the GPU
+executes this stream, so overrunning it corrupts whatever follows in the buffer,
+silently, at draw time, on hardware. A userspace NULL is a far better failure. The
+check exercises the boundary in both directions - filling the buffer exactly must
+succeed, and one word more must fail without changing the stream.
+
+A test assumption worth recording, because it was mine and not the writer's:
+PBESTATE_STATE_WORD0 carries only the LOW word of a split framebuffer address, so a
+36-bit address does not survive one word. The first version of the check asserted the
+full address round-tripped and failed against correct code. It now compares the
+generated pack/unpack round-trip, which is what this component can actually vouch for.
+
+Not done: nothing emits a control stream in anger. There is no job description and no
+SUBMIT_JOBS, so this is a verified component with no caller yet.
+---
+ src/gallium/drivers/pvr/meson.build |   4 +-
+ src/gallium/drivers/pvr/pvr_csb.c   |  56 ++++++++++++++
+ src/gallium/drivers/pvr/pvr_csb.h   |  62 ++++++++++++++++
+ src/gallium/drivers/pvr/pvr_probe.c | 110 +++++++++++++++++++++++++++-
+ 4 files changed, 230 insertions(+), 2 deletions(-)
+ create mode 100644 src/gallium/drivers/pvr/pvr_csb.c
+ create mode 100644 src/gallium/drivers/pvr/pvr_csb.h
+
+diff --git a/src/gallium/drivers/pvr/meson.build b/src/gallium/drivers/pvr/meson.build
+index 2683bed5..a7311d9c 100644
+--- a/src/gallium/drivers/pvr/meson.build
++++ b/src/gallium/drivers/pvr/meson.build
+@@ -7,6 +7,7 @@
+ files_pvr = files(
+   'pvr_bo.c',
+   'pvr_context.c',
++  'pvr_csb.c',
+   'pvr_resource.c',
+   'pvr_shader.c',
+   'pvr_vm.c',
+@@ -21,7 +22,8 @@ libpvr = static_library(
+   # libpowervr_common: src/imagination/common - the .pdsc-generated device tables.
+   # libpowervr_compiler: pco - the NIR-based PowerVR compiler, ~25k lines, the
+   # same one the Vulkan driver uses. Linked here rather than rewritten.
+-  dependencies : [idep_mesautil, idep_nir_headers, dep_libdrm, idep_pco_pygen, idep_pco_usclib, idep_pco_uscgen_programs_headers],
++  dependencies : [idep_mesautil, idep_nir_headers, dep_libdrm, dep_csbgen, idep_pco_pygen, idep_pco_usclib,
++                  idep_pco_uscgen_programs_headers],
+   link_with : [libpowervr_common, libpowervr_compiler, libpowervr_uscgen],
+ )
+ 
+diff --git a/src/gallium/drivers/pvr/pvr_csb.c b/src/gallium/drivers/pvr/pvr_csb.c
+new file mode 100644
+index 00000000..3bb40627
+--- /dev/null
++++ b/src/gallium/drivers/pvr/pvr_csb.c
+@@ -0,0 +1,56 @@
++/* Copyright 2026 The Mesa authors
++ * SPDX-License-Identifier: MIT
++ */
++#include "pvr_csb.h"
++
++void
++pvr_csb_init(struct pvr_csb *csb, void *map, uint32_t size_bytes)
++{
++   csb->start = map;
++   csb->cur = map;
++   csb->end = csb->start + size_bytes / sizeof(uint32_t);
++   csb->overflowed = false;
++}
++
++void
++pvr_csb_reset(struct pvr_csb *csb)
++{
++   csb->cur = csb->start;
++   csb->overflowed = false;
++}
++
++uint32_t *
++pvr_csb_emit(struct pvr_csb *csb, uint32_t words)
++{
++   uint32_t *dst;
++
++   if (words == 0)
++      return csb->cur;
++
++   /* The GPU executes this stream. Overrunning it would corrupt whatever follows the
++    * control stream in the buffer - and it would do so silently, at draw time, on the
++    * hardware, which is the worst place to discover it. So the reservation fails
++    * loudly in userspace instead, and the caller must treat NULL as "this draw did not
++    * fit" rather than writing anyway. */
++   if (csb->cur + words > csb->end) {
++      csb->overflowed = true;
++      return NULL;
++   }
++
++   dst = csb->cur;
++   csb->cur += words;
++
++   return dst;
++}
++
++uint32_t
++pvr_csb_size(const struct pvr_csb *csb)
++{
++   return (csb->cur - csb->start) * sizeof(uint32_t);
++}
++
++bool
++pvr_csb_overflowed(const struct pvr_csb *csb)
++{
++   return csb->overflowed;
++}
+diff --git a/src/gallium/drivers/pvr/pvr_csb.h b/src/gallium/drivers/pvr/pvr_csb.h
+new file mode 100644
+index 00000000..21deb8de
+--- /dev/null
++++ b/src/gallium/drivers/pvr/pvr_csb.h
+@@ -0,0 +1,62 @@
++/* Copyright 2026 The Mesa authors
++ * SPDX-License-Identifier: MIT
++ *
++ * The control stream builder (CSB).
++ *
++ * This is the hardware's command stream: the GPU executes what is written here, so a
++ * writer that overruns its buffer corrupts whatever follows it in memory rather than
++ * raising an error anyone will see. That is why emit() refuses rather than truncating.
++ *
++ * The packet layouts are NOT defined here - they come from csbgen, the same generator
++ * the Vulkan driver uses (csbgen/*.xml -> the headers below, which provide a field
++ * struct plus pack/unpack per packet). Only the stream plumbing is ours.
++ */
++#ifndef PVR_CSB_H
++#define PVR_CSB_H
++
++#include <stdbool.h>
++#include <stdint.h>
++
++/* The generated pack helpers express addresses through these, and this driver's device
++ * addresses are plain 64-bit values (see pvr_vm.h), so they pass through unchanged.
++ * They must be defined before the generated headers are included. */
++#define __pvr_address_type uint64_t
++#define __pvr_get_address(addr) (addr)
++#define __pvr_make_address(addr) (addr)
++
++#include "csbgen/rogue/cr.h"
++#include "csbgen/rogue/ipf.h"
++#include "csbgen/rogue/kmd_stream.h"
++#include "csbgen/rogue/pbestate.h"
++#include "csbgen/rogue/pds.h"
++#include "csbgen/rogue/vdm.h"
++
++struct pvr_csb {
++   uint32_t *start;
++   uint32_t *cur;
++   uint32_t *end;
++   bool overflowed;
++};
++
++/* The stream is written directly into the mapped buffer object, so the caller owns the
++ * memory and must keep it mapped for as long as the CSB is used. */
++void pvr_csb_init(struct pvr_csb *csb, void *map, uint32_t size_bytes);
++void pvr_csb_reset(struct pvr_csb *csb);
++
++/* Reserves `words` 32-bit words and returns where to write them, or NULL if they do not
++ * fit - in which case nothing is reserved and the CSB is marked overflowed. */
++uint32_t *pvr_csb_emit(struct pvr_csb *csb, uint32_t words);
++
++uint32_t pvr_csb_size(const struct pvr_csb *csb);
++bool pvr_csb_overflowed(const struct pvr_csb *csb);
++
++/* Emit one packet and pack its fields in a single step. A packet that does not fit is
++ * skipped rather than partly written, so the stream never contains half a packet. */
++#define pvr_csb_emit_pack(csb, packet, values)                                 \
++   do {                                                                        \
++      uint32_t *dw_ = pvr_csb_emit((csb), packet##_length);                    \
++      if (dw_ != NULL)                                                         \
++         packet##_pack(dw_, (values));                                         \
++   } while (0)
++
++#endif /* PVR_CSB_H */
+diff --git a/src/gallium/drivers/pvr/pvr_probe.c b/src/gallium/drivers/pvr/pvr_probe.c
+index bdc3e3a7..2ae2a481 100644
+--- a/src/gallium/drivers/pvr/pvr_probe.c
++++ b/src/gallium/drivers/pvr/pvr_probe.c
+@@ -21,6 +21,7 @@
+ #include <fcntl.h>
+ 
+ #include "pvr_bo.h"
++#include "pvr_csb.h"
+ #include "pvr_context.h"
+ 
+ #include "util/u_inlines.h"
+@@ -662,6 +663,112 @@ out:
+    return ok;
+ }
+ 
++/* The control stream builder. The GPU executes what is written here, so the two
++ * properties that matter are that packets land exactly where the writer says, and that
++ * running out of room is refused rather than silently overrunning the buffer. */
++static bool
++csb_check(int fd)
++{
++   struct pvr_bo bo = { 0 };
++   struct pvr_csb csb;
++   struct ROGUE_PBESTATE_STATE_WORD0 words = { 0 };
++   struct ROGUE_PBESTATE_STATE_WORD0 readback = { 0 };
++   uint32_t reference[ROGUE_PBESTATE_STATE_WORD0_length];
++   uint32_t *dw;
++   uint32_t total_words;
++   bool ok = false;
++
++   if (!pvr_bo_create(fd, 4096, 4096, &bo) || !pvr_bo_map(fd, &bo)) {
++      printf("csb:           FAIL: could not get a buffer to write into\n");
++      goto out;
++   }
++
++   pvr_csb_init(&csb, bo.map, bo.size);
++
++   /* A real generated packet, packed through the csbgen helpers. PBESTATE_WORD0 holds
++    * the low half of a framebuffer address. */
++   words.address_low = 0x9ffffc0000ULL;
++
++   /* Pack the same values into a local buffer first: that is the reference the writer's
++    * slot has to match, so an offset error in the writer shows up as a mismatch rather
++    * than as a plausible-looking word. */
++   ROGUE_PBESTATE_STATE_WORD0_pack(reference, &words);
++
++   dw = pvr_csb_emit(&csb, ROGUE_PBESTATE_STATE_WORD0_length);
++   if (dw == NULL) {
++      printf("csb:           FAIL: a single packet did not fit in 4 KiB\n");
++      goto out;
++   }
++   ROGUE_PBESTATE_STATE_WORD0_pack(dw, &words);
++
++   if (pvr_csb_size(&csb) != ROGUE_PBESTATE_STATE_WORD0_length * 4) {
++      printf("csb:           FAIL: size advanced by %u, expected %u\n",
++             pvr_csb_size(&csb), (unsigned)(ROGUE_PBESTATE_STATE_WORD0_length * 4));
++      goto out;
++   }
++
++   if (memcmp(reference, dw, sizeof(reference)) != 0) {
++      printf("csb:           FAIL: the emitted word differs from packing locally\n");
++      goto out;
++   }
++
++   /* Read it back out of the buffer with the generated unpacker, which is reading the
++    * memory the GPU would read.
++    *
++    * What is compared is the pack/unpack round-trip of the SAME generated code, not the
++    * value that went in. PBESTATE_STATE_WORD0 carries only the low word of a split
++    * framebuffer address, so a full 36-bit address does not survive one word - that is
++    * the field's business, and asserting otherwise would be a bug in the test dressed
++    * up as a bug in the writer. */
++   struct ROGUE_PBESTATE_STATE_WORD0 expected;
++
++   ROGUE_PBESTATE_STATE_WORD0_unpack(reference, &expected);
++   ROGUE_PBESTATE_STATE_WORD0_unpack(bo.map, &readback);
++
++   if (memcmp(&expected, &readback, sizeof(expected)) != 0 ||
++       readback.address_low != expected.address_low) {
++      printf("csb:           FAIL: readback 0x%" PRIx64 " != packed 0x%" PRIx64 "\n",
++             (uint64_t)readback.address_low, (uint64_t)expected.address_low);
++      goto out;
++   }
++
++   /* Now fill it exactly to the end, then ask for one word more. */
++   total_words = bo.size / 4;
++   dw = pvr_csb_emit(&csb, total_words - ROGUE_PBESTATE_STATE_WORD0_length);
++   if (dw == NULL) {
++      printf("csb:           FAIL: an exactly-fitting remainder was refused\n");
++      goto out;
++   }
++
++   if (pvr_csb_size(&csb) != bo.size) {
++      printf("csb:           FAIL: stream should now be exactly full\n");
++      goto out;
++   }
++
++   const uint32_t before = pvr_csb_size(&csb);
++
++   if (pvr_csb_emit(&csb, 1) != NULL) {
++      printf("csb:           FAIL: a full stream accepted one more word\n");
++      goto out;
++   }
++
++   if (!pvr_csb_overflowed(&csb) || pvr_csb_size(&csb) != before) {
++      printf("csb:           FAIL: the refused emit changed the stream\n");
++      goto out;
++   }
++
++   printf("csb:           packet at the right slot (word 0x%08x), readback matches the "
++          "generated pack/unpack, %u bytes fills exactly, one more word refused\n",
++          reference[0], (unsigned)bo.size);
++   ok = true;
++
++out:
++   pvr_bo_destroy(fd, &bo);
++   printf("csb:           %s (emit, packet placement, readback, overflow refused)\n",
++          ok ? "PASS" : "FAIL");
++   return ok;
++}
++
+ int
+ main(int argc, char **argv)
+ {
+@@ -691,6 +798,7 @@ main(int argc, char **argv)
+    /* Before destroying the screen, which closes the fd. */
+    const bool bo_pass = bo_roundtrip(fd);
+    const bool vm_pass = vm_roundtrip(fd);
++   const bool csb_pass = csb_check(fd);
+    const bool res_pass = resource_roundtrip(screen);
+    const bool ctx_pass = transfer_roundtrip(screen);
+    const bool shader_pass = shader_compile_check(screen);
+@@ -701,7 +809,7 @@ main(int argc, char **argv)
+    screen->destroy(screen);
+ 
+    const bool all = enum_pass && bo_pass && vm_pass && res_pass && ctx_pass &&
+-                    shader_pass && state_pass && fb_pass && pipe_pass;
++                    shader_pass && state_pass && fb_pass && pipe_pass && csb_pass;
+    printf("--- %s\n", all ? "ALL PASS" : "FAILURES ABOVE");
+    return all ? 0 : 1;
+ }
+-- 
+2.47.3
+

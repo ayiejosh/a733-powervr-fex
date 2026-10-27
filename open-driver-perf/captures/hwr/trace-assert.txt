@@ -1,0 +1,466 @@
+[341] : OSid 0 fw state transition request: from 2 to 0 (0-offline 1-ready 2-active 3-offloading). Status 1 (1-ok 0-fail)
+[378] : OSid 0 CCB init status: 1 (1-ok 0-fail): kCCBCtl@0xc0019000 kCCB@0xc001a000 fwCCBCtl@0xc001d000 fwCCB@0xc001e000
+[447] : Initialised Firmware with config flags 0x00100000 and extended config flags 0x00000000
+[474] : OSid 0 fw state transition request: from 2 to 2 (0-offline 1-ready 2-active 3-offloading). Status 1 (1-ok 0-fail)
+[484] : Initialised OS 0 with config flags 0x0000000f
+[516] : Core clock set to 1104000000 Hz
+[526] : Active PM latency set to 10ms. Core clock: 1104000000 Hz
+[554] : GPU init
+[562] : GPIO enabled
+[586] : Host Sync Partition marker: 1
+[681] : Bg Task OSid = 0
+[707] : KCCB Slot 0: Cmd=0x2abc0066, OSid=0
+[768] : KCCB Slot 0: Return value 1
+[795] : KCCB Slot 1: Cmd=0x2abc006a, OSid=0
+[810] : Received cleanup request for HWRTData [0xc0064000]
+[859] : KCCB Slot 1: Return value 1
+[893] : Bg Task complete DM Bitfield: 1
+[902] : Kick MTS Irq task DM=0
+[918] : Irq Task (EVENT_STATUS=0x00000000)
+[996] : Check Pow state: Int: 0x1, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 0 - Update: 0
+[1019] : Idle timer start. Pow state int: 0x1, ext: 0x1, flags: 0x0
+[1049] : Irq Task complete.
+[1069] : Bg Task OSid = 0
+[1112] : KCCB Slot 2: Cmd=0x2abc0066, OSid=0
+[1169] : KCCB Slot 2: Return value 1
+[1206] : Bg Task complete DM Bitfield: 1
+[1214] : Kick MTS Irq task DM=0
+[1233] : Irq Task (EVENT_STATUS=0x00000000)
+[1276] : Check Pow state: Int: 0x1, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 0 - Update: 0
+[1307] : Irq Task complete.
+[1321] : Bg Task OSid = 0
+[1335] : Bg Task complete DM Bitfield: 1
+[1341] : Kick MTS Irq task DM=0
+[1351] : Irq Task (EVENT_STATUS=0x00000000)
+[1369] : Check Pow state: Int: 0x1, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 0 - Update: 0
+[1386] : Irq Task complete.
+[1398] : Bg Task OSid = 0
+[1414] : KCCB Slot 3: Cmd=0x2abc006a, OSid=0
+[1435] : Received cleanup request for HWRTData [0xc0063000]
+[1488] : KCCB Slot 3: Return value 1
+[1524] : Bg Task complete DM Bitfield: 1
+[1531] : Kick MTS Irq task DM=0
+[1547] : Irq Task (EVENT_STATUS=0x00000000)
+[1591] : Check Pow state: Int: 0x1, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 0 - Update: 0
+[1616] : Irq Task complete.
+[1633] : Bg Task OSid = 0
+[1654] : KCCB Slot 4: Cmd=0x2abc0066, OSid=0
+[1708] : KCCB Slot 4: Return value 1
+[1742] : Bg Task complete DM Bitfield: 1
+[1750] : Kick MTS Irq task DM=0
+[1767] : Irq Task (EVENT_STATUS=0x00000000)
+[1812] : Check Pow state: Int: 0x1, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 0 - Update: 0
+[1840] : Irq Task complete.
+[1858] : Bg Task OSid = 0
+[1879] : KCCB Slot 5: Cmd=0x2abc0066, OSid=0
+[1936] : KCCB Slot 5: Return value 1
+[1973] : Bg Task complete DM Bitfield: 1
+[1980] : Kick MTS Irq task DM=0
+[1998] : Irq Task (EVENT_STATUS=0x00000000)
+[2044] : Check Pow state: Int: 0x1, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 0 - Update: 0
+[2071] : Irq Task complete.
+[2086] : Bg Task OSid = 0
+[2109] : KCCB Slot 6: Cmd=0x2abc006a, OSid=0
+[2165] : Freelist [0xc0060000] cleaned
+[2180] : KCCB Slot 6: Return value 1
+[2212] : Bg Task complete DM Bitfield: 1
+[2218] : Kick MTS Irq task DM=0
+[2233] : Irq Task (EVENT_STATUS=0x00000000)
+[2277] : Check Pow state: Int: 0x1, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 0 - Update: 0
+[2304] : Irq Task complete.
+[2387] : Bg Task OSid = 0
+[2413] : KCCB Slot 7: Cmd=0x2abc0066, OSid=0
+[2464] : KCCB Slot 7: Return value 1
+[2488] : KCCB Slot 8: Cmd=0x2abc0066, OSid=0
+[2529] : KCCB Slot 8: Return value 1
+[2559] : Bg Task complete DM Bitfield: 1
+[2567] : Kick MTS Irq task DM=0
+[2583] : Irq Task (EVENT_STATUS=0x00000000)
+[2628] : Check Pow state: Int: 0x1, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 0 - Update: 0
+[2656] : Irq Task complete.
+[2673] : Bg Task OSid = 0
+[2697] : KCCB Slot 9: Cmd=0x2abc006a, OSid=0
+[2758] : Freelist [0xc0061000] cleaned
+[2774] : KCCB Slot 9: Return value 1
+[2806] : Bg Task complete DM Bitfield: 1
+[2815] : Kick MTS Irq task DM=0
+[2832] : Irq Task (EVENT_STATUS=0x00000000)
+[2878] : Check Pow state: Int: 0x1, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 0 - Update: 0
+[2905] : Irq Task complete.
+[2921] : Bg Task OSid = 0
+[2943] : KCCB Slot 10: Cmd=0x2abc0066, OSid=0
+[2994] : KCCB Slot 10: Return value 1
+[3030] : Bg Task complete DM Bitfield: 1
+[3038] : Kick MTS Irq task DM=0
+[3054] : Irq Task (EVENT_STATUS=0x00000000)
+[3099] : Check Pow state: Int: 0x1, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 0 - Update: 0
+[3124] : Irq Task complete.
+[3141] : Bg Task OSid = 0
+[3158] : Bg Task complete DM Bitfield: 1
+[3164] : Kick MTS Irq task DM=0
+[3171] : Irq Task (EVENT_STATUS=0x00000000)
+[3189] : Check Pow state: Int: 0x1, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 0 - Update: 0
+[3210] : Irq Task complete.
+[4831] : Bg Task OSid = 0
+[4852] : KCCB Slot 11: Cmd=0x2abc0066, OSid=0
+[4907] : KCCB Slot 11: Return value 1
+[4939] : Bg Task complete DM Bitfield: 1
+[4947] : Kick MTS Irq task DM=0
+[4964] : Irq Task (EVENT_STATUS=0x00000000)
+[5012] : Check Pow state: Int: 0x1, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 0 - Update: 0
+[5047] : Irq Task complete.
+[5318] : Bg Task OSid = 0
+[5336] : KCCB Slot 12: Cmd=0x2abc006a, OSid=0
+[5397] : FwCommonContext [0xc005f098] cleaned
+[5414] : KCCB Slot 12: Return value 1
+[5447] : Bg Task complete DM Bitfield: 1
+[5455] : Kick MTS Irq task DM=0
+[5472] : Irq Task (EVENT_STATUS=0x00000000)
+[5520] : Check Pow state: Int: 0x1, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 0 - Update: 0
+[5543] : Irq Task complete.
+[5560] : Bg Task OSid = 0
+[5585] : KCCB Slot 13: Cmd=0x2abc0066, OSid=0
+[5636] : KCCB Slot 13: Return value 1
+[5671] : Bg Task complete DM Bitfield: 1
+[5678] : Kick MTS Irq task DM=0
+[5696] : Irq Task (EVENT_STATUS=0x00000000)
+[5742] : Check Pow state: Int: 0x1, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 0 - Update: 0
+[5768] : Irq Task complete.
+[5783] : Bg Task OSid = 0
+[5803] : KCCB Slot 14: Cmd=0x2abc0066, OSid=0
+[5854] : KCCB Slot 14: Return value 1
+[5890] : Bg Task complete DM Bitfield: 1
+[5897] : Kick MTS Irq task DM=0
+[5914] : Irq Task (EVENT_STATUS=0x00000000)
+[5960] : Check Pow state: Int: 0x1, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 0 - Update: 0
+[5986] : Irq Task complete.
+[6002] : Bg Task OSid = 0
+[6023] : KCCB Slot 15: Cmd=0x2abc0066, OSid=0
+[6073] : KCCB Slot 15: Return value 1
+[6107] : Bg Task complete DM Bitfield: 1
+[6114] : Kick MTS Irq task DM=0
+[6131] : Irq Task (EVENT_STATUS=0x00000000)
+[6174] : Check Pow state: Int: 0x1, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 0 - Update: 0
+[6201] : Irq Task complete.
+[6220] : Bg Task OSid = 0
+[6239] : KCCB Slot 16: Cmd=0x2abc0066, OSid=0
+[6291] : KCCB Slot 16: Return value 1
+[6326] : Bg Task complete DM Bitfield: 1
+[6334] : Kick MTS Irq task DM=0
+[6350] : Irq Task (EVENT_STATUS=0x00000000)
+[6394] : Check Pow state: Int: 0x1, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 0 - Update: 0
+[6424] : Irq Task complete.
+[6717] : Bg Task OSid = 0
+[6743] : KCCB Slot 17: Cmd=0x2abc006a, OSid=0
+[6803] : FwCommonContext [0xc005f000] cleaned
+[6819] : KCCB Slot 17: Return value 1
+[6851] : Bg Task complete DM Bitfield: 1
+[6859] : Kick MTS Irq task DM=0
+[6874] : Irq Task (EVENT_STATUS=0x00000000)
+[6917] : Check Pow state: Int: 0x1, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 0 - Update: 0
+[6945] : Irq Task complete.
+[6962] : Bg Task OSid = 0
+[6984] : KCCB Slot 18: Cmd=0x2abc0066, OSid=0
+[7039] : KCCB Slot 18: Return value 1
+[7071] : Bg Task complete DM Bitfield: 1
+[7079] : Kick MTS Irq task DM=0
+[7096] : Irq Task (EVENT_STATUS=0x00000000)
+[7139] : Check Pow state: Int: 0x1, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 0 - Update: 0
+[7170] : Irq Task complete.
+[7185] : Bg Task OSid = 0
+[7205] : KCCB Slot 19: Cmd=0x2abc0066, OSid=0
+[7258] : KCCB Slot 19: Return value 1
+[7294] : Bg Task complete DM Bitfield: 1
+[7302] : Kick MTS Irq task DM=0
+[7320] : Irq Task (EVENT_STATUS=0x00000000)
+[7364] : Check Pow state: Int: 0x1, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 0 - Update: 0
+[7391] : Irq Task complete.
+[7408] : Bg Task OSid = 0
+[7429] : KCCB Slot 20: Cmd=0x2abc0066, OSid=0
+[7484] : KCCB Slot 20: Return value 1
+[7519] : Bg Task complete DM Bitfield: 1
+[7527] : Kick MTS Irq task DM=0
+[7544] : Irq Task (EVENT_STATUS=0x00000000)
+[7588] : Check Pow state: Int: 0x1, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 0 - Update: 0
+[7617] : Irq Task complete.
+[7635] : Bg Task OSid = 0
+[7651] : KCCB Slot 21: Cmd=0x2abc0066, OSid=0
+[7702] : KCCB Slot 21: Return value 1
+[7736] : Bg Task complete DM Bitfield: 1
+[7745] : Kick MTS Irq task DM=0
+[7761] : Irq Task (EVENT_STATUS=0x00000000)
+[7802] : Check Pow state: Int: 0x1, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 0 - Update: 0
+[7829] : Irq Task complete.
+[7844] : Bg Task OSid = 0
+[7866] : KCCB Slot 22: Cmd=0x2abc0066, OSid=0
+[7920] : KCCB Slot 22: Return value 1
+[7954] : Bg Task complete DM Bitfield: 1
+[7962] : Kick MTS Irq task DM=0
+[7979] : Irq Task (EVENT_STATUS=0x00000000)
+[8021] : Check Pow state: Int: 0x1, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 0 - Update: 0
+[8048] : Irq Task complete.
+[8063] : Bg Task OSid = 0
+[8086] : KCCB Slot 23: Cmd=0x2abc0066, OSid=0
+[8138] : KCCB Slot 23: Return value 1
+[8173] : Bg Task complete DM Bitfield: 1
+[8180] : Kick MTS Irq task DM=0
+[8198] : Irq Task (EVENT_STATUS=0x00000000)
+[8242] : Check Pow state: Int: 0x1, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 0 - Update: 0
+[8265] : Irq Task complete.
+[39872] : Bg Task OSid = 0
+[39894] : KCCB Slot 24: Cmd=0x2abc0066, OSid=0
+[39949] : KCCB Slot 24: Return value 1
+[39990] : Bg Task complete DM Bitfield: 1
+[39997] : Kick MTS Irq task DM=0
+[40014] : Irq Task (EVENT_STATUS=0x00000000)
+[40059] : Check Pow state: Int: 0x1, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 0 - Update: 0
+[40088] : Irq Task complete.
+[40371] : Bg Task OSid = 0
+[40391] : KCCB Slot 25: Cmd=0x2abc0065, OSid=0
+[40420] : cCCB Woff update = 200, DM = 2, FWCtx = 0xc0031000
+[40461] : Kick MTS Irq task DM=0
+[40477] : Irq Task (EVENT_STATUS=0x00000000)
+[40542] : Ready-to-run debug OSid = 0, DM = 2, item = 0xc0031000
+[40561] : Client command header DM = 2, client CCB = 0xc004f000, cmd = 0xc004f000
+[40575] : PM running primary config (Core 0)
+[40649] : GPU Units init (# mask: 0x1)
+[40668] : Cancel power off request int: 0x2, ext: 0x1, pow flags: 0x0
+[40682] : Cancel idle timer. Pow state int: 0x2, ext: 0x1, flags: 0x0
+[40702] : Activate MemCtx=0xc0065000 DM=2 secure=0
+[40715] : Setup register set=-1 DM=2, PC address=0x0000000102f10000, OSid=0, NewPCRegRequired=1
+[40724] : Alloc PC set 0 as register range [1 - 1]
+[40746] : Grab reg set 0 refcount now 1
+[40810] : Load  Freelist 0xc005f000 type: 0 (0:local,1:global) for PMDM0: FL Total Pages 32 (max=32,grow size=0), FL-addr = 0x0000009ffffda000, stacktop = 0x000000000000001f, Alloc Page Count = 0, Alloc MMU Page Count = 0
+[40838] : Load  Freelist 0xc0060000 type: 1 (0:local,1:global) for PMDM0: FL Total Pages 448 (max=65536,grow size=256), FL-addr = 0x0000009ffffd9900, stacktop = 0x00000000000001bf, Alloc Page Count = 0, Alloc MMU Page Count = 0
+[40852] : CONTEXT_PB_BASE set to 0x3, FL different between TA/3D: local: 1, global: 1
+[40886] : TA RTData 0xc0062000 loaded on HW context 0
+[40897] : TA Buffers: FWCtx 0xc0031000, RTData 0xc0062000, VHeap 0x0000009ffff98000, TPC 0x0000009ffff99000 (MemCtx 0xc0065000)
+[40939] : TE Region headers base 0x0000009ffff95000 (RGNHDR Init: 1)
+[40968] : Is TA: 1, finished: 0 on HW 0 (HWRTData = 0xc0062000, MemCtx = 0xc0065000). FL different between TA/3D: global:1, local:2
+[40984] : UFL-TA-Base: 0x0000009ffffd9900 (SP = 447, 4PB = 0, 4PT = 0), FL-TA-Base: 0x0000009ffffda000 (SP = 31, 4PB = 0, 4PT = 0)
+[40996] : ALIST0 SP = 0, MLIST0 SP = 0 (VCE 0x0000000000000000, TE 0x0000000000000000, ALIST 0x0000000000000000)
+[41017] : Kick TA: FWCtx 0xc0031000 @ 0, RTD 0xc0062000, First kick:1, Last kick:1, CSW resume:0. (PID:114465, prio:1, frame:0, ext:0x00000001, int:0x00000001)
+[41071] : Check Pow state: Int: 0x2, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 0 - Update: 0
+[41112] : Irq Task complete.
+[41133] : KCCB Slot 26: Cmd=0x2abc0066, OSid=0
+[41190] : KCCB Slot 26: Return value 1
+[41229] : Bg Task complete DM Bitfield: 1
+[41235] : Kick MTS Irq task DM=0
+[41253] : Irq Task (EVENT_STATUS=0x00000000)
+[41318] : Check Pow state: Int: 0x2, Ext: 0x1, Pow flags: 0x0, Fence Counters: Check: 0 - Update: 0
+[41341] : Irq Task complete.
+[41359] : Bg Task OSid = 0
+[41402] : Bg Task complete DM Bitfield: 0
+[43405] : Bg Task OSid = 0
+[43423] : KCCB Slot 27: Cmd=0x2abc0066, OSid=0
+[43482] : KCCB Slot 27: Return value 1
+[43515] : Bg Task complete DM Bitfield: 0
+[44155] : Bg Task OSid = 0
+[44196] : Bg Task complete DM Bitfield: 0
+[45451] : Bg Task OSid = 0
+[45461] : KCCB Slot 28: Cmd=0x2abc0066, OSid=0
+[45513] : KCCB Slot 28: Return value 1
+[45544] : Bg Task complete DM Bitfield: 0
+[45769] : Bg Task OSid = 0
+[45782] : KCCB Slot 29: Cmd=0x2abc0066, OSid=0
+[45830] : KCCB Slot 29: Return value 1
+[45863] : Bg Task complete DM Bitfield: 0
+[46893] : Bg Task OSid = 0
+[46907] : KCCB Slot 30: Cmd=0x2abc0066, OSid=0
+[46949] : KCCB Slot 30: Return value 1
+[46979] : Bg Task complete DM Bitfield: 0
+[47466] : Bg Task OSid = 0
+[47480] : KCCB Slot 31: Cmd=0x2abc0066, OSid=0
+[47526] : KCCB Slot 31: Return value 1
+[47557] : Bg Task complete DM Bitfield: 0
+[51832] : Bg Task OSid = 0
+[51846] : KCCB Slot 32: Cmd=0x2abc0066, OSid=0
+[51892] : KCCB Slot 32: Return value 1
+[51924] : Bg Task complete DM Bitfield: 0
+[60000] : Bg Task OSid = 0
+[60018] : KCCB Slot 33: Cmd=0x2abc0066, OSid=0
+[60062] : KCCB Slot 33: Return value 1
+[60094] : Bg Task complete DM Bitfield: 0
+[60202] : Bg Task OSid = 0
+[60216] : KCCB Slot 34: Cmd=0x2abc0066, OSid=0
+[60261] : KCCB Slot 34: Return value 1
+[60294] : Bg Task complete DM Bitfield: 0
+[60370] : Bg Task OSid = 0
+[60383] : KCCB Slot 35: Cmd=0x2abc0066, OSid=0
+[60426] : KCCB Slot 35: Return value 1
+[60457] : Bg Task complete DM Bitfield: 0
+[60529] : Bg Task OSid = 0
+[60543] : KCCB Slot 36: Cmd=0x2abc0066, OSid=0
+[60583] : KCCB Slot 36: Return value 1
+[60613] : Bg Task complete DM Bitfield: 0
+[60684] : Bg Task OSid = 0
+[60696] : KCCB Slot 37: Cmd=0x2abc0066, OSid=0
+[60740] : KCCB Slot 37: Return value 1
+[60772] : Bg Task complete DM Bitfield: 0
+[60857] : Bg Task OSid = 0
+[60867] : KCCB Slot 38: Cmd=0x2abc0066, OSid=0
+[60912] : KCCB Slot 38: Return value 1
+[60943] : Bg Task complete DM Bitfield: 0
+[61016] : Bg Task OSid = 0
+[61032] : KCCB Slot 39: Cmd=0x2abc0066, OSid=0
+[61076] : KCCB Slot 39: Return value 1
+[61110] : Bg Task complete DM Bitfield: 0
+[61177] : Bg Task OSid = 0
+[61189] : KCCB Slot 40: Cmd=0x2abc0066, OSid=0
+[61233] : KCCB Slot 40: Return value 1
+[61262] : Bg Task complete DM Bitfield: 0
+[61335] : Bg Task OSid = 0
+[61350] : KCCB Slot 41: Cmd=0x2abc0066, OSid=0
+[61395] : KCCB Slot 41: Return value 1
+[61427] : Bg Task complete DM Bitfield: 0
+[61500] : Bg Task OSid = 0
+[61514] : KCCB Slot 42: Cmd=0x2abc0066, OSid=0
+[61556] : KCCB Slot 42: Return value 1
+[61587] : Bg Task complete DM Bitfield: 0
+[61653] : Bg Task OSid = 0
+[61668] : KCCB Slot 43: Cmd=0x2abc0066, OSid=0
+[61713] : KCCB Slot 43: Return value 1
+[61746] : Bg Task complete DM Bitfield: 0
+[61825] : Bg Task OSid = 0
+[61839] : KCCB Slot 44: Cmd=0x2abc0066, OSid=0
+[61882] : KCCB Slot 44: Return value 1
+[61914] : Bg Task complete DM Bitfield: 0
+[61989] : Bg Task OSid = 0
+[62006] : KCCB Slot 45: Cmd=0x2abc0066, OSid=0
+[62049] : KCCB Slot 45: Return value 1
+[62081] : Bg Task complete DM Bitfield: 0
+[62150] : Bg Task OSid = 0
+[62162] : KCCB Slot 46: Cmd=0x2abc0066, OSid=0
+[62206] : KCCB Slot 46: Return value 1
+[62236] : Bg Task complete DM Bitfield: 0
+[62340] : Bg Task OSid = 0
+[62355] : KCCB Slot 47: Cmd=0x2abc0066, OSid=0
+[62396] : KCCB Slot 47: Return value 1
+[62426] : Bg Task complete DM Bitfield: 0
+[62476] : Bg Task OSid = 0
+[62491] : KCCB Slot 48: Cmd=0x2abc0066, OSid=0
+[62536] : KCCB Slot 48: Return value 1
+[62568] : Bg Task complete DM Bitfield: 0
+[62642] : Bg Task OSid = 0
+[62654] : KCCB Slot 49: Cmd=0x2abc0066, OSid=0
+[62697] : KCCB Slot 49: Return value 1
+[62729] : Bg Task complete DM Bitfield: 0
+[62797] : Bg Task OSid = 0
+[62811] : KCCB Slot 50: Cmd=0x2abc0066, OSid=0
+[62853] : KCCB Slot 50: Return value 1
+[62887] : Bg Task complete DM Bitfield: 0
+[62951] : Bg Task OSid = 0
+[62965] : KCCB Slot 51: Cmd=0x2abc0066, OSid=0
+[63010] : KCCB Slot 51: Return value 1
+[63042] : Bg Task complete DM Bitfield: 0
+[63185] : Bg Task OSid = 0
+[63199] : KCCB Slot 52: Cmd=0x2abc0066, OSid=0
+[63245] : KCCB Slot 52: Return value 1
+[63277] : Bg Task complete DM Bitfield: 0
+[63376] : Bg Task OSid = 0
+[63388] : KCCB Slot 53: Cmd=0x2abc0066, OSid=0
+[63431] : KCCB Slot 53: Return value 1
+[63462] : Bg Task complete DM Bitfield: 0
+[63532] : Bg Task OSid = 0
+[63544] : KCCB Slot 54: Cmd=0x2abc0066, OSid=0
+[63588] : KCCB Slot 54: Return value 1
+[63625] : Bg Task complete DM Bitfield: 0
+[63695] : Bg Task OSid = 0
+[63708] : KCCB Slot 55: Cmd=0x2abc0066, OSid=0
+[63751] : KCCB Slot 55: Return value 1
+[63781] : Bg Task complete DM Bitfield: 0
+[63853] : Bg Task OSid = 0
+[63862] : KCCB Slot 56: Cmd=0x2abc0066, OSid=0
+[63906] : KCCB Slot 56: Return value 1
+[63938] : Bg Task complete DM Bitfield: 0
+[64004] : Bg Task OSid = 0
+[64015] : KCCB Slot 57: Cmd=0x2abc0066, OSid=0
+[64057] : KCCB Slot 57: Return value 1
+[64088] : Bg Task complete DM Bitfield: 0
+[64157] : Bg Task OSid = 0
+[64170] : KCCB Slot 58: Cmd=0x2abc0066, OSid=0
+[64211] : KCCB Slot 58: Return value 1
+[64244] : Bg Task complete DM Bitfield: 0
+[64313] : Bg Task OSid = 0
+[64326] : KCCB Slot 59: Cmd=0x2abc0066, OSid=0
+[64371] : KCCB Slot 59: Return value 1
+[64403] : Bg Task complete DM Bitfield: 0
+[64468] : Bg Task OSid = 0
+[64481] : KCCB Slot 60: Cmd=0x2abc0066, OSid=0
+[64525] : KCCB Slot 60: Return value 1
+[64559] : Bg Task complete DM Bitfield: 0
+[64627] : Bg Task OSid = 0
+[64642] : KCCB Slot 61: Cmd=0x2abc0066, OSid=0
+[64686] : KCCB Slot 61: Return value 1
+[64718] : Bg Task complete DM Bitfield: 0
+[64791] : Bg Task OSid = 0
+[64805] : KCCB Slot 62: Cmd=0x2abc0066, OSid=0
+[64848] : KCCB Slot 62: Return value 1
+[64878] : Bg Task complete DM Bitfield: 0
+[65010] : Bg Task OSid = 0
+[65021] : KCCB Slot 63: Cmd=0x2abc0066, OSid=0
+[65064] : KCCB Slot 63: Return value 1
+[65095] : Bg Task complete DM Bitfield: 0
+[65166] : Bg Task OSid = 0
+[65179] : KCCB Slot 64: Cmd=0x2abc0066, OSid=0
+[65223] : KCCB Slot 64: Return value 1
+[65255] : Bg Task complete DM Bitfield: 0
+[65324] : Bg Task OSid = 0
+[65338] : KCCB Slot 65: Cmd=0x2abc0066, OSid=0
+[65383] : KCCB Slot 65: Return value 1
+[65415] : Bg Task complete DM Bitfield: 0
+[72639] : Bg Task OSid = 0
+[72690] : DM2 has taken 31653 ticks and deadline is 129360000 ticks
+[72716] : Fast CRC Check result for Core0, DM2 is HWRNeeded=0
+[72723] : Final result for DM2 is HWRNeeded=0 with HWRChecksToGo=3
+[72763] : Bg Task complete DM Bitfield: 0
+[72782] : Bg Task OSid = 0
+[72805] : Bg Task complete DM Bitfield: 0
+[103985] : Bg Task OSid = 0
+[104010] : DM2 has taken 62979 ticks and deadline is 129360000 ticks
+[104041] : Fast CRC Check result for Core0, DM2 is HWRNeeded=1
+[104077] : HWR: USC Core0, ui32TotalSlotsUsedByDM=0x00000000, psDMHWCtl->ui32USCSlotsUsedByDM=0x00000000, bHWRNeeded=1
+[104086] : USC Slots result for Core0, DM2 is HWRNeeded=1 USCSlotsUsedByDM=0
+[104094] : Final result for DM2 is HWRNeeded=1 with HWRChecksToGo=2
+[104128] : Bg Task complete DM Bitfield: 0
+[104145] : Bg Task OSid = 0
+[104163] : Bg Task complete DM Bitfield: 0
+[135357] : Bg Task OSid = 0
+[135381] : DM2 has taken 94349 ticks and deadline is 129360000 ticks
+[135406] : HWR: Core0, Register=0x00005000, OldValue=0x00000000fffffaf6, CurrValue=0x00000000fffffaf6
+[135422] : HWR: Core0, Register=0x00005020, OldValue=0x00000000496b4b49, CurrValue=0x00000000496b4b49
+[135429] : HWR: Core0, Register=0x00005028, OldValue=0x0000000000000000, CurrValue=0x0000000000000000
+[135435] : HWR: Core0, Register=0x00005030, OldValue=0x0000000000000000, CurrValue=0x0000000000000000
+[135441] : HWR: Core0, Register=0x00005060, OldValue=0x0000000000000000, CurrValue=0x0000000000000000
+[135447] : HWR: Core0, Register=0x000040e0, OldValue=0x0000000000000002, CurrValue=0x0000000000000002
+[135455] : HWR: Core0, Register=0x00004600, OldValue=0x0000000000000002, CurrValue=0x0000000000000002
+[135463] : Full Signature Check result for Core0, DM2 is HWRNeeded=1
+[135495] : HWR: USC Core0, ui32TotalSlotsUsedByDM=0x00000000, psDMHWCtl->ui32USCSlotsUsedByDM=0x00000000, bHWRNeeded=1
+[135505] : USC Slots result for Core0, DM2 is HWRNeeded=1 USCSlotsUsedByDM=0
+[135513] : Final result for DM2 is HWRNeeded=1 with HWRChecksToGo=1
+[135552] : Bg Task complete DM Bitfield: 0
+[135568] : Bg Task OSid = 0
+[135593] : Bg Task complete DM Bitfield: 0
+[166775] : Bg Task OSid = 0
+[166802] : DM2 has taken 125768 ticks and deadline is 129360000 ticks
+[166820] : HWR: Core0, Register=0x00005000, OldValue=0x00000000fffffaf6, CurrValue=0x00000000fffffaf6
+[166832] : HWR: Core0, Register=0x00005020, OldValue=0x00000000496b4b49, CurrValue=0x00000000496b4b49
+[166838] : HWR: Core0, Register=0x00005028, OldValue=0x0000000000000000, CurrValue=0x0000000000000000
+[166844] : HWR: Core0, Register=0x00005030, OldValue=0x0000000000000000, CurrValue=0x0000000000000000
+[166850] : HWR: Core0, Register=0x00005060, OldValue=0x0000000000000000, CurrValue=0x0000000000000000
+[166856] : HWR: Core0, Register=0x000040e0, OldValue=0x0000000000000002, CurrValue=0x0000000000000002
+[166864] : HWR: Core0, Register=0x00004600, OldValue=0x0000000000000002, CurrValue=0x0000000000000002
+[166872] : Full Signature Check result for Core0, DM2 is HWRNeeded=1
+[166907] : HWR: USC Core0, ui32TotalSlotsUsedByDM=0x00000000, psDMHWCtl->ui32USCSlotsUsedByDM=0x00000000, bHWRNeeded=1
+[166915] : USC Slots result for Core0, DM2 is HWRNeeded=1 USCSlotsUsedByDM=0
+[166923] : Final result for DM2 is HWRNeeded=1 with HWRChecksToGo=0
+[166931] : DM2 timed out
+[166939] : RGX DM2 phase count=0x00000000
+[166946] : Core 0 RGX_CR_EVENT_STATUS=0x00000000
+[166974] : USC slots: 0 used by DM2
+[166978] : USC slots: 0 used by DM3
+[166984] : USC slots: 0 used by DM4
+[166988] : USC slots: 64 empty
+[167004] : DM2 has locked up
+[167010] : GPU has locked up (see HWR logs for more info)
+[167144] : ASSERTION (gsRGXFWCtl.ui32StateFlags & RGXFW_STATE_ASSERT_ON_HWR_TRIGGER) == 0U failed at firmware/rogue/rgxfw_hwr.c:3086

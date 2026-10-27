@@ -1,0 +1,155 @@
+From fab56cb5e7f6395d09380617eff04d86e7ced098 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 23 Oct 2026 17:50:10 +0800
+Subject: [PATCH 186/269] gallium/pvr: cmd_stream is a USERSPACE pointer; the
+ kernel parses it into rogue_fwif_cmd_geom
+
+Read the kernel source instead of guessing at the errno, and found the mistake that EFAULT was
+pointing at all along:
+
+  pvr_fw_cmd_init(): copy_from_user(stream, u64_to_user_ptr(stream_userptr), stream_len)
+
+The UAPI agrees: "@cmd_stream: [IN] Pointer to command stream for command. The command stream must be
+u64-aligned." It is a USER pointer to the stream BYTES, not a GPU device address. The kernel copies it
+in and parses it itself, then builds the firmware job. I had been passing a GPU address, so
+copy_from_user read an unmapped userspace address -> EFAULT ("Bad address"). That is now fixed:
+pvr_job_submit()/pvr_job_submit_render() take `const void *cmd_stream` and the probe passes the CPU
+mapping of the stream buffer, u64-aligned.
+
+The submit error moved EFAULT -> EINVAL, i.e. the pointer is accepted and the kernel is now rejecting
+the stream CONTENT while parsing it. And the kernel's parser tells us what that content must be:
+pvr_stream_defs.c defines the geometry stream as a fixed sequence of rogue_fwif_cmd_geom fields -
+
+  regs.vdm_ctrl_stream_base (64), regs.tpu_border_colour_table (64), regs.vdm_draw_indirect0 (64,
+  feature), regs.vdm_draw_indirect1 (32, feature), regs.ppp_ctrl (32), regs.te_psg (32),
+  regs.vdm_context_resume_task0_size (32), regs.vdm_context_resume_task3_size (32, feature),
+  regs.view_idx (32), regs.pds_coeff_free_prog (32, feature) ...
+
+not the CR_* packet stream this driver was building. The two coincide for the first fields - which is
+why the captured 40-byte stream looked like packets and matched my builder - but the parser is reading a
+different structure, and feature-conditional fields change the expected size. The stream builder has to
+be driven by that definition (and the device's feature set), not by packet order.
+
+Also fixed: the zero-length probe submit passes NULL now that the parameter is a pointer.
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c |  6 +++---
+ src/gallium/drivers/pvr_native/pvr_vm.c    | 18 +++++++++---------
+ src/gallium/drivers/pvr_native/pvr_vm.h    |  6 +++---
+ 3 files changed, 15 insertions(+), 15 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index 08008dcf..90ffe481 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -464,7 +464,7 @@ vm_roundtrip(int fd, const struct pvr_device_info *dev_info)
+             if (csb_addr != 0 &&
+                 pvr_vm_map(&vm, csb_addr, csb_bo.handle, csb_bo.size)) {
+                if (pvr_job_submit(&vm, gpu_ctx.handle, DRM_PVR_JOB_TYPE_GEOMETRY,
+-                                    csb_addr, 0, 0, 0)) {
++                                    NULL, 0, 0, 0)) {
+                   printf("vm:            SUBMIT_JOBS accepted a zero-length geometry "
+                          "job at 0x%" PRIx64 " - the submission path works\n",
+                          csb_addr);
+@@ -595,7 +595,7 @@ vm_roundtrip(int fd, const struct pvr_device_info *dev_info)
+             } else {
+                const uint32_t gl = pvr_geom_static_stream(rcsb.map, rcsb.size, ctl_addr, bct_addr,
+                                                           false, 0, false, 0, 0);
+-               if (pvr_job_submit(&vm, gpu_ctx.handle, DRM_PVR_JOB_TYPE_GEOMETRY, rcsb_addr, gl, dset_handle, 0)) {
++               if (pvr_job_submit(&vm, gpu_ctx.handle, DRM_PVR_JOB_TYPE_GEOMETRY, rcsb.map, gl, dset_handle, 0)) {
+                   printf("vm:            SUBMIT_JOBS ACCEPTED a real %u-byte geometry job at "
+                          "0x%" PRIx64 " (ctrl 0x%" PRIx64 ", border table 0x%" PRIx64 ") - the "
+                          "kernel validated the stream it was given\n",
+@@ -2376,7 +2376,7 @@ csb_check(int fd, struct pipe_screen *pscreen)
+        * cmd_stream_len). This assembles the pair and checks the headers agree with the lengths - the
+        * userspace half of job assembly. Submitting it needs the real kernel, not the shim. */
+       {
+-         uint8_t gjob[256], fjob[1024];
++         _Alignas(8) uint8_t gjob[256], fjob[1024];
+          static const uint64_t pbe1[3] = { 0x0200003c68800000ull, 0x0000001f0000001full, 0 };
+          const uint32_t gl = pvr_geom_static_stream(gjob, sizeof(gjob), 0x80003bf000ull,
+                                                     0x8000071000ull, false, 0, false, 0, 0);
+diff --git a/src/gallium/drivers/pvr_native/pvr_vm.c b/src/gallium/drivers/pvr_native/pvr_vm.c
+index 7f5d7b00..928f1435 100644
+--- a/src/gallium/drivers/pvr_native/pvr_vm.c
++++ b/src/gallium/drivers/pvr_native/pvr_vm.c
+@@ -345,13 +345,13 @@ pvr_gpu_context_destroy(struct pvr_vm *vm, struct pvr_gpu_context *ctx)
+ 
+ bool
+ pvr_job_submit(struct pvr_vm *vm, uint32_t context_handle, uint32_t job_type,
+-               uint64_t cmd_stream, uint32_t cmd_stream_len,
++               const void *cmd_stream, uint32_t cmd_stream_len,
+                uint32_t hwrt_set_handle, uint32_t hwrt_data_index)
+ {
+    struct drm_pvr_job job = {
+       .type = job_type,
+       .context_handle = context_handle,
+-      .cmd_stream = cmd_stream,
++      .cmd_stream = (uint64_t)(uintptr_t)cmd_stream,
+       .cmd_stream_len = cmd_stream_len,
+       .hwrt = {
+          .set_handle = hwrt_set_handle,
+@@ -367,7 +367,7 @@ pvr_job_submit(struct pvr_vm *vm, uint32_t context_handle, uint32_t job_type,
+    };
+ 
+    if (drmIoctl(vm->fd, DRM_IOCTL_PVR_SUBMIT_JOBS, &args) != 0) {
+-      mesa_loge("pvr: SUBMIT_JOBS type %u len %u at 0x%" PRIx64 " failed: %s", job_type,
++      mesa_loge("pvr: SUBMIT_JOBS type %u len %u at %p failed: %s", job_type,
+                 cmd_stream_len, cmd_stream, strerror(errno));
+       return false;
+    }
+@@ -379,19 +379,19 @@ pvr_job_submit(struct pvr_vm *vm, uint32_t context_handle, uint32_t job_type,
+  * (pvr_job.c:411: a non-zero cmd_stream AND cmd_stream_len), so both streams have to be real. */
+ bool
+ pvr_job_submit_render(struct pvr_vm *vm, uint32_t context_handle,
+-                      uint64_t geom_stream, uint32_t geom_len,
+-                      uint64_t frag_stream, uint32_t frag_len)
++                      const void *geom_stream, uint32_t geom_len,
++                      const void *frag_stream, uint32_t frag_len)
+ {
+    struct drm_pvr_job jobs[2] = {
+       {
+          .type = DRM_PVR_JOB_TYPE_GEOMETRY,
+          .context_handle = context_handle,
+-         .cmd_stream = geom_stream,
++         .cmd_stream = (uint64_t)(uintptr_t)geom_stream,
+          .cmd_stream_len = geom_len,
+       }, {
+          .type = DRM_PVR_JOB_TYPE_FRAGMENT,
+          .context_handle = context_handle,
+-         .cmd_stream = frag_stream,
++         .cmd_stream = (uint64_t)(uintptr_t)frag_stream,
+          .cmd_stream_len = frag_len,
+       },
+    };
+@@ -404,8 +404,8 @@ pvr_job_submit_render(struct pvr_vm *vm, uint32_t context_handle,
+    };
+ 
+    if (drmIoctl(vm->fd, DRM_IOCTL_PVR_SUBMIT_JOBS, &args) != 0) {
+-      mesa_loge("pvr: SUBMIT_JOBS render (geom %u B at 0x%" PRIx64 ", frag %u B at 0x%" PRIx64
+-                ") failed: %s", geom_len, geom_stream, frag_len, frag_stream, strerror(errno));
++      mesa_loge("pvr: SUBMIT_JOBS render (geom %u B at %p, frag %u B at %p) failed: %s",
++                geom_len, geom_stream, frag_len, frag_stream, strerror(errno));
+       return false;
+    }
+ 
+diff --git a/src/gallium/drivers/pvr_native/pvr_vm.h b/src/gallium/drivers/pvr_native/pvr_vm.h
+index 034a07b6..710522cd 100644
+--- a/src/gallium/drivers/pvr_native/pvr_vm.h
++++ b/src/gallium/drivers/pvr_native/pvr_vm.h
+@@ -127,10 +127,10 @@ bool pvr_hwrt_dataset_create(struct pvr_vm *vm, const struct pvr_hwrt_dataset_de
+                              uint32_t *handle_out);
+ 
+ bool pvr_job_submit_render(struct pvr_vm *vm, uint32_t context_handle,
+-                            uint64_t geom_stream, uint32_t geom_len,
+-                            uint64_t frag_stream, uint32_t frag_len);
++                            const void *geom_stream, uint32_t geom_len,
++                            const void *frag_stream, uint32_t frag_len);
+ bool pvr_job_submit(struct pvr_vm *vm, uint32_t context_handle, uint32_t job_type,
+-                    uint64_t cmd_stream, uint32_t cmd_stream_len,
++                    const void *cmd_stream, uint32_t cmd_stream_len,
+                     uint32_t hwrt_set_handle, uint32_t hwrt_data_index);
+ 
+ bool pvr_vm_init(int fd, struct pvr_vm *vm);
+-- 
+2.47.3
+

@@ -1,0 +1,59 @@
+From 3c710edd7f1a6ce3c077fe08a60ecbcb5ff2a08a Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sat, 17 Oct 2026 15:45:29 +0800
+Subject: [PATCH 170/269] vulkan/powervr: PVR_CSB_DUMP - hexdump the static
+ command streams
+
+Debug instrumentation for the gallium driver's job-assembly work, which had no working reference to
+compare against. Env-guarded, no behaviour change when unset, and the streams are inline byte arrays so
+this needs no buffer mapping.
+
+Captured output for a headless clear (see the recovery log):
+
+  geometry    len=40 : 00000028 00000000 000b9000 ...
+  fragment_pr len=384: 00000180 ...
+  fragment    len=384: (identical to fragment_pr)
+
+which decoded to "memcpy the PBE register block, then one CR_EVENT_PIXEL_PDS_DATA packet". Follows the
+existing PVR_JOB_TRACE precedent in the same file.
+---
+ .../winsys/powervr/pvr_drm_job_render.c       | 23 +++++++++++++++++++
+ 1 file changed, 23 insertions(+)
+
+diff --git a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c
+index 9559744e..bd2d5bc9 100644
+--- a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c
++++ b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c
+@@ -631,6 +631,29 @@ VkResult pvr_drm_winsys_render_submit(
+       }
+    }
+ 
++   /* ponytail: PVR_CSB_DUMP - hexdump the STATIC command streams a working driver submits.
++    * fw_stream is an inline byte array, so this needs no buffer mapping. This is ground truth for the
++    * gallium driver's missing job assembly, which otherwise has nothing to copy from. */
++   if (getenv("PVR_CSB_DUMP")) {
++      static unsigned long _d;
++      const struct { const char *what; const uint8_t *p; uint32_t len; } _st[] = {
++         { "geometry",    submit_info->geometry.fw_stream, submit_info->geometry.fw_stream_len },
++         { "fragment_pr", submit_info->fragment_pr.fw_stream, submit_info->fragment_pr.fw_stream_len },
++         { "fragment",    submit_info->fragment.fw_stream, submit_info->fragment.fw_stream_len },
++      };
++      if (_d++ < 40) {
++         for (unsigned _i = 0; _i < 3; _i++) {
++            if (!_st[_i].len) continue;
++            fprintf(stderr, "[csb] %s len=%u:", _st[_i].what, _st[_i].len);
++            for (uint32_t _b = 0; _b + 4 <= _st[_i].len && _b < 256; _b += 4) {
++               uint32_t _w; memcpy(&_w, &_st[_i].p[_b], 4);
++               fprintf(stderr, " %08x", _w);
++            }
++            fprintf(stderr, "\n");
++         }
++      }
++   }
++
+    /* Returns VK_ERROR_OUT_OF_DEVICE_MEMORY to match pvrsrv. */
+    return pvr_ioctlf(drm_ws->base.render_fd,
+                      DRM_IOCTL_PVR_SUBMIT_JOBS,
+-- 
+2.47.3
+

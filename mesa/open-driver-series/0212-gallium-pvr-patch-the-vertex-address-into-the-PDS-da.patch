@@ -1,0 +1,180 @@
+From d26949fbcd6103e6f53c2f7d2d38ff5f13219da7 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sat, 24 Oct 2026 08:38:52 +0800
+Subject: [PATCH 212/269] gallium/pvr: patch the vertex address into the PDS
+ data and point the VDM state at it
+
+Implements the mechanism found in pvr_arch_cmd_buffer.c: the vertex attribute program's const map
+carries VERTEX_ATTRIBUTE_ADDRESS entries with a const_offset, the vertex buffer's address is patched
+into the PDS data at that offset, and the VDM state's vs_data_addr names the patched DATA block - not the
+vertex buffer.
+
+  shader: vertex buffer uploaded at 0x9fffffe000 (3 positions, 36 bytes)
+  shader: vertex PDS data 32 B at 0x9fffffd000 (holds the patched attribute address)
+  RENDER SUBMIT ACCEPTED - target unchanged
+
+The target is still unchanged, and the reason found this round is not in any of this wiring: the probe's
+vertex shader computes a CONSTANT position and never reads the attribute. All three indices therefore
+produce the same vertex, the triangle is degenerate, and no pixel can be rasterised. The structure is
+right; the shader that would exercise it is not written yet.
+
+That is worth recording because it invalidates the previous round's two hypotheses - the unchanged target
+was never evidence about the clip or the VDM state pointer, since no draw could have produced pixels
+regardless.
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c  | 25 +++++++-
+ src/gallium/drivers/pvr_native/pvr_shader.c | 65 +++++++++++++++++++++
+ src/gallium/drivers/pvr_native/pvr_shader.h | 11 ++++
+ 3 files changed, 100 insertions(+), 1 deletion(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index 7e053770..be34b9d5 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -124,6 +124,8 @@ static uint32_t g_fs_doutu;
+ static uint64_t g_vertex_prog_addr;
+ /* The vertex buffer's device address (three positions, 3 floats each). */
+ static uint64_t g_vertex_data_addr;
++/* The patched PDS data block the VDM state points at - not the vertex buffer itself. */
++static uint64_t g_vertex_pds_data_addr;
+ 
+ static bool
+ 
+@@ -814,7 +816,7 @@ real_job_done:
+ 
+                      if (!pvr_csb_emit_pds_state_update(&ctl_csb, laddr, 0, 0, false) ||
+                          !pvr_csb_emit_pds_state_update(&ctl_csb, faddr, 0, 0, true) ||
+-                         !pvr_csb_emit_vdm_state(&ctl_csb, false, 0, g_vertex_data_addr != 0, g_vertex_data_addr, &vdm_words) ||
++                         !pvr_csb_emit_vdm_state(&ctl_csb, false, 0, g_vertex_pds_data_addr != 0, g_vertex_pds_data_addr, &vdm_words) ||
+                          !pvr_csb_emit_index_list(&ctl_csb, iaddr, 3, 1,
+                                                   ROGUE_VDMCTRL_INDEX_SIZE_B16) ||
+                          !pvr_csb_emit_stream_terminate(&ctl_csb))
+@@ -1273,6 +1275,27 @@ shader_compile_check(struct pipe_screen *pscreen)
+                      g_vertex_data_addr = daddr;
+                      printf("shader:        vertex buffer uploaded at 0x%" PRIx64 " (3 positions, 36 bytes)\n", daddr);
+                   }
++                  /* The VDM state points at THIS block, not at the buffer: the PDS data holds the
++                   * vertex address patched into the const map's const_offset. */
++                  {
++                     uint8_t vdata[256];
++                     const uint32_t dlen = pvr_shader_vertex_data(&scr->dev_info, daddr, vdata,
++                                                                  sizeof(vdata), 12, 12, 0);
++                     struct pvr_bo pbo = { 0 };
++                     uint64_t paddr = 0;
++
++                     if (dlen > 0 && pvr_bo_create(scr->fd, dlen, 1, &pbo) &&
++                         (paddr = pvr_vm_alloc(&scr->vm, pbo.size, scr->vm.general.page_size)) != 0 &&
++                         pvr_vm_map(&scr->vm, paddr, pbo.handle, pbo.size) &&
++                         pvr_bo_map(scr->fd, &pbo)) {
++                        memcpy(pbo.map, vdata, dlen);
++                        g_vertex_pds_data_addr = paddr;
++                        printf("shader:        vertex PDS data %u B at 0x%" PRIx64
++                               " (holds the patched attribute address)\n", dlen, paddr);
++                     } else {
++                        printf("shader:        FAIL: no vertex PDS data\n");
++                     }
++                  }
+                }
+                printf("shader:        vertex program uploaded at 0x%" PRIx64 "\n", vaddr);
+             } else {
+diff --git a/src/gallium/drivers/pvr_native/pvr_shader.c b/src/gallium/drivers/pvr_native/pvr_shader.c
+index 9093d470..ad33ab1d 100644
+--- a/src/gallium/drivers/pvr_native/pvr_shader.c
++++ b/src/gallium/drivers/pvr_native/pvr_shader.c
+@@ -38,6 +38,71 @@ pvr_shader_create(struct nir_shader *nir, pco_ctx *ctx)
+    return shader;
+ }
+ 
++uint32_t
++pvr_shader_vertex_data(const struct pvr_device_info *dev_info,
++                       uint64_t vertex_buffer_addr,
++                       void *data_out, uint32_t data_size,
++                       uint32_t stride, uint32_t attrib_bytes,
++                       uint8_t destination)
++{
++   struct pvr_pds_vertex_dma dma = {
++      .offset = 0,
++      .stride = stride,
++      .size_in_dwords = attrib_bytes / 4,
++      .attrib_size_in_bytes = attrib_bytes,
++      .destination = destination,
++      .binding_index = 0,
++      .divisor = 0,
++   };
++   struct pvr_pds_vertex_primary_program_input input = {
++      .dma_list = &dma,
++      .dma_count = 1,
++   };
++   struct pvr_pds_info info = { 0 };
++   const uint8_t *entries;
++   uint32_t produced;
++   int32_t remaining;
++
++   info.entries_size_in_bytes = 512;
++   info.entries = calloc(1, info.entries_size_in_bytes);
++   if (info.entries == NULL)
++      return 0;
++
++   /* Generate the program into a scratch buffer purely to obtain its const map. */
++   pvr_pds_generate_vertex_primary_program(&input, NULL, &info, false, dev_info);
++   produced = info.data_size_in_dwords * sizeof(uint32_t);
++
++   if (produced == 0 || produced > data_size) {
++      free(info.entries);
++      return 0;
++   }
++
++   memset(data_out, 0, produced);
++
++   /* Patch every vertex-attribute-address entry with the buffer's address plus that attribute's
++    * offset. A one-attribute program has exactly one, so other entry types are not walked - if a later
++    * program needs them this becomes the reference's switch, not a guess. */
++   entries = (const uint8_t *)info.entries;
++   remaining = (int32_t)info.entries_written_size_in_bytes;
++
++   while (remaining >= (int32_t)sizeof(struct pvr_const_map_entry_vertex_attribute_address)) {
++      const struct pvr_const_map_entry_vertex_attribute_address *e =
++         (const struct pvr_const_map_entry_vertex_attribute_address *)entries;
++
++      if (e->type == PVR_PDS_CONST_MAP_ENTRY_TYPE_VERTEX_ATTRIBUTE_ADDRESS &&
++          (uint32_t)e->const_offset + sizeof(uint64_t) <= produced) {
++         const uint64_t addr = vertex_buffer_addr + e->offset;
++         memcpy((uint8_t *)data_out + e->const_offset, &addr, sizeof(addr));
++      }
++
++      entries += sizeof(*e);
++      remaining -= sizeof(*e);
++   }
++
++   free(info.entries);
++   return produced;
++}
++
+ uint32_t
+ pvr_shader_vertex_program(const struct pvr_device_info *dev_info,
+                           void *dst, uint32_t dst_size,
+diff --git a/src/gallium/drivers/pvr_native/pvr_shader.h b/src/gallium/drivers/pvr_native/pvr_shader.h
+index ac85a361..91726154 100644
+--- a/src/gallium/drivers/pvr_native/pvr_shader.h
++++ b/src/gallium/drivers/pvr_native/pvr_shader.h
+@@ -51,6 +51,17 @@ uint32_t pvr_shader_vertex_program(const struct pvr_device_info *dev_info,
+                                    uint32_t stride, uint32_t attrib_bytes,
+                                    uint8_t destination);
+ 
++/* Builds the PDS DATA the vertex program reads: the const-map entries generated alongside the program,
++ * with the vertex buffer's address patched in at each entry's const_offset. The VDM state's
++ * vs_data_addr names THIS block, not the vertex buffer - that indirection is what took a round to find.
++ *
++ * Returns the data size in bytes, or 0. */
++uint32_t pvr_shader_vertex_data(const struct pvr_device_info *dev_info,
++                                uint64_t vertex_buffer_addr,
++                                void *data_out, uint32_t data_size,
++                                uint32_t stride, uint32_t attrib_bytes,
++                                uint8_t destination);
++
+ /* Runs the full pco pipeline over a NIR shader and returns the encoded binary.
+  *
+  * The sequence is the one the Vulkan driver uses (pvr_usc.c build_shader): preprocess,
+-- 
+2.47.3
+

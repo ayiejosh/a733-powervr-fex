@@ -1,0 +1,103 @@
+From c0947d140677ad90ffca88b12d2d2f39facecf4b Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 05:26:35 +0800
+Subject: [PATCH 110/269] gallium/pvr: link pco and hand its NIR options to
+ gallium
+
+Link libpowervr_compiler - pco, the ~25k-line NIR-based PowerVR compiler - and
+reach it from the screen, so the driver reuses the compiler rather than
+growing a second one. pco_nir_options() is exactly what gallium's
+screen->nir_options[] wants, so that is the call site; it is the hook the
+compiler plugs into, and shader compilation proper waits on the context path.
+
+Only pco_nir_options survives --gc-sections today, so the megadriver grows 3 KiB
+rather than the compiler's full size. The rest is retained as soon as something
+calls it, which is the point of linking rather than copying.
+
+Also corrects a comment that called the file next to the Vulkan winsys a second
+copy of the UAPI. It is that winsys's own struct header. The real synced header,
+include/drm-uapi/pvr_drm.h, differs from a stock kernel only by this project's
+local DRM_PVR_BO_CPU_CACHED addition; the dev-query structs match the running
+kernel byte for byte, and sizeof(struct drm_pvr_dev_query_gpu_info) is 16 on
+both sides against the kernel's 12-byte minimum, so the enumeration's single
+call with .size = sizeof(query) is correct.
+---
+ src/gallium/drivers/pvr/meson.build  | 12 ++++++------
+ src/gallium/drivers/pvr/pvr_screen.c | 19 +++++++++++++++++--
+ 2 files changed, 23 insertions(+), 8 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr/meson.build b/src/gallium/drivers/pvr/meson.build
+index 7a3dbac6..f3643793 100644
+--- a/src/gallium/drivers/pvr/meson.build
++++ b/src/gallium/drivers/pvr/meson.build
+@@ -2,8 +2,7 @@
+ # SPDX-License-Identifier: MIT
+ #
+ # SKELETON: milestone 1 is that this builds in-tree, registers a pipe_screen and
+-# enumerates the device. src/imagination/pco (the NIR-based PowerVR compiler, ~25k
+-# lines) is the piece to link against next, not to rewrite.
++# enumerates the device. The pieces below are linked and reused, not rewritten.
+ 
+ files_pvr = files(
+   'pvr_screen.c',
+@@ -14,10 +13,11 @@ libpvr = static_library(
+   files_pvr,
+   include_directories : [inc_gallium_aux, inc_gallium, inc_include, inc_src, inc_imagination],
+   gnu_symbol_visibility : 'hidden',
+-  # libpowervr_common is src/imagination/common: the .pdsc-generated device tables
+-  # and helpers the Vulkan driver also uses.
+-  dependencies : [idep_mesautil, dep_libdrm],
+-  link_with : [libpowervr_common],
++  # libpowervr_common: src/imagination/common - the .pdsc-generated device tables.
++  # libpowervr_compiler: pco - the NIR-based PowerVR compiler, ~25k lines, the
++  # same one the Vulkan driver uses. Linked here rather than rewritten.
++  dependencies : [idep_mesautil, idep_nir_headers, dep_libdrm],
++  link_with : [libpowervr_common, libpowervr_compiler],
+ )
+ 
+ driver_pvr = declare_dependency(
+diff --git a/src/gallium/drivers/pvr/pvr_screen.c b/src/gallium/drivers/pvr/pvr_screen.c
+index ca1e5acf..cae6ba84 100644
+--- a/src/gallium/drivers/pvr/pvr_screen.c
++++ b/src/gallium/drivers/pvr/pvr_screen.c
+@@ -14,13 +14,22 @@
+ 
+ #include <xf86drm.h>
+ 
+-/* The kernel UAPI, from Mesa's synced copy - the same header the Vulkan driver uses.
+- * Deliberately NOT the copy inside src/imagination/vulkan/winsys/powervr/. */
++/* The kernel UAPI, from Mesa's synced copy - the same header the Vulkan driver's
++ * winsys includes. It differs from a stock kernel only by this project's local
++ * DRM_PVR_BO_CPU_CACHED addition; the dev-query structs are byte-identical to the
++ * running kernel's (sizeof(drm_pvr_dev_query_gpu_info) is 16 on both sides, and the
++ * kernel's minimum accepted size for it is 12, so passing sizeof is correct).
++ * Note the file next to the Vulkan winsys is that winsys's own struct header, not a
++ * second copy of the UAPI. */
+ #include "drm-uapi/pvr_drm.h"
+ 
+ #include "util/u_memory.h"
+ #include "util/os_file.h"
+ #include "util/log.h"
++#include "util/macros.h"
++
++/* pco: the PowerVR compiler from src/imagination/pco, linked rather than rewritten. */
++#include "pco/pco.h"
+ 
+ static const char *
+ pvr_get_name(struct pipe_screen *pscreen)
+@@ -89,6 +98,12 @@ pvr_screen_create(int fd, const struct pipe_screen_config *config,
+    }
+    mesa_logi("pvr: pvr_screen_create fd=%d -> %s (skeleton: no draw path)", fd, screen->name);
+ 
++   /* Where pco plugs into gallium: the compiler's NIR options, handed to the state
++    * tracker. This is the one place the linked compiler is reached from the screen;
++    * shader compilation itself needs the context path, which does not exist yet. */
++   for (unsigned i = 0; i < ARRAY_SIZE(screen->base.nir_options); i++)
++      screen->base.nir_options[i] = pco_nir_options();
++
+    screen->base.destroy = pvr_destroy_screen;
+    screen->base.get_name = pvr_get_name;
+    screen->base.get_vendor = pvr_get_vendor;
+-- 
+2.47.3
+

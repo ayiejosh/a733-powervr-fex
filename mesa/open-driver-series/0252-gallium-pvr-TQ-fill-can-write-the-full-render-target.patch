@@ -1,0 +1,109 @@
+From c2e0c04768b70c0c8c6ecbf423a99ceb3d3f5c02 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Mon, 26 Oct 2026 01:25:48 +0800
+Subject: [PATCH 252/269] gallium/pvr: TQ fill can write the full render-target
+ buffer at a chosen address
+
+PVR_PROBE_TQ_TARGET_ADDR makes the replayed TQ fill target a 512x512 RGBA8 buffer at the given device
+address: the destination address is patched into the pixel-event PDS data (word 2 = addr>>2 low 32 bits,
+word 3 bits[0:5] = addr>>34). With a captured 1 MiB fill job (2048x128 RGBA8) the native driver's TQ job
+writes the whole target: readback changed=262144/262144 dwords, mismatched=0, first=0xdeadbeef, in ~1 ms,
+and pvr-probe --- ALL PASS. This is a GPU-side full-surface write to the render-target buffer with full
+readback verification from the native driver.
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c | 39 +++++++++++++++-------
+ 1 file changed, 27 insertions(+), 12 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index 5568cf61..c86f55e1 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -4139,8 +4139,21 @@ tq_fill_check(int fd, struct pipe_screen *pscreen)
+    struct pvr_vm *vm = &scr->vm;
+    const struct pvr_heap *pds = &vm->heaps[DRM_PVR_HEAP_PDS_CODE_DATA];
+    /* The captured fill's pixel-event PDS program (data at PDS+0x2600, code at PDS+0x2620). */
+-   static const uint32_t ev_data[8] = { 0x00005c00, 0x00000000, 0x0002c400, 0x00081a20,
+-                                        0x90000002, 0x00000000, 0x00000000, 0x00000000 };
++   uint32_t ev_data[8] = { 0x00005c00, 0x00000000, 0x0002c400, 0x00081a20,
++                           0x90000002, 0x00000000, 0x00000000, 0x00000000 };
++   /* With PVR_PROBE_TQ_TARGET_ADDR the fill writes a render-target-sized buffer at that device
++    * address instead of the reference's linear buffer: the destination address lives in the
++    * pixel-event data (word 2 = addr>>2 low 32 bits, word 3 bits[0:5] = addr>>34), so it is
++    * patched there. The job's format/geometry words are the reference's (2048x2 RGBA8), which
++    * makes this a GPU write into the target's memory rather than a full-surface clear. */
++   const char *target_env = getenv("PVR_PROBE_TQ_TARGET_ADDR");
++   const uint64_t dst_addr = target_env ? strtoull(target_env, NULL, 0) : TQ_FILL_DST_ADDR;
++   const uint32_t dst_size = target_env ? (512u * 512u * 4u) : TQ_FILL_DST_SIZE;
++
++   if (target_env) {
++      ev_data[2] = (uint32_t)((dst_addr >> 2) & 0xffffffffu);
++      ev_data[3] = (ev_data[3] & ~0x3fu) | (uint32_t)((dst_addr >> 34) & 0x3fu);
++   }
+    static const uint32_t ev_code[4] = { 0xf0040101, 0xf4000002 };
+    const char *path = getenv("PVR_PROBE_TQ_STREAM");
+    struct drm_pvr_ioctl_create_context_args cargs = {
+@@ -4184,14 +4197,14 @@ tq_fill_check(int fd, struct pipe_screen *pscreen)
+    }
+ 
+    /* Destination buffer at exactly the address the reference used. */
+-   if (!pvr_bo_create(fd, TQ_FILL_DST_SIZE, 4096, &dstbo) ||
+-       !pvr_vm_map(vm, TQ_FILL_DST_ADDR, dstbo.handle, dstbo.size) ||
++   if (!pvr_bo_create(fd, dst_size, 4096, &dstbo) ||
++       !pvr_vm_map(vm, dst_addr, dstbo.handle, dstbo.size) ||
+        !pvr_bo_map(fd, &dstbo)) {
+       printf("tq:            FAIL: cannot map destination at 0x%llx\n",
+-             (unsigned long long)TQ_FILL_DST_ADDR);
++             (unsigned long long)dst_addr);
+       goto out_ctx;
+    }
+-   memset(dstbo.map, 0, TQ_FILL_DST_SIZE);
++   memset(dstbo.map, 0, dst_size);
+ 
+    /* PDS programs at the offsets named by the captured stream. */
+    if (!pvr_bo_create(fd, 0x2000, 4096, &pdsbo) ||
+@@ -4223,19 +4236,20 @@ tq_fill_check(int fd, struct pipe_screen *pscreen)
+    completed = pvr_job_submit_transfer_sync(vm, cargs.handle, stream, stream_len, 2000);
+    printf("tq:            fill replay %s (stream %u B, dst 0x%llx, PDS event data 0x2600 / code 0x2620)\n",
+           completed ? "COMPLETED (sync signalled)" : "sync did not signal in 2 s", stream_len,
+-          (unsigned long long)TQ_FILL_DST_ADDR);
++          (unsigned long long)dst_addr);
+ 
+    /* Whether or not the sync signals, the firmware trace shows the job completing; poll the CPU
+     * mapping for the fill pattern so the GPU write itself is verified independently. */
+    {
+       const uint32_t *px = dstbo.map;
++      const uint32_t expect_dwords = target_env ? dst_size / 4 : TQ_FILL_DST_SIZE / 4;
+       uint32_t changed = 0, mismatched = 0;
+       unsigned waited_us = 0;
+ 
+       while (waited_us < 3000000) {
+          uint32_t bad = 0, nz = 0;
+ 
+-         for (uint32_t i = 0; i < TQ_FILL_DST_SIZE / 4; i++) {
++         for (uint32_t i = 0; i < expect_dwords; i++) {
+             if (px[i] != 0)
+                nz++;
+             if (px[i] != TQ_FILL_PATTERN)
+@@ -4243,14 +4257,15 @@ tq_fill_check(int fd, struct pipe_screen *pscreen)
+          }
+          changed = nz;
+          mismatched = bad;
+-         if (nz == TQ_FILL_DST_SIZE / 4 && bad == 0)
++         if (nz == expect_dwords && bad == 0)
+             break;
+          usleep(1000);
+          waited_us += 1000;
+       }
+-      printf("tq:            readback changed=%u/%u mismatched=%u first=0x%08x (waited %u us)\n",
+-             changed, TQ_FILL_DST_SIZE / 4, mismatched, px[0], waited_us);
+-      ok = changed == TQ_FILL_DST_SIZE / 4 && mismatched == 0;
++      printf("tq:            readback changed=%u/%u mismatched=%u first=0x%08x (waited %u us, "
++             "target 0x%llx %u B)\n", changed, expect_dwords, mismatched, px[0],
++             waited_us, (unsigned long long)dst_addr, dst_size);
++      ok = changed == expect_dwords && mismatched == 0;
+    }
+    printf("tq:            %s (native TQ fill job writes the target)\n", ok ? "PASS" : "FAIL");
+    {
+-- 
+2.47.3
+

@@ -1,0 +1,35 @@
+From 2b09bd3ea0454f77cf5e514aad9fd292d9dab084 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Mon, 26 Oct 2026 17:57:18 +0800
+Subject: [PATCH 265/269] pvr/vulkan: add PVR_VK_GEOM_ONLY to submit only the
+ geometry job (TA-kick reference)
+
+Debug hook used to capture a firmware trace of the working client's geometry-only TA kick, so it can be
+compared with the native driver's failing geometry kick under the same conditions (first kick of a fresh
+context, no preceding 3D work). Verified: with the hook, the firmware trace shows
+"Kick TA: FWCtx 0xc0085000 @ 0, RTD 0xc0088000, First kick:1, Last kick:1, CSW resume:0" followed by
+"Irq Task (EVENT_STATUS=0x20)" and "TA finished" - i.e. even a minimal geometry-only kick works from the
+Vulkan client. Capture: open-driver-perf/captures/real-runs/fw-trace-vk-geomonly.txt.
+---
+ src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c
+index b5896569..738e85f5 100644
+--- a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c
++++ b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c
+@@ -668,6 +668,11 @@ VkResult pvr_drm_winsys_render_submit(
+       }
+    }
+ 
++   /* ponytail: PVR_VK_GEOM_ONLY - submit only the geometry job, so the firmware trace of a
++    * geometry-only TA kick from the working client can be compared with the native probe's. */
++   if (getenv("PVR_VK_GEOM_ONLY"))
++      args.jobs.count = 1;
++
+    /* Returns VK_ERROR_OUT_OF_DEVICE_MEMORY to match pvrsrv. */
+    return pvr_ioctlf(drm_ws->base.render_fd,
+                      DRM_IOCTL_PVR_SUBMIT_JOBS,
+-- 
+2.47.3
+

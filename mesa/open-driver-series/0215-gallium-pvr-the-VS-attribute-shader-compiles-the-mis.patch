@@ -1,0 +1,612 @@
+From 38081339697e0b55497bac4f9830381fff5c7951 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sat, 24 Oct 2026 22:01:10 +0800
+Subject: [PATCH 215/269] gallium/pvr: the VS attribute shader compiles - the
+ missing piece was pco_data, not SPIR-V
+
+The handoff's next step was "build the VS from SPIR-V so the input carries the metadata pco's
+PVFIO pass expects". That hypothesis was wrong, and the real cause is smaller: the driver passed a
+zeroed pco_data into pco, so pco_nir_pvi() had no attrib_formats[] entry for the attribute location
+and skipped it, and trans_load_input_vs() had no attribs[] range to name. The load was then never
+lowered and the encoder produced a shader identical to a constant-position one. No SPIR-V detour is
+needed; hand-built NIR works once the driver fills its half of the interface.
+
+pvr_shader_init_vs_data() fills that half from the shader's declared inputs, the same two facts the
+Vulkan driver fills from pipeline state (pvr_alloc_vs_attribs / pvr_init_vs_attribs).
+
+One thing that looks like a bug but is not: pco_ra() forces hw_vtxins = 0 ("FIXME: Temporarily
+disable vtxin allocation due to vec handling bug"), so the entry function's vtxins is 0 even when
+the shader reads attributes - the loads address the vtxin registers directly. What the hardware
+state needs is the driver-side range count, so pvr_shader.vtxins now carries
+pco_data.common.vtxins and the probe requires 3 for its vec3 attribute.
+
+Also completes the vertex fetch chain: pvr_shader_vertex_data() now patches the const map by entry
+TYPE (the old walk advanced by one entry's size through a mixed list - it only worked by luck) and
+patches the DOUTU_ADDRESS entry with the shader's USC offset, which is the instruction that
+actually starts the VS after the fetch. Before this the attribute program ran and kicked nothing.
+
+Verification (DRM noop shim, no GPU): probe exits 0, ALL PASS; VS reports vtxins=3; PDS data is
+32 B with DOUTU -> 0x1000, the VS's USC offset; and the probe now requires the attribute VS binary
+to differ from a constant-position VS, which is exactly the silent symptom that cost two rounds.
+
+Next: the first draw needs the VDM state's VS half (vs_other_present with STATE3 code address,
+STATE4 vtxouts, STATE5 sizes, STATE0 cam_size) and TA state, and the draw test must drop the
+standalone VS launcher in favour of that chain. Those are first-draw work, not compiler work.
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c  | 134 ++++++++---
+ src/gallium/drivers/pvr_native/pvr_shader.c | 249 +++++++++++++++-----
+ src/gallium/drivers/pvr_native/pvr_shader.h |  25 +-
+ 3 files changed, 315 insertions(+), 93 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index 1beaf556..6a84f147 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -126,6 +126,13 @@ static uint64_t g_vertex_prog_addr;
+ static uint64_t g_vertex_data_addr;
+ /* The patched PDS data block the VDM state points at - not the vertex buffer itself. */
+ static uint64_t g_vertex_pds_data_addr;
++/* What the compiled vertex shader needs from the PDS vertex program: its temp count goes into the
++ * program's DOUTU control word, and the attribute DMA writes the vtxin registers the shader reads.
++ * Set by the shader check, consumed by the draw test. */
++static unsigned g_vs_temps;
++static unsigned g_vs_vtxins;
++/* The VS binary's offset within the USC heap, which is the address its DOUTU takes. */
++static uint32_t g_vs_usc_offset;
+ 
+ static bool
+ 
+@@ -1227,16 +1234,24 @@ shader_compile_check(struct pipe_screen *pscreen)
+       unsigned vsize = 0;
+       nir_builder vb = nir_builder_init_simple_shader(MESA_SHADER_VERTEX, pco_nir_options(),
+                                                       "vs_probe");
+-      /* ponytail: CONSTANT position. A shader that reads the position attribute cannot be compiled
+-       * today: nir_load_input (with or without an explicit nir_variable) crashes pco's register
+-       * allocator, and with the variable the load is dropped anyway (56 bytes, vtxins=0 - identical to
+-       * the constant version). So the fetch path is wired but unexercised, and this shader stays
+-       * constant so the rest of the probe remains verifiable.
+-       *
+-       * The real fix is to build the vertex shader the way the Vulkan driver does, rather than by hand:
+-       * its NIR has gone through spirv-to-nir with the input metadata pco's PVFIO pass expects. */
+-      nir_def *pos = nir_vec4(&vb, nir_imm_float(&vb, 0.0f), nir_imm_float(&vb, 0.5f),
+-                              nir_imm_float(&vb, 0.0f), nir_imm_float(&vb, 1.0f));
++      /* The shader reads the position attribute - the point of milestone 2. Two facts are needed
++       * for pco's per-vertex-input pass to lower it, and neither is discoverable from the load
++       * alone: the shader_in variable (the pass takes the attribute's type from it) and the
++       * driver-filled ranges/formats in pco_data (see pvr_shader_init_vs_data). This is the shape
++       * the Vulkan driver's spirv-to-nir output ends up with, reached without a SPIR-V detour. */
++      {
++         nir_variable *in = nir_variable_create(vb.shader, nir_var_shader_in,
++                                                glsl_vec_type(3), "position");
++         in->data.location = VERT_ATTRIB_GENERIC0;
++         vb.shader->info.inputs_read |= BITFIELD64_BIT(VERT_ATTRIB_GENERIC0);
++      }
++      nir_def *attrib = nir_load_input(&vb, 3, 32, nir_imm_int(&vb, 0),
++                                       .io_semantics = (nir_io_semantics){
++                                          .location = VERT_ATTRIB_GENERIC0,
++                                          .num_slots = 1,
++                                       });
++      nir_def *pos = nir_vec4(&vb, nir_channel(&vb, attrib, 0), nir_channel(&vb, attrib, 1),
++                              nir_channel(&vb, attrib, 2), nir_imm_float(&vb, 1.0f));
+       {
+          nir_variable *outv = nir_variable_create(vb.shader, nir_var_shader_out,
+                                                   glsl_vec4_type(), "gl_Position");
+@@ -1283,27 +1298,6 @@ shader_compile_check(struct pipe_screen *pscreen)
+                      g_vertex_data_addr = daddr;
+                      printf("shader:        vertex buffer uploaded at 0x%" PRIx64 " (3 positions, 36 bytes)\n", daddr);
+                   }
+-                  /* The VDM state points at THIS block, not at the buffer: the PDS data holds the
+-                   * vertex address patched into the const map's const_offset. */
+-                  {
+-                     uint8_t vdata[256];
+-                     const uint32_t dlen = pvr_shader_vertex_data(&scr->dev_info, daddr, vdata,
+-                                                                  sizeof(vdata), 12, 12, 0);
+-                     struct pvr_bo pbo = { 0 };
+-                     uint64_t paddr = 0;
+-
+-                     if (dlen > 0 && pvr_bo_create(scr->fd, dlen, 1, &pbo) &&
+-                         (paddr = pvr_vm_alloc(&scr->vm, pbo.size, scr->vm.general.page_size)) != 0 &&
+-                         pvr_vm_map(&scr->vm, paddr, pbo.handle, pbo.size) &&
+-                         pvr_bo_map(scr->fd, &pbo)) {
+-                        memcpy(pbo.map, vdata, dlen);
+-                        g_vertex_pds_data_addr = paddr;
+-                        printf("shader:        vertex PDS data %u B at 0x%" PRIx64
+-                               " (holds the patched attribute address)\n", dlen, paddr);
+-                     } else {
+-                        printf("shader:        FAIL: no vertex PDS data\n");
+-                     }
+-                  }
+                }
+                printf("shader:        vertex program uploaded at 0x%" PRIx64 "\n", vaddr);
+             } else {
+@@ -1317,8 +1311,45 @@ shader_compile_check(struct pipe_screen *pscreen)
+       struct pvr_shader *vobj = pvr_shader_create(vb.shader, screen->pco_ctx);
+ 
+       if (vobj != NULL) {
++         g_vs_temps = vobj->temps;
++         g_vs_vtxins = vobj->vtxins;
+          printf("shader:        pco encoded %u bytes of USC for a VERTEX shader; PDS kick needs "
+                 "temps=%u vtxins=%u\n", vobj->binary_size, vobj->temps, vobj->vtxins);
++
++         /* The milestone-2 blocker: a vertex shader that reads an attribute has to come out with
++          * the attribute's three components allocated as vtxin registers. vtxins == 0 is the old
++          * symptom (load dropped, shader identical to a constant one). */
++         if (vobj->vtxins != 3) {
++            printf("shader:        FAIL: the VS reads one vec3 attribute but allocated %u vtxins\n",
++                   vobj->vtxins);
++            ok = false;
++         }
++
++         /* The failure mode that cost two rounds was silent: the attribute load was dropped and
++          * the binary was byte-identical to a shader that reads no attributes. Require the two to
++          * differ, not just to compile. */
++         {
++            nir_builder cb = nir_builder_init_simple_shader(MESA_SHADER_VERTEX, pco_nir_options(),
++                                                            "vs_constant_check");
++            nir_variable *outc = nir_variable_create(cb.shader, nir_var_shader_out,
++                                                     glsl_vec4_type(), "gl_Position");
++            outc->data.location = VARYING_SLOT_POS;
++            nir_store_var(&cb, outc, nir_imm_vec4(&cb, 0.0f, 0.5f, 0.0f, 1.0f), 0xf);
++            cb.shader->info.internal = false;
++
++            struct pvr_shader *cobj = pvr_shader_create(cb.shader, screen->pco_ctx);
++
++            if (cobj == NULL) {
++               printf("shader:        FAIL: the constant-control VS did not compile\n");
++               ok = false;
++            } else if (cobj->binary_size == vobj->binary_size &&
++                       memcmp(cobj->binary, vobj->binary, vobj->binary_size) == 0) {
++               printf("shader:        FAIL: the attribute VS encoded byte-identical to a constant "
++                      "VS - the load was dropped\n");
++               ok = false;
++            }
++            ralloc_free(cb.shader);
++         }
+       /* Upload the VS into the USC code heap's USABLE area, which is what the doutu offset is
+        * relative to. The firmware's static areas occupy the carveout at the heap base, so the first
+        * byte a shader may use is base + (size - usable_size), and that carveout size IS the offset the
+@@ -1339,9 +1370,47 @@ shader_compile_check(struct pipe_screen *pscreen)
+ 
+             if (pvr_vm_map(&scr2->vm, dst, ubo.handle, ubo.size) && pvr_bo_map(scr2->fd, &ubo)) {
+                memcpy(ubo.map, vobj->binary, vobj->binary_size);
++               g_vs_usc_offset = (uint32_t)doutu;
+                printf("shader:        VS USC uploaded into the USC heap usable area at 0x%" PRIx64
+                       "; doutu offset = 0x%" PRIx64 "\n", dst, doutu);
+ 
++               /* The attribute program's DATA segment. It has to be built after the shader is
++                * placed: it carries both the vertex buffer's address and the shader's USC offset
++                * (in the DOUTU entry), which is what makes the fetch program start the VS that
++                * reads what was fetched. */
++               if (g_vertex_data_addr != 0) {
++                  uint8_t vdata[256];
++                  struct pvr_screen *scr3 = pvr_screen(pscreen);
++                  const uint32_t dlen = pvr_shader_vertex_data(
++                     &scr3->dev_info, g_vertex_data_addr, g_vs_usc_offset, vdata, sizeof(vdata),
++                     12, 12, 0, g_vs_temps);
++                  struct pvr_bo pbo = { 0 };
++                  uint64_t paddr = 0;
++
++                  if (dlen > 0 && pvr_bo_create(scr3->fd, dlen, 1, &pbo) &&
++                      (paddr = pvr_vm_alloc(&scr3->vm, pbo.size, scr3->vm.general.page_size)) != 0 &&
++                      pvr_vm_map(&scr3->vm, paddr, pbo.handle, pbo.size) &&
++                      pvr_bo_map(scr3->fd, &pbo)) {
++                     memcpy(pbo.map, vdata, dlen);
++                     g_vertex_pds_data_addr = paddr;
++
++                     /* The DOUTU entry is patched with the VS's USC offset in the instruction's
++                      * own encoding: bits [2:31] are the offset with the low two bits clear. */
++                     const uint32_t doutu_word = *(const uint32_t *)vdata;
++                     printf("shader:        vertex PDS data %u B at 0x%" PRIx64
++                            " (attribute address + DOUTU -> 0x%x)\n",
++                            dlen, paddr, doutu_word & ~3u);
++                     if ((doutu_word & ~3u) != g_vs_usc_offset) {
++                        printf("shader:        FAIL: PDS DOUTU address 0x%x is not the VS offset "
++                               "0x%x\n", doutu_word & ~3u, g_vs_usc_offset);
++                        ok = false;
++                     }
++                  } else {
++                     printf("shader:        FAIL: no vertex PDS data\n");
++                     ok = false;
++                  }
++               }
++
+                /* The FS goes into the heap after the VS, on the next page. Same contract: the offset
+                 * is relative to the heap base and the launcher must name it. */
+                {
+@@ -1373,7 +1442,8 @@ shader_compile_check(struct pipe_screen *pscreen)
+             const uint32_t llen = pvr_shader_pds_launcher(vobj, 0, launcher, sizeof(launcher));
+ 
+             if (llen > 0)
+-               printf("shader:        PDS launcher for the VS: %u bytes (zero temps)\n", llen);
++               printf("shader:        PDS launcher for the VS: %u bytes (temps=%u)\n", llen,
++                      g_vs_temps);
+             else
+                printf("shader:        FAIL: no PDS launcher for the VS\n");
+          }
+diff --git a/src/gallium/drivers/pvr_native/pvr_shader.c b/src/gallium/drivers/pvr_native/pvr_shader.c
+index d3e2dc64..5d4c845d 100644
+--- a/src/gallium/drivers/pvr_native/pvr_shader.c
++++ b/src/gallium/drivers/pvr_native/pvr_shader.c
+@@ -12,40 +12,114 @@
+ 
+ #include "util/log.h"
+ 
++static bool pvr_shader_compile_data(pco_ctx *ctx, struct nir_shader *nir,
++                                    pco_data *data, pco_shader **shader_out,
++                                    const void **data_out, unsigned *size_out);
++
++/* Fills the driver half of pco's vertex-input interface. pco cannot discover either fact from the
++ * NIR alone: pco_nir_pvi() synthesises the fetch/convert instructions only for attribute locations
++ * whose attrib_formats[] entry is not NONE, and pco_trans_nir.c's trans_load_input_vs() names the
++ * vtxin registers through attribs[]. The Vulkan driver fills both from pipeline state
++ * (pvr_alloc_vs_attribs / pvr_init_vs_attribs); this is the same data from the same source, the
++ * shader's declared inputs.
++ *
++ * ponytail: the format is derived from the declared type instead of taken from vertex element
++ * state, so only 32-bit float attributes are described. A GL vertex element can disagree (half,
++ * int, normalised), which is a different format, not a different count - when the frontend feeds
++ * real vertex elements, pass their pipe_format in here instead of deriving it. */
++static enum pipe_format
++pvr_shader_attr_format(const struct glsl_type *type)
++{
++   const struct glsl_type *scalar = glsl_without_array(type);
++
++   if (!glsl_type_is_vector_or_scalar(scalar) || glsl_get_bit_size(scalar) != 32 ||
++       !glsl_base_type_is_float(glsl_get_base_type(scalar)))
++      return PIPE_FORMAT_NONE;
++
++   switch (glsl_get_vector_elements(scalar)) {
++   case 1: return PIPE_FORMAT_R32_FLOAT;
++   case 2: return PIPE_FORMAT_R32G32_FLOAT;
++   case 3: return PIPE_FORMAT_R32G32B32_FLOAT;
++   case 4: return PIPE_FORMAT_R32G32B32A32_FLOAT;
++   default: return PIPE_FORMAT_NONE;
++   }
++}
++
++static void
++pvr_shader_alloc_vs_range(pco_range *ranges, unsigned *counter, nir_variable *var)
++{
++   unsigned slots = glsl_count_dword_slots(var->type, false);
++
++   ranges[var->data.location] = (pco_range){ .start = *counter, .count = slots };
++   *counter += slots;
++}
++
++static void
++pvr_shader_init_vs_data(struct nir_shader *nir, pco_data *data)
++{
++   nir_foreach_shader_in_variable (var, nir) {
++      /* The arrays are indexed by the GL attribute/varying enum, and NIR can carry a location
++       * outside it (a driver bug or a malformed shader). Skip rather than write out of bounds. */
++      if (var->data.location < 0 || var->data.location >= VERT_ATTRIB_MAX)
++         continue;
++
++      pvr_shader_alloc_vs_range(data->vs.attribs, &data->common.vtxins, var);
++      data->vs.attrib_formats[var->data.location] =
++         pvr_shader_attr_format(var->type);
++   }
++
++   /* GL writes gl_Position; the other built-in outputs (point size, layer, clip distances) and
++    * generic varyings get their ranges when the frontend links them - pco only needs the ranges of
++    * the outputs the shader actually writes. */
++   nir_foreach_shader_out_variable (var, nir) {
++      if (var->data.location == VARYING_SLOT_POS)
++         pvr_shader_alloc_vs_range(data->vs.varyings, &data->vs.vtxouts, var);
++   }
++}
++
+ struct pvr_shader *
+ pvr_shader_create(struct nir_shader *nir, pco_ctx *ctx)
+ {
+    struct pvr_shader *shader = calloc(1, sizeof(*shader));
++   pco_data data = { 0 };
+ 
+    if (shader == NULL)
+       return NULL;
+ 
+-   if (!pvr_shader_compile(ctx, nir, &shader->pco, &shader->binary,
+-                           &shader->binary_size)) {
++   if (nir->info.stage == MESA_SHADER_VERTEX)
++      pvr_shader_init_vs_data(nir, &data);
++
++   if (!pvr_shader_compile_data(ctx, nir, &data, &shader->pco, &shader->binary,
++                                &shader->binary_size)) {
+       free(shader);
+       return NULL;
+    }
+ 
+-   /* The entry function is the first in the list; its temps and vertex-input counts are what the
+-    * PDS kick program is built from. */
++   /* The entry function is the first in the list; its temps are what the PDS kick program is built
++    * from. The vtxin count is the driver-side attribute allocation above: pco's register allocator
++    * currently allocates no vtxins of its own (pco_ra.c has a FIXME that disables it), because the
++    * attribute loads read the vtxin registers directly - so the range count is the number the
++    * hardware state needs, and the function-level count is always 0 for these shaders. */
+    if (shader->pco != NULL && !list_is_empty(&shader->pco->funcs)) {
+       struct _pco_func *entry = list_first_entry(&shader->pco->funcs, struct _pco_func, link);
+ 
+       shader->temps = entry->temps;
+-      shader->vtxins = entry->vtxins;
++      shader->vtxins = data.common.vtxins;
+    }
+ 
+    return shader;
+ }
+ 
+-uint32_t
+-pvr_shader_vertex_data(const struct pvr_device_info *dev_info,
+-                       uint64_t vertex_buffer_addr,
+-                       void *data_out, uint32_t data_size,
+-                       uint32_t stride, uint32_t attrib_bytes,
+-                       uint8_t destination)
++/* The one-attribute vertex DMA both builders are generated from. Shared so the code and its data
++ * segment always describe the same fetch: a program patched against a different DMA than it was
++ * generated for is a mismatch nothing downstream would catch. */
++static void
++pvr_shader_vertex_primary_input(struct pvr_pds_vertex_primary_program_input *input,
++                                struct pvr_pds_vertex_dma *dma,
++                                uint32_t stride, uint32_t attrib_bytes,
++                                uint8_t destination, uint32_t usc_temps)
+ {
+-   struct pvr_pds_vertex_dma dma = {
++   *dma = (struct pvr_pds_vertex_dma){
+       .offset = 0,
+       .stride = stride,
+       .size_in_dwords = attrib_bytes / 4,
+@@ -54,14 +128,33 @@ pvr_shader_vertex_data(const struct pvr_device_info *dev_info,
+       .binding_index = 0,
+       .divisor = 0,
+    };
+-   struct pvr_pds_vertex_primary_program_input input = {
+-      .dma_list = &dma,
++   *input = (struct pvr_pds_vertex_primary_program_input){
++      .dma_list = dma,
+       .dma_count = 1,
+    };
++
++   /* The DOUTU that ends the attribute program is what starts the vertex shader. Its execution
++    * address and temp count live in the DATA segment's DOUTU_ADDRESS entry (patched by
++    * pvr_shader_vertex_data), not in the code - so the code builder can pass 0 for usc_temps. */
++   pvr_pds_setup_doutu(&input->usc_task_control, 0, usc_temps,
++                       PVR_ROGUE_PDSINST_DOUT_FIELDS_DOUTU_SAMPLE_RATE_INSTANCE, false);
++}
++
++uint32_t
++pvr_shader_vertex_data(const struct pvr_device_info *dev_info,
++                       uint64_t vertex_buffer_addr, uint64_t usc_exec_addr,
++                       void *data_out, uint32_t data_size,
++                       uint32_t stride, uint32_t attrib_bytes,
++                       uint8_t destination, uint32_t usc_temps)
++{
++   struct pvr_pds_vertex_dma dma;
++   struct pvr_pds_vertex_primary_program_input input;
+    struct pvr_pds_info info = { 0 };
+-   const uint8_t *entries;
++   const uint8_t *entry;
++   const uint8_t *end;
+    uint32_t produced;
+-   int32_t remaining;
++
++   pvr_shader_vertex_primary_input(&input, &dma, stride, attrib_bytes, destination, usc_temps);
+ 
+    /* 512 was too small: the generator wrote past it and corrupted the heap (glibc reported
+     * "unaligned tcache chunk detected"). Sized for the largest entry set a vertex program can
+@@ -82,26 +175,68 @@ pvr_shader_vertex_data(const struct pvr_device_info *dev_info,
+ 
+    memset(data_out, 0, produced);
+ 
+-   /* Patch every vertex-attribute-address entry with the buffer's address plus that attribute's
+-    * offset. A one-attribute program has exactly one, so other entry types are not walked - if a later
+-    * program needs them this becomes the reference's switch, not a guess. */
+-   entries = (const uint8_t *)info.entries;
+-   /* Clamp to what was actually allocated: the walk trusts this number, and an over-large one reads
+-    * past the buffer - which is how this crashed with heap corruption before. */
+-   remaining = (int32_t)MIN2(info.entries_written_size_in_bytes, info.entries_size_in_bytes);
+-
+-   while (remaining >= (int32_t)sizeof(struct pvr_const_map_entry_vertex_attribute_address)) {
+-      const struct pvr_const_map_entry_vertex_attribute_address *e =
+-         (const struct pvr_const_map_entry_vertex_attribute_address *)entries;
++   /* Walk the const map by entry TYPE. The entries are not all the same size, and advancing by one
++    * entry's size through a list of mixed types lands in the middle of the next entry - which
++    * silently patches the wrong dword or misses the one that matters. */
++   entry = (const uint8_t *)info.entries;
++   end = entry + MIN2(info.entries_written_size_in_bytes, info.entries_size_in_bytes);
++
++   while (entry + sizeof(struct pvr_const_map_entry) <= end) {
++      const struct pvr_const_map_entry *header = (const struct pvr_const_map_entry *)entry;
++
++      switch (header->type) {
++      case PVR_PDS_CONST_MAP_ENTRY_TYPE_DOUTU_ADDRESS: {
++         const struct pvr_const_map_entry_doutu_address *e = (const void *)entry;
++         uint64_t value = 0;
++
++         /* The shader's USC offset in the encoding DOUTU takes, ORed with the generator's control
++          * word (temp count, sample rate). */
++         pvr_set_usc_execution_address64(&value, usc_exec_addr);
++         value |= e->doutu_control;
++
++         if ((uint32_t)e->const_offset + sizeof(value) <= produced)
++            memcpy((uint8_t *)data_out + e->const_offset, &value, sizeof(value));
++         entry += sizeof(*e);
++         break;
++      }
+ 
+-      if (e->type == PVR_PDS_CONST_MAP_ENTRY_TYPE_VERTEX_ATTRIBUTE_ADDRESS &&
+-          (uint32_t)e->const_offset + sizeof(uint64_t) <= produced) {
++      case PVR_PDS_CONST_MAP_ENTRY_TYPE_VERTEX_ATTRIBUTE_ADDRESS: {
++         const struct pvr_const_map_entry_vertex_attribute_address *e = (const void *)entry;
+          const uint64_t addr = vertex_buffer_addr + e->offset;
+-         memcpy((uint8_t *)data_out + e->const_offset, &addr, sizeof(addr));
++
++         if ((uint32_t)e->const_offset + sizeof(addr) <= produced)
++            memcpy((uint8_t *)data_out + e->const_offset, &addr, sizeof(addr));
++         entry += sizeof(*e);
++         break;
++      }
++
++      case PVR_PDS_CONST_MAP_ENTRY_TYPE_VERTEX_ATTRIBUTE_STRIDE: {
++         const struct pvr_const_map_entry_vertex_attribute_stride *e = (const void *)entry;
++
++         /* The DMA computes address = buffer + (index * stride) + offset; the stride is the one
++          * fact here that comes from the draw, not from the shader. */
++         if ((uint32_t)e->const_offset + sizeof(stride) <= produced)
++            memcpy((uint8_t *)data_out + e->const_offset, &stride, sizeof(stride));
++         entry += sizeof(*e);
++         break;
+       }
+ 
+-      entries += sizeof(*e);
+-      remaining -= sizeof(*e);
++      case PVR_PDS_CONST_MAP_ENTRY_TYPE_LITERAL32:
++         entry += sizeof(struct pvr_const_map_entry_literal32);
++         break;
++
++      case PVR_PDS_CONST_MAP_ENTRY_TYPE_LITERAL64:
++         entry += sizeof(struct pvr_const_map_entry_literal64);
++         break;
++
++      default:
++         /* An entry type with no patch rule here would leave a data word zero that the generator
++          * expected a value in. Refuse the whole segment rather than return one that reads
++          * plausibly. */
++         mesa_loge("pvr: no patch rule for PDS const-map entry type %u", header->type);
++         free(info.entries);
++         return 0;
++      }
+    }
+ 
+    free(info.entries);
+@@ -114,22 +249,15 @@ pvr_shader_vertex_program(const struct pvr_device_info *dev_info,
+                           uint32_t stride, uint32_t attrib_bytes,
+                           uint8_t destination)
+ {
+-   struct pvr_pds_vertex_dma dma = {
+-      .offset = 0,
+-      .stride = stride,
+-      .size_in_dwords = attrib_bytes / 4,
+-      .attrib_size_in_bytes = attrib_bytes,
+-      .destination = destination,
+-      .binding_index = 0,
+-      .divisor = 0,
+-   };
+-   struct pvr_pds_vertex_primary_program_input input = {
+-      .dma_list = &dma,
+-      .dma_count = 1,
+-   };
++   struct pvr_pds_vertex_dma dma;
++   struct pvr_pds_vertex_primary_program_input input;
+    struct pvr_pds_info info = { 0 };
+    uint32_t size_bytes = 0;
+ 
++   /* usc_temps = 0 is deliberate: the DOUTU control word (and therefore the temp count) is in the
++    * data segment, not the code, so the code is identical whatever the shader's temps are. */
++   pvr_shader_vertex_primary_input(&input, &dma, stride, attrib_bytes, destination, 0);
++
+    /* The const map is where the program's immediate/descriptor references are recorded. A vertex
+     * program with no uniform reads needs few or none, but the generator writes into this buffer, so it
+     * has to exist and be sized. */
+@@ -187,11 +315,11 @@ pvr_shader_destroy(struct pvr_shader *shader)
+    free(shader);
+ }
+ 
+-bool
+-pvr_shader_compile(pco_ctx *ctx, struct nir_shader *nir, pco_shader **shader_out,
+-                   const void **data_out, unsigned *size_out)
++static bool
++pvr_shader_compile_data(pco_ctx *ctx, struct nir_shader *nir, pco_data *data,
++                        pco_shader **shader_out, const void **data_out,
++                        unsigned *size_out)
+ {
+-   pco_data data = { 0 };
+    pco_shader *shader;
+    unsigned size;
+ 
+@@ -202,11 +330,11 @@ pvr_shader_compile(pco_ctx *ctx, struct nir_shader *nir, pco_shader **shader_out
+ 
+    /* Order matters and is copied from the Vulkan driver's build_shader(). Getting it
+     * wrong yields a plausible binary rather than an error. */
+-   pco_preprocess_nir(ctx, nir, &data);
+-   pco_lower_nir(ctx, nir, &data);
+-   pco_postprocess_nir(ctx, nir, &data);
++   pco_preprocess_nir(ctx, nir, data);
++   pco_lower_nir(ctx, nir, data);
++   pco_postprocess_nir(ctx, nir, data);
+ 
+-   shader = pco_trans_nir(ctx, nir, &data, NULL);
++   shader = pco_trans_nir(ctx, nir, data, NULL);
+    if (shader == NULL) {
+       mesa_loge("pvr: pco failed to translate %s", nir->info.name);
+       return false;
+@@ -228,6 +356,21 @@ pvr_shader_compile(pco_ctx *ctx, struct nir_shader *nir, pco_shader **shader_out
+    return true;
+ }
+ 
++bool
++pvr_shader_compile(pco_ctx *ctx, struct nir_shader *nir, pco_shader **shader_out,
++                   const void **data_out, unsigned *size_out)
++{
++   pco_data data = { 0 };
++
++   /* A zeroed pco_data is not enough for a vertex shader: without the attribute formats and
++    * register ranges, pco's per-vertex-input pass finds nothing to lower, drops the loads, and
++    * encodes a shader identical to one that reads no attributes. */
++   if (nir->info.stage == MESA_SHADER_VERTEX)
++      pvr_shader_init_vs_data(nir, &data);
++
++   return pvr_shader_compile_data(ctx, nir, &data, shader_out, data_out, size_out);
++}
++
+ uint8_t
+ pvr_shader_frag_coord_usage(const struct nir_shader *nir)
+ {
+diff --git a/src/gallium/drivers/pvr_native/pvr_shader.h b/src/gallium/drivers/pvr_native/pvr_shader.h
+index 91726154..84786e21 100644
+--- a/src/gallium/drivers/pvr_native/pvr_shader.h
++++ b/src/gallium/drivers/pvr_native/pvr_shader.h
+@@ -22,9 +22,14 @@ struct pvr_shader {
+    const void *binary;
+    unsigned binary_size;
+ 
+-   /* What the PDS kick program needs: how many temps the entry function allocates and how many
+-    * vertex input registers it reads. These live in pco's internal per-function record, so they are
+-    * copied out here rather than reaching into pco from the callers. */
++   /* What the PDS kick program needs. temps is the entry function's temp count, copied out of
++    * pco's internal per-function record rather than reaching into pco from the callers.
++    *
++    * vtxins is the driver-side attribute register count (pco_data.common.vtxins), not the entry
++    * function's: pco's register allocator has vtxin allocation disabled upstream (see the FIXME in
++    * pco_ra.c) because the attribute loads address the vtxin registers directly, so the
++    * function-level count is 0 even for a shader that reads attributes. The range count is what the
++    * hardware state needs. */
+    unsigned temps;
+    unsigned vtxins;
+ };
+@@ -52,15 +57,19 @@ uint32_t pvr_shader_vertex_program(const struct pvr_device_info *dev_info,
+                                    uint8_t destination);
+ 
+ /* Builds the PDS DATA the vertex program reads: the const-map entries generated alongside the program,
+- * with the vertex buffer's address patched in at each entry's const_offset. The VDM state's
+- * vs_data_addr names THIS block, not the vertex buffer - that indirection is what took a round to find.
++ * with two things patched in at their const_offset:
++ *  - the vertex buffer's address, at each VERTEX_ATTRIBUTE_ADDRESS entry;
++ *  - the vertex shader's USC offset, at the DOUTU_ADDRESS entry - that is the instruction that
++ *    starts the shader after the fetch, so without it the attribute program runs and nothing draws.
++ * The VDM state's vs_data_addr names THIS block, not the vertex buffer.
+  *
+- * Returns the data size in bytes, or 0. */
++ * usc_exec_addr is the shader's offset within the USC heap (what DOUTU takes), usc_temps its temp
++ * count (which goes into the DOUTU control word). Returns the data size in bytes, or 0. */
+ uint32_t pvr_shader_vertex_data(const struct pvr_device_info *dev_info,
+-                                uint64_t vertex_buffer_addr,
++                                uint64_t vertex_buffer_addr, uint64_t usc_exec_addr,
+                                 void *data_out, uint32_t data_size,
+                                 uint32_t stride, uint32_t attrib_bytes,
+-                                uint8_t destination);
++                                uint8_t destination, uint32_t usc_temps);
+ 
+ /* Runs the full pco pipeline over a NIR shader and returns the encoded binary.
+  *
+-- 
+2.47.3
+

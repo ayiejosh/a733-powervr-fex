@@ -1,0 +1,44 @@
+From 46e407d26728b1646d7ab98574c52fa92e5673c9 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sun, 25 Oct 2026 04:32:26 +0800
+Subject: [PATCH 233/269] gallium/pvr: confirm our geometry-only kick still
+ hangs; reference SIZEINFO values do not help
+
+Round-twenty checks against the round-19 A/B baseline (Vulkan geometry-only reaches "TA finished",
+our lone geometry kick times out):
+
+- our geometry-only submission was retested on the latest build: still "Kick TA" then DM2 timeout;
+- the TA state block's SIZEINFO words were patched to the reference's captured values
+  (SIZEINFO1=0x01000000, SIZEINFO2=0x00804000; PVR_PROBE_TA_SIZEINFO) - still times out, so those
+  values are not what the geometry kick needs.
+
+So the difference is in memory our geometry command points at, not in the fields compared so far.
+Verification: probe ALL PASS under the shim.
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index 2d258c28..17d3ef7d 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -1131,6 +1131,16 @@ real_job_done:
+                            } else {
+                               const uint32_t *cw = (const uint32_t *)rctl.map;
+ 
++                              /* Round-20 experiment: the reference's SIZEINFO words (captured)
++                               * are non-zero where ours are zero because our shader uses no
++                               * varyings; test whether the TA kick requires them. */
++                              if (getenv("PVR_PROBE_TA_SIZEINFO")) {
++                                 uint32_t *aw = (uint32_t *)pbo.map;
++
++                                 aw[7] = 0x01000000u;
++                                 aw[8] = 0x00804000u;
++                                 printf("hwrt:          TA SIZEINFO patched to reference values\n");
++                              }
+                               if (getenv("PVR_DUMP_TA")) {
+                                  const uint32_t *aw = (const uint32_t *)pbo.map;
+                                  printf("OURTA: TA block %u words:", pvr_csb_size(&block) / 4);
+-- 
+2.47.3
+

@@ -1,0 +1,185 @@
+From aeebc510fd2e432c2c2f6d80ed19e3d2accc942e Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 22:11:39 +0800
+Subject: [PATCH 156/269] gallium/pvr: PDS/USC size info, with the per-field
+ units applied where the caller cannot get them wrong
+
+  csb: TA PDS size info: 16 bytes is 4 PDS units and 1 USC unit - the per-field units are applied
+  --- ALL PASS        (real open kernel)
+
+TA_STATE_PDS_SIZEINFO1/2 say how much PDS and USC storage a program needs, and the units are
+PER-FIELD:
+
+  pds_uniformsize /4   pds_texturestatesize /4   pds_varyingsize /4   pds_tempsize /4
+  usc_varyingsize /16  usc_sharedsize /16
+
+The USC fields use a sixteen-byte unit while the PDS fields use four. A caller dividing by one unit
+for all of them is wrong by four on half the fields, and the hardware would be told a
+differently-sized region exists with nothing reporting it. So the division lives INSIDE this
+function and the caller passes bytes: a caller cannot get it wrong if it never does it. All
+divisions round up, as the reference does, so a size that is not a whole number of units still
+allocates the last one.
+
+The check is built to distinguish the units rather than to pack them: sixteen bytes is FOUR PDS units
+and ONE USC unit, and both answers come from the same input. A check that only verified the fields
+round-tripped would pass with every USC size four times too large.
+---
+ src/gallium/drivers/pvr/pvr_csb.c   | 35 +++++++++++++++++++
+ src/gallium/drivers/pvr/pvr_csb.h   | 29 ++++++++++++++++
+ src/gallium/drivers/pvr/pvr_probe.c | 54 ++++++++++++++++++++++++++++-
+ 3 files changed, 117 insertions(+), 1 deletion(-)
+
+diff --git a/src/gallium/drivers/pvr/pvr_csb.c b/src/gallium/drivers/pvr/pvr_csb.c
+index a0fa18ec..cbc04a9c 100644
+--- a/src/gallium/drivers/pvr/pvr_csb.c
++++ b/src/gallium/drivers/pvr/pvr_csb.c
+@@ -299,6 +299,41 @@ pvr_filter_from_pipe(enum pipe_tex_filter filter, enum ROGUE_TEXSTATE_FILTER *ou
+    }
+ }
+ 
++bool
++pvr_csb_emit_ta_pds_sizeinfo(struct pvr_csb *csb, const struct pvr_pds_sizes *sizes,
++                             bool tri_merge_disable, uint32_t batchnum)
++{
++   const uint32_t words = ROGUE_TA_STATE_PDS_SIZEINFO1_length +
++                          ROGUE_TA_STATE_PDS_SIZEINFO2_length;
++   struct ROGUE_TA_STATE_PDS_SIZEINFO1 info1 = {
++      .pds_uniformsize = DIV_ROUND_UP(sizes->uniform_bytes,
++         ROGUE_TA_STATE_PDS_SIZEINFO1_PDS_UNIFORMSIZE_UNIT_SIZE),
++      .pds_texturestatesize = DIV_ROUND_UP(sizes->texturestate_bytes,
++         ROGUE_TA_STATE_PDS_SIZEINFO1_PDS_TEXTURESTATESIZE_UNIT_SIZE),
++      .pds_varyingsize = DIV_ROUND_UP(sizes->varying_bytes,
++         ROGUE_TA_STATE_PDS_SIZEINFO1_PDS_VARYINGSIZE_UNIT_SIZE),
++      .usc_varyingsize = DIV_ROUND_UP(sizes->usc_varying_bytes,
++         ROGUE_TA_STATE_PDS_SIZEINFO1_USC_VARYINGSIZE_UNIT_SIZE),
++      .pds_tempsize = DIV_ROUND_UP(sizes->temp_count,
++         ROGUE_TA_STATE_PDS_SIZEINFO1_PDS_TEMPSIZE_UNIT_SIZE),
++   };
++   struct ROGUE_TA_STATE_PDS_SIZEINFO2 info2 = {
++      .usc_sharedsize = DIV_ROUND_UP(sizes->usc_shared_count,
++         ROGUE_TA_STATE_PDS_SIZEINFO2_USC_SHAREDSIZE_UNIT_SIZE),
++      .pds_tri_merge_disable = tri_merge_disable,
++      .pds_batchnum = batchnum,
++   };
++   uint32_t *dw = pvr_csb_emit(csb, words);
++
++   if (dw == NULL)
++      return false;
++
++   ROGUE_TA_STATE_PDS_SIZEINFO1_pack(dw, &info1);
++   ROGUE_TA_STATE_PDS_SIZEINFO2_pack(dw + ROGUE_TA_STATE_PDS_SIZEINFO1_length, &info2);
++
++   return true;
++}
++
+ bool
+ pvr_csb_emit_ta_output_sel(struct pvr_csb *csb, const struct pvr_ta_output_sel *sel)
+ {
+diff --git a/src/gallium/drivers/pvr/pvr_csb.h b/src/gallium/drivers/pvr/pvr_csb.h
+index 79bf32e1..8bd1200e 100644
+--- a/src/gallium/drivers/pvr/pvr_csb.h
++++ b/src/gallium/drivers/pvr/pvr_csb.h
+@@ -374,6 +374,35 @@ struct pvr_ta_output_sel {
+ bool pvr_csb_emit_ta_output_sel(struct pvr_csb *csb,
+                                 const struct pvr_ta_output_sel *sel);
+ 
++/* TA_STATE_PDS_SIZEINFO1/2: how much PDS and USC storage a program needs.
++ *
++ * The caller passes SIZES IN BYTES (or counts) and this function applies the units, because the
++ * units are per-field and differ:
++ *
++ *   pds_uniformsize       / 4      pds_texturestatesize / 4
++ *   pds_varyingsize       / 4      pds_tempsize        / 4
++ *   usc_varyingsize       / 16     usc_sharedsize      / 16
++ *
++ * The USC fields use a SIXTEEN-byte unit while the PDS fields use four - so a caller that
++ * divided by one unit for all of them is wrong by a factor of four on half the fields, and the
++ * hardware would read a differently-sized region with nothing reporting it. That is why the
++ * division is inside this function rather than at the call site: a caller cannot get it wrong if
++ * it never does it.
++ *
++ * All divisions round UP, as the reference does - a size that is not a whole number of units must
++ * still allocate the last one. */
++struct pvr_pds_sizes {
++   uint32_t uniform_bytes;
++   uint32_t texturestate_bytes;
++   uint32_t varying_bytes;
++   uint32_t usc_varying_bytes;
++   uint32_t temp_count;
++   uint32_t usc_shared_count;
++};
++
++bool pvr_csb_emit_ta_pds_sizeinfo(struct pvr_csb *csb, const struct pvr_pds_sizes *sizes,
++                                  bool tri_merge_disable, uint32_t batchnum);
++
+ /* Dwords a stream link occupies - what the guard must be at minimum. */
+ #define PVR_CSB_LINK_DWORDS (ROGUE_VDMCTRL_STREAM_LINK0_length + \
+                              ROGUE_VDMCTRL_STREAM_LINK1_length)
+diff --git a/src/gallium/drivers/pvr/pvr_probe.c b/src/gallium/drivers/pvr/pvr_probe.c
+index 82070514..ef3bbb51 100644
+--- a/src/gallium/drivers/pvr/pvr_probe.c
++++ b/src/gallium/drivers/pvr/pvr_probe.c
+@@ -1815,7 +1815,59 @@ csb_check(int fd, struct pipe_screen *pscreen)
+             goto out;
+          }
+ 
+-         printf("csb:           TA OUTPUT_SEL: scalars and the two 8-bit plane groups survive "
++         /* PDS sizes. The check uses test values that give DIFFERENT answers under the two units:
++       * 16 bytes is 4 units at PDS's four-byte unit and 1 unit at USC's sixteen-byte unit. If the
++       * units were mixed up, every USC field would read four times too large and the hardware
++       * would be told a differently-sized region exists. */
++      {
++         const struct pvr_pds_sizes sizes = {
++            .uniform_bytes = 16, .texturestate_bytes = 16, .varying_bytes = 16,
++            .usc_varying_bytes = 16, .temp_count = 16, .usc_shared_count = 16,
++         };
++         struct ROGUE_TA_STATE_PDS_SIZEINFO1 i1 = { 0 };
++         struct ROGUE_TA_STATE_PDS_SIZEINFO2 i2 = { 0 };
++
++         pvr_csb_reset(&csb);
++
++         if (!pvr_csb_emit_ta_pds_sizeinfo(&csb, &sizes, false, 1) ||
++             pvr_csb_size(&csb) != (ROGUE_TA_STATE_PDS_SIZEINFO1_length +
++                                    ROGUE_TA_STATE_PDS_SIZEINFO2_length) * 4) {
++            printf("csb:           FAIL: the PDS size info did not emit\n");
++            goto out;
++         }
++
++         ROGUE_TA_STATE_PDS_SIZEINFO1_unpack(bo.map, &i1);
++         ROGUE_TA_STATE_PDS_SIZEINFO2_unpack(
++            (uint32_t *)bo.map + ROGUE_TA_STATE_PDS_SIZEINFO1_length, &i2);
++
++         /* Sixteen bytes under a four-byte unit is four; under a sixteen-byte unit it is one. Both
++          * answers appear below for the same input, which is what makes this a units check rather
++          * than a packing check. */
++         if (i1.pds_uniformsize != 4 || i1.pds_texturestatesize != 4 ||
++             i1.pds_varyingsize != 4 || i1.pds_tempsize != 4) {
++            printf("csb:           FAIL: a PDS field did not use the four-byte unit (u %u t %u v "
++                   "%u tmp %u, all expected 4)\n", i1.pds_uniformsize, i1.pds_texturestatesize,
++                   i1.pds_varyingsize, i1.pds_tempsize);
++            goto out;
++         }
++
++         if (i1.usc_varyingsize != 1 || i2.usc_sharedsize != 1) {
++            printf("csb:           FAIL: a USC field did not use the sixteen-byte unit (varying %u "
++                   "shared %u, both expected 1) - the units are mixed up\n",
++                   i1.usc_varyingsize, i2.usc_sharedsize);
++            goto out;
++         }
++
++         if (i2.pds_batchnum != 1 || i2.pds_tri_merge_disable) {
++            printf("csb:           FAIL: SIZEINFO2's other fields did not survive\n");
++            goto out;
++         }
++
++         printf("csb:           TA PDS size info: 16 bytes is 4 PDS units and 1 USC unit - the "
++                "per-field units are applied\n");
++      }
++
++      printf("csb:           TA OUTPUT_SEL: scalars and the two 8-bit plane groups survive "
+                 "independently; rhw/z flags are caller-supplied (no shader analysis yet)\n");
+       }
+ 
+-- 
+2.47.3
+

@@ -1,0 +1,229 @@
+From 98a792c90b648a36de10e751229186ab2f39cb5a Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 14:50:51 +0800
+Subject: [PATCH 120/269] gallium/pvr: record the framebuffer state instead of
+ discarding it
+
+set_framebuffer_state was a no-op, so the driver had no idea what it was being
+asked to render into. It now keeps the state via util_copy_framebuffer_state(),
+which matters for two reasons beyond bookkeeping: the copy takes the resource
+references that keep the render targets alive while bound, and it gives the draw
+path something to write into.
+
+  framebuffer: recorded 64x64, cbuf0 target address 0x9fffffc000
+  framebuffer: PASS (set_framebuffer_state records and keeps the target alive)
+
+Two things found while implementing, both of which change what the work is:
+
+* This Mesa has no driver-side surface creation. There is no create_surface hook in
+  pipe_context or pipe_screen; u_surface.c passes a stack-allocated pipe_surface
+  template straight to clear/blit, and the CSO layer owns the framebuffer store
+  (cso_context.c util_copy_framebuffer_state). So the frontend allocates surfaces and
+  the driver only records. Worth knowing before writing surface hooks that no caller
+  would ever reach.
+
+* pipe_framebuffer_state holds its cbufs BY VALUE (struct pipe_surface cbufs[]), not
+  as pointers, and the reference taken is on each cbuf's texture. An older-Mesa
+  assumption here would have produced pointer arithmetic that compiles and is wrong.
+
+The device addresses are deliberately not duplicated in the context: each cbuf's
+texture is a pvr_resource, so pvr_resource(fb.cbufs[i].texture)->dev_addr is what the
+draw path wants. A second copy would be a second thing to keep in sync.
+
+The runnable check exercises the reference counting too: it drops its own reference
+after binding and then reads the recorded target, so a driver that had not taken a
+reference would be reading freed memory.
+
+Not done and not claimed: nothing renders. There is still no pipeline state, no CSB
+generation and no job submission, so these render targets are never written to.
+---
+ src/gallium/drivers/pvr/pvr_context.c | 24 +++++++-
+ src/gallium/drivers/pvr/pvr_context.h | 11 ++++
+ src/gallium/drivers/pvr/pvr_probe.c   | 81 ++++++++++++++++++++++++++-
+ 3 files changed, 112 insertions(+), 4 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr/pvr_context.c b/src/gallium/drivers/pvr/pvr_context.c
+index 81713caf..3f3e7042 100644
+--- a/src/gallium/drivers/pvr/pvr_context.c
++++ b/src/gallium/drivers/pvr/pvr_context.c
+@@ -151,9 +151,24 @@ pvr_set_sampler_views(UNUSED struct pipe_context *pctx,
+ }
+ 
+ static void
+-pvr_set_framebuffer_state(UNUSED struct pipe_context *pctx,
+-                          UNUSED const struct pipe_framebuffer_state *state)
++pvr_set_framebuffer_state(struct pipe_context *pctx,
++                          const struct pipe_framebuffer_state *state)
+ {
++   struct pvr_context *ctx = pvr_context(pctx);
++
++   /* Previously discarded. The draw path needs the render targets, and the copy takes
++    * the resource references that keep them alive while bound. */
++   util_copy_framebuffer_state(&ctx->fb, state);
++
++   if (state->nr_cbufs > 0 && state->cbufs[0].texture != NULL) {
++      /* Log what the GPU would be asked to write. A render target with no device
++       * address is one the GPU cannot reach, which is worth seeing before the job
++       * submission code exists to fail on it. */
++      struct pvr_resource *rt = pvr_resource(state->cbufs[0].texture);
++
++      mesa_logd("pvr: framebuffer %ux%u, %u cbuf(s), target 0x%" PRIx64, state->width,
++                state->height, state->nr_cbufs, rt->dev_addr);
++   }
+ }
+ 
+ static void
+@@ -272,7 +287,10 @@ pvr_delete_vs_state(UNUSED struct pipe_context *pctx, void *state)
+ static void
+ pvr_context_destroy(struct pipe_context *pctx)
+ {
+-   FREE(pvr_context(pctx));
++   struct pvr_context *ctx = pvr_context(pctx);
++
++   util_unreference_framebuffer_state(&ctx->fb);
++   FREE(ctx);
+ }
+ 
+ struct pipe_context *
+diff --git a/src/gallium/drivers/pvr/pvr_context.h b/src/gallium/drivers/pvr/pvr_context.h
+index 8e3ea524..820730e9 100644
+--- a/src/gallium/drivers/pvr/pvr_context.h
++++ b/src/gallium/drivers/pvr/pvr_context.h
+@@ -9,6 +9,7 @@
+ #define PVR_CONTEXT_H
+ 
+ #include "pipe/p_context.h"
++#include "util/u_framebuffer.h"
+ 
+ struct pvr_shader;
+ 
+@@ -20,6 +21,16 @@ struct pvr_context {
+     * ignored, so the draw path has something to read. */
+    struct pvr_shader *vs;
+    struct pvr_shader *fs;
++
++   /* The current render targets. Copies the surfaces (which reference their textures),
++    * so this keeps the resources alive for as long as they are bound - a framebuffer
++    * whose texture was freed underneath it is a use-after-free the GPU would perform,
++    * not the CPU.
++    *
++    * The device addresses are deliberately NOT duplicated here: each cbuf's texture is
++    * a pvr_resource, so pvr_resource(fb.cbufs[i].texture)->dev_addr is the address the
++    * draw path wants. Storing a second copy would be a second thing to keep in sync. */
++   struct pipe_framebuffer_state fb;
+ };
+ 
+ struct pipe_context *pvr_context_create(struct pipe_screen *pscreen, void *priv,
+diff --git a/src/gallium/drivers/pvr/pvr_probe.c b/src/gallium/drivers/pvr/pvr_probe.c
+index cbdaae41..4bd173a7 100644
+--- a/src/gallium/drivers/pvr/pvr_probe.c
++++ b/src/gallium/drivers/pvr/pvr_probe.c
+@@ -22,6 +22,8 @@
+ 
+ #include "pvr_bo.h"
+ #include "pvr_context.h"
++
++#include "util/u_inlines.h"
+ #include "pvr_screen.h"
+ #include "pvr_shader.h"
+ 
+@@ -496,6 +498,82 @@ shader_state_check(struct pipe_screen *pscreen)
+    return ok;
+ }
+ 
++/* Render targets, as a GL framebuffer reaches the driver. Previously discarded; the
++ * point of recording them is that the draw path has something to write into, and that
++ * the resource stays alive while bound. */
++static bool
++framebuffer_check(struct pipe_screen *pscreen)
++{
++   struct pipe_resource templ = {
++      .target = PIPE_TEXTURE_2D,
++      .format = PIPE_FORMAT_R8G8B8A8_UNORM,
++      .width0 = 64,
++      .height0 = 64,
++      .depth0 = 1,
++      .array_size = 1,
++      .last_level = 0,
++      .nr_samples = 1,
++      .usage = PIPE_USAGE_DEFAULT,
++      .bind = PIPE_BIND_RENDER_TARGET,
++   };
++   struct pipe_context *pctx = pscreen->context_create(pscreen, NULL, 0);
++   struct pvr_context *ctx = pvr_context(pctx);
++   struct pipe_framebuffer_state fb = { 0 };
++   struct pipe_resource *res;
++   bool ok;
++
++   if (pctx == NULL) {
++      printf("framebuffer:   FAIL: no context\n");
++      return false;
++   }
++
++   res = pscreen->resource_create(pscreen, &templ);
++   if (res == NULL) {
++      printf("framebuffer:   FAIL: no render target resource\n");
++      pctx->destroy(pctx);
++      return false;
++   }
++
++   fb.width = templ.width0;
++   fb.height = templ.height0;
++   fb.nr_cbufs = 1;
++   fb.cbufs[0].texture = res;
++   fb.cbufs[0].format = res->format;
++
++   pctx->set_framebuffer_state(pctx, &fb);
++
++   ok = ctx->fb.nr_cbufs == 1 && ctx->fb.cbufs[0].texture == res &&
++        ctx->fb.width == templ.width0 && ctx->fb.height == templ.height0;
++
++   if (!ok) {
++      printf("framebuffer:   FAIL: state was not recorded\n");
++      pctx->destroy(pctx);
++      return false;
++   }
++
++   printf("framebuffer:   recorded %ux%u, cbuf0 target address 0x%" PRIx64 "\n",
++          ctx->fb.width, ctx->fb.height,
++          pvr_resource(ctx->fb.cbufs[0].texture)->dev_addr);
++
++   /* Drop our own reference. The context holds its own, so the resource must still be
++    * intact; if the driver had not taken one this reads freed memory. */
++   pipe_resource_reference(&res, NULL);
++
++   ok = pvr_resource(ctx->fb.cbufs[0].texture)->dev_addr != 0;
++
++   if (!ok) {
++      printf("framebuffer:   FAIL: the bound target did not survive its own reference\n");
++   }
++
++   /* Destroying the context releases the last reference, so this also proves the
++    * framebuffer state is released rather than leaked. */
++   pctx->destroy(pctx);
++
++   printf("framebuffer:   %s (set_framebuffer_state records and keeps the target "
++          "alive)\n", ok ? "PASS" : "FAIL");
++   return ok;
++}
++
+ int
+ main(int argc, char **argv)
+ {
+@@ -529,11 +607,12 @@ main(int argc, char **argv)
+    const bool ctx_pass = transfer_roundtrip(screen);
+    const bool shader_pass = shader_compile_check(screen);
+    const bool state_pass = shader_state_check(screen);
++   const bool fb_pass = framebuffer_check(screen);
+ 
+    screen->destroy(screen);
+ 
+    const bool all = enum_pass && bo_pass && vm_pass && res_pass && ctx_pass &&
+-                    shader_pass && state_pass;
++                    shader_pass && state_pass && fb_pass;
+    printf("--- %s\n", all ? "ALL PASS" : "FAILURES ABOVE");
+    return all ? 0 : 1;
+ }
+-- 
+2.47.3
+

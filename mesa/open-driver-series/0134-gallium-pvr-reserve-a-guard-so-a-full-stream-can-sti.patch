@@ -1,0 +1,201 @@
+From 4c8e25d32b30394d71feae5a9e9d977edcf43e17 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 17:19:25 +0800
+Subject: [PATCH 134/269] gallium/pvr: reserve a guard so a full stream can
+ still link onward
+
+A control stream that fills its buffer has to say where it continues, and the only way to
+say so is the stream link - so the link's dwords must still fit at the moment the buffer
+is full. The reference reserves exactly this and says why (pvr_arch_csb.c: "a few bytes
+including guard padding size are reserved at the end, every time a buffer is created").
+
+pvr_csb_init() now takes guard_dwords and holds them back: ordinary emission stops before
+the guard, and only the stream link may use it. The guard is deliberately NOT reachable by
+mistake - pvr_csb_emit() will not hand out guarded dwords even when they are physically
+free, so a stream cannot be filled past the point where linking is still possible. That
+turn of phrase is the whole design: the failure it prevents is a job that fills its
+buffer and has nowhere to go, which is unsubmittable rather than merely wrong.
+
+Verified on the real kernel, ALL PASS, including the property itself: fill to the guard
+boundary, ordinary emission refused, link still emitted.
+
+Also worth recording, because it cost the first attempt: the patch that routed the link
+through the guard silently did not apply - the append in the previous round had different
+surrounding text - and the check caught it by failing on the property rather than passing
+on the mechanism. A patch that does not apply and does not error is the failure mode to
+watch for when editing by pattern; the check is what distinguishes it from a working
+change.
+---
+ src/gallium/drivers/pvr/pvr_csb.c   | 33 ++++++++++++++++++++++++++---
+ src/gallium/drivers/pvr/pvr_csb.h   | 24 ++++++++++++++++++---
+ src/gallium/drivers/pvr/pvr_probe.c | 32 ++++++++++++++++++++++------
+ 3 files changed, 77 insertions(+), 12 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr/pvr_csb.c b/src/gallium/drivers/pvr/pvr_csb.c
+index 173d48a3..f0937567 100644
+--- a/src/gallium/drivers/pvr/pvr_csb.c
++++ b/src/gallium/drivers/pvr/pvr_csb.c
+@@ -4,14 +4,37 @@
+ #include "pvr_csb.h"
+ 
+ void
+-pvr_csb_init(struct pvr_csb *csb, void *map, uint32_t size_bytes)
++pvr_csb_init(struct pvr_csb *csb, void *map, uint32_t size_bytes,
++             uint32_t guard_dwords)
+ {
++   const uint32_t total = size_bytes / sizeof(uint32_t);
++
+    csb->start = map;
+    csb->cur = map;
+-   csb->end = csb->start + size_bytes / sizeof(uint32_t);
++   /* Ordinary emission stops before the guard, so the link dwords are always still
++    * there when the buffer is full. */
++   csb->end = csb->start + (total > guard_dwords ? total - guard_dwords : 0);
++   csb->guard_end = csb->start + total;
+    csb->overflowed = false;
+ }
+ 
++/* Emission that may use the guard. Only the stream link goes through here, which is what
++ * the guard exists for. */
++static uint32_t *
++pvr_csb_emit_guarded(struct pvr_csb *csb, uint32_t words)
++{
++   if (csb->cur + words > csb->guard_end) {
++      csb->overflowed = true;
++      return NULL;
++   }
++
++   uint32_t *dst = csb->cur;
++
++   csb->cur += words;
++
++   return dst;
++}
++
+ void
+ pvr_csb_reset(struct pvr_csb *csb)
+ {
+@@ -69,7 +92,11 @@ pvr_csb_emit_link(struct pvr_csb *csb, uint64_t dev_addr, bool with_return)
+    struct ROGUE_VDMCTRL_STREAM_LINK1 link1 = {
+       .link_addrlsb = dev_addr,
+    };
+-   uint32_t *dw = pvr_csb_emit(csb, words);
++   /* Through the guard, not around it: a full stream still has to be able to say where
++    * it continues, which is the entire reason the guard is reserved. Ordinary emission
++    * cannot reach these dwords, so a stream can never be filled past the point where
++    * linking is still possible. */
++   uint32_t *dw = pvr_csb_emit_guarded(csb, words);
+ 
+    if (dw == NULL)
+       return false;
+diff --git a/src/gallium/drivers/pvr/pvr_csb.h b/src/gallium/drivers/pvr/pvr_csb.h
+index b1c171aa..ccfb4112 100644
+--- a/src/gallium/drivers/pvr/pvr_csb.h
++++ b/src/gallium/drivers/pvr/pvr_csb.h
+@@ -34,13 +34,31 @@
+ struct pvr_csb {
+    uint32_t *start;
+    uint32_t *cur;
+-   uint32_t *end;
++   uint32_t *end;       /* last dword ordinary emission may use */
++   uint32_t *guard_end; /* absolute end, reachable only by the stream link */
+    bool overflowed;
+ };
+ 
+ /* The stream is written directly into the mapped buffer object, so the caller owns the
+- * memory and must keep it mapped for as long as the CSB is used. */
+-void pvr_csb_init(struct pvr_csb *csb, void *map, uint32_t size_bytes);
++ * memory and must keep it mapped for as long as the CSB is used.
++ *
++ * guard_dwords are held back at the end and are NOT available to ordinary emission. A
++ * control stream that fills its buffer has to continue somewhere, and the only way to
++ * say so is the stream link - so the link's dwords must still fit in the current buffer
++ * at the moment it is full. The reference reserves exactly this and says why
++ * (pvr_arch_csb.c: "a few bytes including guard padding size are reserved at the end,
++ * every time a buffer is created"). Passing 0 means a buffer that cannot be linked and
++ * therefore must not overflow.
++ *
++ * The guard is deliberately not callable by mistake: pvr_csb_emit() will not hand out
++ * guarded dwords even when they are physically free, so a stream cannot be filled past
++ * the point where linking is still possible. */
++void pvr_csb_init(struct pvr_csb *csb, void *map, uint32_t size_bytes,
++                  uint32_t guard_dwords);
++
++/* Dwords a stream link occupies - what the guard must be at minimum. */
++#define PVR_CSB_LINK_DWORDS (ROGUE_VDMCTRL_STREAM_LINK0_length + \
++                             ROGUE_VDMCTRL_STREAM_LINK1_length)
+ void pvr_csb_reset(struct pvr_csb *csb);
+ 
+ /* Reserves `words` 32-bit words and returns where to write them, or NULL if they do not
+diff --git a/src/gallium/drivers/pvr/pvr_probe.c b/src/gallium/drivers/pvr/pvr_probe.c
+index 104d1cae..73f2c438 100644
+--- a/src/gallium/drivers/pvr/pvr_probe.c
++++ b/src/gallium/drivers/pvr/pvr_probe.c
+@@ -997,7 +997,7 @@ csb_check(int fd, struct pipe_screen *pscreen)
+       goto out;
+    }
+ 
+-   pvr_csb_init(&csb, bo.map, bo.size);
++   pvr_csb_init(&csb, bo.map, bo.size, PVR_CSB_LINK_DWORDS);
+ 
+    /* A real generated packet, packed through the csbgen helpers. PBESTATE_WORD0 holds
+     * the low half of a framebuffer address. */
+@@ -1046,23 +1046,25 @@ csb_check(int fd, struct pipe_screen *pscreen)
+       goto out;
+    }
+ 
+-   /* Now fill it exactly to the end, then ask for one word more. */
+-   total_words = bo.size / 4;
++   /* Fill to the guard boundary, not to the end of the buffer: the last
++    * PVR_CSB_LINK_DWORDS are held back so a full stream can still say where it
++    * continues. */
++   total_words = bo.size / 4 - PVR_CSB_LINK_DWORDS;
+    dw = pvr_csb_emit(&csb, total_words - ROGUE_PBESTATE_STATE_WORD0_length);
+    if (dw == NULL) {
+       printf("csb:           FAIL: an exactly-fitting remainder was refused\n");
+       goto out;
+    }
+ 
+-   if (pvr_csb_size(&csb) != bo.size) {
+-      printf("csb:           FAIL: stream should now be exactly full\n");
++   if (pvr_csb_size(&csb) != total_words * 4) {
++      printf("csb:           FAIL: stream should now be full up to the guard\n");
+       goto out;
+    }
+ 
+    const uint32_t before = pvr_csb_size(&csb);
+ 
+    if (pvr_csb_emit(&csb, 1) != NULL) {
+-      printf("csb:           FAIL: a full stream accepted one more word\n");
++      printf("csb:           FAIL: a stream full to the guard accepted another word\n");
+       goto out;
+    }
+ 
+@@ -1071,6 +1073,24 @@ csb_check(int fd, struct pipe_screen *pscreen)
+       goto out;
+    }
+ 
++   /* The guard's whole purpose: refuse ordinary emission, but still have room to link.
++    * Without it a full stream would have nowhere to go and the job would simply be
++    * unsubmittable. */
++   pvr_csb_reset(&csb);
++   (void)pvr_csb_emit(&csb, total_words - ROGUE_PBESTATE_STATE_WORD0_length);
++   (void)pvr_csb_emit(&csb, 1); /* fails: past the guard boundary */
++
++   if (!pvr_csb_emit_link(&csb, 0x9ffffe0000ULL, false)) {
++      printf("csb:           FAIL: a full stream could not emit its link - the guard did "
++             "not reserve the room\n");
++      goto out;
++   }
++
++   if (pvr_csb_overflowed(&csb)) {
++      printf("csb:           FAIL: emitting the link left the stream marked overflowed\n");
++      goto out;
++   }
++
+    /* The region header, which is device-derived rather than a fixed packet: the stream
+     * has to reserve exactly this many dwords before anything is written. Not a generated
+     * packet, so there is nothing to pack and unpack - what is checked is the reservation
+-- 
+2.47.3
+

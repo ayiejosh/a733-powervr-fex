@@ -1,0 +1,239 @@
+From c42ffc271adc6182ee207f059bc463300f7bd0ea Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 20:29:04 +0800
+Subject: [PATCH 148/269] gallium/pvr: record vertex input state, and the
+ reference bug that took two rounds to find
+
+  context: vertex buffers: referenced on bind, released on unbind and on resource->user
+           replacement, user buffers never referenced
+  --- ALL PASS        (real open kernel)
+
+Vertex buffers are copied and their resources referenced; the element state is recorded as an
+opaque pointer because this driver does not yet create one (the object is the driver's private
+type, so casting it to an invented struct would be inventing a layout nothing produces).
+
+The interesting part is the bug. The first version corrupted the heap, and the corruption was
+detected SEVERAL CHECKS LATER - in shader_state_check's malloc - so the backtrace pointed at
+unrelated code. It took three experiments to localise:
+
+  baseline, no change                              passes
+  change present, check disabled (driver never runs) passes
+  change present, check enabled                    corrupts
+
+and then one more to isolate the reference calls from everything else in the same function.
+
+The cause: pipe_resource_reference both TAKES the new reference and RELEASES whatever dst holds,
+so dst must still hold the OLD pointer when it is called. Assigning the whole struct first - the
+obvious way to write this - puts the NEW pointer in dst, so the helper releases the reference it
+was just asked to take. The count falls to zero while the state still names the buffer, and the
+buffer is freed underneath it.
+
+Fixing that exposed a second one the check had been asserting all along: the four transitions are
+all distinct. resource->resource must take the new and release the old; resource->user must
+release the old or it leaks a buffer per bind; user->resource must take the new or the buffer is
+freed while named; user->user is a plain copy, and referencing it would dereference a client
+pointer as a resource. The first version handled one of the four.
+
+The check asserts the reference count goes up on bind, back down on unbind, and back down again
+when a resource is replaced by a user buffer - so a recording that merely copies the pointer, or
+leaks on one of the four transitions, fails rather than looking correct.
+---
+ src/gallium/drivers/pvr/pvr_context.c | 65 ++++++++++++++++++++++-
+ src/gallium/drivers/pvr/pvr_context.h | 10 ++++
+ src/gallium/drivers/pvr/pvr_probe.c   | 75 +++++++++++++++++++++++++++
+ 3 files changed, 148 insertions(+), 2 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr/pvr_context.c b/src/gallium/drivers/pvr/pvr_context.c
+index 1ec7dafc..909f49d8 100644
+--- a/src/gallium/drivers/pvr/pvr_context.c
++++ b/src/gallium/drivers/pvr/pvr_context.c
+@@ -183,9 +183,69 @@ pvr_set_constant_buffer(UNUSED struct pipe_context *pctx,
+ }
+ 
+ static void
+-pvr_set_vertex_buffers(UNUSED struct pipe_context *pctx, UNUSED unsigned count,
+-                       UNUSED const struct pipe_vertex_buffer *buffers)
++pvr_set_vertex_buffers(struct pipe_context *pctx, unsigned count,
++                       const struct pipe_vertex_buffer *buffers)
+ {
++   struct pvr_context *ctx = pvr_context(pctx);
++
++   assert(count <= ARRAY_SIZE(ctx->vertex_buffers));
++
++   for (unsigned i = 0; i < count; i++) {
++      const bool old_is_user = ctx->vertex_buffers[i].is_user_buffer;
++      const bool new_is_user = buffers[i].is_user_buffer;
++      struct pipe_resource **slot = &ctx->vertex_buffers[i].buffer.resource;
++
++      /* All four transitions are distinct, and getting one wrong is silent:
++       *   resource -> resource  must take the new reference AND release the old
++       *   resource -> user      must release the old, or it leaks per bind
++       *   user -> resource      must take the new, or the buffer is freed while named
++       *   user -> user          is a plain copy, and referencing would read a client pointer
++       *   as a resource
++       *
++       * pipe_resource_reference both takes the new and releases whatever dst currently holds,
++       * so dst must still hold the OLD pointer when it is called. The first version of this
++       * assigned the whole struct first, which put the NEW pointer in dst and made the helper
++       * release the reference it had just been asked to take - the count fell to zero while the
++       * state still named the buffer. That corrupted the heap, and the corruption surfaced
++       * several checks later in an unrelated malloc. */
++      if (!old_is_user && !new_is_user) {
++         ctx->vertex_buffers[i].is_user_buffer = false;
++         ctx->vertex_buffers[i].buffer_offset = buffers[i].buffer_offset;
++         pipe_resource_reference(slot, buffers[i].buffer.resource);
++      } else if (!old_is_user && new_is_user) {
++         pipe_resource_reference(slot, NULL);
++         ctx->vertex_buffers[i] = buffers[i];
++      } else if (old_is_user && !new_is_user) {
++         /* Discard the client pointer BEFORE the helper runs, or it would be dereferenced as a
++          * resource. Setting the union to NULL gives the helper nothing to release and the new
++          * reference to take, which is exactly this transition. */
++         ctx->vertex_buffers[i].buffer.resource = NULL;
++         ctx->vertex_buffers[i].is_user_buffer = false;
++         ctx->vertex_buffers[i].buffer_offset = buffers[i].buffer_offset;
++         pipe_resource_reference(slot, buffers[i].buffer.resource);
++      } else {
++         ctx->vertex_buffers[i] = buffers[i];
++      }
++   }
++
++   /* Slots above the new count are released and cleared, not left holding a stale pointer that
++    * anything walking the array would read as live. */
++   for (unsigned i = count; i < ctx->nr_vertex_buffers; i++) {
++      if (!ctx->vertex_buffers[i].is_user_buffer)
++         pipe_resource_reference(&ctx->vertex_buffers[i].buffer.resource, NULL);
++
++      ctx->vertex_buffers[i] = (struct pipe_vertex_buffer){ 0 };
++   }
++
++   ctx->nr_vertex_buffers = count;
++}
++
++static void
++pvr_bind_vertex_elements_state(struct pipe_context *pctx, void *state)
++{
++   /* The object is opaque here; see the note in the header. The CSO layer owns it and keeps it
++    * alive while bound, so holding the pointer is safe and copying bytes out of it would not be. */
++   pvr_context(pctx)->velements_state = state;
+ }
+ 
+ static void
+@@ -506,6 +566,7 @@ pvr_context_create(struct pipe_screen *pscreen, UNUSED void *priv,
+    ctx->base.set_framebuffer_state = pvr_set_framebuffer_state;
+    ctx->base.set_constant_buffer = pvr_set_constant_buffer;
+    ctx->base.set_vertex_buffers = pvr_set_vertex_buffers;
++   ctx->base.bind_vertex_elements_state = pvr_bind_vertex_elements_state;
+    ctx->base.set_stencil_ref = pvr_set_stencil_ref;
+    ctx->base.set_sample_mask = pvr_set_sample_mask;
+    ctx->base.set_min_samples = pvr_set_min_samples;
+diff --git a/src/gallium/drivers/pvr/pvr_context.h b/src/gallium/drivers/pvr/pvr_context.h
+index eb61dd9a..4fe1fd1c 100644
+--- a/src/gallium/drivers/pvr/pvr_context.h
++++ b/src/gallium/drivers/pvr/pvr_context.h
+@@ -43,6 +43,16 @@ struct pvr_context {
+ 
+    unsigned nr_viewports;
+    struct pipe_viewport_state viewports[PIPE_MAX_VIEWPORTS];
++
++   unsigned nr_vertex_buffers;
++   struct pipe_vertex_buffer vertex_buffers[PIPE_MAX_ATTRIBS];
++
++   /* Opaque, and deliberately not dereferenced: a vertex-elements object is the DRIVER's private
++    * type once create_vertex_elements_state exists, and this driver does not create one yet (the
++    * frontend's default is registered). Recording the pointer makes the bind visible and gives a
++    * future create hook somewhere to put the parsed elements; inventing a struct to cast it to
++    * would be inventing a layout nothing produces. */
++   void *velements_state;
+ };
+ 
+ struct pipe_context *pvr_context_create(struct pipe_screen *pscreen, void *priv,
+diff --git a/src/gallium/drivers/pvr/pvr_probe.c b/src/gallium/drivers/pvr/pvr_probe.c
+index 3b62d7b3..946f14f4 100644
+--- a/src/gallium/drivers/pvr/pvr_probe.c
++++ b/src/gallium/drivers/pvr/pvr_probe.c
+@@ -677,6 +677,81 @@ out_tex:
+ out_ctx:
+    pctx->destroy(pctx);
+ 
++   {
++      struct pipe_resource templ = {
++         .target = PIPE_BUFFER, .format = PIPE_FORMAT_R8_UNORM,
++         .width0 = 1024, .height0 = 1, .depth0 = 1, .array_size = 1,
++         .last_level = 0, .nr_samples = 1, .usage = PIPE_USAGE_DEFAULT,
++      };
++      struct pipe_resource *vbo = pscreen->resource_create(pscreen, &templ);
++      struct pvr_context *vctx = pvr_context(pctx);
++      struct pipe_vertex_buffer vb = { .is_user_buffer = false,
++                                       .buffer.resource = vbo };
++
++      const int before = p_atomic_read(&vbo->reference.count);
++
++      pctx->set_vertex_buffers(pctx, 1, &vb);
++
++      if (vctx->nr_vertex_buffers != 1 ||
++          vctx->vertex_buffers[0].buffer.resource != vbo ||
++          vctx->vertex_buffers[0].is_user_buffer) {
++         printf("context:       FAIL: the vertex buffer was not recorded as a resource\n");
++         ok = false;
++      } else if (p_atomic_read(&vbo->reference.count) != before + 1) {
++         printf("context:       FAIL: binding took no reference (%d -> %d) - the buffer could "
++                "be freed while the state names it\n", before,
++                p_atomic_read(&vbo->reference.count));
++         ok = false;
++      }
++
++      pctx->set_vertex_buffers(pctx, 0, NULL);
++
++      if (vctx->nr_vertex_buffers != 0 ||
++          p_atomic_read(&vbo->reference.count) != before) {
++         printf("context:       FAIL: unbinding left %u buffers, count %d (expected 0, %d)\n",
++                vctx->nr_vertex_buffers, p_atomic_read(&vbo->reference.count), before);
++         ok = false;
++      }
++
++      /* A user buffer is a client pointer with no upload path in this driver. It must be
++       * recorded as one and never referenced as a resource - the union member is then pointer
++       * to client memory. */
++      pctx->set_vertex_buffers(pctx, 1, &(struct pipe_vertex_buffer){
++         .is_user_buffer = true, .buffer.user = (const void *)0x1000,
++      });
++
++      if (vctx->nr_vertex_buffers != 1 || !vctx->vertex_buffers[0].is_user_buffer)
++         ok = false, printf("context:       FAIL: a user buffer was not recorded as one\n");
++
++      /* Resource -> user must RELEASE the resource, not leak it. */
++      pctx->set_vertex_buffers(pctx, 1, &vb);
++
++      if (p_atomic_read(&vbo->reference.count) != before + 1) {
++         printf("context:       FAIL: resource-after-user did not take a reference\n");
++         ok = false;
++      }
++
++      pctx->set_vertex_buffers(pctx, 1, &(struct pipe_vertex_buffer){
++         .is_user_buffer = true, .buffer.user = (const void *)0x2000,
++      });
++
++      if (p_atomic_read(&vbo->reference.count) != before) {
++         printf("context:       FAIL: replacing a resource with a user buffer did not release "
++                "it (count %d, expected %d) - that leaks a buffer per bind\n",
++                p_atomic_read(&vbo->reference.count), before);
++         ok = false;
++      }
++
++      pctx->set_vertex_buffers(pctx, 0, NULL);
++
++      /* Drop the creation reference - NOT resource_destroy, which is the destructor the
++       * resource machinery calls at count zero. */
++      pipe_resource_reference(&vbo, NULL);
++
++      printf("context:       vertex buffers: referenced on bind, released on unbind and on "
++             "resource->user replacement, user buffers never referenced\n");
++   }
++
+    printf("context:       %s (create, texture_map/unmap, offset arithmetic)\n",
+           ok ? "PASS" : "FAIL");
+    return ok;
+-- 
+2.47.3
+

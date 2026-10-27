@@ -1,0 +1,153 @@
+From 08d337ad357c404deeea89cc335e20509e78f424 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 16:42:33 +0800
+Subject: [PATCH 131/269] gallium/pvr: the job submission path, and the
+ kernel's requirement for a stream
+
+SUBMIT_JOBS plumbing: a drm_pvr_job carrying the context handle, job type, and the DEVICE
+address of the control stream (not a CPU pointer, not a buffer handle - the kernel takes
+the address the GPU sees). Submitted with no sync operations, because this driver has no
+fences yet and inventing a wait it cannot signal would be worse than submitting
+unsynchronised work it cannot yet produce.
+
+Exercised on the real kernel with a ZERO-LENGTH stream, deliberately:
+
+  pvr: SUBMIT_JOBS type 0 len 0 at 0x9ffffde000 failed: Invalid argument
+  vm:  SUBMIT_JOBS refused a zero-length job
+
+The zero length is the point, not an oversight. The GPU executes this stream and a
+malformed one can hang the hardware rather than fail cleanly - on a board whose GPU has
+rebooted it before, that is not a risk worth taking to make a check look thorough. A
+zero-length stream executes nothing, so what was tested is exactly the part this round
+wrote: the job description, the argument array, and the ioctl. It was reached and parsed,
+and refused for the one reason it should be.
+
+The refusal is also the finding. pvr_job.c:411 states the requirement outright:
+
+  if (!args->cmd_stream || !args->cmd_stream_len)
+          return ERR_PTR(-EINVAL);
+
+So a job needs a real control stream, and building one is the ~5700-line piece this path
+is still working toward. The submission path is in place and validated as far as it can be
+without CSB content; the next thing that changes its behaviour is content, not plumbing.
+---
+ src/gallium/drivers/pvr/pvr_probe.c | 37 +++++++++++++++++++++++++++++
+ src/gallium/drivers/pvr/pvr_vm.c    | 27 +++++++++++++++++++++
+ src/gallium/drivers/pvr/pvr_vm.h    |  8 +++++++
+ 3 files changed, 72 insertions(+)
+
+diff --git a/src/gallium/drivers/pvr/pvr_probe.c b/src/gallium/drivers/pvr/pvr_probe.c
+index 91c0e326..2e0dd362 100644
+--- a/src/gallium/drivers/pvr/pvr_probe.c
++++ b/src/gallium/drivers/pvr/pvr_probe.c
+@@ -118,6 +118,7 @@ out:
+ static bool
+ vm_roundtrip(int fd, const struct pvr_device_info *dev_info)
+ {
++   const int pvm_fd_for_probe = fd;
+    struct pvr_vm vm;
+    struct pvr_bo a = { 0 }, b = { 0 };
+    uint64_t addr_a = 0, addr_b = 0, size = 0;
+@@ -440,6 +441,42 @@ vm_roundtrip(int fd, const struct pvr_device_info *dev_info)
+       printf("vm:            GPU context %u created: render type, callstack at 0x%"
+              PRIx64 "\n", gpu_ctx.handle, gpu_ctx.callstack_addr);
+ 
++      /* The submission path, exercised with a ZERO-LENGTH control stream.
++       *
++       * Deliberate: the GPU executes this stream, and a malformed one can hang the
++       * hardware rather than fail cleanly - on a board whose GPU has rebooted it before,
++       * that is not a risk worth taking to make a check look more thorough. A
++       * zero-length stream executes nothing, so what is being tested is exactly the part
++       * this round wrote: the job description and the ioctl. Whether the kernel accepts
++       * it, and what it says if not, is the result.
++       *
++       * A real submission needs the CSB content, which is the 5700-line piece this path
++       * is still building toward. */
++      {
++         struct pvr_bo csb_bo = { 0 };
++         uint64_t csb_addr = 0;
++
++         if (pvr_bo_create(pvm_fd_for_probe, 4096, 1, &csb_bo)) {
++            csb_addr = pvr_vm_alloc(&vm, csb_bo.size, vm.general.page_size);
++
++            if (csb_addr != 0 &&
++                pvr_vm_map(&vm, csb_addr, csb_bo.handle, csb_bo.size)) {
++               if (pvr_job_submit(&vm, gpu_ctx.handle, DRM_PVR_JOB_TYPE_GEOMETRY,
++                                  csb_addr, 0)) {
++                  printf("vm:            SUBMIT_JOBS accepted a zero-length geometry "
++                         "job at 0x%" PRIx64 " - the submission path works\n",
++                         csb_addr);
++               } else {
++                  printf("vm:            SUBMIT_JOBS refused a zero-length job (see the "
++                         "error above for the kernel's reason)\n");
++               }
++               pvr_vm_unmap(&vm, csb_addr, csb_bo.size);
++               pvr_vm_free(&vm, csb_addr, csb_bo.size);
++            }
++            pvr_bo_destroy(pvm_fd_for_probe, &csb_bo);
++         }
++      }
++
+       pvr_gpu_context_destroy(&vm, &gpu_ctx);
+    }
+ 
+diff --git a/src/gallium/drivers/pvr/pvr_vm.c b/src/gallium/drivers/pvr/pvr_vm.c
+index ccfcb9c4..3a6e4123 100644
+--- a/src/gallium/drivers/pvr/pvr_vm.c
++++ b/src/gallium/drivers/pvr/pvr_vm.c
+@@ -343,6 +343,33 @@ pvr_gpu_context_destroy(struct pvr_vm *vm, struct pvr_gpu_context *ctx)
+    ctx->handle = 0;
+ }
+ 
++bool
++pvr_job_submit(struct pvr_vm *vm, uint32_t context_handle, uint32_t job_type,
++               uint64_t cmd_stream, uint32_t cmd_stream_len)
++{
++   struct drm_pvr_job job = {
++      .type = job_type,
++      .context_handle = context_handle,
++      .cmd_stream = cmd_stream,
++      .cmd_stream_len = cmd_stream_len,
++   };
++   struct drm_pvr_ioctl_submit_jobs_args args = {
++      .jobs = {
++         .stride = sizeof(job),
++         .count = 1,
++         .array = (__u64)(uintptr_t)&job,
++      },
++   };
++
++   if (drmIoctl(vm->fd, DRM_IOCTL_PVR_SUBMIT_JOBS, &args) != 0) {
++      mesa_loge("pvr: SUBMIT_JOBS type %u len %u at 0x%" PRIx64 " failed: %s", job_type,
++                cmd_stream_len, cmd_stream, strerror(errno));
++      return false;
++   }
++
++   return true;
++}
++
+ void
+ pvr_vm_finish(struct pvr_vm *vm)
+ {
+diff --git a/src/gallium/drivers/pvr/pvr_vm.h b/src/gallium/drivers/pvr/pvr_vm.h
+index a4e5863a..25c027ba 100644
+--- a/src/gallium/drivers/pvr/pvr_vm.h
++++ b/src/gallium/drivers/pvr/pvr_vm.h
+@@ -95,6 +95,14 @@ struct pvr_gpu_context {
+ bool pvr_gpu_context_create(struct pvr_vm *vm, struct pvr_gpu_context *ctx);
+ void pvr_gpu_context_destroy(struct pvr_vm *vm, struct pvr_gpu_context *ctx);
+ 
++/* Submit one job. `cmd_stream` is the DEVICE address of the control stream the GPU will
++ * execute, not a CPU pointer and not a buffer handle - the kernel takes the address the
++ * GPU sees. A job with no sync operations is submitted without any: the driver has no
++ * fences yet, and inventing a wait it cannot signal would be worse than submitting
++ * unsynchronised work it cannot yet produce. */
++bool pvr_job_submit(struct pvr_vm *vm, uint32_t context_handle, uint32_t job_type,
++                    uint64_t cmd_stream, uint32_t cmd_stream_len);
++
+ bool pvr_vm_init(int fd, struct pvr_vm *vm);
+ void pvr_vm_finish(struct pvr_vm *vm);
+ 
+-- 
+2.47.3
+

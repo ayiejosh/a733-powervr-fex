@@ -1,0 +1,602 @@
+From 73737e192750ce62ab0c998fe0fb2da365c108a7 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 13:48:02 +0800
+Subject: [PATCH 116/269] gallium/pvr: GL initialises on the driver - context,
+ transfers, and the format gate
+
+Three things, in the order the crashes demanded them:
+
+1. pipe_context with buffer_map/texture_map/unmap and transfer_flush_region. The
+   resources are already CPU mapped write-combined, so a transfer is arithmetic on
+   that mapping: offset = box.y * stride + box.x * blocksize, with the block size
+   used rather than assuming 4 bytes per pixel, which would read and write the
+   wrong memory for the 16-bit formats. flush_resource is not needed; there is
+   nothing to queue.
+
+2. The full context contract. cso_unbind_context() calls every bind_* and set_*
+   hook unconditionally on teardown, and st's throttle teardown calls the screen's
+   fence_reference for each ring slot, so a NULL hook anywhere there is a crash on
+   the way out of a context that was created successfully. These are stateless
+   because there is no state yet - marked with the ceiling, because when the draw
+   path lands they must record what was bound rather than silently ignoring it.
+
+3. is_format_supported now answers for plain (non-compressed) formats. What it
+   claims is narrow and worth being precise about: the driver can back such a
+   resource with memory and describe its layout. It does not claim a draw path.
+   Before this the state tracker built no configs, DRI had nothing to hand out and
+   EGL could not initialise at all.
+
+Result, on the real open kernel driver, no shim:
+
+  OpenGL compatibility profile renderer: PowerVR B-Series BXM-4-64 (36.56.104.183)
+  OpenGL compatibility profile version: 1.5 Mesa 26.3.0-devel
+  OpenGL ES profile renderer: PowerVR B-Series BXM-4-64 (36.56.104.183)
+
+GL now initialises on the native driver and reports it as the renderer, instead of
+dying in st_init_extensions or on teardown. probe: ALL PASS, including a transfer
+written into an 8x8 box at (4,4) and verified at byte 1040 of a stride-256 texture.
+
+What this is NOT: the version is 1.5 / ES-CM 1.1, the level you get from zeroed
+shader caps, so no shader stage exists and nothing can be drawn. There is still no
+draw path, no rasterisation and no command submission, and no benchmark is possible
+or claimed. Shader stages stay closed until pco is wired to something that draws.
+---
+ src/gallium/drivers/pvr/meson.build   |   1 +
+ src/gallium/drivers/pvr/pvr_context.c | 273 ++++++++++++++++++++++++++
+ src/gallium/drivers/pvr/pvr_context.h |  26 +++
+ src/gallium/drivers/pvr/pvr_probe.c   | 115 ++++++++++-
+ src/gallium/drivers/pvr/pvr_screen.c  |  46 ++++-
+ 5 files changed, 451 insertions(+), 10 deletions(-)
+ create mode 100644 src/gallium/drivers/pvr/pvr_context.c
+ create mode 100644 src/gallium/drivers/pvr/pvr_context.h
+
+diff --git a/src/gallium/drivers/pvr/meson.build b/src/gallium/drivers/pvr/meson.build
+index 84d88dca..53914e67 100644
+--- a/src/gallium/drivers/pvr/meson.build
++++ b/src/gallium/drivers/pvr/meson.build
+@@ -6,6 +6,7 @@
+ 
+ files_pvr = files(
+   'pvr_bo.c',
++  'pvr_context.c',
+   'pvr_resource.c',
+   'pvr_vm.c',
+   'pvr_screen.c',
+diff --git a/src/gallium/drivers/pvr/pvr_context.c b/src/gallium/drivers/pvr/pvr_context.c
+new file mode 100644
+index 00000000..bc901a95
+--- /dev/null
++++ b/src/gallium/drivers/pvr/pvr_context.c
+@@ -0,0 +1,273 @@
++/* Copyright 2026 The Mesa authors
++ * SPDX-License-Identifier: MIT
++ */
++#include "pvr_context.h"
++
++#include "pipe/p_context.h"
++#include "util/format/u_formats.h"
++#include "util/log.h"
++#include "util/u_inlines.h"
++#include "util/u_memory.h"
++
++#include "pvr_resource.h"
++#include "pvr_screen.h"
++
++struct pvr_transfer {
++   struct pipe_transfer base;
++};
++
++/* Shared by the buffer and texture entry points: this Mesa version split the old
++ * transfer_map into buffer_map and texture_map, and the two differ only in how the
++ * caller expresses the offset. */
++static void *
++pvr_transfer_map(struct pipe_context *pctx, struct pipe_resource *pres,
++                 unsigned level, unsigned usage, const struct pipe_box *box,
++                 struct pipe_transfer **out_transfer)
++{
++   struct pvr_screen *screen = pvr_screen(pctx->screen);
++   struct pvr_resource *res = pvr_resource(pres);
++   struct pvr_transfer *trans;
++   uint64_t offset;
++
++   /* The linear layout only describes level 0 and a single layer. Resource creation
++    * already refuses more than that, so reaching here would be a bug rather than a
++    * request. */
++   if (level != 0 || box->depth != 1) {
++      mesa_loge("pvr: refusing a transfer at level %u depth %u", level, box->depth);
++      return NULL;
++   }
++
++   /* Mapped on demand and left mapped. The mapping is write-combined, so CPU writes
++    * are visible to the device without an explicit flush and there is nothing to
++    * bracket - which is also why transfer_flush_region is a no-op below. */
++   if (res->bo.map == NULL && !pvr_bo_map(screen->fd, &res->bo))
++      return NULL;
++
++   trans = CALLOC_STRUCT(pvr_transfer);
++   if (!trans)
++      return NULL;
++
++   pipe_resource_reference(&trans->base.resource, pres);
++   trans->base.level = level;
++   trans->base.usage = usage;
++   trans->base.box = *box;
++   trans->base.stride = res->stride;
++   trans->base.layer_stride =
++      res->stride ? (uint64_t)res->stride * pres->height0 : 0;
++
++   /* A buffer resource has no stride; there the box's x is already the byte offset.
++    * For a texture the block size converts a pixel column into a byte column - which
++    * matters for the 16-bit formats, where assuming 4 bytes per pixel would read and
++    * write the wrong memory. */
++   if (res->stride != 0) {
++      offset = (uint64_t)box->y * res->stride +
++               (uint64_t)box->x * util_format_get_blocksize(pres->format);
++   } else {
++      offset = box->x;
++   }
++
++   *out_transfer = &trans->base;
++
++   return (uint8_t *)res->bo.map + offset;
++}
++
++static void
++pvr_transfer_unmap(UNUSED struct pipe_context *pctx, struct pipe_transfer *transfer)
++{
++   struct pvr_transfer *trans = (struct pvr_transfer *)transfer;
++
++   pipe_resource_reference(&trans->base.resource, NULL);
++   FREE(trans);
++}
++
++static void
++pvr_transfer_flush_region(UNUSED struct pipe_context *pctx,
++                          UNUSED struct pipe_transfer *transfer,
++                          UNUSED const struct pipe_box *box)
++{
++   /* Nothing to do. The only mapping available here is write-combined, whose reads are
++    * uncached, so a CPU write is already visible to the device. A cacheable mapping
++    * would need real maintenance - and this kernel has no userspace path for it, which
++    * is the other reason not to use one. */
++}
++
++/* Not a stub for its own sake: the state tracker calls flush on every context unbind,
++ * so its absence is a crash on the way out of any GL context that was successfully
++ * created. There is no command stream to submit yet, so there is genuinely nothing to
++ * do, and no fence is produced - which is the correct answer for "nothing pending". */
++static void
++pvr_flush(UNUSED struct pipe_context *pctx, UNUSED struct pipe_fence_handle **fence,
++          UNUSED unsigned flags)
++{
++}
++
++/* The state tracker calls sampler_view_release unconditionally while tearing a
++ * context down (st_context.c), whether or not the driver ever handed it a view. This
++ * driver creates none yet, so there is nothing to release or destroy - but a NULL
++ * hook here is a crash on the way out of every GL context, exactly like flush. */
++static void
++pvr_sampler_view_destroy(UNUSED struct pipe_context *pctx,
++                         UNUSED struct pipe_sampler_view *view)
++{
++}
++
++static void
++pvr_sampler_view_release(UNUSED struct pipe_context *pctx,
++                         UNUSED struct pipe_sampler_view *view)
++{
++}
++
++/* The gallium context contract. cso_unbind_context() calls this entire set on every
++ * context teardown, whether or not anything was ever bound, so a NULL hook anywhere in
++ * it is a crash on the way out of any GL context. There is no command stream and no
++ * state yet, so "bind nothing" and "set nothing" are the truthful implementations
++ * rather than placeholders.
++ *
++ * ponytail: stateless on purpose. When the draw path lands these must record what was
++ * bound - ignoring state at that point would mean drawing with whatever the hardware
++ * last happened to hold. The ceiling is named here so it is not mistaken for finished. */
++#define PVR_DEFINE_BIND_NOOP(name)                                            \
++   static void name(UNUSED struct pipe_context *pctx, UNUSED void *state)      \
++   {                                                                          \
++   }
++
++PVR_DEFINE_BIND_NOOP(pvr_bind_state_noop)
++
++static void
++pvr_bind_sampler_states(UNUSED struct pipe_context *pctx,
++                        UNUSED mesa_shader_stage shader, UNUSED unsigned start_slot,
++                        UNUSED unsigned num_samplers, UNUSED void **samplers)
++{
++}
++
++static void
++pvr_set_sampler_views(UNUSED struct pipe_context *pctx,
++                      UNUSED mesa_shader_stage shader, UNUSED unsigned start_slot,
++                      UNUSED unsigned num_views,
++                      UNUSED unsigned unbind_num_trailing_slots,
++                      UNUSED struct pipe_sampler_view **views)
++{
++}
++
++static void
++pvr_set_framebuffer_state(UNUSED struct pipe_context *pctx,
++                          UNUSED const struct pipe_framebuffer_state *state)
++{
++}
++
++static void
++pvr_set_constant_buffer(UNUSED struct pipe_context *pctx,
++                        UNUSED mesa_shader_stage shader, UNUSED uint index,
++                        UNUSED const struct pipe_constant_buffer *buf)
++{
++}
++
++static void
++pvr_set_vertex_buffers(UNUSED struct pipe_context *pctx, UNUSED unsigned count,
++                       UNUSED const struct pipe_vertex_buffer *buffers)
++{
++}
++
++static void
++pvr_set_stencil_ref(UNUSED struct pipe_context *pctx,
++                    UNUSED const struct pipe_stencil_ref ref)
++{
++}
++
++static void
++pvr_set_sample_mask(UNUSED struct pipe_context *pctx, UNUSED unsigned sample_mask)
++{
++}
++
++static void
++pvr_set_min_samples(UNUSED struct pipe_context *pctx, UNUSED unsigned min_samples)
++{
++}
++
++static void
++pvr_set_sample_coverage(UNUSED struct pipe_context *pctx, UNUSED float value,
++                        UNUSED bool invert)
++{
++}
++
++static void
++pvr_set_shader_buffers(UNUSED struct pipe_context *pctx,
++                       UNUSED mesa_shader_stage shader, UNUSED unsigned start_slot,
++                       UNUSED unsigned count,
++                       UNUSED const struct pipe_shader_buffer *buffers,
++                       UNUSED unsigned writable_bitmask)
++{
++}
++
++static void
++pvr_set_shader_images(UNUSED struct pipe_context *pctx,
++                      UNUSED mesa_shader_stage shader, UNUSED unsigned start_slot,
++                      UNUSED unsigned count,
++                      UNUSED unsigned unbind_num_trailing_slots,
++                      UNUSED const struct pipe_image_view *images)
++{
++}
++
++static void
++pvr_set_stream_output_targets(UNUSED struct pipe_context *pctx,
++                              UNUSED unsigned num_targets,
++                              UNUSED struct pipe_stream_output_target **targets,
++                              UNUSED const unsigned *offsets,
++                              UNUSED enum mesa_prim output_prim)
++{
++}
++
++static void
++pvr_context_destroy(struct pipe_context *pctx)
++{
++   FREE(pvr_context(pctx));
++}
++
++struct pipe_context *
++pvr_context_create(struct pipe_screen *pscreen, UNUSED void *priv,
++                   UNUSED unsigned flags)
++{
++   struct pvr_context *ctx = CALLOC_STRUCT(pvr_context);
++
++   if (!ctx)
++      return NULL;
++
++   ctx->base.screen = pscreen;
++   ctx->base.destroy = pvr_context_destroy;
++   ctx->base.flush = pvr_flush;
++   ctx->base.sampler_view_destroy = pvr_sampler_view_destroy;
++   ctx->base.sampler_view_release = pvr_sampler_view_release;
++
++   ctx->base.buffer_map = pvr_transfer_map;
++   ctx->base.buffer_unmap = pvr_transfer_unmap;
++   ctx->base.texture_map = pvr_transfer_map;
++   ctx->base.texture_unmap = pvr_transfer_unmap;
++   ctx->base.transfer_flush_region = pvr_transfer_flush_region;
++
++   ctx->base.bind_blend_state = pvr_bind_state_noop;
++   ctx->base.bind_depth_stencil_alpha_state = pvr_bind_state_noop;
++   ctx->base.bind_rasterizer_state = pvr_bind_state_noop;
++   ctx->base.bind_vs_state = pvr_bind_state_noop;
++   ctx->base.bind_fs_state = pvr_bind_state_noop;
++   ctx->base.bind_gs_state = pvr_bind_state_noop;
++   ctx->base.bind_tcs_state = pvr_bind_state_noop;
++   ctx->base.bind_tes_state = pvr_bind_state_noop;
++   ctx->base.bind_ms_state = pvr_bind_state_noop;
++   ctx->base.bind_ts_state = pvr_bind_state_noop;
++   ctx->base.bind_compute_state = pvr_bind_state_noop;
++   ctx->base.bind_vertex_elements_state = pvr_bind_state_noop;
++   ctx->base.bind_sampler_states = pvr_bind_sampler_states;
++   ctx->base.set_sampler_views = pvr_set_sampler_views;
++   ctx->base.set_framebuffer_state = pvr_set_framebuffer_state;
++   ctx->base.set_constant_buffer = pvr_set_constant_buffer;
++   ctx->base.set_vertex_buffers = pvr_set_vertex_buffers;
++   ctx->base.set_stencil_ref = pvr_set_stencil_ref;
++   ctx->base.set_sample_mask = pvr_set_sample_mask;
++   ctx->base.set_min_samples = pvr_set_min_samples;
++   ctx->base.set_sample_coverage = pvr_set_sample_coverage;
++   ctx->base.set_shader_buffers = pvr_set_shader_buffers;
++   ctx->base.set_shader_images = pvr_set_shader_images;
++   ctx->base.set_stream_output_targets = pvr_set_stream_output_targets;
++
++   return &ctx->base;
++}
+diff --git a/src/gallium/drivers/pvr/pvr_context.h b/src/gallium/drivers/pvr/pvr_context.h
+new file mode 100644
+index 00000000..1e6518bf
+--- /dev/null
++++ b/src/gallium/drivers/pvr/pvr_context.h
+@@ -0,0 +1,26 @@
++/* Copyright 2026 The Mesa authors
++ * SPDX-License-Identifier: MIT
++ *
++ * pipe_context. For now it exists to own transfers: the resources are already CPU
++ * mapped write-combined, so a transfer is arithmetic on that mapping and nothing
++ * more. There is no state, no draw path and no command submission yet.
++ */
++#ifndef PVR_CONTEXT_H
++#define PVR_CONTEXT_H
++
++#include "pipe/p_context.h"
++
++struct pvr_context {
++   struct pipe_context base;
++};
++
++struct pipe_context *pvr_context_create(struct pipe_screen *pscreen, void *priv,
++                                        unsigned flags);
++
++static inline struct pvr_context *
++pvr_context(struct pipe_context *pctx)
++{
++   return (struct pvr_context *)pctx;
++}
++
++#endif /* PVR_CONTEXT_H */
+diff --git a/src/gallium/drivers/pvr/pvr_probe.c b/src/gallium/drivers/pvr/pvr_probe.c
+index ca934222..a2fb6c2e 100644
+--- a/src/gallium/drivers/pvr/pvr_probe.c
++++ b/src/gallium/drivers/pvr/pvr_probe.c
+@@ -21,6 +21,7 @@
+ #include <fcntl.h>
+ 
+ #include "pvr_bo.h"
++#include "pvr_context.h"
+ #include "pvr_resource.h"
+ #include "pvr_vm.h"
+ #include "pvr_public.h"
+@@ -249,6 +250,117 @@ out:
+    return ok;
+ }
+ 
++/* Transfers: create a context, map a sub-box of a texture, write through the returned
++ * pointer, and then verify the bytes landed at the byte offset that box implies,
++ * looked at directly through the buffer's own mapping. The offset arithmetic is the
++ * part that fails silently - a wrong pitch writes plausible data to the wrong place. */
++static bool
++transfer_roundtrip(struct pipe_screen *pscreen)
++{
++   const unsigned x = 4, y = 4, w = 8, h = 8;
++   const uint32_t magic = 0xA1B2C300u;
++   struct pipe_resource templ = {
++      .target = PIPE_TEXTURE_2D,
++      .format = PIPE_FORMAT_R8G8B8A8_UNORM,
++      .width0 = 64,
++      .height0 = 64,
++      .depth0 = 1,
++      .array_size = 1,
++      .last_level = 0,
++      .nr_samples = 1,
++      .usage = PIPE_USAGE_DEFAULT,
++      .bind = PIPE_BIND_SAMPLER_VIEW,
++   };
++   const struct pipe_box box = {
++      .x = x, .y = y, .width = w, .height = h, .depth = 1,
++   };
++   struct pipe_context *pctx;
++   struct pipe_resource *tex;
++   struct pipe_transfer *trans = NULL;
++   struct pvr_resource *res;
++   uint32_t *p;
++   bool ok = false;
++
++   pctx = pscreen->context_create(pscreen, NULL, 0);
++   if (!pctx) {
++      printf("context:       FAIL: context_create returned NULL\n");
++      return false;
++   }
++
++   tex = pscreen->resource_create(pscreen, &templ);
++   if (!tex) {
++      printf("context:       FAIL: could not create the texture to transfer into\n");
++      goto out_ctx;
++   }
++
++   p = pctx->texture_map(pctx, tex, 0, PIPE_MAP_WRITE, &box, &trans);
++   if (p == NULL || trans == NULL) {
++      printf("context:       FAIL: texture_map returned NULL\n");
++      goto out_tex;
++   }
++
++   if (trans->stride == 0) {
++      printf("context:       FAIL: transfer did not report a stride\n");
++      pctx->texture_unmap(pctx, trans);
++      goto out_tex;
++   }
++
++   /* Walk it the way the transfer says to, not the way we guess. */
++   for (unsigned row = 0; row < h; row++) {
++      uint32_t *line = (uint32_t *)((uint8_t *)p + (uint64_t)row * trans->stride);
++      for (unsigned col = 0; col < w; col++)
++         line[col] = magic + row * w + col;
++   }
++   pctx->texture_unmap(pctx, trans);
++   trans = NULL;
++
++   /* Now look at the same bytes through the buffer's own CPU mapping: the first word
++    * written must sit at box.y * stride + box.x * 4, which is exactly the arithmetic
++    * a wrong implementation gets wrong without failing. */
++   res = pvr_resource(tex);
++   if (res->bo.map == NULL) {
++      printf("context:       FAIL: the resource has no CPU mapping to verify against\n");
++      goto out_tex;
++   }
++
++   const uint64_t expect_off = (uint64_t)y * res->stride +
++                               (uint64_t)x * 4;
++   const uint32_t *at = (const uint32_t *)((const uint8_t *)res->bo.map + expect_off);
++
++   if (at[0] != magic) {
++      printf("context:       FAIL: expected 0x%08x at byte %" PRIu64 ", found 0x%08x\n",
++             magic, expect_off, at[0]);
++      goto out_tex;
++   }
++
++   if (at[(h - 1) * (res->stride / 4) + (w - 1)] != magic + h * w - 1) {
++      printf("context:       FAIL: the last pixel of the box is not where it belongs\n");
++      goto out_tex;
++   }
++
++   /* And that the byte before the box is untouched - an off-by-one in the pitch would
++    * otherwise still pass the two checks above. */
++   if (*(const uint32_t *)((const uint8_t *)res->bo.map + expect_off - 4) == magic) {
++      printf("context:       FAIL: the write landed before the box\n");
++      goto out_tex;
++   }
++
++   printf("context:       wrote a %ux%u box at (%u,%u) into stride %u; verified at "
++          "byte %" PRIu64 "\n", w, h, x, y, res->stride, expect_off);
++   ok = true;
++
++out_tex:
++   if (trans)
++      pctx->texture_unmap(pctx, trans);
++   pscreen->resource_destroy(pscreen, tex);
++out_ctx:
++   pctx->destroy(pctx);
++
++   printf("context:       %s (create, texture_map/unmap, offset arithmetic)\n",
++          ok ? "PASS" : "FAIL");
++   return ok;
++}
++
+ int
+ main(int argc, char **argv)
+ {
+@@ -279,10 +391,11 @@ main(int argc, char **argv)
+    const bool bo_pass = bo_roundtrip(fd);
+    const bool vm_pass = vm_roundtrip(fd);
+    const bool res_pass = resource_roundtrip(screen);
++   const bool ctx_pass = transfer_roundtrip(screen);
+ 
+    screen->destroy(screen);
+ 
+-   const bool all = enum_pass && bo_pass && vm_pass && res_pass;
++   const bool all = enum_pass && bo_pass && vm_pass && res_pass && ctx_pass;
+    printf("--- %s\n", all ? "ALL PASS" : "FAILURES ABOVE");
+    return all ? 0 : 1;
+ }
+diff --git a/src/gallium/drivers/pvr/pvr_screen.c b/src/gallium/drivers/pvr/pvr_screen.c
+index 22b6e1e3..23b090e5 100644
+--- a/src/gallium/drivers/pvr/pvr_screen.c
++++ b/src/gallium/drivers/pvr/pvr_screen.c
+@@ -27,11 +27,13 @@
+ #include "util/os_file.h"
+ #include "util/log.h"
+ #include "util/macros.h"
++#include "util/format/u_formats.h"
+ #include "util/u_screen.h"
+ 
+ /* pco: the PowerVR compiler from src/imagination/pco, linked rather than rewritten. */
+ #include "pco/pco.h"
+ 
++#include "pvr_context.h"
+ #include "pvr_resource.h"
+ 
+ static const char *
+@@ -52,20 +54,44 @@ pvr_get_device_vendor(struct pipe_screen *pscreen)
+    return "Imagination Technologies";
+ }
+ 
+-/* The state tracker calls this unconditionally while building its format tables,
+- * so it has to exist. The answer is "none": there is no resource management yet
+- * (explicitly out of scope for this milestone), and claiming support here would
+- * have the tracker build tables for resources this driver cannot create. Lying
+- * would move the failure somewhere less honest. */
++/* What this answers is narrow, and worth being precise about: can the driver back a
++ * resource of this format with memory and describe its layout? Linear memory can
++ * describe any plain (non-compressed) format, so those are accepted. It does NOT
++ * claim a working draw path - there is none yet - but without it the state tracker
++ * builds no configs at all, DRI has nothing to hand out, and EGL cannot initialise,
++ * so this is also the gate on everything downstream. Compressed and subsampled
++ * layouts are refused rather than accepted and described wrongly. */
+ static bool
+ pvr_is_format_supported(UNUSED struct pipe_screen *pscreen,
+-                        UNUSED enum pipe_format format,
++                        enum pipe_format format,
+                         UNUSED enum pipe_texture_target target,
+-                        UNUSED unsigned sample_count,
+-                        UNUSED unsigned storage_sample_count,
++                        unsigned sample_count,
++                        unsigned storage_sample_count,
+                         UNUSED unsigned bindings)
+ {
+-   return false;
++   const struct util_format_description *desc;
++
++   if (sample_count > 1 || storage_sample_count > 1)
++      return false;
++
++   desc = util_format_description(format);
++   if (desc == NULL)
++      return false;
++
++   return desc->layout == UTIL_FORMAT_LAYOUT_PLAIN;
++}
++
++/* This driver never creates a fence - there is nothing to submit and so nothing to
++ * wait for - which makes the honest implementation "release whatever we were holding
++ * and clear the caller's pointer". It is reached unconditionally: st's throttle
++ * teardown calls it for every ring slot on every context destruction. */
++static void
++pvr_fence_reference(UNUSED struct pipe_screen *pscreen,
++                    struct pipe_fence_handle **ptr,
++                    UNUSED struct pipe_fence_handle *fence)
++{
++   if (ptr)
++      *ptr = NULL;
+ }
+ 
+ static void
+@@ -156,6 +182,8 @@ pvr_screen_create(int fd, const struct pipe_screen_config *config,
+    screen->base.get_vendor = pvr_get_vendor;
+    screen->base.get_device_vendor = pvr_get_device_vendor;
+    screen->base.is_format_supported = pvr_is_format_supported;
++   screen->base.fence_reference = pvr_fence_reference;
++   screen->base.context_create = pvr_context_create;
+    screen->base.resource_create = pvr_resource_create;
+    screen->base.resource_destroy = pvr_resource_destroy;
+ 
+-- 
+2.47.3
+

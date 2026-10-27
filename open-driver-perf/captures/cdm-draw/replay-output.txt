@@ -1,0 +1,27 @@
+MESA: info: pvr: PowerVR B-Series BXM-4-64 (36.56.104.183), device_id 0x36104183, gpu_id 0x240038006800b7
+MESA: info: pvr: pvr_screen_create fd=3 -> PowerVR B-Series BXM-4-64 (36.56.104.183) (skeleton: no draw path)
+MESA: info: pvr: static area heap 0 usage 1 offset 0x0 size 128
+MESA: info: pvr: static area heap 0 usage 3 offset 0x80 size 1024
+MESA: info: pvr: static area heap 1 usage 2 offset 0x0 size 128
+MESA: info: pvr: static area heap 1 usage 0 offset 0x80 size 128
+MESA: info: pvr: static area heap 2 usage 2 offset 0x0 size 128
+MESA: info: pvr: 6 heaps; general base 0x8000000000 size 137438953472 carveout 1152 usable 0x8000000480 (137438952320 bytes), page 4096, vm_context 1
+name:          PowerVR B-Series BXM-4-64 (36.56.104.183)
+vendor:        Imagination Technologies
+device vendor: Imagination Technologies
+cdm:           compile-time literal pool installed at 0x800004b040
+cdm:           replaying captured compute job (fw stream 44 B, ctrl stream @0x80001b1000, state @0x800006b000, programs installed)
+MESA: error: pvr: compute job did not signal completion within 2000 ms
+cdm:           readback inside=73728 outside=177828 zero=10588 (waited 0 us, target 0x80000b1000)
+cdm:           target: 262144/262144 nonzero dwords
+cdm:           desc page: 12/1024 nonzero dwords
+cdm:           ctrl stream: 15/1024 nonzero dwords
+cdm:           ctx state: 0/1024 nonzero dwords
+cdm:           border table: 0/1024 nonzero dwords
+cdm:           pds page: 341/3072 nonzero dwords
+cdm:           usc page: 1642/7168 nonzero dwords
+cdm:           target[0..7] = cafebabe ffff0000 ffff0000 ffff0000 ffff0000 ffff0000 ffff0000 ffff0000
+cdm:           ids: local00=cafebabe wgx1=ffff0000 wgy1=ffff0000 gid1=ffff0000 marker=ffff0000
+cdm:           first nonzero target words: [0]=cafebabe [1]=ffff0000 [2]=ffff0000 [3]=ffff0000 [4]=ffff0000 [5]=ffff0000 [6]=ffff0000 [7]=ffff0000 [8]=ffff0000 [9]=ffff0000 [10]=ffff0000 [11]=ffff0000 [12]=ffff0000 [13]=ffff0000 [14]=ffff0000 [15]=ffff0000 [16]=ffff0000 [17]=ffff0000 [18]=ffff0000 [19]=ffff0000 [20]=ffff0000 [21]=ffff0000 [22]=ffff0000 [23]=ffff0000 [24]=ffff0000 [25]=ffff0000 [26]=ffff0000 [27]=ffff0000 [28]=ffff0000 [29]=ffff0000 [30]=ffff0000 [31]=ffff0000
+cdm:           center=0xff0000ff corner=0xffff0000
+cdm:           PASS (native compute draw of the captured Vulkan triangle job)

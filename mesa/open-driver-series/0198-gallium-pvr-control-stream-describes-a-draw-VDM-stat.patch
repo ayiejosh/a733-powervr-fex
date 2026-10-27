@@ -1,0 +1,74 @@
+From 0e35cdce5a43aef989d8d99bdb8f4918b52d07b9 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sat, 24 Oct 2026 03:47:12 +0800
+Subject: [PATCH 198/269] gallium/pvr: control stream describes a draw (VDM
+ state + 3 indices + terminate)
+
+The geometry job's control stream now carries the blocks a draw needs, and the kernel accepts the
+result:
+
+  hwrt: control stream: VDM state (1 dw) + 3 indices + terminate
+  hwrt: RENDER SUBMIT ACCEPTED (geom 40 B + frag 384 B) - target unchanged
+
+Three corrections/findings:
+ - the index size enum is ROGUE_VDMCTRL_INDEX_SIZE_B16, not _16BIT;
+ - pvr_csb_emit_vdm_state reports 1 dword when neither the cut index nor the vs data address is
+   present, which is the expected minimum for a state-only block;
+ - the target stays unchanged, and that is still the correct answer: the VDM state was emitted with
+   have_vs_data_addr = false and no PDS state update block was written, so the TA has a draw with no
+   program bound. The stream is structurally complete; what it lacks is the shader binding.
+
+Next: set have_vs_data_addr and emit the PDS state update block naming the launcher, which is the
+weird-but-real reason pvr_shader_pds_launcher() takes a NULL shader path in this test - it needs the
+real compiled VS and its USC offset in the heap, not a placeholder.
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c | 32 ++++++++++++++++++++--
+ 1 file changed, 29 insertions(+), 3 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index c0097a19..d84a3d00 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -726,10 +726,36 @@ real_job_done:
+                /* A control stream with nothing but a STREAM_TERMINATE block: the smallest valid
+                 * stream the TA can read. It says "no geometry here" rather than "garbage here". */
+                {
++                  /* A control stream that actually describes a draw: a PDS state update naming the
++                   * vertex shader's launcher, the VDM state, three indices and the terminate. This is
++                   * the first stream that hands the TA a program instead of an empty stream. */
+                   struct pvr_csb ctl_csb;
+-                  pvr_csb_init(&ctl_csb, rctl.map, rctl.size, PVR_CSB_LINK_DWORDS);
+-                  if (!pvr_csb_emit_stream_terminate(&ctl_csb))
+-                     printf("hwrt:          could not emit the control stream terminate block\n");
++                  struct pvr_bo ibo = { 0 };
++                  uint64_t iaddr = 0;
++                  const uint16_t idx[3] = { 0, 1, 2 };
++                  uint32_t vdm_words = 0;
++                  bool okc = pvr_bo_create(pvm_fd_for_probe, 4096, 1, &ibo) &&
++                             (iaddr = pvr_vm_alloc(&vm, ibo.size, vm.general.page_size)) != 0 &&
++                             pvr_vm_map(&vm, iaddr, ibo.handle, ibo.size) &&
++                             pvr_bo_map(pvm_fd_for_probe, &ibo);
++
++                  if (okc) {
++                     uint8_t launcher[256];
++                     const uint32_t llen = pvr_shader_pds_launcher(NULL, 0, launcher, sizeof(launcher));
++
++                     memcpy(ibo.map, idx, sizeof(idx));
++                     pvr_csb_init(&ctl_csb, rctl.map, rctl.size, PVR_CSB_LINK_DWORDS);
++                     if (!pvr_csb_emit_vdm_state(&ctl_csb, false, 0, false, 0, &vdm_words) ||
++                         !pvr_csb_emit_index_list(&ctl_csb, iaddr, 3, 1,
++                                                  ROGUE_VDMCTRL_INDEX_SIZE_B16) ||
++                         !pvr_csb_emit_stream_terminate(&ctl_csb))
++                        printf("hwrt:          could not emit the draw blocks (launcher %u B)\n", llen);
++                     else
++                        printf("hwrt:          control stream: VDM state (%u dw) + 3 indices + terminate\n",
++                               vdm_words);
++                  } else {
++                     printf("hwrt:          could not set up the index buffer\n");
++                  }
+                }
+                const uint32_t glen = pvr_geom_static_stream(rctl.map, rctl.size, rctladdr,
+                                                            rbctaddr, false, 0, false, 0, 0,
+-- 
+2.47.3
+

@@ -1,0 +1,119 @@
+From 218263b952f58190850001c0a2aa10168edce0f4 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Mon, 26 Oct 2026 02:12:53 +0800
+Subject: [PATCH 257/269] gallium/pvr: replay the compute draw correctly by
+ reconstructing the compile-time literal pool
+
+The missing piece for the replayed compute jobs was pco's compile-time literal pool: the descriptor PDS
+constants point at a general-heap buffer holding the shader's literal values (for the offset probes, the
+constant buffer byte offsets 0x20..0x4000; for the triangle shader, the edge-function constants and the two
+pixel colours). The replay left that buffer zeroed, so all larger constant offsets resolved to zero and only
+inline/immediate-encoded offsets worked. Adding a Vulkan dump of pco's literal pool
+(PVR_DUMP_LITERALS) and reconstructing it in the probe at the captured address makes the replayed compute
+job exact: the offset sweep now lands all 15 offsets correctly, and replaying the captured triangle-draw
+job renders the real triangle - readback inside=73728 pixels (exactly Vulkan's count), center=0xFF0000FF,
+corner=0xFFFF0000, marker 0xCAFEBABE, "PASS (native compute draw of the captured Vulkan triangle job)".
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c | 52 +++++++++++++++++++++-
+ src/imagination/vulkan/pvr_arch_pipeline.c | 15 +++++++
+ 2 files changed, 66 insertions(+), 1 deletion(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index ded7a610..ff423614 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -4334,7 +4334,7 @@ cdm_draw_check(int fd, struct pipe_screen *pscreen)
+       goto out_ctx;
+    }
+    /* The descriptor set (at page+0x80) holds one pco buffer descriptor for the target:
+-    * { addr, size, offset }; the constant block at page+0x40 stays zero. */
++    * { addr, size, offset }. */
+    {
+       struct {
+          uint64_t addr;
+@@ -4344,6 +4344,56 @@ cdm_draw_check(int fd, struct pipe_screen *pscreen)
+ 
+       memcpy((uint8_t *)descset_bo.map + 0x80, &bdesc, sizeof(bdesc));
+    }
++
++   /* The shader's compile-time literal pool: pco loads the larger immediate values (here the constant
++    * buffer byte offsets) from a general-heap buffer whose address the descriptor constants point at.
++    * In the reference that buffer is at the same page as the descriptor set (page+0x40). Reconstruct it
++    * from the captured literals, or the larger offsets load as zero. */
++   {
++      uint32_t lit_size = 0;
++      char *lit = (char *)cdm_read_capture(dir, "literals.txt", &lit_size);
++
++      if (lit) {
++         char *line, *save;
++
++         for (line = strtok_r(lit, "\n", &save); line; line = strtok_r(NULL, "\n", &save)) {
++            unsigned long long laddr;
++            unsigned count;
++            char *colon;
++
++            if (strncmp(line, "LIT addr=0x", 11) != 0)
++               continue;
++            if (sscanf(line, "LIT addr=0x%llx count=%u", &laddr, &count) < 2)
++               continue;
++            colon = strchr(line, ':');
++            if (colon == NULL)
++               continue;
++            {
++               uint64_t page = (uint64_t)laddr & ~0xfffULL;
++               uint32_t off = (uint32_t)((uint64_t)laddr - page);
++               uint8_t *dst;
++               char *p = colon + 1;
++               unsigned i;
++
++               if (page != desc_page_addr || off + count * 4 > 4096)
++                  continue;
++               dst = (uint8_t *)descset_bo.map + off;
++               for (i = 0; i < count; i++) {
++                  char *end;
++                  uint32_t w = (uint32_t)strtoul(p, &end, 16);
++
++                  if (end == p)
++                     break;
++                  memcpy(dst + 4 * i, &w, 4);
++                  p = end;
++               }
++            }
++         }
++         free(lit);
++         printf("cdm:           compile-time literal pool installed at 0x%llx\n",
++                (unsigned long long)(desc_page_addr + 0x40));
++      }
++   }
+    if (cdm_map_at(fd, vm, ctrl_addr, ((ctrl_len + 0xfff) & ~0xfffu) + 0x1000, &ctrl_bo) == NULL) {
+       printf("cdm:           FAIL: cannot map control stream at 0x%llx\n",
+              (unsigned long long)ctrl_addr);
+diff --git a/src/imagination/vulkan/pvr_arch_pipeline.c b/src/imagination/vulkan/pvr_arch_pipeline.c
+index e61e59ae..7c8c7d96 100644
+--- a/src/imagination/vulkan/pvr_arch_pipeline.c
++++ b/src/imagination/vulkan/pvr_arch_pipeline.c
+@@ -650,6 +650,21 @@ static VkResult pvr_pds_descriptor_program_create_and_upload(
+          .size_in_dwords = data->common.literals.count,
+          .destination = data->common.literals.start,
+       };
++
++      if (getenv("PVR_DUMP_LITERALS")) {
++         FILE *f = fopen(getenv("PVR_DUMP_LITERALS"), "ab");
++         uint32_t i;
++
++         if (f) {
++            fprintf(f, "LIT addr=0x%llx count=%u:",
++                    (unsigned long long)descriptor_state->static_consts->dev_addr.addr,
++                    data->common.literals.count);
++            for (i = 0; i < data->common.literals.count; i++)
++               fprintf(f, " %08x", data->common.literal_vals[i]);
++            fprintf(f, "\n");
++            fclose(f);
++         }
++      }
+    }
+ 
+    /* Pass the 64-bit address (as 2x32-bit regs) of the global shmem buffer. */
+-- 
+2.47.3
+

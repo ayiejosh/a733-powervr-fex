@@ -1,0 +1,142 @@
+From afc13d84084a1285a53888d024ed10507e52588a Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sun, 25 Oct 2026 04:16:11 +0800
+Subject: [PATCH 232/269] gallium/pvr: fill the fragment stream's
+ ISP/background scalars; firmware tiles-in-flight now matches
+
+The firmware trace showed the 3D kick's setup computing all-zero partition state for our job:
+  reference: "Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000005, ISPCtl=0x80035000)"
+  ours:      "Updating Tiles In Flight (Dusts=1, PartitionMask=0x00000000, ISPCtl=0x00000000)"
+because pvr_frag_static_stream only filled the PBE words and the EOT pointer; every ISP/background
+scalar in the fragment stream was left zero. The reference's values for a 512x512 single-colour
+single-sample draw (captured from its firmware stream) are now written: usc_pixel_output_ctrl
+0x7ff8, isp_bgobjdepth 1.0f, isp_bgobjvals 0x3ff, isp_aa 0, isp_ctl 0x80035000, event_pixel_pds_info
+0x201, view_idx 0.
+
+Result: the firmware's tiles-in-flight line now matches the reference exactly (PartitionMask=0x5,
+ISPCtl=0x80035000, USCTiles=6). The fragment-only kick's fault changed address class as a result
+(0x25_0000_0000 -> 0x65_0000_0000) - i.e. it is now failing later, on another address. The
+fragment-only sequence itself is artificial though ("3D check: missing TA FWCtx"), so it does not
+prove much on its own; the combined geometry+fragment kick still logs "Kick TA" and then times out.
+
+New helpers: pvr_frag_static_stream_set_isp() plus the PVR_PROBE_ISP_CTL/ISP_OUTCTRL overrides.
+Verification: probe ALL PASS under the shim; traces archived in open-driver-perf/captures/real-runs/.
+---
+ src/gallium/drivers/pvr_native/pvr_csb.c   | 28 ++++++++++++++++++++++
+ src/gallium/drivers/pvr_native/pvr_csb.h   | 11 +++++++++
+ src/gallium/drivers/pvr_native/pvr_probe.c | 27 +++++++++++++++++++--
+ 3 files changed, 64 insertions(+), 2 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_csb.c b/src/gallium/drivers/pvr_native/pvr_csb.c
+index 7e24112f..fc6eb65d 100644
+--- a/src/gallium/drivers/pvr_native/pvr_csb.c
++++ b/src/gallium/drivers/pvr_native/pvr_csb.c
+@@ -1499,3 +1499,31 @@ pvr_frag_static_stream_fill_bgnd(void *stream, uint32_t stream_size,
+    memcpy((uint8_t *)stream + bgnd_off, bgnd, ROGUE_NUM_CR_PDS_BGRND_WORDS * 8);
+    memcpy((uint8_t *)stream + pr_bgnd_off, pr_bgnd, ROGUE_NUM_CR_PDS_BGRND_WORDS * 8);
+ }
++
++void
++pvr_frag_static_stream_set_isp(void *stream, uint32_t stream_size,
++                               uint32_t usc_pixel_output_ctrl, uint32_t isp_ctl,
++                               uint32_t event_pixel_pds_info)
++{
++   const uint32_t pbe_dwords = PVR_MAX_COLOR_ATTACHMENTS * ROGUE_NUM_PBESTATE_REG_WORDS * 2;
++   const uint32_t usc_clear_off = (PVR_FRAG_PRE_PBE_DWORDS + pbe_dwords +
++                                   PVR_CMD_DW(CR_TPU_BORDER_COLOUR_TABLE_PDM) +
++                                   2 * ROGUE_NUM_CR_PDS_BGRND_WORDS * 2) * 4;
++   const uint32_t ctrl_off = usc_clear_off +
++                             ROGUE_KMD_STREAM_USC_CLEAR_REGISTER_COUNT *
++                                PVR_CMD_DW(CR_USC_CLEAR_REGISTER) * 4;
++   uint32_t *dw = (uint32_t *)stream;
++
++   if (ctrl_off + 7 * 4 > stream_size)
++      return;
++
++   /* These words are written raw: their packings are not decoded yet, and the values the reference
++    * writes for a 512x512 single-colour single-sample draw are what the firmware consumes. */
++   dw[ctrl_off / 4 + 0] = usc_pixel_output_ctrl;
++   dw[ctrl_off / 4 + 1] = 0x3f800000u;          /* isp_bgobjdepth = 1.0f */
++   dw[ctrl_off / 4 + 2] = 0x3ffu;               /* isp_bgobjvals */
++   dw[ctrl_off / 4 + 3] = 0;                    /* isp_aa (no MSAA) */
++   dw[ctrl_off / 4 + 4] = isp_ctl;
++   dw[ctrl_off / 4 + 5] = event_pixel_pds_info;
++   dw[ctrl_off / 4 + 6] = 0;                    /* view_idx */
++}
+diff --git a/src/gallium/drivers/pvr_native/pvr_csb.h b/src/gallium/drivers/pvr_native/pvr_csb.h
+index a51645f6..567b1d3c 100644
+--- a/src/gallium/drivers/pvr_native/pvr_csb.h
++++ b/src/gallium/drivers/pvr_native/pvr_csb.h
+@@ -740,6 +740,17 @@ void pvr_frag_static_stream_fill_bgnd(void *stream, uint32_t stream_size,
+                                       uint64_t tpu_border_table_addr,
+                                       const uint64_t bgnd[3], const uint64_t pr_bgnd[3]);
+ 
++/* Fill the fragment stream's ISP/background scalar fields, which the reference always sets and this
++ * driver left zero: USC pixel output control, background depth/value, AA and ISPCtl, plus the
++ * pixel-event PDS info word. The firmware derives its tiles-in-flight/partition setup from these;
++ * all-zero there makes the 3D kick compute a zero partition mask and page-fault (firmware trace:
++ * reference "Updating Tiles In Flight (Dusts=1, PartitionMask=0x5, ISPCtl=0x80035000)", ours
++ * "PartitionMask=0x0, ISPCtl=0x0"). `isp_ctl` also needs the pixel-output width of the fragment
++ * shader, so callers pass it rather than relying on a constant. */
++void pvr_frag_static_stream_set_isp(void *stream, uint32_t stream_size,
++                                    uint32_t usc_pixel_output_ctrl, uint32_t isp_ctl,
++                                    uint32_t event_pixel_pds_info);
++
+ /* Pack the three CR_PDS_BGRND words for a background program. */
+ void pvr_csb_pds_bgnd_words(uint32_t shader_off, uint32_t texunicode_off,
+                             uint32_t texturedata_off, uint32_t temps_dwords,
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index b359c7fe..2d258c28 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -775,6 +775,13 @@ real_job_done:
+          struct pvr_bo rtbo = { 0 }, rtcsb = { 0 }, rctl = { 0 }, rbct = { 0 };
+          uint64_t rtaddr = 0, rctladdr = 0, rbctaddr = 0;
+          uint64_t eot_data_offset = 0;
++         const uint32_t isp_output_ctrl =
++            getenv("PVR_PROBE_ISP_OUTCTRL") ? strtoul(getenv("PVR_PROBE_ISP_OUTCTRL"), NULL, 0)
++                                            : 0x00007ff8u;
++         const uint32_t isp_ctl =
++            getenv("PVR_PROBE_ISP_CTL") ? strtoul(getenv("PVR_PROBE_ISP_CTL"), NULL, 0)
++                                        : 0x80035000u;
++         const uint32_t isp_event_info = 0x00000201u;
+          bool ok2 = true;
+ 
+          if (!pvr_bo_create(pvm_fd_for_probe, (uint64_t)RTW * RTH * 4, 1, &rtbo)) {
+@@ -1218,8 +1225,19 @@ real_job_done:
+                                                     0x0000001f0000001full, 0 };
+                   const uint32_t df2 = pvr_frag_static_stream(dfstream, sizeof(dfstream), dpbe, 1,
+                                                               (uint32_t)eot_data_offset, false);
+-                  const bool fdone = pvr_job_submit_frag_sync(vm, gpu_ctx.handle, dfstream, df2,
+-                                                              dset_handle, 0, 2000);
++                  uint64_t dbgnd[3], dpr_bgnd[3];
++                  bool fdone;
++
++                  pvr_csb_pds_bgnd_words(g_fs_pds_base_offset, g_fs_pds_base_offset,
++                                         g_fs_pds_base_offset, 0, 0, 0, dbgnd);
++                  pvr_csb_pds_bgnd_words(g_fs_pds_base_offset, g_fs_pds_base_offset,
++                                         g_fs_pds_base_offset, 0, 0, 0, dpr_bgnd);
++                  pvr_frag_static_stream_fill_bgnd(dfstream, sizeof(dfstream), rbctaddr, dbgnd,
++                                                   dpr_bgnd);
++                  pvr_frag_static_stream_set_isp(dfstream, sizeof(dfstream), isp_output_ctrl,
++                                                 isp_ctl, isp_event_info);
++                  fdone = pvr_job_submit_frag_sync(vm, gpu_ctx.handle, dfstream, df2,
++                                                   dset_handle, 0, 2000);
+ 
+                   printf("hwrt:          fragment-only (dummy state) %s\n",
+                          fdone ? "COMPLETED" : "did not complete in 2 s");
+@@ -1245,6 +1263,11 @@ real_job_done:
+                                          g_fs_pds_base_offset, 0, 0, 0, pr_bgnd);
+                   pvr_frag_static_stream_fill_bgnd(fstream, sizeof(fstream), rbctaddr, bgnd,
+                                                    pr_bgnd);
++                  /* The reference's ISP/background scalars for a 512x512 single-colour draw
++                   * (captured): without these the firmware's tiles-in-flight setup is all zero
++                   * (PartitionMask=0, ISPCtl=0) and the 3D kick page-faults. */
++                  pvr_frag_static_stream_set_isp(fstream, sizeof(fstream), isp_output_ctrl,
++                                                 isp_ctl, isp_event_info);
+                   printf("hwrt:          fragment stream: PDS bgnd = PDS+0x%x, border table 0x%"
+                          PRIx64 "\n", (unsigned)g_fs_pds_base_offset, rbctaddr);
+                }
+-- 
+2.47.3
+

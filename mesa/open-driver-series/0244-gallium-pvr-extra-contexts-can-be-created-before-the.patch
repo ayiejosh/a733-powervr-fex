@@ -1,0 +1,112 @@
+From 9bb72ed1ce3e02aeb623f0b69e3010926500e2cc Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sun, 25 Oct 2026 06:56:15 +0800
+Subject: [PATCH 244/269] gallium/pvr: extra contexts can be created before the
+ render context (order test, negative)
+
+The reference client creates its transfer/compute contexts before its render context; the probe used to
+create them after. A shared helper now supports both orders (PVR_PROBE_EXTRA_CTXS_FIRST creates them
+before the render context). Hardware test: still `Kick TA` -> `DM2 timed out`, so the context creation
+order is not the trigger either.
+
+Static context state streams were also byte-compared between the two drivers (temporary dumps, reverted):
+both are 192 bytes / 48 dwords with the identical layout; the only differences are the VDM/GEOM state
+base addresses and the PDS task-program offsets, as expected for different allocations.
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c | 66 ++++++++++++----------
+ 1 file changed, 36 insertions(+), 30 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index 221966c5..3c63db64 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -129,6 +129,37 @@ static struct pvr_shader *g_vs_shader;
+  * heaps are addressed by offset, not by an arbitrary device address. */
+ static uint32_t g_vs_usc_offset;
+ static uint32_t g_fs_usc_offset;
++/* Round-42: create the extra context types the reference client has, optionally before the render
++ * context (the reference creates transfer/compute contexts first, its render context last). */
++static void
++probe_create_extra_contexts(int fd, uint32_t vm_context_handle, bool with_compute)
++{
++   struct drm_pvr_ioctl_create_context_args cargs = {
++      .type = DRM_PVR_CTX_TYPE_TRANSFER_FRAG,
++      .vm_context_handle = vm_context_handle,
++   };
++
++   if (drmIoctl(fd, DRM_IOCTL_PVR_CREATE_CONTEXT, &cargs) == 0)
++      printf("vm:            extra transfer context %u created\n", cargs.handle);
++   else
++      printf("vm:            extra transfer context FAILED: %s\n", strerror(errno));
++
++   if (with_compute) {
++      static uint64_t cstate[8] = { 64 };
++      struct drm_pvr_ioctl_create_context_args ccargs = {
++         .type = DRM_PVR_CTX_TYPE_COMPUTE,
++         .static_context_state = (uint64_t)(uintptr_t)cstate,
++         .static_context_state_len = sizeof(cstate),
++         .vm_context_handle = vm_context_handle,
++      };
++
++      if (drmIoctl(fd, DRM_IOCTL_PVR_CREATE_CONTEXT, &ccargs) == 0)
++         printf("vm:            extra compute context %u created\n", ccargs.handle);
++      else
++         printf("vm:            extra compute context FAILED: %s\n", strerror(errno));
++   }
++}
++
+ static uint64_t g_vertex_prog_code_offset;
+ static uint64_t g_vertex_prog_data_offset;
+ static uint64_t g_fs_pds_base_offset;
+@@ -450,6 +481,9 @@ vm_roundtrip(int fd, struct pipe_screen *pscreen)
+    {
+       struct pvr_gpu_context gpu_ctx;
+ 
++      if (getenv("PVR_PROBE_EXTRA_CTXS_FIRST"))
++         probe_create_extra_contexts(pvm_fd_for_probe, vm->context_handle, true);
++
+       if (!pvr_gpu_context_create(vm, dev_info, &gpu_ctx)) {
+          printf("vm:            FAIL: CREATE_CONTEXT did not succeed\n");
+          goto out;
+@@ -539,36 +573,8 @@ vm_roundtrip(int fd, struct pipe_screen *pscreen)
+       printf("vm:            sizes: drm_pvr_job=%zu obj_array=%zu hwrt_ref=%zu\n",
+              sizeof(struct drm_pvr_job), sizeof(struct drm_pvr_obj_array),
+              sizeof(struct drm_pvr_hwrt_data_ref));
+-      /* Round-39: create the extra contexts the reference client has (compute/transfer), unused, to
+-       * test whether their mere presence changes the firmware's behaviour. */
+-      if (getenv("PVR_PROBE_EXTRA_CTXS")) {
+-         struct drm_pvr_ioctl_create_context_args cargs = {
+-            .type = DRM_PVR_CTX_TYPE_TRANSFER_FRAG,
+-            .vm_context_handle = vm->context_handle,
+-         };
+-
+-         if (drmIoctl(pvm_fd_for_probe, DRM_IOCTL_PVR_CREATE_CONTEXT, &cargs) == 0)
+-            printf("vm:            extra transfer context %u created\n", cargs.handle);
+-         else
+-            printf("vm:            extra transfer context FAILED: %s\n", strerror(errno));
+-
+-         /* Compute context: zeroed 64-byte static state (7 u64 cdm registers + header), unused. */
+-         {
+-            static uint64_t cstate[8] = { 64 };
+-            struct drm_pvr_ioctl_create_context_args ccargs = {
+-               .type = DRM_PVR_CTX_TYPE_COMPUTE,
+-               .static_context_state = (uint64_t)(uintptr_t)cstate,
+-               .static_context_state_len = sizeof(cstate),
+-               .vm_context_handle = vm->context_handle,
+-            };
+-
+-            if (drmIoctl(pvm_fd_for_probe, DRM_IOCTL_PVR_CREATE_CONTEXT, &ccargs) == 0) {
+-               printf("vm:            extra compute context %u created\n", ccargs.handle);
+-            } else {
+-               printf("vm:            extra compute context FAILED: %s\n", strerror(errno));
+-            }
+-         }
+-      }
++      if (getenv("PVR_PROBE_EXTRA_CTXS") && !getenv("PVR_PROBE_EXTRA_CTXS_FIRST"))
++         probe_create_extra_contexts(pvm_fd_for_probe, vm->context_handle, true);
+ 
+       printf("vm:            GPU context %u created: render type, callstack at 0x%"
+              PRIx64 "\n", gpu_ctx.handle, gpu_ctx.callstack_addr);
+-- 
+2.47.3
+

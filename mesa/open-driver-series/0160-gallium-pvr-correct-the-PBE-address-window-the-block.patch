@@ -1,0 +1,164 @@
+From 23d22b948d02c0452fdb18eee848ac24766b94bf Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sat, 17 Oct 2026 10:04:27 +0800
+Subject: [PATCH 160/269] gallium/pvr: correct the PBE address window - the
+ blocker I declared does not exist
+
+  csb: PBE target: bits [0:31]+[34:39]; a real 2^39 heap address round-trips, bit-32 addresses
+       refused
+  --- ALL PASS        (real open kernel)
+
+The previous commit claimed this device's general heap (2^39) does not fit the PBE's address split
+and that render-target addressing was blocked pending resolution. THAT WAS WRONG.
+
+The claim came from reading the field's declared range, bits [0:5], and assuming it sat at bit 32.
+The generated pack says otherwise:
+
+  dw[0] = __pvr_address(values->address_high, 34, 0, 5)
+
+Shift 34, not 32. So the encoded address is bits [0:31] plus bits [34:39] - a 40-bit window reaching
+1TB, with bits 32 and 33 having no field at all. 0x8000000000 encodes as low=0, high=32 and fits
+comfortably. A declaration says how WIDE a field is; only the pack says WHERE it goes.
+
+Three errors in one small function, in this order:
+  1. computed the high field's position as 32 instead of reading the packer's 34, and declared a
+     blocker that did not exist;
+  2. in the check, hand-computed a shift again (<< 34) after the unpack had already left the field
+     in place - the exact convention round 20 recorded, applied wrongly in the round that cited it;
+  3. wrote the mask for bits 32-33 as 0xc0000000, which is bits 30-31.
+
+All three were caught by the check asserting reconstruction rather than by rereading the code, which
+is the argument for that style of check. The mask error was caught only because the NEGATIVE case is
+asserted too: an accepted bit-32 address is exactly the silent re-encoding the check exists to stop.
+
+Net effect: render-target addressing is NOT blocked. The window is 40 bits, 16GB-aligned.
+---
+ src/gallium/drivers/pvr/pvr_csb.c   | 11 +++++-----
+ src/gallium/drivers/pvr/pvr_csb.h   | 34 ++++++++++++++---------------
+ src/gallium/drivers/pvr/pvr_probe.c | 28 +++++++++++++++---------
+ 3 files changed, 40 insertions(+), 33 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr/pvr_csb.c b/src/gallium/drivers/pvr/pvr_csb.c
+index 14f3e62c..969cf45a 100644
+--- a/src/gallium/drivers/pvr/pvr_csb.c
++++ b/src/gallium/drivers/pvr/pvr_csb.c
+@@ -383,12 +383,11 @@ pvr_csb_emit_pbe_target(struct pvr_csb *csb, const struct pvr_pbe_target *target
+    };
+    uint32_t *dw;
+ 
+-   /* 32 + 6 bits. See the header: this device's general heap base is 2^39 and does not fit, so the
+-    * refusal is the honest answer until the addressing question is settled. */
+-   if (target->addr > 0x3fffffffffULL) {
+-      mesa_loge("pvr: PBE target 0x%" PRIx64 " exceeds the address split's 38 bits (256GB) - this "
+-                "device's general heap starts at 0x8000000000, so render-target addressing needs "
+-                "resolving before this can be used", target->addr);
++   /* Bits [0:31] and [34:39] - see the header. Bits 32 and 33 have no field, so an address that
++    * sets either cannot be encoded; refuse rather than let the packer re-encode it elsewhere. */
++   if (target->addr >= (1ULL << 40) || (target->addr & 0x300000000ULL) != 0) {
++      mesa_loge("pvr: PBE target 0x%" PRIx64 " is outside the encodable set (bits [0:31] and "
++                "[34:39], so 16GB-aligned below 1TB)", target->addr);
+       return false;
+    }
+ 
+diff --git a/src/gallium/drivers/pvr/pvr_csb.h b/src/gallium/drivers/pvr/pvr_csb.h
+index 680daff9..e06fd143 100644
+--- a/src/gallium/drivers/pvr/pvr_csb.h
++++ b/src/gallium/drivers/pvr/pvr_csb.h
+@@ -417,23 +417,23 @@ bool pvr_csb_emit_ta_pds_sizeinfo(struct pvr_csb *csb, const struct pvr_pds_size
+ 
+ /* The PBE (pixel backend) render-target address: PBESTATE_STATE_WORD0 + STATE_WORD1.
+  *
+- * The split is NOT symmetrical with the other address packets here. WORD0's address_low is bits
+- * [0:31] and WORD1's address_high is bits **[0:5]** - six bits - so the pair addresses at most
+- * 2^38, i.e. 256 GiB.
+- *
+- * **THIS DEVICE'S GENERAL HEAP BASE IS 0x8000000000, WHICH IS 2^39.** A render target allocated
+- * from the general heap therefore does NOT fit these fields, and the generated pack would keep the
+- * low 38 bits and drop the rest without complaint - the PBE would then write pixels to a different
+- * 256 GiB window entirely.
+- *
+- * The reference does not trip over this because it passes surface addresses it derived itself,
+- * which is the same reason round 47's PDS window never bit it: offsets that happen to fit. What
+- * this means for a driver allocating from the general heap is NOT RESOLVED - either PBE targets are
+- * addressed relative to something, or they must come from a lower heap, and picking either answer
+- * without evidence would be the plausible-inference mistake this programme has recorded five times.
+- *
+- * So the emit enforces the window and refuses anything larger, and the question is recorded here
+- * where the next person will hit it rather than left to become a hang. */
++ * The generated pack places the two halves like this:
++ *
++ *    dw[0] = __pvr_address(values->address_high, 34, 0, 5)   <- SHIFT 34, six bits
++ *            (address_low contributes at shift 0, bits [0:31])
++ *
++ * so the encoded address is bits [0:31] plus bits [34:39]: a 40-bit window in which bits 32 and 33
++ * are NOT represented and must be zero. In other words PBE targets are **16 GiB aligned**
++ * (2^34), and the window reaches 1 TiB.
++ *
++ * This device's general heap base is 0x8000000000 (2^39), which FITS - the field's high part takes
++ * the value 32 there. An earlier version of this function refused it, having read the field's
++ * declared range (bits [0:5]) and assumed it sat at bit 32 rather than reading the packer's shift.
++ * The declaration says how wide a field is; only the pack says WHERE it goes, and the two are not
++ * the same piece of information.
++ *
++ * Enforced here rather than left to the packer: an address with bits 32 or 33 set cannot be
++ * represented, and would otherwise be silently re-encoded to a different address. */
+ struct pvr_pbe_target {
+    uint64_t addr;
+    enum ROGUE_PBESTATE_SOURCE_FORMAT source_format;
+diff --git a/src/gallium/drivers/pvr/pvr_probe.c b/src/gallium/drivers/pvr/pvr_probe.c
+index 7d3f3489..4a953de7 100644
+--- a/src/gallium/drivers/pvr/pvr_probe.c
++++ b/src/gallium/drivers/pvr/pvr_probe.c
+@@ -1778,8 +1778,10 @@ csb_check(int fd, struct pipe_screen *pscreen)
+        * inside 38 bits round-trips, and a real general-heap address (0x8000000000) is REFUSED
+        * rather than truncated into a different 256GB window. */
+       {
++         /* A REAL general-heap address: 0x8000000000 is 2^39, which the shift-34 high field
++          * encodes as 32. This is the case the previous version wrongly refused. */
+          const struct pvr_pbe_target t = {
+-            .addr = 0x0000000100ULL, .source_format = 0, .mrt_index = 0,
++            .addr = 0x8000000000ULL, .source_format = 0, .mrt_index = 0,
+          };
+          struct ROGUE_PBESTATE_STATE_WORD0 w0 = { 0 };
+          struct ROGUE_PBESTATE_STATE_WORD1 w1 = { 0 };
+@@ -1797,22 +1799,28 @@ csb_check(int fd, struct pipe_screen *pscreen)
+          ROGUE_PBESTATE_STATE_WORD1_unpack(
+             (uint32_t *)bo.map + ROGUE_PBESTATE_STATE_WORD0_length, &w1);
+ 
+-         if ((w0.address_low | ((uint64_t)w1.address_high << 32)) != t.addr) {
+-            printf("csb:           FAIL: the PBE address did not reconstruct\n");
++         /* Combine the halves IN PLACE: the generated unpack leaves each field where it sits in
++          * the address, so address_high already reads back as bits [34:39] set - shifting it again
++          * here double-shifts and yields zero. Round 20 recorded exactly this convention; this
++          * round hand-computed a shift twice anyway, which is the argument for reconstructing
++          * rather than shifting in the first place. */
++         if ((w0.address_low | w1.address_high) != t.addr) {
++            printf("csb:           FAIL: the PBE address did not reconstruct (low 0x%x high %u)\n",
++                   (unsigned)w0.address_low, (unsigned)w1.address_high);
+             goto out;
+          }
+ 
+-         /* A general-heap address is 2^39 and does not fit 32+6 bits. Accepting it would write
+-          * pixels into a different window. */
++         /* An address with bit 32 set has no field to live in: it must be refused, or the packer
++          * would re-encode it as a different address. */
+          if (pvr_csb_emit_pbe_target(&csb, &(struct pvr_pbe_target){
+-                .addr = 0x8000000000ULL, .source_format = 0, .mrt_index = 0 })) {
+-            printf("csb:           FAIL: the PBE target accepted a 2^39 address into a 38-bit "
+-                   "split - it would be truncated into another window\n");
++                .addr = 0x100000000ULL, .source_format = 0, .mrt_index = 0 })) {
++            printf("csb:           FAIL: the PBE target accepted an address using bit 32, which the "
++                   "split has no field for\n");
+             goto out;
+          }
+ 
+-         printf("csb:           PBE target: 38-bit split (32+6) round-trips; a general-heap "
+-                "address at 2^39 refused, addressing unresolved\n");
++         printf("csb:           PBE target: bits [0:31]+[34:39]; a real 2^39 heap address "
++                "round-trips, bit-32 addresses refused\n");
+       }
+ 
+       printf("csb:           TA PDS bases: all five fit bits[4:31] and round-trip; a 40-bit "
+-- 
+2.47.3
+
