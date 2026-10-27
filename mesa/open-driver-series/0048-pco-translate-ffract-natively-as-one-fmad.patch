@@ -1,7 +1,7 @@
-From b703ee22dddb5c25952538a118556f97f80daaac Mon Sep 17 00:00:00 2001
+From 32abd7af3b6a57924f20bed9cd232ef2f031d73c Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sat, 10 Oct 2026 00:59:34 +0800
-Subject: [PATCH 48/98] pco: translate ffract natively as one fmad
+Subject: [PATCH 048/294] pco: translate ffract natively as one fmad
 
 ffract was lowered by NIR to a floor and a subtract. fmad's third source
 takes both the floor and the negate modifier, so x * 1.0 + -floor(x)
@@ -21,7 +21,7 @@ and vkrender gates pass.
  2 files changed, 10 insertions(+), 1 deletion(-)
 
 diff --git a/src/imagination/pco/pco_nir.c b/src/imagination/pco/pco_nir.c
-index 425baa5..cb5dd25 100644
+index 425baa5e..cb5dd259 100644
 --- a/src/imagination/pco/pco_nir.c
 +++ b/src/imagination/pco/pco_nir.c
 @@ -51,7 +51,7 @@ static const nir_shader_compiler_options nir_options = {
@@ -34,7 +34,7 @@ index 425baa5..cb5dd25 100644
     .lower_fquantize2f16 = true,
     /* The ALU has no flrp; trans_alu() has no case for it and hits
 diff --git a/src/imagination/pco/pco_trans_nir.c b/src/imagination/pco/pco_trans_nir.c
-index b250dd2..8509e8f 100644
+index b250dd23..8509e8f4 100644
 --- a/src/imagination/pco/pco_trans_nir.c
 +++ b/src/imagination/pco/pco_trans_nir.c
 @@ -3817,6 +3817,15 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)

@@ -1,7 +1,7 @@
-From 90f10f92fe000770f7abd25b19e404a9722d5464 Mon Sep 17 00:00:00 2001
+From 31ec1f6a1ef1f35136c5579cd69f9db93a0a3bc3 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sat, 24 Oct 2026 02:48:59 +0800
-Subject: [PATCH 195/269] gallium/pvr: vertex shader compiles through pco as
+Subject: [PATCH 195/294] gallium/pvr: vertex shader compiles through pco as
  well
 
 A vertex shader is a different pipeline stage, not a different NIR spelling: pco lowers it with

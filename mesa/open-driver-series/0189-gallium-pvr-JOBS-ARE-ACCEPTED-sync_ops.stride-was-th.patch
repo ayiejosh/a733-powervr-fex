@@ -1,7 +1,7 @@
-From 08baee0c69ad068d87f37a6433dd01a089bd43bb Mon Sep 17 00:00:00 2001
+From 621905734b23b312439c1b958e64fbd1b4aee9fd Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Fri, 23 Oct 2026 20:39:43 +0800
-Subject: [PATCH 189/269] gallium/pvr: JOBS ARE ACCEPTED - sync_ops.stride was
+Subject: [PATCH 189/294] gallium/pvr: JOBS ARE ACCEPTED - sync_ops.stride was
  the blocker
 
 The kernel's copy helper checks the array STRIDE before it ever looks at the count:

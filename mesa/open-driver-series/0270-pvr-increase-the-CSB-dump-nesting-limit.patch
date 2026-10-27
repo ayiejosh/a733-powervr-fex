@@ -1,7 +1,7 @@
-From 8f505d8f297dc8e2fe48113be310f73e1461e02a Mon Sep 17 00:00:00 2001
+From beeb668f3c63785ffb46dc1141b4954033110402 Mon Sep 17 00:00:00 2001
 From: Peter Quayle <peter.quayle@imgtec.com>
 Date: Fri, 25 Sep 2026 12:37:41 +0100
-Subject: [PATCH 01/24] pvr: increase the CSB dump nesting limit
+Subject: [PATCH 270/294] pvr: increase the CSB dump nesting limit
 
 pvr_dump_begin()'s max_depth sets allowed_child_depth, which pvr_dump_ctx_push()
 decrements on each nested context and errors on at zero. The stream-out sub-dump

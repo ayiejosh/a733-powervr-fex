@@ -1,7 +1,7 @@
-From 4c8e25d32b30394d71feae5a9e9d977edcf43e17 Mon Sep 17 00:00:00 2001
+From d19e80b8e9d48880b541bdcb23a59d341fad21ff Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Fri, 16 Oct 2026 17:19:25 +0800
-Subject: [PATCH 134/269] gallium/pvr: reserve a guard so a full stream can
+Subject: [PATCH 134/294] gallium/pvr: reserve a guard so a full stream can
  still link onward
 
 A control stream that fills its buffer has to say where it continues, and the only way to

@@ -1,7 +1,7 @@
-From f635e609084ed88b433194bfbf8022635e8b0b9f Mon Sep 17 00:00:00 2001
+From 5e23ee3d6e09728bb7f0fdf7c724c39511d11ecf Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sat, 10 Oct 2026 02:08:09 +0800
-Subject: [PATCH 56/98] pco: schedule for dual issue before RA
+Subject: [PATCH 056/294] pco: schedule for dual issue before RA
 
 Post-RA pairing only finds independent ops that RA did not tie together
 through register reuse. Before RA, on SSA, place an independent
@@ -27,7 +27,7 @@ it is a net win. All output hashes and vkedge/vkrender checks unchanged.
  3 files changed, 141 insertions(+), 3 deletions(-)
 
 diff --git a/src/imagination/pco/pco_group_instrs.c b/src/imagination/pco/pco_group_instrs.c
-index b18f1a3..539cc9e 100644
+index b18f1a37..539cc9e4 100644
 --- a/src/imagination/pco/pco_group_instrs.c
 +++ b/src/imagination/pco/pco_group_instrs.c
 @@ -15,6 +15,7 @@
@@ -201,7 +201,7 @@ index b18f1a3..539cc9e 100644
   * \brief Converts a PCO instruction to an instruction group.
   *
 diff --git a/src/imagination/pco/pco_internal.h b/src/imagination/pco/pco_internal.h
-index d0bb304..87ed03c 100644
+index d0bb3041..87ed03c0 100644
 --- a/src/imagination/pco/pco_internal.h
 +++ b/src/imagination/pco/pco_internal.h
 @@ -1810,6 +1810,7 @@ bool pco_post_ra_legalize(pco_shader *shader);
@@ -213,7 +213,7 @@ index d0bb304..87ed03c 100644
  bool pco_opt_comp_only_vecs(pco_shader *shader);
  bool pco_nir_compute_instance_check(nir_shader *shader);
 diff --git a/src/imagination/pco/pco_ir.c b/src/imagination/pco/pco_ir.c
-index defcd0d..b245e60 100644
+index defcd0d4..b245e606 100644
 --- a/src/imagination/pco/pco_ir.c
 +++ b/src/imagination/pco/pco_ir.c
 @@ -52,6 +52,7 @@ void pco_process_ir(pco_ctx *ctx, pco_shader *shader)

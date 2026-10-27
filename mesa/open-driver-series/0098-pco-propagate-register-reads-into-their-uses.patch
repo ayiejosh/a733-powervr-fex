@@ -1,7 +1,7 @@
-From c737360e571400cfb5d642eee1ccd9558c2dd2b6 Mon Sep 17 00:00:00 2001
+From bb1721bdf8df2e180f12f44bb8b2fe8543b4692e Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sun, 11 Oct 2026 13:12:24 +0800
-Subject: [PATCH 98/98] pco: propagate register reads into their uses
+Subject: [PATCH 098/294] pco: propagate register reads into their uses
 
 A read of a virtual register was an opaque mbyp, so a value held in a
 register (a loop-carried value or the result of an if) was always copied
@@ -27,7 +27,7 @@ uniform loop commit).
  4 files changed, 55 insertions(+), 12 deletions(-)
 
 diff --git a/src/imagination/pco/pco_cf.c b/src/imagination/pco/pco_cf.c
-index 3345626..6fbd947 100644
+index 3345626a..6fbd947b 100644
 --- a/src/imagination/pco/pco_cf.c
 +++ b/src/imagination/pco/pco_cf.c
 @@ -133,13 +133,30 @@ static inline void set_body_exec_cnd(struct list_head *body,
@@ -111,7 +111,7 @@ index 3345626..6fbd947 100644
     /* Skip the then body when the condition is false. */
     pco_br(&b,
 diff --git a/src/imagination/pco/pco_group_instrs.c b/src/imagination/pco/pco_group_instrs.c
-index 539cc9e..4d1fa30 100644
+index 539cc9e4..4d1fa306 100644
 --- a/src/imagination/pco/pco_group_instrs.c
 +++ b/src/imagination/pco/pco_group_instrs.c
 @@ -597,7 +597,10 @@ find_sink(pco_block *block, pco_instr *a, struct set *paired)
@@ -127,7 +127,7 @@ index 539cc9e..4d1fa30 100644
              break;
           }
 diff --git a/src/imagination/pco/pco_opt.c b/src/imagination/pco/pco_opt.c
-index 76afe3a..0ed126d 100644
+index 76afe3ac..0ed126d9 100644
 --- a/src/imagination/pco/pco_opt.c
 +++ b/src/imagination/pco/pco_opt.c
 @@ -406,19 +406,40 @@ static inline bool can_fwd_prop_src(const pco_instr *to_instr,
@@ -175,7 +175,7 @@ index 76afe3a..0ed126d 100644
        pco_ref repl = parent_instr->src[0];
        if (psrc->flr)
 diff --git a/src/imagination/pco/pco_trans_nir.c b/src/imagination/pco/pco_trans_nir.c
-index b5b5eb0..914e1e7 100644
+index b5b5eb04..914e1e75 100644
 --- a/src/imagination/pco/pco_trans_nir.c
 +++ b/src/imagination/pco/pco_trans_nir.c
 @@ -2433,7 +2433,7 @@ static pco_instr *trans_reg_intr(trans_ctx *tctx,

@@ -1,7 +1,7 @@
-From 3c72ad2fae7aaf3db4d1347351422048a0f762a2 Mon Sep 17 00:00:00 2001
+From d041973df547f0205c2a534ab07e166f9b8c4920 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sat, 24 Oct 2026 01:25:13 +0800
-Subject: [PATCH 193/269] gallium/pvr: INDEX_LIST block - the control stream
+Subject: [PATCH 193/294] gallium/pvr: INDEX_LIST block - the control stream
  can now describe vertex indices
 
 The TA's control stream is built from blocks, and the driver already had emitters for most of them

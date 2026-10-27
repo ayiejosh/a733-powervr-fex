@@ -1,7 +1,7 @@
-From fef7725f5866208ee1aab3bc614cd3079e9243d0 Mon Sep 17 00:00:00 2001
+From b71a431c79b966fa0f3333b3517232f002f8ab74 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sat, 10 Oct 2026 19:41:38 +0800
-Subject: [PATCH 72/98] pvr, pco: skip the dynamic offset add for non-dynamic
+Subject: [PATCH 072/294] pvr, pco: skip the dynamic offset add for non-dynamic
  buffers
 
 Buffer loads, stores and atomics added the descriptor's offset word to
@@ -27,7 +27,7 @@ weston-simple-egl + vkcube: OK.
  3 files changed, 104 insertions(+), 63 deletions(-)
 
 diff --git a/src/imagination/pco/pco_data.h b/src/imagination/pco/pco_data.h
-index 836b31b..5086033 100644
+index 836b31bf..50860338 100644
 --- a/src/imagination/pco/pco_data.h
 +++ b/src/imagination/pco/pco_data.h
 @@ -185,6 +185,10 @@ typedef struct _pco_binding_data {
@@ -42,7 +42,7 @@ index 836b31b..5086033 100644
  
  /** PCO descriptor set data. */
 diff --git a/src/imagination/pco/pco_trans_nir.c b/src/imagination/pco/pco_trans_nir.c
-index 9f0727c..98b441b 100644
+index 9f0727c2..98b441b2 100644
 --- a/src/imagination/pco/pco_trans_nir.c
 +++ b/src/imagination/pco/pco_trans_nir.c
 @@ -1284,6 +1284,27 @@ static pco_instr *trans_atomic_shared(trans_ctx *tctx,
@@ -245,7 +245,7 @@ index 9f0727c..98b441b 100644
     pco_ref addr_data = pco_ref_new_ssa_addr_data(tctx->func, chans);
     pco_vec(&tctx->b,
 diff --git a/src/imagination/vulkan/pvr_arch_pipeline.c b/src/imagination/vulkan/pvr_arch_pipeline.c
-index e007ea2..39e14fa 100644
+index e007ea21..39e14fa2 100644
 --- a/src/imagination/vulkan/pvr_arch_pipeline.c
 +++ b/src/imagination/vulkan/pvr_arch_pipeline.c
 @@ -2646,6 +2646,7 @@ static void pvr_setup_descriptors(pco_data *data,

@@ -1,7 +1,7 @@
-From aa539348ac956d4c745742d53630a9e8489e0382 Mon Sep 17 00:00:00 2001
+From a78e59370d0321c2e9b51fef17aa3bb16c15c5ba Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Fri, 16 Oct 2026 15:53:53 +0800
-Subject: [PATCH 126/269] gallium/pvr: reserve the carveout of every heap, not
+Subject: [PATCH 126/294] gallium/pvr: reserve the carveout of every heap, not
  just the general one
 
 The firmware's static memory is not all in the general heap: the PDS and USC carveouts

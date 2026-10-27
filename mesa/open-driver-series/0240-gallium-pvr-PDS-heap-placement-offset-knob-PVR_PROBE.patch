@@ -1,7 +1,7 @@
-From 3d889c562672e487c7bcf2f371e8709d2edcdd80 Mon Sep 17 00:00:00 2001
+From 18257ea1f1ce22fb11eaa408a1778a1eaafd47a2 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sun, 25 Oct 2026 06:22:08 +0800
-Subject: [PATCH 240/269] gallium/pvr: PDS heap placement offset knob
+Subject: [PATCH 240/294] gallium/pvr: PDS heap placement offset knob
  (PVR_PROBE_PDS_OFFSET)
 
 Lets the probe place the attribute/fragment PDS programs at a configurable offset in the PDS heap, to

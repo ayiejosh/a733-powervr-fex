@@ -1,7 +1,7 @@
-From 2280bf4316c1b3edbd730d09968c2d737e4749de Mon Sep 17 00:00:00 2001
+From d4e8179a49e7001f75ed744c4cdfeb0cceedd6be Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sat, 10 Oct 2026 01:50:28 +0800
-Subject: [PATCH 52/98] pco: back-propagate pixel output writes again
+Subject: [PATCH 052/294] pco: back-propagate pixel output writes again
 
 try_back_prop_instr returned early for pixout destinations, ahead of the
 checks written for them (no alphaf/depthf in between, pixout not already
@@ -17,7 +17,7 @@ the discard probes behave exactly as before.
  1 file changed, 1 deletion(-)
 
 diff --git a/src/imagination/pco/pco_opt.c b/src/imagination/pco/pco_opt.c
-index b9aedea..fac4293 100644
+index b9aedeae..fac42937 100644
 --- a/src/imagination/pco/pco_opt.c
 +++ b/src/imagination/pco/pco_opt.c
 @@ -263,7 +263,6 @@ static inline bool try_back_prop_instr(struct pco_use *uses, pco_instr *instr)

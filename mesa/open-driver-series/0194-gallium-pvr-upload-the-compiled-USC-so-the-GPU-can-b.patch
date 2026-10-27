@@ -1,7 +1,7 @@
-From ff2c0797e503e9b2690d95911b113e88ac48dc84 Mon Sep 17 00:00:00 2001
+From c4238a59ab62e36d5e7723dd00f94a2bf469d5c9 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sat, 24 Oct 2026 02:18:23 +0800
-Subject: [PATCH 194/269] gallium/pvr: upload the compiled USC so the GPU can
+Subject: [PATCH 194/294] gallium/pvr: upload the compiled USC so the GPU can
  be pointed at it
 
 Compiling a shader is not the same as being able to run one: the GPU reads the program from a device

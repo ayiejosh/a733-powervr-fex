@@ -1,7 +1,7 @@
-From 11d84a70a178795f635eea81e3d36463b2037446 Mon Sep 17 00:00:00 2001
+From b045f4b5a0185c2d640c44c921c6f3172c05fcea Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sat, 24 Oct 2026 05:16:57 +0800
-Subject: [PATCH 202/269] gallium/pvr: PDS state update can target the DDM
+Subject: [PATCH 202/294] gallium/pvr: PDS state update can target the DDM
  (fragment programs)
 
 The captured fragment static stream is zeros in every pds_bgnd word - only the PBE words and the EOT

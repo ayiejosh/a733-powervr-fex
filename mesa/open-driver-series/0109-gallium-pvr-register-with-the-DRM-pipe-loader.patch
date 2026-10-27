@@ -1,7 +1,7 @@
-From f05b41b3638bc73c56790ada70ccc284fece7cf7 Mon Sep 17 00:00:00 2001
+From 1b06cf9bcd43354035816697b8214a233a5bf7fb Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Fri, 16 Oct 2026 04:54:53 +0800
-Subject: [PATCH 109/269] gallium/pvr: register with the DRM pipe loader
+Subject: [PATCH 109/294] gallium/pvr: register with the DRM pipe loader
 
 Give the driver a drm_driver_descriptor, add it to the pipe loader's table and
 link it into the DRI megadriver, so "pvr" reaches pvr_screen_create() the same

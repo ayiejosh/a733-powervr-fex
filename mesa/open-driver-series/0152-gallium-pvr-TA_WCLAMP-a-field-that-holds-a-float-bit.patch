@@ -1,7 +1,7 @@
-From 7b547423f9002ca34caee640a524a68054741e73 Mon Sep 17 00:00:00 2001
+From 868c028361150c61e8da1e144737d751b96ca14e Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Fri, 16 Oct 2026 20:55:26 +0800
-Subject: [PATCH 152/269] gallium/pvr: TA_WCLAMP, a field that holds a float
+Subject: [PATCH 152/294] gallium/pvr: TA_WCLAMP, a field that holds a float
  bit pattern
 
   csb: TA wclamp: 0x29e12e13, the float bit pattern of the reference's 1.0e-13f (not an integer)

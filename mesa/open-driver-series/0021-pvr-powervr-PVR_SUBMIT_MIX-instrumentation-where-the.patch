@@ -1,8 +1,8 @@
-From d59c7708e38625cb95a0fd08137b913be5263619 Mon Sep 17 00:00:00 2001
+From a6ff84839e3d61c75151f8a487ba01edfcf569e7 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Thu, 8 Oct 2026 11:03:30 +0800
-Subject: [PATCH 21/43] pvr/powervr: PVR_SUBMIT_MIX instrumentation - where the
- sync churn actually comes from
+Subject: [PATCH 021/294] pvr/powervr: PVR_SUBMIT_MIX instrumentation - where
+ the sync churn actually comes from
 
 Counts submit calls and the wait-count distribution of the null-job path. Measured in
 Xwayland during a windowed client run: ~16,400 null submits in 22 s (~745/s, ~17.7 per
@@ -22,7 +22,7 @@ a local fix. Instrumentation is env-gated and inert by default.
  2 files changed, 5 insertions(+)
 
 diff --git a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_null.c b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_null.c
-index 4c93d18..39fd709 100644
+index 4c93d183..39fd709e 100644
 --- a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_null.c
 +++ b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_null.c
 @@ -45,6 +45,9 @@ VkResult pvr_drm_winsys_null_job_submit(struct pvr_winsys *ws,
@@ -36,7 +36,7 @@ index 4c93d18..39fd709 100644
     int ret;
  
 diff --git a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c
-index e0d90ba..1e3bcae 100644
+index e0d90bad..1e3bcaeb 100644
 --- a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c
 +++ b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c
 @@ -475,6 +475,8 @@ VkResult pvr_drm_winsys_render_submit(
@@ -48,3 +48,6 @@ index e0d90ba..1e3bcae 100644
     const struct pvr_drm_winsys_render_ctx *drm_ctx =
        to_pvr_drm_winsys_render_ctx(ctx);
     const struct pvr_winsys_geometry_state *const geom_state =
+-- 
+2.47.3
+

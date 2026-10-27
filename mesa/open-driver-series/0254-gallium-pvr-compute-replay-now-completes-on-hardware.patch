@@ -1,7 +1,7 @@
-From 8ea2504a0598bb0e47321c782047335a98abcb22 Mon Sep 17 00:00:00 2001
+From 846c10d9fe16256797f14c8303f5ea9748b97e6e Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Mon, 26 Oct 2026 01:50:39 +0800
-Subject: [PATCH 254/269] gallium/pvr: compute replay now completes on hardware
+Subject: [PATCH 254/294] gallium/pvr: compute replay now completes on hardware
  (no HWR); shader stores still missing
 
 Extend the reconstructed USC page to 0x1000..0x7fff so the compute shader's real program at USC+0x7200

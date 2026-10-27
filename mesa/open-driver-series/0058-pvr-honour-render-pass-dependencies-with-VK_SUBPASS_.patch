@@ -1,7 +1,7 @@
-From 538357e938a5b4fd0da2da1bbc985a70f9a9cb86 Mon Sep 17 00:00:00 2001
+From 291357a14d074b55ddc881ec0b4a7ca0606c052e Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sat, 10 Oct 2026 02:48:34 +0800
-Subject: [PATCH 58/98] pvr: honour render pass dependencies with
+Subject: [PATCH 058/294] pvr: honour render pass dependencies with
  VK_SUBPASS_EXTERNAL
 
 vkCreateRenderPass2 only looked at dependencies between subpasses, so a
@@ -26,7 +26,7 @@ unchanged within noise.
  3 files changed, 66 insertions(+)
 
 diff --git a/src/imagination/vulkan/pvr_arch_cmd_buffer.c b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
-index 07f1e1c..7f25af6 100644
+index 07f1e1c8..7f25af64 100644
 --- a/src/imagination/vulkan/pvr_arch_cmd_buffer.c
 +++ b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
 @@ -4012,6 +4012,30 @@ pvr_resolve_unemitted_resolve_attachments(struct pvr_cmd_buffer *cmd_buffer,
@@ -88,7 +88,7 @@ index 07f1e1c..7f25af6 100644
     attachments = state->render_pass_info.attachments;
     clear_values = state->render_pass_info.clear_values;
 diff --git a/src/imagination/vulkan/pvr_arch_pass.c b/src/imagination/vulkan/pvr_arch_pass.c
-index f9dec8a..7dcaa3b 100644
+index f9dec8a8..7dcaa3bf 100644
 --- a/src/imagination/vulkan/pvr_arch_pass.c
 +++ b/src/imagination/vulkan/pvr_arch_pass.c
 @@ -862,8 +862,28 @@ PVR_PER_ARCH(CreateRenderPass2)(VkDevice _device,
@@ -121,7 +121,7 @@ index f9dec8a..7dcaa3b 100644
        if (dep->srcSubpass != VK_SUBPASS_EXTERNAL &&
            dep->dstSubpass != VK_SUBPASS_EXTERNAL &&
 diff --git a/src/imagination/vulkan/pvr_pass.h b/src/imagination/vulkan/pvr_pass.h
-index 1b52787..33758be 100644
+index 1b52787e..33758bea 100644
 --- a/src/imagination/vulkan/pvr_pass.h
 +++ b/src/imagination/vulkan/pvr_pass.h
 @@ -125,6 +125,15 @@ struct pvr_render_pass {

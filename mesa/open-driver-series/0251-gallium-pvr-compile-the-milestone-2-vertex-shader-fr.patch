@@ -1,7 +1,7 @@
-From 81ee7138df86e03c41160a40426a24b3c070e0e1 Mon Sep 17 00:00:00 2001
+From f13efe56166106bb227a5d09e0d289fe3ba0e3ef Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sun, 25 Oct 2026 20:23:20 +0800
-Subject: [PATCH 251/269] gallium/pvr: compile the milestone-2 vertex shader
+Subject: [PATCH 251/294] gallium/pvr: compile the milestone-2 vertex shader
  from SPIR-V through spirv_to_nir
 
 The probe's vertex shader now comes from a SPIR-V module (an Input vec3 at location 0 and a plain

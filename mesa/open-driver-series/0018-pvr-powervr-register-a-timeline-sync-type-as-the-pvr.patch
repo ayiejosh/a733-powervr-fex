@@ -1,7 +1,7 @@
-From 48ce5bef82f52a84e4686b665e654bd42fdf3f52 Mon Sep 17 00:00:00 2001
+From 62520037c2cb2b9158e1a220d531160246a0fa7f Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Thu, 8 Oct 2026 08:15:45 +0800
-Subject: [PATCH 18/43] pvr/powervr: register a timeline sync type, as the
+Subject: [PATCH 018/294] pvr/powervr: register a timeline sync type, as the
  pvrsrvkm winsys already does
 
 The powervr (open/DRM) winsys registered only the binary DRM syncobj type and left
@@ -30,7 +30,7 @@ validate: 0 failures / 27. All probes pass.
  2 files changed, 17 insertions(+), 1 deletion(-)
 
 diff --git a/src/gallium/drivers/zink/zink_kopper.c b/src/gallium/drivers/zink/zink_kopper.c
-index 7967206..8194fd3 100644
+index 7967206c..8194fd3d 100644
 --- a/src/gallium/drivers/zink/zink_kopper.c
 +++ b/src/gallium/drivers/zink/zink_kopper.c
 @@ -405,6 +405,10 @@ kopper_GetSwapchainImages(struct zink_screen *screen, struct kopper_swapchain *c
@@ -45,7 +45,7 @@ index 7967206..8194fd3 100644
  }
  
 diff --git a/src/imagination/vulkan/winsys/powervr/pvr_drm.c b/src/imagination/vulkan/winsys/powervr/pvr_drm.c
-index a952fc3..bdac96b 100644
+index a952fc30..bdac96bb 100644
 --- a/src/imagination/vulkan/winsys/powervr/pvr_drm.c
 +++ b/src/imagination/vulkan/winsys/powervr/pvr_drm.c
 @@ -41,6 +41,7 @@
@@ -76,3 +76,6 @@ index a952fc3..bdac96b 100644
  
     err = u_rwlock_init(&drm_ws->dmabuf_bo_lock);
     if (err) {
+-- 
+2.47.3
+

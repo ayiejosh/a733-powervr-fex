@@ -1,7 +1,7 @@
-From d26949fbcd6103e6f53c2f7d2d38ff5f13219da7 Mon Sep 17 00:00:00 2001
+From 9ae94e6b28807da0dcdf662ec21f50b4084226c1 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sat, 24 Oct 2026 08:38:52 +0800
-Subject: [PATCH 212/269] gallium/pvr: patch the vertex address into the PDS
+Subject: [PATCH 212/294] gallium/pvr: patch the vertex address into the PDS
  data and point the VDM state at it
 
 Implements the mechanism found in pvr_arch_cmd_buffer.c: the vertex attribute program's const map

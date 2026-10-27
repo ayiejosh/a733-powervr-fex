@@ -1,7 +1,7 @@
-From 53ccc4b69582eb90e9aaa7d4c150776002b74285 Mon Sep 17 00:00:00 2001
+From 098dec03899f8c7784f4b93abb1b037688e24982 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Thu, 8 Oct 2026 13:39:57 +0800
-Subject: [PATCH 31/43] pvr: plumb sync values through the winsys submit API
+Subject: [PATCH 031/294] pvr: plumb sync values through the winsys submit API
  (step 1 of 3, behaviour-preserving)
 
 Groundwork for timeline syncobjs, which is what removes the queue's per-job sync
@@ -49,7 +49,7 @@ so no sync object is created or destroyed per job.
  17 files changed, 87 insertions(+), 87 deletions(-)
 
 diff --git a/src/imagination/vulkan/pvr_arch_job_compute.c b/src/imagination/vulkan/pvr_arch_job_compute.c
-index 0a39435..75cb0c4 100644
+index 0a394353..75cb0c4b 100644
 --- a/src/imagination/vulkan/pvr_arch_job_compute.c
 +++ b/src/imagination/vulkan/pvr_arch_job_compute.c
 @@ -194,7 +194,7 @@ pvr_submit_info_flags_init(const struct pvr_device_info *const dev_info,
@@ -73,7 +73,7 @@ index 0a39435..75cb0c4 100644
     struct pvr_winsys_compute_submit_info submit_info;
     struct pvr_device *device = ctx->device;
 diff --git a/src/imagination/vulkan/pvr_arch_job_render.c b/src/imagination/vulkan/pvr_arch_job_render.c
-index 025a05b..4befa9e 100644
+index 025a05ba..4befa9ef 100644
 --- a/src/imagination/vulkan/pvr_arch_job_render.c
 +++ b/src/imagination/vulkan/pvr_arch_job_render.c
 @@ -839,7 +839,7 @@ pvr_geom_state_flags_init(const struct pvr_render_job *const job,
@@ -130,7 +130,7 @@ index 025a05b..4befa9e 100644
     struct pvr_rt_dataset *rt_dataset =
        job->view_state.rt_datasets[job->view_state.view_index];
 diff --git a/src/imagination/vulkan/pvr_arch_job_transfer.c b/src/imagination/vulkan/pvr_arch_job_transfer.c
-index df05efe..af3e1a4 100644
+index df05efe7..af3e1a45 100644
 --- a/src/imagination/vulkan/pvr_arch_job_transfer.c
 +++ b/src/imagination/vulkan/pvr_arch_job_transfer.c
 @@ -5910,7 +5910,7 @@ pvr_submit_info_flags_init(const struct pvr_device_info *const dev_info,
@@ -187,7 +187,7 @@ index df05efe..af3e1a4 100644
  
        if (list_first_entry(sub_cmd->transfer_cmds,
 diff --git a/src/imagination/vulkan/pvr_arch_queue.c b/src/imagination/vulkan/pvr_arch_queue.c
-index cb6203e..ca2f860 100644
+index cb6203ea..ca2f8604 100644
 --- a/src/imagination/vulkan/pvr_arch_queue.c
 +++ b/src/imagination/vulkan/pvr_arch_queue.c
 @@ -308,8 +308,8 @@ pvr_process_graphics_cmd_for_view(struct pvr_device *device,
@@ -250,7 +250,7 @@ index cb6203e..ca2f860 100644
        vk_sync_destroy(&device->vk, sync);
        return result;
 diff --git a/src/imagination/vulkan/pvr_job_compute.h b/src/imagination/vulkan/pvr_job_compute.h
-index afd9a6e..c6319ef 100644
+index afd9a6ec..c6319ef2 100644
 --- a/src/imagination/vulkan/pvr_job_compute.h
 +++ b/src/imagination/vulkan/pvr_job_compute.h
 @@ -33,8 +33,8 @@ struct vk_sync;
@@ -265,7 +265,7 @@ index afd9a6e..c6319ef 100644
  #define pvr_arch_compute_job_submit PVR_PER_ARCH(compute_job_submit)
  
 diff --git a/src/imagination/vulkan/pvr_job_render.h b/src/imagination/vulkan/pvr_job_render.h
-index 8320328..fb250b9 100644
+index 83203281..fb250b94 100644
 --- a/src/imagination/vulkan/pvr_job_render.h
 +++ b/src/imagination/vulkan/pvr_job_render.h
 @@ -189,10 +189,10 @@ VkResult PVR_PER_ARCH(render_target_dataset_create)(
@@ -284,7 +284,7 @@ index 8320328..fb250b9 100644
  #   define pvr_arch_render_job_submit PVR_PER_ARCH(render_job_submit)
  
 diff --git a/src/imagination/vulkan/pvr_job_transfer.h b/src/imagination/vulkan/pvr_job_transfer.h
-index 5fa011d..24cfccc 100644
+index 5fa011d4..24cfccc8 100644
 --- a/src/imagination/vulkan/pvr_job_transfer.h
 +++ b/src/imagination/vulkan/pvr_job_transfer.h
 @@ -45,8 +45,8 @@ struct vk_sync;
@@ -299,7 +299,7 @@ index 5fa011d..24cfccc 100644
  #define pvr_arch_transfer_job_submit PVR_PER_ARCH(transfer_job_submit)
  
 diff --git a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_compute.c b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_compute.c
-index b25c66f..381cc49 100644
+index b25c66f2..381cc49a 100644
 --- a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_compute.c
 +++ b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_compute.c
 @@ -170,7 +170,7 @@ VkResult pvr_drm_winsys_compute_submit(
@@ -335,7 +335,7 @@ index b25c66f..381cc49 100644
                    DRM_PVR_SYNC_OP_FLAG_HANDLE_TYPE_SYNCOBJ,
           .value = 0,
 diff --git a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_compute.h b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_compute.h
-index 641b1d1..096526b 100644
+index 641b1d17..096526b2 100644
 --- a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_compute.h
 +++ b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_compute.h
 @@ -48,6 +48,6 @@ VkResult pvr_drm_winsys_compute_submit(
@@ -347,7 +347,7 @@ index 641b1d1..096526b 100644
  
  #endif /* PVR_DRM_JOB_COMPUTE_H */
 diff --git a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c
-index 1e3bcae..579d119 100644
+index 1e3bcaeb..579d119d 100644
 --- a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c
 +++ b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c
 @@ -470,8 +470,8 @@ VkResult pvr_drm_winsys_render_submit(
@@ -419,7 +419,7 @@ index 1e3bcae..579d119 100644
                       DRM_PVR_SYNC_OP_FLAG_HANDLE_TYPE_SYNCOBJ,
              .value = 0,
 diff --git a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.h b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.h
-index 102084c..f329275 100644
+index 102084cc..f329275c 100644
 --- a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.h
 +++ b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.h
 @@ -72,7 +72,7 @@ VkResult pvr_drm_winsys_render_submit(
@@ -433,7 +433,7 @@ index 102084c..f329275 100644
  
  #endif /* PVR_DRM_JOB_RENDER_H */
 diff --git a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_transfer.c b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_transfer.c
-index 9ae0f64..75ce2f2 100644
+index 9ae0f64d..75ce2f20 100644
 --- a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_transfer.c
 +++ b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_transfer.c
 @@ -126,7 +126,7 @@ VkResult pvr_drm_winsys_transfer_submit(
@@ -469,7 +469,7 @@ index 9ae0f64..75ce2f2 100644
                    DRM_PVR_SYNC_OP_FLAG_HANDLE_TYPE_SYNCOBJ,
           .value = 0,
 diff --git a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_transfer.h b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_transfer.h
-index f6ea0ab..5d5d4f3 100644
+index f6ea0ab8..5d5d4f32 100644
 --- a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_transfer.h
 +++ b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_transfer.h
 @@ -46,6 +46,6 @@ VkResult pvr_drm_winsys_transfer_submit(
@@ -481,7 +481,7 @@ index f6ea0ab..5d5d4f3 100644
  
  #endif /* PVR_DRM_JOB_TRANSFER_H */
 diff --git a/src/imagination/vulkan/winsys/pvr_winsys.h b/src/imagination/vulkan/winsys/pvr_winsys.h
-index 30f48db..03a69d3 100644
+index 30f48dbd..03a69d3c 100644
 --- a/src/imagination/vulkan/winsys/pvr_winsys.h
 +++ b/src/imagination/vulkan/winsys/pvr_winsys.h
 @@ -298,7 +298,7 @@ struct pvr_winsys_transfer_submit_info {
@@ -550,7 +550,7 @@ index 30f48db..03a69d3 100644
     VkResult (*null_job_submit)(struct pvr_winsys *ws,
                                 struct vk_sync_wait *waits,
 diff --git a/src/imagination/vulkan/winsys/pvrsrvkm/pvr_arch_srv_job_compute.c b/src/imagination/vulkan/winsys/pvrsrvkm/pvr_arch_srv_job_compute.c
-index 0121efd..4c7532b 100644
+index 0121efde..4c7532b2 100644
 --- a/src/imagination/vulkan/winsys/pvrsrvkm/pvr_arch_srv_job_compute.c
 +++ b/src/imagination/vulkan/winsys/pvrsrvkm/pvr_arch_srv_job_compute.c
 @@ -146,7 +146,7 @@ VkResult PVR_PER_ARCH(srv_winsys_compute_submit)(
@@ -574,7 +574,7 @@ index 0121efd..4c7532b 100644
        if (srv_wait_sync->fd >= 0) {
           in_fd = os_dupfd_cloexec(srv_wait_sync->fd);
 diff --git a/src/imagination/vulkan/winsys/pvrsrvkm/pvr_arch_srv_job_render.c b/src/imagination/vulkan/winsys/pvrsrvkm/pvr_arch_srv_job_render.c
-index 2b9bd0e..c55cde3 100644
+index 2b9bd0ed..c55cde39 100644
 --- a/src/imagination/vulkan/winsys/pvrsrvkm/pvr_arch_srv_job_render.c
 +++ b/src/imagination/vulkan/winsys/pvrsrvkm/pvr_arch_srv_job_render.c
 @@ -761,8 +761,8 @@ VkResult PVR_PER_ARCH(srv_winsys_render_submit)(
@@ -613,7 +613,7 @@ index 2b9bd0e..c55cde3 100644
        if (srv_wait_sync->fd >= 0) {
           in_frag_fd = os_dupfd_cloexec(srv_wait_sync->fd);
 diff --git a/src/imagination/vulkan/winsys/pvrsrvkm/pvr_arch_srv_job_transfer.c b/src/imagination/vulkan/winsys/pvrsrvkm/pvr_arch_srv_job_transfer.c
-index ced9548..8fe07e5 100644
+index ced95482..8fe07e5a 100644
 --- a/src/imagination/vulkan/winsys/pvrsrvkm/pvr_arch_srv_job_transfer.c
 +++ b/src/imagination/vulkan/winsys/pvrsrvkm/pvr_arch_srv_job_transfer.c
 @@ -149,7 +149,7 @@ VkResult PVR_PER_ARCH(srv_winsys_transfer_submit)(
@@ -636,3 +636,6 @@ index ced9548..8fe07e5 100644
  
        if (srv_wait_sync->fd >= 0) {
           in_fd = os_dupfd_cloexec(srv_wait_sync->fd);
+-- 
+2.47.3
+

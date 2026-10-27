@@ -1,7 +1,7 @@
-From 8928e2b1e84d05247c40149548e077afe3473587 Mon Sep 17 00:00:00 2001
+From 9ca8185a5ea3a72c6da8c1c6e1d0eeba33efce56 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sun, 11 Oct 2026 05:17:47 +0800
-Subject: [PATCH 80/98] pvr: keep up to 16 render target datasets for reuse
+Subject: [PATCH 080/294] pvr: keep up to 16 render target datasets for reuse
 
 Four were too few for frames with many renders of several sizes, each
 kept by the command buffers of the frames in flight: glmark2's desktop
@@ -19,7 +19,7 @@ CTS: as for the previous commit, identical to before.
  1 file changed, 1 insertion(+), 1 deletion(-)
 
 diff --git a/src/imagination/vulkan/pvr_rt_dataset.c b/src/imagination/vulkan/pvr_rt_dataset.c
-index b827903..bd45675 100644
+index b8279038..bd45675a 100644
 --- a/src/imagination/vulkan/pvr_rt_dataset.c
 +++ b/src/imagination/vulkan/pvr_rt_dataset.c
 @@ -61,7 +61,7 @@ void pvr_rt_vheap_rtc_data_fini(struct pvr_rt_dataset *rt_dataset)

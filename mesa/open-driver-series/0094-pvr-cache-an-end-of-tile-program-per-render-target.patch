@@ -1,7 +1,7 @@
-From ddb1769c14b19de030fa4caa7d382affa75cebc3 Mon Sep 17 00:00:00 2001
+From 7a7e6862e27daed655b709c5285f2fa8787dc173 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sun, 11 Oct 2026 11:29:39 +0800
-Subject: [PATCH 94/98] pvr: cache an end of tile program per render target
+Subject: [PATCH 094/294] pvr: cache an end of tile program per render target
 
 The end of tile program cache held one entry, keyed by the PBE state
 words, which contain the render target address. A frame that renders to
@@ -18,7 +18,7 @@ thread uses about 5.7x less CPU in desktop blur.
  3 files changed, 72 insertions(+), 50 deletions(-)
 
 diff --git a/src/imagination/vulkan/pvr_arch_cmd_buffer.c b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
-index 43d613e..29e096f 100644
+index 43d613ef..29e096fd 100644
 --- a/src/imagination/vulkan/pvr_arch_cmd_buffer.c
 +++ b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
 @@ -585,35 +585,39 @@ static VkResult pvr_sub_cmd_gfx_per_job_fragment_programs_create_and_upload(
@@ -135,7 +135,7 @@ index 43d613e..29e096f 100644
  
     if (result != VK_SUCCESS)
 diff --git a/src/imagination/vulkan/pvr_arch_device.c b/src/imagination/vulkan/pvr_arch_device.c
-index dc72086..4d0002d 100644
+index dc720865..4d0002d6 100644
 --- a/src/imagination/vulkan/pvr_arch_device.c
 +++ b/src/imagination/vulkan/pvr_arch_device.c
 @@ -652,16 +652,17 @@ pvr_device_init_view_index_init_programs(struct pvr_device *device)
@@ -162,7 +162,7 @@ index dc72086..4d0002d 100644
  
  static void pvr_device_init_tile_buffer_state(struct pvr_device *device)
 diff --git a/src/imagination/vulkan/pvr_device.h b/src/imagination/vulkan/pvr_device.h
-index 28d9f56..ea47bba 100644
+index 28d9f56f..ea47bba1 100644
 --- a/src/imagination/vulkan/pvr_device.h
 +++ b/src/imagination/vulkan/pvr_device.h
 @@ -51,6 +51,8 @@ struct pvr_compute_query_shader {

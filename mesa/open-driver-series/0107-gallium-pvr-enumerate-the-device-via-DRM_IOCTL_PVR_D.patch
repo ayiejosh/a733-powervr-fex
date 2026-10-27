@@ -1,7 +1,7 @@
-From d8e187e1aa395938322be4e7aceed25f8b1076e2 Mon Sep 17 00:00:00 2001
+From c76633e5514ef28b3f8285bcae022b575dad0f37 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Thu, 15 Oct 2026 20:46:36 +0800
-Subject: [PATCH 107/269] gallium/pvr: enumerate the device via
+Subject: [PATCH 107/294] gallium/pvr: enumerate the device via
  DRM_IOCTL_PVR_DEV_QUERY
 
 Reads the GPU identity through the same kernel interface the Vulkan driver uses and decodes

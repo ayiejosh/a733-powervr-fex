@@ -1,7 +1,7 @@
-From 0ba967e490fb276d6790847e0388104fe7f1644c Mon Sep 17 00:00:00 2001
+From b2277098ea9b337ae0c8166787adaef78c157876 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sat, 24 Oct 2026 08:20:24 +0800
-Subject: [PATCH 211/269] gallium/pvr: emit a region clip covering the whole
+Subject: [PATCH 211/294] gallium/pvr: emit a region clip covering the whole
  target
 
 Tested the first of the two remaining hypotheses for the unchanged target: a draw with no clip region

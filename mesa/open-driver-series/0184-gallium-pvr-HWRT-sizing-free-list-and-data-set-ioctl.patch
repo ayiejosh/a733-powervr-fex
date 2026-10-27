@@ -1,7 +1,7 @@
-From 405abdcc575ceb7e26b21566f8a3728d23a0892a Mon Sep 17 00:00:00 2001
+From 31c6226b9c869180343675734a1afa8595913e85 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Fri, 23 Oct 2026 14:51:23 +0800
-Subject: [PATCH 184/269] gallium/pvr: HWRT sizing, free-list and data-set
+Subject: [PATCH 184/294] gallium/pvr: HWRT sizing, free-list and data-set
  ioctls
 
 The kernel refuses a geometry/fragment job without a hwrt reference, so a render job needs a HWRT data

@@ -1,7 +1,7 @@
-From 25eef88d2864b3664926a873505e46ef260a954f Mon Sep 17 00:00:00 2001
+From a6dfa23c9639e713b63ee09db1a7a9f1979a2585 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Tue, 27 Oct 2026 05:01:31 +0800
-Subject: [PATCH 269/269] gallium/pvr: add a probe hook to submit the geometry
+Subject: [PATCH 269/294] gallium/pvr: add a probe hook to submit the geometry
  job without sync ops; result: the TA kick still times out, so the
  signal-dependency shape is not the DM2 stall's cause
 

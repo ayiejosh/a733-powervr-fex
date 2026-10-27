@@ -1,7 +1,7 @@
-From d70e32a765042d88a4a6f6d9d338ba00b5890ed9 Mon Sep 17 00:00:00 2001
+From ef5f7db34c044ed5221dc7520f2157c3d7f30272 Mon Sep 17 00:00:00 2001
 From: Mohammadzafar Ziya <mohammadzafar.ziya@imgtec.com>
 Date: Thu, 2 Jul 2026 19:02:30 +0530
-Subject: [PATCH 23/24] pvr: Instrument draw and transfer u_trace markers
+Subject: [PATCH 292/294] pvr: Instrument draw and transfer u_trace markers
 
 Add marker-based u_trace instrumentation for compute, draw
 and transfer commands during command buffer recording.

@@ -1,7 +1,7 @@
-From 98a792c90b648a36de10e751229186ab2f39cb5a Mon Sep 17 00:00:00 2001
+From dd5b014450795a04d17a9782dfd2c17519693452 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Fri, 16 Oct 2026 14:50:51 +0800
-Subject: [PATCH 120/269] gallium/pvr: record the framebuffer state instead of
+Subject: [PATCH 120/294] gallium/pvr: record the framebuffer state instead of
  discarding it
 
 set_framebuffer_state was a no-op, so the driver had no idea what it was being

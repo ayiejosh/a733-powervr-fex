@@ -1,7 +1,7 @@
-From 5e4871eba4a2c1447a768298d2704cbd83f2c972 Mon Sep 17 00:00:00 2001
+From 59bb1d3ed88fb4f9d0e38284e5c63be24fb0d538 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sat, 24 Oct 2026 03:56:47 +0800
-Subject: [PATCH 199/269] gallium/pvr: PDS state update block names a real
+Subject: [PATCH 199/294] gallium/pvr: PDS state update block names a real
  launcher address
 
 The control stream now carries the PDS state update that tells the TA where the vertex program lives,

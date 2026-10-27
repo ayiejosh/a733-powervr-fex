@@ -1,7 +1,7 @@
-From de2231920b430eddcb6893125c722ffdb22b430a Mon Sep 17 00:00:00 2001
+From 015085e9563f504c3b6fb62d68c76340a9fe93e5 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sun, 25 Oct 2026 01:24:25 +0800
-Subject: [PATCH 227/269] gallium/pvr: TA PDS bases are env-selectable;
+Subject: [PATCH 227/294] gallium/pvr: TA PDS bases are env-selectable;
  pointing them at a real program changes nothing
 
 Round-eleven experiment on the TA-never-starts problem: the TA state block's PDS group

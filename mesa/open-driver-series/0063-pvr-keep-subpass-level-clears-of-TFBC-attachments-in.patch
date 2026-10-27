@@ -1,7 +1,7 @@
-From bc1be45ba37025b77209aec6b22a35beed9cf52e Mon Sep 17 00:00:00 2001
+From 13fb54a593d024d397fa2b114188afcfb1d47208 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sat, 10 Oct 2026 11:23:44 +0800
-Subject: [PATCH 63/98] pvr: keep subpass-level clears of TFBC attachments
+Subject: [PATCH 063/294] pvr: keep subpass-level clears of TFBC attachments
  inside the render area
 
 When an attachment's output registers were used by an earlier attachment of
@@ -28,7 +28,7 @@ d253e35; gate 44/44.
  3 files changed, 151 insertions(+), 7 deletions(-)
 
 diff --git a/src/imagination/vulkan/pvr_arch_cmd_buffer.c b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
-index 87a4417..129b7f3 100644
+index 87a44170..129b7f39 100644
 --- a/src/imagination/vulkan/pvr_arch_cmd_buffer.c
 +++ b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
 @@ -1683,6 +1683,86 @@ pvr_render_needs_fbc_load(const struct pvr_cmd_buffer *cmd_buffer,
@@ -158,7 +158,7 @@ index 87a4417..129b7f3 100644
  
     rp_info->pipeline_bind_point =
 diff --git a/src/imagination/vulkan/pvr_arch_pass.c b/src/imagination/vulkan/pvr_arch_pass.c
-index 21d9629..ab02134 100644
+index 21d96290..ab02134f 100644
 --- a/src/imagination/vulkan/pvr_arch_pass.c
 +++ b/src/imagination/vulkan/pvr_arch_pass.c
 @@ -137,6 +137,39 @@ static inline bool pvr_has_output_register_writes(
@@ -270,7 +270,7 @@ index 21d9629..ab02134 100644
           /* pvr_subpass_load_op_setup() is responsible for cleaning
            * up all load_ops created in this loop for this hw_render.
 diff --git a/src/imagination/vulkan/pvr_hw_pass.h b/src/imagination/vulkan/pvr_hw_pass.h
-index 6438ee7..e8e232e 100644
+index 6438ee7c..e8e232eb 100644
 --- a/src/imagination/vulkan/pvr_hw_pass.h
 +++ b/src/imagination/vulkan/pvr_hw_pass.h
 @@ -104,6 +104,12 @@ struct pvr_renderpass_hwsetup_subpass {

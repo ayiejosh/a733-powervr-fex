@@ -1,7 +1,7 @@
-From 9b2c57554d83b638de5d71fc4186273f5ea497ed Mon Sep 17 00:00:00 2001
+From fd76fc65b11693b6929f114ddcae9b0f7ff4c49f Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Thu, 8 Oct 2026 11:37:26 +0800
-Subject: [PATCH 25/43] pvr: keep shaderFloat16 disabled - the miscompile is
+Subject: [PATCH 025/294] pvr: keep shaderFloat16 disabled - the miscompile is
  real; my previous 'correction' was wrong
 
 I re-enabled shaderFloat16 last commit on the grounds that neither the correctness nor the
@@ -28,7 +28,7 @@ well as benchmark runs.
  1 file changed, 15 insertions(+), 9 deletions(-)
 
 diff --git a/src/imagination/vulkan/pvr_physical_device.c b/src/imagination/vulkan/pvr_physical_device.c
-index e586eac..c100c9c 100644
+index e586eac3..c100c9ca 100644
 --- a/src/imagination/vulkan/pvr_physical_device.c
 +++ b/src/imagination/vulkan/pvr_physical_device.c
 @@ -346,18 +346,24 @@ static void pvr_physical_device_get_supported_features(
@@ -65,3 +65,6 @@ index e586eac..c100c9c 100644
        .shaderInt8 = true,
        .descriptorIndexing = false,
        .shaderInputAttachmentArrayDynamicIndexing = true,
+-- 
+2.47.3
+

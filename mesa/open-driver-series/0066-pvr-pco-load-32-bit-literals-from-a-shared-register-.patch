@@ -1,7 +1,7 @@
-From c10121106dcab130f197439a03846be5075bd74c Mon Sep 17 00:00:00 2001
+From 4dc8f31adf8e22ed5f933d06bdaed638be4b6bdd Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sat, 10 Oct 2026 14:45:08 +0800
-Subject: [PATCH 66/98] pvr, pco: load 32-bit literals from a shared register
+Subject: [PATCH 066/294] pvr, pco: load 32-bit literals from a shared register
  pool
 
 A literal that is not in the hardware constant table costs a whole
@@ -33,7 +33,7 @@ CTS (5062 + 9170 + 838 dot/matrix + 282 buffer cases): identical to before.
  4 files changed, 181 insertions(+)
 
 diff --git a/src/imagination/pco/pco_const_imms.c b/src/imagination/pco/pco_const_imms.c
-index fdbf035..8c70399 100644
+index fdbf0357..8c70399c 100644
 --- a/src/imagination/pco/pco_const_imms.c
 +++ b/src/imagination/pco/pco_const_imms.c
 @@ -18,6 +18,7 @@
@@ -202,7 +202,7 @@ index fdbf035..8c70399 100644
         * table costs one materialization per use. Within a single block it is safe
         * to materialize it once and move from that register afterwards, because a
 diff --git a/src/imagination/pco/pco_data.h b/src/imagination/pco/pco_data.h
-index 7a99527..836b31b 100644
+index 7a995274..836b31bf 100644
 --- a/src/imagination/pco/pco_data.h
 +++ b/src/imagination/pco/pco_data.h
 @@ -232,6 +232,13 @@ typedef struct _pco_common_data {
@@ -220,7 +220,7 @@ index 7a99527..836b31b 100644
  
     struct {
 diff --git a/src/imagination/vulkan/pvr_arch_cmd_buffer.c b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
-index 129b7f3..805889c 100644
+index 129b7f39..805889c9 100644
 --- a/src/imagination/vulkan/pvr_arch_cmd_buffer.c
 +++ b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
 @@ -6196,6 +6196,14 @@ static VkResult pvr_setup_descriptor_mappings(
@@ -239,7 +239,7 @@ index 129b7f3..805889c 100644
              assert(stage == PVR_STAGE_ALLOCATION_COMPUTE);
              assert(data->cs.global_shmem);
 diff --git a/src/imagination/vulkan/pvr_arch_pipeline.c b/src/imagination/vulkan/pvr_arch_pipeline.c
-index 60832f6..e007ea2 100644
+index 60832f6a..e007ea21 100644
 --- a/src/imagination/vulkan/pvr_arch_pipeline.c
 +++ b/src/imagination/vulkan/pvr_arch_pipeline.c
 @@ -617,6 +617,23 @@ static VkResult pvr_pds_descriptor_program_create_and_upload(

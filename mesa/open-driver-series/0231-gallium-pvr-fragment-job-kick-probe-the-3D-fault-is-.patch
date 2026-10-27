@@ -1,7 +1,7 @@
-From 85cab663c69f16ef82d305fb9357db751569ee91 Mon Sep 17 00:00:00 2001
+From 8412c8e48c040d11048930c26dfb98b89349dde7 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sun, 25 Oct 2026 04:11:32 +0800
-Subject: [PATCH 231/269] gallium/pvr: fragment-job kick probe; the 3D fault is
+Subject: [PATCH 231/294] gallium/pvr: fragment-job kick probe; the 3D fault is
  job-level, and submit timing is not it
 
 Round sixteen experiments on the last blocker (TA kick silent, fragment kick works):

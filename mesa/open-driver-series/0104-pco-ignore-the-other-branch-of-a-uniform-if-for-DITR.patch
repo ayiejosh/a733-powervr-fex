@@ -1,7 +1,7 @@
-From be232b13c0abc8db493c81883687f35074453f6e Mon Sep 17 00:00:00 2001
+From d727cf31def7030ce4a4a703b997f5a8e2e8feda Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Tue, 13 Oct 2026 23:12:13 +0800
-Subject: [PATCH 104/105] pco: ignore the other branch of a uniform if for DITR
+Subject: [PATCH 104/294] pco: ignore the other branch of a uniform if for DITR
  pre-fences
 
 ditr_needs_pre_fence walks the instruction list backwards looking for
@@ -21,7 +21,7 @@ jellyfish and bump lose three groups on the executed path.
  1 file changed, 44 insertions(+)
 
 diff --git a/src/imagination/pco/pco_legalize.c b/src/imagination/pco/pco_legalize.c
-index f18aab8..f4a9422 100644
+index f18aab81..f4a9422d 100644
 --- a/src/imagination/pco/pco_legalize.c
 +++ b/src/imagination/pco/pco_legalize.c
 @@ -882,6 +882,46 @@ static bool try_legalize_large_hwreg_offsets(pco_instr *instr,

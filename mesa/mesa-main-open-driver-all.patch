@@ -24318,7 +24318,7 @@ index 4e53459b..b5bc6e39 100644
        const struct pvr_descriptor_set_layout *dst_layout = dst_set->layout;
        const struct pvr_descriptor_set_layout_binding *src_binding;
 diff --git a/src/imagination/vulkan/pvr_arch_device.c b/src/imagination/vulkan/pvr_arch_device.c
-index af9d6980..8b3e0f89 100644
+index af9d6980..ae120293 100644
 --- a/src/imagination/vulkan/pvr_arch_device.c
 +++ b/src/imagination/vulkan/pvr_arch_device.c
 @@ -26,11 +26,14 @@
@@ -24418,22 +24418,17 @@ index af9d6980..8b3e0f89 100644
  
     result = pvr_arch_queues_create(device, pCreateInfo);
     if (result != VK_SUCCESS)
-@@ -894,6 +951,14 @@ VkResult PVR_PER_ARCH(create_device)(struct pvr_physical_device *pdevice,
+@@ -894,6 +951,9 @@ VkResult PVR_PER_ARCH(create_device)(struct pvr_physical_device *pdevice,
     if (result != VK_SUCCESS)
        goto err_pvr_robustness_buffer_finish;
  
-+   /* Render target state for geometry-only kicks outside a render pass. */
-+   result = pvr_device_dummy_rt_init(device);
-+   if (result != VK_SUCCESS)
-+      goto err_pvr_border_color_table_finish;
-+
 +   /* Initialize GPU tracing infrastructure */
 +   pvr_device_utrace_init(device);
 +
     /* FIXME: Move this to a later stage and possibly somewhere other than
      * pvr_device. The purpose of this is so that we don't have to get the size
      * on each kick.
-@@ -907,11 +972,20 @@ VkResult PVR_PER_ARCH(create_device)(struct pvr_physical_device *pdevice,
+@@ -907,11 +967,29 @@ VkResult PVR_PER_ARCH(create_device)(struct pvr_physical_device *pdevice,
  
     simple_mtx_init(&device->rs_mtx, mtx_plain);
     list_inithead(&device->render_states);
@@ -24443,6 +24438,15 @@ index af9d6980..8b3e0f89 100644
 +   device->load_op_cache = NULL;
 +   simple_mtx_init(&device->spm_eot_cache_mtx, mtx_plain);
 +   device->spm_eot_cache = NULL;
++
++   /* Render target state for geometry-only kicks outside a render pass. This
++    * takes a dataset from the cache above, so it must follow its init.
++    */
++   result = pvr_device_dummy_rt_init(device);
++   if (result != VK_SUCCESS) {
++      pvr_rt_dataset_cache_finish(device);
++      goto err_pvr_border_color_table_finish;
++   }
  
     *pDevice = pvr_device_to_handle(device);
  
@@ -24454,7 +24458,7 @@ index af9d6980..8b3e0f89 100644
  err_pvr_robustness_buffer_finish:
     pvr_robustness_buffer_finish(device);
  
-@@ -921,6 +995,7 @@ err_pvr_spm_finish_scratch_buffer_store:
+@@ -921,6 +999,7 @@ err_pvr_spm_finish_scratch_buffer_store:
     pvr_arch_queues_destroy(device);
  
  err_pvr_finish_tile_buffer_state:
@@ -24462,7 +24466,7 @@ index af9d6980..8b3e0f89 100644
     pvr_device_finish_tile_buffer_state(device);
     pvr_arch_device_finish_spm_load_state(device);
  
-@@ -961,6 +1036,7 @@ err_dec_device_count:
+@@ -961,6 +1040,7 @@ err_dec_device_count:
     pvr_bo_suballocator_fini(&device->suballoc_transfer);
     pvr_bo_suballocator_fini(&device->suballoc_pds);
     pvr_bo_suballocator_fini(&device->suballoc_general);
@@ -24470,7 +24474,7 @@ index af9d6980..8b3e0f89 100644
  
     pvr_bo_store_destroy(device);
  
-@@ -983,6 +1059,9 @@ void PVR_PER_ARCH(destroy_device)(struct pvr_device *device,
+@@ -983,6 +1063,9 @@ void PVR_PER_ARCH(destroy_device)(struct pvr_device *device,
     if (!device)
        return;
  
@@ -24480,15 +24484,15 @@ index af9d6980..8b3e0f89 100644
     simple_mtx_lock(&device->rs_mtx);
     list_for_each_entry_safe (struct pvr_render_state,
                               rstate,
-@@ -996,10 +1075,16 @@ void PVR_PER_ARCH(destroy_device)(struct pvr_device *device,
+@@ -996,10 +1079,16 @@ void PVR_PER_ARCH(destroy_device)(struct pvr_device *device,
     simple_mtx_unlock(&device->rs_mtx);
     simple_mtx_destroy(&device->rs_mtx);
  
 +   /* After the render states above, which hand their datasets to the cache. */
++   pvr_device_dummy_rt_finish(device);
 +   pvr_rt_dataset_cache_finish(device);
 +   pvr_arch_mrt_load_op_cache_finish(device);
 +   pvr_arch_spm_eot_cache_finish(device);
-+   pvr_device_dummy_rt_finish(device);
     pvr_arch_border_color_table_finish(device);
     pvr_robustness_buffer_finish(device);
     pvr_spm_finish_scratch_buffer_store(device);
@@ -24497,7 +24501,7 @@ index af9d6980..8b3e0f89 100644
     pvr_device_finish_tile_buffer_state(device);
     pvr_arch_device_finish_spm_load_state(device);
     pvr_device_finish_graphics_static_clear_state(device);
-@@ -1020,6 +1105,7 @@ void PVR_PER_ARCH(destroy_device)(struct pvr_device *device,
+@@ -1020,6 +1109,7 @@ void PVR_PER_ARCH(destroy_device)(struct pvr_device *device,
     pvr_bo_suballocator_fini(&device->suballoc_transfer);
     pvr_bo_suballocator_fini(&device->suballoc_pds);
     pvr_bo_suballocator_fini(&device->suballoc_general);

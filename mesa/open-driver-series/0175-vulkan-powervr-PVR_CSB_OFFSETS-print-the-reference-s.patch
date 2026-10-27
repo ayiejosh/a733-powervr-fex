@@ -1,7 +1,7 @@
-From 5b9849828033190578373888fe2adfab5af72477 Mon Sep 17 00:00:00 2001
+From 4ec4c2135a42a9353589d8708e565317dc784588 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sun, 18 Oct 2026 10:20:18 +0800
-Subject: [PATCH 175/269] vulkan/powervr: PVR_CSB_OFFSETS - print the
+Subject: [PATCH 175/294] vulkan/powervr: PVR_CSB_OFFSETS - print the
  reference's own stream offsets
 
 Env-guarded print of pbe_reg_byte_offset and eot_data_addr_byte_offset from pvr_frag_state_stream_init, so

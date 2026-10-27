@@ -1,7 +1,7 @@
-From 0e35cdce5a43aef989d8d99bdb8f4918b52d07b9 Mon Sep 17 00:00:00 2001
+From 64b0e361d2162f070ff23e659c30a2c3b947a346 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sat, 24 Oct 2026 03:47:12 +0800
-Subject: [PATCH 198/269] gallium/pvr: control stream describes a draw (VDM
+Subject: [PATCH 198/294] gallium/pvr: control stream describes a draw (VDM
  state + 3 indices + terminate)
 
 The geometry job's control stream now carries the blocks a draw needs, and the kernel accepts the

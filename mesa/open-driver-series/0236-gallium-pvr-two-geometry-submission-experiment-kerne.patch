@@ -1,7 +1,7 @@
-From ce57b7944fdc6a3a213d93fb96ea42a947a07204 Mon Sep 17 00:00:00 2001
+From 089307b70f654265c8b92b09148a07f91e147063 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sun, 25 Oct 2026 04:53:28 +0800
-Subject: [PATCH 236/269] gallium/pvr: two-geometry-submission experiment;
+Subject: [PATCH 236/294] gallium/pvr: two-geometry-submission experiment;
  kernel module gets the upstream paired-job fixes
 
 Round-23 experiment: queueing two geometry jobs back to back (PVR_PROBE_QUEUE_TWO_GEOM) still hangs

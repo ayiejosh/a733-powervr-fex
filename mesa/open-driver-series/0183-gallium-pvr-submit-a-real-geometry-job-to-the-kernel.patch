@@ -1,7 +1,7 @@
-From b7c004edbac4d03a5f0489e27c0c36f8b746b4f6 Mon Sep 17 00:00:00 2001
+From adf35d66848c0fb042c1e1ede0d66214d0502106 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Fri, 23 Oct 2026 14:11:58 +0800
-Subject: [PATCH 183/269] gallium/pvr: submit a real geometry job to the
+Subject: [PATCH 183/294] gallium/pvr: submit a real geometry job to the
  kernel; it needs HWRT, not just a stream
 
 Added a test that allocates the three BOs the geometry stream points at (command stream, ctrl stream,

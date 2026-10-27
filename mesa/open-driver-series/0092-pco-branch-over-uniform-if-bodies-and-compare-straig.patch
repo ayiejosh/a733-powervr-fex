@@ -1,8 +1,8 @@
-From d06ae1286d8dbbe71a9e2039f79c0c5c1b5610fd Mon Sep 17 00:00:00 2001
+From 07ca49a65caf36f85a077aec8e2299cc2d2ebcb4 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sun, 11 Oct 2026 11:29:39 +0800
-Subject: [PATCH 92/98] pco: branch over uniform if bodies and compare straight
- into p0
+Subject: [PATCH 092/294] pco: branch over uniform if bodies and compare
+ straight into p0
 
 Every if was lowered with the execution mask counter (cndst, br.allinst,
 cndef, br.allinst, cndend), even when all instances take the same side.
@@ -32,7 +32,7 @@ path goes from 8 control instructions to 2.
  4 files changed, 271 insertions(+), 25 deletions(-)
 
 diff --git a/src/imagination/pco/pco_cf.c b/src/imagination/pco/pco_cf.c
-index 7ff9a34..4e0d820 100644
+index 7ff9a341..4e0d820a 100644
 --- a/src/imagination/pco/pco_cf.c
 +++ b/src/imagination/pco/pco_cf.c
 @@ -22,13 +22,19 @@
@@ -390,7 +390,7 @@ index 7ff9a34..4e0d820 100644
           pco_loop *loop = pco_cf_node_as_loop(cf_node);
           util_dynarray_append(&loop_stack, loop);
 diff --git a/src/imagination/pco/pco_internal.h b/src/imagination/pco/pco_internal.h
-index 092fdb5..71063ab 100644
+index 092fdb59..71063ab6 100644
 --- a/src/imagination/pco/pco_internal.h
 +++ b/src/imagination/pco/pco_internal.h
 @@ -313,6 +313,7 @@ typedef struct _pco_if {
@@ -402,7 +402,7 @@ index 092fdb5..71063ab 100644
     struct list_head then_body; /** List of pco_cf_nodes for if body. */
     struct list_head interlogue; /** List of pco_cf_nodes for if interlogue. */
 diff --git a/src/imagination/pco/pco_map.py b/src/imagination/pco/pco_map.py
-index 358198b..9f976d0 100644
+index 358198b0..9f976d06 100644
 --- a/src/imagination/pco/pco_map.py
 +++ b/src/imagination/pco/pco_map.py
 @@ -2870,6 +2870,40 @@ group_map(O_TSTZ,
@@ -447,7 +447,7 @@ index 358198b..9f976d0 100644
     hdr=(I_IGRP_HDR_MAIN, [
        ('oporg', 'be'),
 diff --git a/src/imagination/pco/pco_ops.py b/src/imagination/pco/pco_ops.py
-index de53bdf..b0dd890 100644
+index de53bdf9..b0dd8906 100644
 --- a/src/imagination/pco/pco_ops.py
 +++ b/src/imagination/pco/pco_ops.py
 @@ -509,6 +509,7 @@ O_UADD_CARRY = hw_op('uadd_carry', OM_ALU, 2, 2)

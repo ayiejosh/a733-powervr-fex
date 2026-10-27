@@ -1,7 +1,7 @@
-From e7923c85ff76dad52b62301ee32e85c6877daaf1 Mon Sep 17 00:00:00 2001
+From 79434acda2a9356af14bfefe9b094ea93ede7cab Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sat, 10 Oct 2026 00:35:10 +0800
-Subject: [PATCH 46/98] pvr: recycle control-stream blocks across command
+Subject: [PATCH 046/294] pvr: recycle control-stream blocks across command
  buffer resets
 
 Every command buffer reset freed its 4 KiB control-stream blocks and the next
@@ -30,7 +30,7 @@ vkedge coverage/blend gate and vkrender pixel checks pass.
  5 files changed, 100 insertions(+), 7 deletions(-)
 
 diff --git a/src/imagination/vulkan/pvr_arch_csb.c b/src/imagination/vulkan/pvr_arch_csb.c
-index 66edec7..2337e4b 100644
+index 66edec76..2337e4b1 100644
 --- a/src/imagination/vulkan/pvr_arch_csb.c
 +++ b/src/imagination/vulkan/pvr_arch_csb.c
 @@ -121,12 +121,7 @@ static bool pvr_csb_buffer_extend(struct pvr_csb *csb)
@@ -48,7 +48,7 @@ index 66edec7..2337e4b 100644
        vk_error(csb->device, result);
        csb->status = result;
 diff --git a/src/imagination/vulkan/pvr_arch_device.c b/src/imagination/vulkan/pvr_arch_device.c
-index 78c03e8..e46aabc 100644
+index 78c03e85..e46aabc5 100644
 --- a/src/imagination/vulkan/pvr_arch_device.c
 +++ b/src/imagination/vulkan/pvr_arch_device.c
 @@ -816,6 +816,8 @@ VkResult PVR_PER_ARCH(create_device)(struct pvr_physical_device *pdevice,
@@ -77,7 +77,7 @@ index 78c03e8..e46aabc 100644
     pvr_winsys_destroy(device->ws);
     p_atomic_dec(&device->instance->active_device_count);
 diff --git a/src/imagination/vulkan/pvr_csb.c b/src/imagination/vulkan/pvr_csb.c
-index deaae4f..58cc567 100644
+index deaae4f3..58cc567a 100644
 --- a/src/imagination/vulkan/pvr_csb.c
 +++ b/src/imagination/vulkan/pvr_csb.c
 @@ -105,6 +105,84 @@ void pvr_csb_init(struct pvr_device *device,
@@ -175,7 +175,7 @@ index deaae4f..58cc567 100644
     }
  
 diff --git a/src/imagination/vulkan/pvr_csb.h b/src/imagination/vulkan/pvr_csb.h
-index 07a49df..22ec1a2 100644
+index 07a49dfd..22ec1a21 100644
 --- a/src/imagination/vulkan/pvr_csb.h
 +++ b/src/imagination/vulkan/pvr_csb.h
 @@ -70,6 +70,15 @@
@@ -195,7 +195,7 @@ index 07a49df..22ec1a2 100644
     PVR_CMD_STREAM_TYPE_INVALID = 0, /* explicitly treat 0 as invalid */
     PVR_CMD_STREAM_TYPE_GRAPHICS,
 diff --git a/src/imagination/vulkan/pvr_device.h b/src/imagination/vulkan/pvr_device.h
-index ba46b9b..0f09e0c 100644
+index ba46b9bf..0f09e0c3 100644
 --- a/src/imagination/vulkan/pvr_device.h
 +++ b/src/imagination/vulkan/pvr_device.h
 @@ -83,6 +83,13 @@ struct pvr_device {

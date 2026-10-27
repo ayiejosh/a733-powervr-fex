@@ -1,7 +1,7 @@
-From 26ed8163f7df41808bdeb583646617d3c70c46b7 Mon Sep 17 00:00:00 2001
+From 57c616b388c3fe88f7726cfcaa9aaaa447f9b7e7 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sat, 10 Oct 2026 01:30:42 +0800
-Subject: [PATCH 49/98] pco: co-issue independent ALU ops in phases 0 and 1
+Subject: [PATCH 049/294] pco: co-issue independent ALU ops in phases 0 and 1
 
 A main ALU instruction group has two parallel datapaths: phase 0 and
 phase 1. pco_group_instrs put one op per group, so phase 1 was only ever
@@ -34,7 +34,7 @@ vkedge MSAA/helper/blend checks and vkrender pixel checks pass.
  3 files changed, 274 insertions(+), 2 deletions(-)
 
 diff --git a/src/imagination/pco/pco_debug.c b/src/imagination/pco/pco_debug.c
-index 7e5f9ca..e36cd08 100644
+index 7e5f9ca9..e36cd08b 100644
 --- a/src/imagination/pco/pco_debug.c
 +++ b/src/imagination/pco/pco_debug.c
 @@ -42,6 +42,9 @@ static const struct debug_named_value pco_debug_options[] = {
@@ -48,7 +48,7 @@ index 7e5f9ca..e36cd08 100644
  };
  
 diff --git a/src/imagination/pco/pco_group_instrs.c b/src/imagination/pco/pco_group_instrs.c
-index b46a2b1..d5102de 100644
+index b46a2b16..d5102de2 100644
 --- a/src/imagination/pco/pco_group_instrs.c
 +++ b/src/imagination/pco/pco_group_instrs.c
 @@ -171,6 +171,262 @@ static inline void calc_align_padding(pco_igrp *last_igrp,
@@ -347,7 +347,7 @@ index b46a2b1..d5102de 100644
        }
  
 diff --git a/src/imagination/pco/pco_internal.h b/src/imagination/pco/pco_internal.h
-index ffbc3b4..d0bb304 100644
+index ffbc3b45..d0bb3041 100644
 --- a/src/imagination/pco/pco_internal.h
 +++ b/src/imagination/pco/pco_internal.h
 @@ -70,6 +70,7 @@ enum pco_debug {

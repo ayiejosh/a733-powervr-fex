@@ -1,7 +1,7 @@
-From 54adf97a7ad76faa0d1442c4acfa985c7bc33ffa Mon Sep 17 00:00:00 2001
+From 90b01636ea7bd74dd39e05986b1172843d5cd727 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sun, 11 Oct 2026 04:11:20 +0800
-Subject: [PATCH 76/98] pvr: cache load op programs across dynamic renders
+Subject: [PATCH 076/294] pvr: cache load op programs across dynamic renders
 
 Every vkCmdBeginRendering set up a load op, compiled its fragment shader
 with the whole pco pipeline and uploaded the USC and PDS programs. The
@@ -24,7 +24,7 @@ CTS: as for the previous commits, identical to before.
  4 files changed, 154 insertions(+), 3 deletions(-)
 
 diff --git a/src/imagination/vulkan/pvr_arch_device.c b/src/imagination/vulkan/pvr_arch_device.c
-index 1e2d552..d70df95 100644
+index 1e2d5521..d70df955 100644
 --- a/src/imagination/vulkan/pvr_arch_device.c
 +++ b/src/imagination/vulkan/pvr_arch_device.c
 @@ -26,6 +26,7 @@
@@ -55,7 +55,7 @@ index 1e2d552..d70df95 100644
     pvr_robustness_buffer_finish(device);
     pvr_spm_finish_scratch_buffer_store(device);
 diff --git a/src/imagination/vulkan/pvr_arch_mrt.c b/src/imagination/vulkan/pvr_arch_mrt.c
-index 122acda..3971d64 100644
+index 122acda4..3971d64d 100644
 --- a/src/imagination/vulkan/pvr_arch_mrt.c
 +++ b/src/imagination/vulkan/pvr_arch_mrt.c
 @@ -296,6 +296,137 @@ pvr_rendering_info_needs_load(const struct pvr_dynamic_render_info *dr_info)
@@ -217,7 +217,7 @@ index 122acda..3971d64 100644
     pvr_bo_suballoc_free(load_op->pds_frag_prog.pvr_bo);
     pvr_bo_suballoc_free(load_op->usc_frag_prog_bo);
 diff --git a/src/imagination/vulkan/pvr_device.h b/src/imagination/vulkan/pvr_device.h
-index cec8d67..0e5b6a2 100644
+index cec8d675..0e5b6a27 100644
 --- a/src/imagination/vulkan/pvr_device.h
 +++ b/src/imagination/vulkan/pvr_device.h
 @@ -189,6 +189,12 @@ struct pvr_device {
@@ -234,7 +234,7 @@ index cec8d67..0e5b6a2 100644
  
  struct pvr_device_memory {
 diff --git a/src/imagination/vulkan/pvr_mrt.h b/src/imagination/vulkan/pvr_mrt.h
-index 249a913..d8888a5 100644
+index 249a913f..d8888a5a 100644
 --- a/src/imagination/vulkan/pvr_mrt.h
 +++ b/src/imagination/vulkan/pvr_mrt.h
 @@ -104,6 +104,9 @@ struct usc_mrt_setup {

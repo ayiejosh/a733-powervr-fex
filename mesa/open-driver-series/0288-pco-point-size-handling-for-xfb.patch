@@ -1,7 +1,7 @@
-From a23b47e407a5e25cca8325c5dd050ac3c43acc52 Mon Sep 17 00:00:00 2001
+From 5b1070f881409a2e0032db6ee25426c1b8cd5108 Mon Sep 17 00:00:00 2001
 From: Simon Perretta <simon.perretta@imgtec.com>
 Date: Mon, 12 Oct 2026 15:17:00 +0100
-Subject: [PATCH 19/24] pco: point size handling for xfb
+Subject: [PATCH 288/294] pco: point size handling for xfb
 
 The point size output will get consumed and become inaccessible to xfb, so
 duplicate it into a varying (prior to clamping) if needed to ensure it will

@@ -1,8 +1,8 @@
-From 80788b9198426029eee40767713ef6a41a608f77 Mon Sep 17 00:00:00 2001
+From 39f51a18422d82c59add2a4f4f24f94d237a8c9f Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Thu, 8 Oct 2026 20:02:30 +0800
-Subject: [PATCH 36/43] imagination/pvrsrvkm: fix the winsys build against the
- current submit API
+Subject: [PATCH 036/294] imagination/pvrsrvkm: fix the winsys build against
+ the current submit API
 
 The pvrsrvkm winsys does not compile on main: the submit API moved to struct
 vk_sync_signal * (the open winsys reads signal_sync_geom->sync) but this winsys and its
@@ -28,7 +28,7 @@ project rather than a fix, so the option stays off by default.
  7 files changed, 12 insertions(+), 12 deletions(-)
 
 diff --git a/src/imagination/vulkan/winsys/pvrsrvkm/pvr_arch_srv_job_compute.c b/src/imagination/vulkan/winsys/pvrsrvkm/pvr_arch_srv_job_compute.c
-index 4c7532b..babbab2 100644
+index 4c7532b2..babbab20 100644
 --- a/src/imagination/vulkan/winsys/pvrsrvkm/pvr_arch_srv_job_compute.c
 +++ b/src/imagination/vulkan/winsys/pvrsrvkm/pvr_arch_srv_job_compute.c
 @@ -200,7 +200,7 @@ VkResult PVR_PER_ARCH(srv_winsys_compute_submit)(
@@ -41,7 +41,7 @@ index 4c7532b..babbab2 100644
     } else if (fence != -1) {
        close(fence);
 diff --git a/src/imagination/vulkan/winsys/pvrsrvkm/pvr_arch_srv_job_render.c b/src/imagination/vulkan/winsys/pvrsrvkm/pvr_arch_srv_job_render.c
-index c55cde3..e1b5dfd 100644
+index c55cde39..e1b5dfd2 100644
 --- a/src/imagination/vulkan/winsys/pvrsrvkm/pvr_arch_srv_job_render.c
 +++ b/src/imagination/vulkan/winsys/pvrsrvkm/pvr_arch_srv_job_render.c
 @@ -923,14 +923,14 @@ VkResult PVR_PER_ARCH(srv_winsys_render_submit)(
@@ -62,7 +62,7 @@ index c55cde3..e1b5dfd 100644
     } else if (fence_frag != -1) {
        close(fence_frag);
 diff --git a/src/imagination/vulkan/winsys/pvrsrvkm/pvr_arch_srv_job_transfer.c b/src/imagination/vulkan/winsys/pvrsrvkm/pvr_arch_srv_job_transfer.c
-index 8fe07e5..95c56b1 100644
+index 8fe07e5a..95c56b10 100644
 --- a/src/imagination/vulkan/winsys/pvrsrvkm/pvr_arch_srv_job_transfer.c
 +++ b/src/imagination/vulkan/winsys/pvrsrvkm/pvr_arch_srv_job_transfer.c
 @@ -229,7 +229,7 @@ VkResult PVR_PER_ARCH(srv_winsys_transfer_submit)(
@@ -75,7 +75,7 @@ index 8fe07e5..95c56b1 100644
     } else if (fence != -1) {
        close(fence);
 diff --git a/src/imagination/vulkan/winsys/pvrsrvkm/pvr_srv.c b/src/imagination/vulkan/winsys/pvrsrvkm/pvr_srv.c
-index 341f07e..a322925 100644
+index 341f07e0..a322925e 100644
 --- a/src/imagination/vulkan/winsys/pvrsrvkm/pvr_srv.c
 +++ b/src/imagination/vulkan/winsys/pvrsrvkm/pvr_srv.c
 @@ -630,20 +630,20 @@ static void pvr_srv_winsys_get_heaps_info(struct pvr_winsys *ws,
@@ -104,7 +104,7 @@ index 341f07e..a322925 100644
  PER_ARCH_FUNCS(rogue);
  
 diff --git a/src/imagination/vulkan/winsys/pvrsrvkm/pvr_srv_job_compute.h b/src/imagination/vulkan/winsys/pvrsrvkm/pvr_srv_job_compute.h
-index a5eeb04..199f530 100644
+index a5eeb04a..199f5309 100644
 --- a/src/imagination/vulkan/winsys/pvrsrvkm/pvr_srv_job_compute.h
 +++ b/src/imagination/vulkan/winsys/pvrsrvkm/pvr_srv_job_compute.h
 @@ -60,7 +60,7 @@ VkResult PVR_PER_ARCH(srv_winsys_compute_submit)(
@@ -117,7 +117,7 @@ index a5eeb04..199f530 100644
  
  #endif /* PVR_SRV_JOB_COMPUTE_H */
 diff --git a/src/imagination/vulkan/winsys/pvrsrvkm/pvr_srv_job_render.h b/src/imagination/vulkan/winsys/pvrsrvkm/pvr_srv_job_render.h
-index b6ede01..3ba3b1d 100644
+index b6ede014..3ba3b1da 100644
 --- a/src/imagination/vulkan/winsys/pvrsrvkm/pvr_srv_job_render.h
 +++ b/src/imagination/vulkan/winsys/pvrsrvkm/pvr_srv_job_render.h
 @@ -74,8 +74,8 @@ VkResult PVR_PER_ARCH(srv_winsys_render_submit)(
@@ -132,7 +132,7 @@ index b6ede01..3ba3b1d 100644
  VkResult PVR_PER_ARCH(srv_render_target_dataset_create)(
     struct pvr_winsys *ws,
 diff --git a/src/imagination/vulkan/winsys/pvrsrvkm/pvr_srv_job_transfer.h b/src/imagination/vulkan/winsys/pvrsrvkm/pvr_srv_job_transfer.h
-index 62db198..85d1f73 100644
+index 62db1981..85d1f73e 100644
 --- a/src/imagination/vulkan/winsys/pvrsrvkm/pvr_srv_job_transfer.h
 +++ b/src/imagination/vulkan/winsys/pvrsrvkm/pvr_srv_job_transfer.h
 @@ -59,7 +59,7 @@ VkResult PVR_PER_ARCH(srv_winsys_transfer_submit)(
@@ -144,3 +144,6 @@ index 62db198..85d1f73 100644
  #endif
  
  #endif /* PVR_SRV_JOB_TRANSFER_H */
+-- 
+2.47.3
+
