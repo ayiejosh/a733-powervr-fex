@@ -1,0 +1,26 @@
+From 08ef6e92db3c4eb2c329d0f6301834a65dd59870 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Tue, 27 Oct 2026 13:24:12 +0800
+Subject: [PATCH 21/24] fix(tf-port): close the pending-clear struct after
+ merging the XFB header block
+
+---
+ src/imagination/vulkan/pvr_cmd_buffer.h | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/src/imagination/vulkan/pvr_cmd_buffer.h b/src/imagination/vulkan/pvr_cmd_buffer.h
+index 7b0c76ca..c338aaef 100644
+--- a/src/imagination/vulkan/pvr_cmd_buffer.h
++++ b/src/imagination/vulkan/pvr_cmd_buffer.h
+@@ -455,6 +455,8 @@ struct pvr_pending_clear {
+    VkRect2D area;
+    /* A draw recorded since may read the image. */
+    bool read;
++};
++
+ struct pvr_xfb_binding {
+    pvr_dev_addr_t buffer_addr;
+    pvr_dev_addr_t buffer_limit;
+-- 
+2.47.3
+

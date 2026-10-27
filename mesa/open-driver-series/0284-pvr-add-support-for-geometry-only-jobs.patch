@@ -1,0 +1,372 @@
+From 7bdc22c97052b1e7d0e6080993b0e67e2183c64b Mon Sep 17 00:00:00 2001
+From: Ashish Chauhan <ashish.chauhan@imgtec.com>
+Date: Wed, 7 Oct 2026 17:57:08 +0100
+Subject: [PATCH 15/24] pvr: add support for geometry only jobs
+
+This is needed for XFB queries outside of a renderpass.
+
+Signed-off-by: Ashish Chauhan <ashish.chauhan@imgtec.com>
+Acked-by: Frank Binns <frank.binns@imgtec.com>
+Part-of: <https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/44385>
+(cherry picked from commit c4f774ec5693b9149c67d1df4451c3336f5444cc)
+---
+ src/imagination/vulkan/pvr_arch_cmd_buffer.c | 152 +++++++++++++++----
+ src/imagination/vulkan/pvr_arch_device.c     |  47 ++++++
+ src/imagination/vulkan/pvr_arch_job_render.c |   2 +-
+ src/imagination/vulkan/pvr_cmd_buffer.h      |   5 +
+ src/imagination/vulkan/pvr_device.h          |   7 +
+ 5 files changed, 182 insertions(+), 31 deletions(-)
+
+diff --git a/src/imagination/vulkan/pvr_arch_cmd_buffer.c b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
+index b60448a3..3ea140a3 100644
+--- a/src/imagination/vulkan/pvr_arch_cmd_buffer.c
++++ b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
+@@ -427,23 +427,40 @@ err_free_depth_bias_bo:
+ 
+ static VkResult
+ pvr_cmd_buffer_emit_ppp_state(const struct pvr_cmd_buffer *const cmd_buffer,
+-                              struct pvr_csb *const csb)
++                              struct pvr_csb *const csb,
++                              bool geom_only)
+ {
+-   const struct pvr_render_state *const rstate =
+-      cmd_buffer->state.render_pass_info.rstate;
++   pvr_dev_addr_t ppp_addr;
++   uint32_t ppp_size;
+ 
+    assert(csb->stream_type == PVR_CMD_STREAM_TYPE_GRAPHICS ||
+           csb->stream_type == PVR_CMD_STREAM_TYPE_GRAPHICS_DEFERRED);
+ 
++   if (geom_only) {
++      /* Geometry-only kicks have no render state, so use the PPP state built
++       * for the dummy render target.
++       */
++      const struct pvr_device *const device = cmd_buffer->device;
++
++      ppp_addr = device->dummy_rt.ppp_state_bo->dev_addr;
++      ppp_size = device->dummy_rt.ppp_state_size;
++   } else {
++      const struct pvr_render_state *const rstate =
++         cmd_buffer->state.render_pass_info.rstate;
++
++      ppp_addr = rstate->ppp_state_bo->dev_addr;
++      ppp_size = rstate->ppp_state_size;
++   }
++
+    pvr_csb_set_relocation_mark(csb);
+ 
+    pvr_csb_emit (csb, VDMCTRL_PPP_STATE0, state0) {
+-      state0.addrmsb = rstate->ppp_state_bo->dev_addr;
+-      state0.word_count = rstate->ppp_state_size;
++      state0.addrmsb = ppp_addr;
++      state0.word_count = ppp_size;
+    }
+ 
+    pvr_csb_emit (csb, VDMCTRL_PPP_STATE1, state1) {
+-      state1.addrlsb = rstate->ppp_state_bo->dev_addr;
++      state1.addrlsb = ppp_addr;
+    }
+ 
+    pvr_csb_clear_relocation_mark(csb);
+@@ -746,7 +763,7 @@ static VkResult pvr_sub_cmd_gfx_build_terminate_ctrl_stream(
+ 
+    pvr_csb_init(device, PVR_CMD_STREAM_TYPE_GRAPHICS, &csb);
+ 
+-   result = pvr_cmd_buffer_emit_ppp_state(cmd_buffer, &csb);
++   result = pvr_cmd_buffer_emit_ppp_state(cmd_buffer, &csb, false);
+    if (result != VK_SUCCESS)
+       goto err_csb_finish;
+ 
+@@ -2624,6 +2641,49 @@ err_csb_finish:
+    return result;
+ }
+ 
++/* Job setup for a geometry-only kick issued outside of a render pass, e.g. to
++ * run a transform feedback query program. There are no attachments and no
++ * fragment phase.
++ */
++static void
++pvr_sub_cmd_gfx_geom_only_job_init(struct pvr_cmd_buffer *cmd_buffer,
++                                   struct pvr_sub_cmd_gfx *sub_cmd)
++{
++   struct pvr_render_job *const job = &sub_cmd->job;
++
++   job->view_state.view_index = 0;
++   job->view_state.rt_datasets = &cmd_buffer->device->dummy_rt.rt_dataset;
++
++   job->ctrl_stream_addr = pvr_csb_get_start_address(&sub_cmd->control_stream);
++
++   if (sub_cmd->depth_bias_bo)
++      job->depth_bias_table_addr = sub_cmd->depth_bias_bo->dev_addr;
++   else
++      job->depth_bias_table_addr = PVR_DEV_ADDR_INVALID;
++
++   if (sub_cmd->scissor_bo)
++      job->scissor_table_addr = sub_cmd->scissor_bo->dev_addr;
++   else
++      job->scissor_table_addr = PVR_DEV_ADDR_INVALID;
++
++   job->has_depth_attachment = false;
++   job->has_stencil_attachment = false;
++   job->ds_clear_value = (VkClearDepthStencilValue){
++      .depth = 1.0f,
++      .stencil = 0xFFFFFFFF,
++   };
++
++   job->samples = VK_SAMPLE_COUNT_1_BIT;
++   job->max_tiles_in_flight = 0U;
++   job->frag_uses_atomic_ops = sub_cmd->frag_uses_atomic_ops;
++   job->disable_compute_overlap = false;
++   job->disable_pixel_merging = true;
++   job->max_shared_registers = cmd_buffer->state.max_shared_regs;
++
++   job->geometry_terminate = false;
++   job->run_frag = false;
++}
++
+ VkResult pvr_arch_cmd_buffer_end_sub_cmd(struct pvr_cmd_buffer *cmd_buffer)
+ {
+    struct pvr_cmd_buffer_state *state = &cmd_buffer->state;
+@@ -2694,6 +2754,8 @@ VkResult pvr_arch_cmd_buffer_end_sub_cmd(struct pvr_cmd_buffer *cmd_buffer)
+ 
+       /* TODO: Check if the sub_cmd can be skipped based on
+        * sub_cmd->gfx.empty_cmd flag and if dynamic rendering isn't enabled.
++       * NOTE: Do NOT skip geometry-only kicks (protect with
++       * !gfx_sub_cmd->geom_only) as they have XFB query side effects.
+        */
+ 
+       /* TODO: Set the state in the functions called with the command buffer
+@@ -2705,7 +2767,8 @@ VkResult pvr_arch_cmd_buffer_end_sub_cmd(struct pvr_cmd_buffer *cmd_buffer)
+          return pvr_cmd_buffer_set_error_unwarned(cmd_buffer, result);
+ 
+       result = pvr_cmd_buffer_emit_ppp_state(cmd_buffer,
+-                                             &gfx_sub_cmd->control_stream);
++                                             &gfx_sub_cmd->control_stream,
++                                             gfx_sub_cmd->geom_only);
+       if (result != VK_SUCCESS)
+          return pvr_cmd_buffer_set_error_unwarned(cmd_buffer, result);
+ 
+@@ -2723,11 +2786,15 @@ VkResult pvr_arch_cmd_buffer_end_sub_cmd(struct pvr_cmd_buffer *cmd_buffer)
+             return pvr_cmd_buffer_set_error_unwarned(cmd_buffer, result);
+       }
+ 
+-      result = pvr_sub_cmd_gfx_job_init(&device->pdevice->dev_info,
+-                                        cmd_buffer,
+-                                        gfx_sub_cmd);
+-      if (result != VK_SUCCESS)
+-         return pvr_cmd_buffer_set_error_unwarned(cmd_buffer, result);
++      if (gfx_sub_cmd->geom_only) {
++         pvr_sub_cmd_gfx_geom_only_job_init(cmd_buffer, gfx_sub_cmd);
++      } else {
++         result = pvr_sub_cmd_gfx_job_init(&device->pdevice->dev_info,
++                                           cmd_buffer,
++                                           gfx_sub_cmd);
++         if (result != VK_SUCCESS)
++            return pvr_cmd_buffer_set_error_unwarned(cmd_buffer, result);
++      }
+ 
+       if (pvr_sub_cmd_gfx_requires_split_submit(gfx_sub_cmd)) {
+          result = pvr_sub_cmd_gfx_build_terminate_ctrl_stream(device,
+@@ -2914,6 +2981,22 @@ pvr_render_pass_info_get_view_mask(const struct pvr_render_pass_info *rp_info)
+    return hw_render->view_mask;
+ }
+ 
++static inline bool
++pvr_cmd_buffer_in_render_pass(const struct pvr_cmd_buffer *const cmd_buffer)
++{
++   const struct pvr_render_pass_info *const rp_info =
++      &cmd_buffer->state.render_pass_info;
++
++   /* Secondaries that continue a render pass are inside one throughout. */
++   if (cmd_buffer->vk.level == VK_COMMAND_BUFFER_LEVEL_SECONDARY &&
++       (cmd_buffer->usage_flags &
++        VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT)) {
++      return true;
++   }
++
++   return rp_info->pass || rp_info->dynamic_render;
++}
++
+ VkResult pvr_arch_cmd_buffer_start_sub_cmd(struct pvr_cmd_buffer *cmd_buffer,
+                                            enum pvr_sub_cmd_type type)
+ {
+@@ -2975,24 +3058,33 @@ VkResult pvr_arch_cmd_buffer_start_sub_cmd(struct pvr_cmd_buffer *cmd_buffer,
+                                1);
+       sub_cmd->gfx.rstate = state->render_pass_info.rstate;
+       sub_cmd->gfx.empty_cmd = true;
+-      sub_cmd->gfx.view_mask =
+-         pvr_render_pass_info_get_view_mask(&state->render_pass_info);
+-      if (state->render_pass_info.dynamic_render) {
+-         sub_cmd->is_suspend = state->render_pass_info.suspend;
+-         sub_cmd->is_resume = state->render_pass_info.resume;
+-         sub_cmd->is_dynamic_render = true;
+-         sub_cmd->gfx.hw_render = state->render_pass_info.hw_render;
+-         sub_cmd->gfx.multiview_enabled =
+-            state->render_pass_info.hw_render->multiview_enabled;
+-         sub_cmd->gfx.hw_render_idx = 0;
+-         sub_cmd->gfx.dr_info = state->render_pass_info.dr_info;
++      sub_cmd->gfx.geom_only = !pvr_cmd_buffer_in_render_pass(cmd_buffer);
++
++      /* Check if this is a geometry-only kick (graphics sub-cmd outside render pass). */
++      if (sub_cmd->gfx.geom_only) {
++         sub_cmd->gfx.rstate = NULL;
++         sub_cmd->gfx.view_mask = 1; /* Single view for geometry-only. */
++         sub_cmd->gfx.multiview_enabled = false;
+       } else {
+-         sub_cmd->gfx.hw_render_idx =
+-            state->render_pass_info.current_hw_subpass;
+-         sub_cmd->gfx.multiview_enabled =
+-            state->render_pass_info.pass
+-               ? state->render_pass_info.pass->multiview_enabled
+-               : false;
++         sub_cmd->gfx.view_mask =
++            pvr_render_pass_info_get_view_mask(&state->render_pass_info);
++         if (state->render_pass_info.dynamic_render) {
++            sub_cmd->is_suspend = state->render_pass_info.suspend;
++            sub_cmd->is_resume = state->render_pass_info.resume;
++            sub_cmd->is_dynamic_render = true;
++            sub_cmd->gfx.hw_render = state->render_pass_info.hw_render;
++            sub_cmd->gfx.multiview_enabled =
++               state->render_pass_info.hw_render->multiview_enabled;
++            sub_cmd->gfx.hw_render_idx = 0;
++            sub_cmd->gfx.dr_info = state->render_pass_info.dr_info;
++         } else {
++            sub_cmd->gfx.hw_render_idx =
++               state->render_pass_info.current_hw_subpass;
++            sub_cmd->gfx.multiview_enabled =
++               state->render_pass_info.pass
++                  ? state->render_pass_info.pass->multiview_enabled
++                  : false;
++         }
+       }
+       sub_cmd->gfx.view_index_wanted = sub_cmd->gfx.multiview_enabled;
+ 
+diff --git a/src/imagination/vulkan/pvr_arch_device.c b/src/imagination/vulkan/pvr_arch_device.c
+index 4d0002d6..3282b462 100644
+--- a/src/imagination/vulkan/pvr_arch_device.c
++++ b/src/imagination/vulkan/pvr_arch_device.c
+@@ -750,6 +750,41 @@ static void pvr_finish_null_pages(struct pvr_device *device)
+    pvr_bo_free(device, device->null_state.zero_bo);
+ }
+ 
++static VkResult pvr_device_dummy_rt_init(struct pvr_device *device)
++{
++   VkResult result;
++
++   result = pvr_arch_render_target_dataset_create(device,
++                                                  1, /* width */
++                                                  1, /* height */
++                                                  1, /* samples */
++                                                  1, /* layers */
++                                                  &device->dummy_rt.rt_dataset);
++   if (result != VK_SUCCESS)
++      return result;
++
++   result = pvr_arch_ppp_state_create(device,
++                                      1, /* width */
++                                      1, /* height */
++                                      &device->dummy_rt.ppp_state_bo,
++                                      &device->dummy_rt.ppp_state_size);
++   if (result != VK_SUCCESS)
++      goto err_render_target_dataset_destroy;
++
++   return VK_SUCCESS;
++
++err_render_target_dataset_destroy:
++   pvr_render_target_dataset_destroy(device->dummy_rt.rt_dataset);
++
++   return result;
++}
++
++static void pvr_device_dummy_rt_finish(struct pvr_device *device)
++{
++   pvr_bo_suballoc_free(device->dummy_rt.ppp_state_bo);
++   pvr_render_target_dataset_destroy(device->dummy_rt.rt_dataset);
++}
++
+ VkResult PVR_PER_ARCH(create_device)(struct pvr_physical_device *pdevice,
+                                      const VkDeviceCreateInfo *pCreateInfo,
+                                      const VkAllocationCallbacks *pAllocator,
+@@ -915,6 +950,14 @@ VkResult PVR_PER_ARCH(create_device)(struct pvr_physical_device *pdevice,
+    if (result != VK_SUCCESS)
+       goto err_pvr_robustness_buffer_finish;
+ 
++   /* Render target state for geometry-only kicks outside a render pass. */
++   result = pvr_device_dummy_rt_init(device);
++   if (result != VK_SUCCESS)
++      goto err_pvr_border_color_table_finish;
++
++   /* Initialize GPU tracing infrastructure */
++   pvr_device_utrace_init(device);
++
+    /* FIXME: Move this to a later stage and possibly somewhere other than
+     * pvr_device. The purpose of this is so that we don't have to get the size
+     * on each kick.
+@@ -939,6 +982,9 @@ VkResult PVR_PER_ARCH(create_device)(struct pvr_physical_device *pdevice,
+ 
+    return VK_SUCCESS;
+ 
++err_pvr_border_color_table_finish:
++   pvr_arch_border_color_table_finish(device);
++
+ err_pvr_robustness_buffer_finish:
+    pvr_robustness_buffer_finish(device);
+ 
+@@ -1029,6 +1075,7 @@ void PVR_PER_ARCH(destroy_device)(struct pvr_device *device,
+    pvr_rt_dataset_cache_finish(device);
+    pvr_arch_mrt_load_op_cache_finish(device);
+    pvr_arch_spm_eot_cache_finish(device);
++   pvr_device_dummy_rt_finish(device);
+    pvr_arch_border_color_table_finish(device);
+    pvr_robustness_buffer_finish(device);
+    pvr_spm_finish_scratch_buffer_store(device);
+diff --git a/src/imagination/vulkan/pvr_arch_job_render.c b/src/imagination/vulkan/pvr_arch_job_render.c
+index efbc0dd8..ac61dcf1 100644
+--- a/src/imagination/vulkan/pvr_arch_job_render.c
++++ b/src/imagination/vulkan/pvr_arch_job_render.c
+@@ -1557,7 +1557,7 @@ VkResult pvr_arch_render_job_submit(struct pvr_render_ctx *ctx,
+          (rt_dataset->rt_data_idx + 1) % ARRAY_SIZE(rt_dataset->rt_datas);
+ 
+       rt_dataset->need_frag = false;
+-   } else {
++   } else if (rt_dataset != device->dummy_rt.rt_dataset) {
+       rt_dataset->need_frag = true;
+    }
+ 
+diff --git a/src/imagination/vulkan/pvr_cmd_buffer.h b/src/imagination/vulkan/pvr_cmd_buffer.h
+index bfe976cc..ec4f3fdf 100644
+--- a/src/imagination/vulkan/pvr_cmd_buffer.h
++++ b/src/imagination/vulkan/pvr_cmd_buffer.h
+@@ -216,6 +216,11 @@ struct pvr_sub_cmd_gfx {
+ 
+    bool has_query;
+ 
++   /* True if this is a geometry-only kick (e.g., for XFB queries outside render
++    * pass).
++    */
++   bool geom_only;
++
+    bool wait_on_previous_transfer;
+ 
+    bool has_depth_feedback;
+diff --git a/src/imagination/vulkan/pvr_device.h b/src/imagination/vulkan/pvr_device.h
+index d5f2de62..cfb5e87a 100644
+--- a/src/imagination/vulkan/pvr_device.h
++++ b/src/imagination/vulkan/pvr_device.h
+@@ -187,6 +187,13 @@ struct pvr_device {
+ 
+    struct pvr_border_color_table *border_color_table;
+ 
++   /* Render target state for geometry-only kicks outside a render pass. */
++   struct {
++      struct pvr_rt_dataset *rt_dataset;
++      struct pvr_suballoc_bo *ppp_state_bo;
++      size_t ppp_state_size;
++   } dummy_rt;
++
+    struct {
+       pdsc_program *xfb_init;
+       pdsc_program *xfb_main;
+-- 
+2.47.3
+

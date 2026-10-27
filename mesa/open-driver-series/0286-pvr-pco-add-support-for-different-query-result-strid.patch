@@ -1,0 +1,281 @@
+From 4e7c1f2924efbf1123f5754b3a6639f0a09ae8ac Mon Sep 17 00:00:00 2001
+From: Ashish Chauhan <ashish.chauhan@imgtec.com>
+Date: Fri, 11 Sep 2026 02:05:31 +0100
+Subject: [PATCH 17/24] pvr, pco: add support for different query result
+ strides and report counts
+
+This is needed for xfb queries.
+
+Co-authored-by: Simon Perretta <simon.perretta@imgtec.com>
+Signed-off-by: Ashish Chauhan <ashish.chauhan@imgtec.com>
+Acked-by: Frank Binns <frank.binns@imgtec.com>
+Part-of: <https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/44385>
+(cherry picked from commit 36a66ad14a95fb0e850ef5bd968648d97a7bc395)
+---
+ src/imagination/common/pvr_iface.h            | 12 +++++
+ src/imagination/pco/usclib/common.cl          | 54 ++++++++++++-------
+ .../vulkan/pvr_arch_query_compute.c           | 28 +++++++---
+ src/imagination/vulkan/pvr_query.c            | 19 ++++++-
+ src/imagination/vulkan/pvr_query.h            |  4 ++
+ 5 files changed, 92 insertions(+), 25 deletions(-)
+
+diff --git a/src/imagination/common/pvr_iface.h b/src/imagination/common/pvr_iface.h
+index cced6735..ce1ef4c5 100644
+--- a/src/imagination/common/pvr_iface.h
++++ b/src/imagination/common/pvr_iface.h
+@@ -42,6 +42,12 @@ enum pvr_query_copy_data {
+ 
+    PVR_QUERY_COPY_DATA_FLAGS,
+ 
++   /** Stride in bytes between elements in the result buffer. */
++   PVR_QUERY_COPY_DATA_RESULT_STRIDE,
++
++   /** Number of 32-bit reports per query result. */
++   PVR_QUERY_COPY_DATA_REPORT_COUNT,
++
+    _PVR_QUERY_COPY_DATA_COUNT,
+ };
+ 
+@@ -55,6 +61,12 @@ enum pvr_query_reset_data {
+    PVR_QUERY_RESET_DATA_AVAILABILITY_BO_LO,
+    PVR_QUERY_RESET_DATA_AVAILABILITY_BO_HI,
+ 
++   /** Stride in bytes between elements in the result buffer. */
++   PVR_QUERY_RESET_DATA_RESULT_STRIDE,
++
++   /** Number of 32-bit reports per query result. */
++   PVR_QUERY_RESET_DATA_REPORT_COUNT,
++
+    _PVR_QUERY_RESET_DATA_COUNT,
+ };
+ 
+diff --git a/src/imagination/pco/usclib/common.cl b/src/imagination/pco/usclib/common.cl
+index 344f6ae9..33173aa3 100644
+--- a/src/imagination/pco/usclib/common.cl
++++ b/src/imagination/pco/usclib/common.cl
+@@ -92,9 +92,16 @@ cs_query_copy_common(void)
+    uint result_base_addr_lo = nir_load_preamble(1, PVR_QUERY_COPY_DATA_RESULT_BO_LO, 0);
+    uint result_base_addr_hi = nir_load_preamble(1, PVR_QUERY_COPY_DATA_RESULT_BO_HI, 0);
+ 
++   uint result_stride = nir_load_preamble(1, PVR_QUERY_COPY_DATA_RESULT_STRIDE, 0);
+    uint dest_stride = nir_load_preamble(1, PVR_QUERY_COPY_DATA_DEST_STRIDE, 0);
+ 
++   uint report_count = nir_load_preamble(1, PVR_QUERY_COPY_DATA_REPORT_COUNT, 0);
++
+    uint flags = nir_load_preamble(1, PVR_QUERY_COPY_DATA_FLAGS, 0);
++   bool is_64bit = flags & VK_QUERY_RESULT_64_BIT;
++
++   uint dest_elem_stride = is_64bit ? sizeof(uint64_t) : sizeof(uint32_t);
++   uint report_stride = sizeof(uint32_t);
+ 
+    uint index = query_calc_global_id();
+ 
+@@ -102,30 +109,32 @@ cs_query_copy_common(void)
+       uint2 avail_addr = nir_uadd64_32(avail_base_addr_lo, avail_base_addr_hi, index * sizeof(uint32_t));
+       uint available = nir_dma_ld_pco(1, avail_addr);
+ 
+-      uint2 dest_addr = nir_umad64_32(dest_stride, index, dest_base_addr_lo, dest_base_addr_hi);
++      uint2 dest_base_addr = nir_umad64_32(dest_stride, index, dest_base_addr_lo, dest_base_addr_hi);
+ 
+       if (available || (flags & VK_QUERY_RESULT_PARTIAL_BIT)) {
+-         uint2 result_addr = nir_uadd64_32(result_base_addr_lo, result_base_addr_hi, index * sizeof(uint32_t));
+-         uint result = nir_dma_ld_pco(1, result_addr);
+-
+-         /* TODO: for 64/32-bit writes, just prep the 64-bit one and set the burst-length variably. */
+-         if (flags & VK_QUERY_RESULT_64_BIT) {
+-            /* TODO: check if data should be (result, 0) or (0, result) */
+-            nir_dma_st_pco(false, dest_addr, result, 0);
+-         } else {
+-            nir_dma_st_pco(false, dest_addr, result);
++         uint2 result_base_addr = nir_umad64_32(result_stride, index, result_base_addr_lo, result_base_addr_hi);
++
++         for (unsigned r = 0; r < report_count; ++r) {
++            uint2 dest_addr = nir_umad64_32(r, dest_elem_stride, dest_base_addr.x, dest_base_addr.y);
++            uint2 result_addr = nir_umad64_32(r, report_stride, result_base_addr.x, result_base_addr.y);
++            uint result = nir_dma_ld_pco(1, result_addr);
++
++            /* TODO: for 64/32-bit writes, just prep the 64-bit one and set the burst-length variably. */
++            if (is_64bit)
++               nir_dma_st_pco(false, dest_addr, result, 0);
++            else
++               nir_dma_st_pco(false, dest_addr, result);
+          }
+       }
+ 
+       if (flags & VK_QUERY_RESULT_WITH_AVAILABILITY_BIT) {
+-         if (flags & VK_QUERY_RESULT_64_BIT) {
+-            dest_addr = nir_uadd64_32(dest_addr.x, dest_addr.y, sizeof(uint64_t));
+-            /* TODO: check if data should be (available, 0) or (0, available) */
++         uint2 dest_addr = nir_umad64_32(report_count, dest_elem_stride, dest_base_addr.x, dest_base_addr.y);
++
++         /* TODO: for 64/32-bit writes, just prep the 64-bit one and set the burst-length variably. */
++         if (is_64bit)
+             nir_dma_st_pco(false, dest_addr, available, 0);
+-         } else {
+-            dest_addr = nir_uadd64_32(dest_addr.x, dest_addr.y, sizeof(uint32_t));
++         else
+             nir_dma_st_pco(false, dest_addr, available);
+-         }
+       }
+    }
+ }
+@@ -141,11 +150,20 @@ cs_query_reset_common(void)
+    uint avail_base_addr_lo = nir_load_preamble(1, PVR_QUERY_RESET_DATA_AVAILABILITY_BO_LO, 0);
+    uint avail_base_addr_hi = nir_load_preamble(1, PVR_QUERY_RESET_DATA_AVAILABILITY_BO_HI, 0);
+ 
++   uint result_stride = nir_load_preamble(1, PVR_QUERY_RESET_DATA_RESULT_STRIDE, 0);
++   uint report_count = nir_load_preamble(1, PVR_QUERY_RESET_DATA_REPORT_COUNT, 0);
++
++   uint report_stride = sizeof(uint32_t);
++
+    uint index = query_calc_global_id();
+ 
+    if (index < index_count) {
+-      uint2 result_addr = nir_uadd64_32(result_base_addr_lo, result_base_addr_hi, index * sizeof(uint32_t));
+-      nir_dma_st_pco(false, result_addr, 0);
++      uint2 result_base_addr = nir_umad64_32(result_stride, index, result_base_addr_lo, result_base_addr_hi);
++
++      for (unsigned r = 0; r < report_count; ++r) {
++         uint2 result_addr = nir_umad64_32(r, report_stride, result_base_addr.x, result_base_addr.y);
++         nir_dma_st_pco(false, result_addr, 0);
++      }
+ 
+       uint2 avail_addr = nir_uadd64_32(avail_base_addr_lo, avail_base_addr_hi, index * sizeof(uint32_t));
+       nir_dma_st_pco(false, avail_addr, 0);
+diff --git a/src/imagination/vulkan/pvr_arch_query_compute.c b/src/imagination/vulkan/pvr_arch_query_compute.c
+index d9915f04..828f34d3 100644
+--- a/src/imagination/vulkan/pvr_arch_query_compute.c
++++ b/src/imagination/vulkan/pvr_arch_query_compute.c
+@@ -500,7 +500,12 @@ VkResult pvr_arch_add_query_program(struct pvr_cmd_buffer *cmd_buffer,
+       /* Assert if no memory is bound to destination buffer. */
+       assert(buffer->dev_addr.addr);
+ 
+-      uint64_t offset =
++      const uint32_t report_count = pool->query_report_count;
++      const uint32_t result_stride = pool->result_elem_stride;
++
++      uint64_t result_offset =
++         (uint64_t)query_info->copy_query_results.first_query * result_stride;
++      uint64_t avail_offset =
+          query_info->copy_query_results.first_query * sizeof(uint32_t);
+ 
+       dev_addr = PVR_DEV_ADDR_OFFSET(buffer->dev_addr,
+@@ -508,10 +513,11 @@ VkResult pvr_arch_add_query_program(struct pvr_cmd_buffer *cmd_buffer,
+       uint64_t dest_addr = dev_addr.addr;
+ 
+       dev_addr =
+-         PVR_DEV_ADDR_OFFSET(pool->availability_buffer->dev_addr, offset);
++         PVR_DEV_ADDR_OFFSET(pool->availability_buffer->dev_addr, avail_offset);
+       uint64_t avail_addr = dev_addr.addr;
+ 
+-      dev_addr = PVR_DEV_ADDR_OFFSET(pool->result_buffer->dev_addr, offset);
++      dev_addr =
++         PVR_DEV_ADDR_OFFSET(pool->result_buffer->dev_addr, result_offset);
+       uint64_t result_addr = dev_addr.addr;
+ 
+       const_buffer[PVR_QUERY_COPY_DATA_INDEX_COUNT] = num_query_indices;
+@@ -532,6 +538,9 @@ VkResult pvr_arch_add_query_program(struct pvr_cmd_buffer *cmd_buffer,
+       const_buffer[PVR_QUERY_COPY_DATA_FLAGS] =
+          query_info->copy_query_results.flags;
+ 
++      const_buffer[PVR_QUERY_COPY_DATA_RESULT_STRIDE] = result_stride;
++      const_buffer[PVR_QUERY_COPY_DATA_REPORT_COUNT] = report_count;
++
+       break;
+    }
+ 
+@@ -540,15 +549,20 @@ VkResult pvr_arch_add_query_program(struct pvr_cmd_buffer *cmd_buffer,
+                      pool,
+                      query_info->reset_query_pool.query_pool);
+ 
+-      uint64_t offset =
++      const uint32_t report_count = pool->query_report_count;
++      const uint32_t result_stride = pool->result_elem_stride;
++
++      uint64_t result_offset =
++         (uint64_t)query_info->reset_query_pool.first_query * result_stride;
++      uint64_t avail_offset =
+          query_info->reset_query_pool.first_query * sizeof(uint32_t);
+ 
+       pvr_dev_addr_t dev_addr =
+-         PVR_DEV_ADDR_OFFSET(pool->result_buffer->dev_addr, offset);
++         PVR_DEV_ADDR_OFFSET(pool->result_buffer->dev_addr, result_offset);
+       uint64_t result_addr = dev_addr.addr;
+ 
+       dev_addr =
+-         PVR_DEV_ADDR_OFFSET(pool->availability_buffer->dev_addr, offset);
++         PVR_DEV_ADDR_OFFSET(pool->availability_buffer->dev_addr, avail_offset);
+       uint64_t avail_addr = dev_addr.addr;
+ 
+       const_buffer[PVR_QUERY_RESET_DATA_INDEX_COUNT] = num_query_indices;
+@@ -558,6 +572,8 @@ VkResult pvr_arch_add_query_program(struct pvr_cmd_buffer *cmd_buffer,
+       const_buffer[PVR_QUERY_RESET_DATA_AVAILABILITY_BO_LO] = avail_addr &
+                                                               0xffffffff;
+       const_buffer[PVR_QUERY_RESET_DATA_AVAILABILITY_BO_HI] = avail_addr >> 32;
++      const_buffer[PVR_QUERY_RESET_DATA_RESULT_STRIDE] = result_stride;
++      const_buffer[PVR_QUERY_RESET_DATA_REPORT_COUNT] = report_count;
+ 
+       break;
+    }
+diff --git a/src/imagination/vulkan/pvr_query.c b/src/imagination/vulkan/pvr_query.c
+index a188d171..669100a9 100644
+--- a/src/imagination/vulkan/pvr_query.c
++++ b/src/imagination/vulkan/pvr_query.c
+@@ -46,6 +46,19 @@
+ #include "vk_log.h"
+ #include "vk_object.h"
+ 
++static uint32_t pvr_reports_per_query(const struct pvr_query_pool *pool)
++{
++   switch (pool->query_type) {
++   case VK_QUERY_TYPE_OCCLUSION:
++      return 1u;
++
++   default:
++      break;
++   }
++
++   UNREACHABLE("Unsupported query type");
++}
++
+ static VkResult pvr_occlusion_query_pool_setup(struct pvr_device *device,
+                                                struct pvr_query_pool *pool)
+ {
+@@ -54,7 +67,9 @@ static VkResult pvr_occlusion_query_pool_setup(struct pvr_device *device,
+    uint32_t result_size;
+ 
+    /* Occlusion queries return 1 result per query. */
+-   result_size = pool->query_count * sizeof(uint32_t);
++   pool->result_elem_stride = sizeof(uint32_t);
++
++   result_size = pool->query_count * pool->result_elem_stride;
+    pool->result_stride = ALIGN_POT(result_size, ROGUE_OQUERY_ALIGN);
+ 
+    /* Each Phantom writes to a separate offset within the vis test heap so
+@@ -81,6 +96,8 @@ static VkResult pvr_query_pool_setup(struct pvr_device *device,
+     */
+    assert(!device->vk.enabled_features.pipelineStatisticsQuery);
+ 
++   pool->query_report_count = pvr_reports_per_query(pool);
++
+    switch (pool->query_type) {
+    case VK_QUERY_TYPE_OCCLUSION:
+       return pvr_occlusion_query_pool_setup(device, pool);
+diff --git a/src/imagination/vulkan/pvr_query.h b/src/imagination/vulkan/pvr_query.h
+index 179e0927..b46858e9 100644
+--- a/src/imagination/vulkan/pvr_query.h
++++ b/src/imagination/vulkan/pvr_query.h
+@@ -30,6 +30,10 @@ struct pvr_query_pool {
+ 
+    VkQueryType query_type;
+    uint32_t query_count;
++   uint32_t query_report_count;
++
++   /* Bytes between consecutive queries' results in result_buffer. */
++   uint32_t result_elem_stride;
+ 
+    struct pvr_suballoc_bo *result_buffer;
+    struct pvr_suballoc_bo *availability_buffer;
+-- 
+2.47.3
+

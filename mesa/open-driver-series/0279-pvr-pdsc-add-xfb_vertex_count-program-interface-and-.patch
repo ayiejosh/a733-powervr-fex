@@ -1,0 +1,171 @@
+From 80670b228c08f3eb578bde0d7fbd2beb75aa38e8 Mon Sep 17 00:00:00 2001
+From: Ashish Chauhan <ashish.chauhan@imgtec.com>
+Date: Fri, 11 Sep 2026 02:03:53 +0100
+Subject: [PATCH 10/24] pvr, pdsc: add xfb_vertex_count program interface and
+ wiring
+
+Signed-off-by: Ashish Chauhan <ashish.chauhan@imgtec.com>
+Acked-by: Frank Binns <frank.binns@imgtec.com>
+Part-of: <https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/44385>
+(cherry picked from commit cf7c43d4dce0c6b6307075b0fa194f61fdf0f359)
+---
+ src/imagination/common/pvr_iface.h            | 30 +++++++
+ src/imagination/pdsc/pdsc_precomp.c           |  2 +
+ .../pdsc/programs/pdsc_xfb_vertex_count.h     | 86 +++++++++++++++++++
+ 3 files changed, 118 insertions(+)
+ create mode 100644 src/imagination/pdsc/programs/pdsc_xfb_vertex_count.h
+
+diff --git a/src/imagination/common/pvr_iface.h b/src/imagination/common/pvr_iface.h
+index f542cb7b..543acfff 100644
+--- a/src/imagination/common/pvr_iface.h
++++ b/src/imagination/common/pvr_iface.h
+@@ -266,4 +266,34 @@ enum pvr_xfb_end_ref_id {
+    PVR_XFB_END_REF_ID_QUERY_RESULT_ST_SRC0,
+ };
+ 
++/* PDSC XFB vertex count patch IDs */
++enum pvr_xfb_vertex_count_patch_id {
++   /** Patch ID for vertex count negative counter offset */
++   PVR_XFB_VERTEX_COUNT_PATCH_ID_NEGATIVE_COUNTER_OFFSET,
++
++   /** Patch ID for vertex count vertex stride reciprocal */
++   PVR_XFB_VERTEX_COUNT_PATCH_ID_VERTEX_STRIDE_RECIP,
++
++   /** Patch ID for instance count */
++   PVR_XFB_VERTEX_COUNT_PATCH_ID_INSTANCE_COUNT,
++
++   /** Patch ID for first instance */
++   PVR_XFB_VERTEX_COUNT_PATCH_ID_FIRST_INSTANCE,
++
++   /** Patch ID for counter buffer load source 0 */
++   PVR_XFB_VERTEX_COUNT_PATCH_ID_COUNTER_BUFFER_LD_SRC0,
++
++   /** Patch ID for output count buffer store source 0 */
++   PVR_XFB_VERTEX_COUNT_PATCH_ID_OUTPUT_COUNT_BUFFER_ST_SRC0,
++};
++
++/* PDSC XFB vertex count reference IDs */
++enum pvr_xfb_vertex_count_ref_id {
++   /** Ref ID for counter buffer load destination */
++   PVR_XFB_VERTEX_COUNT_REF_ID_COUNTER_BUFFER_LD_DEST,
++
++   /** Ref ID for output count buffer store source 0 */
++   PVR_XFB_VERTEX_COUNT_REF_ID_OUTPUT_COUNT_BUFFER_ST_SRC0,
++};
++
+ #endif /* PVR_IFACE_H */
+diff --git a/src/imagination/pdsc/pdsc_precomp.c b/src/imagination/pdsc/pdsc_precomp.c
+index 6bf46f9f..44b59ffc 100644
+--- a/src/imagination/pdsc/pdsc_precomp.c
++++ b/src/imagination/pdsc/pdsc_precomp.c
+@@ -30,6 +30,7 @@ struct pdsc_precomp_info {
+ };
+ #include "programs/pdsc_xfb_end.h"
+ #include "programs/pdsc_xfb_init.h"
++#include "programs/pdsc_xfb_vertex_count.h"
+ 
+ #define PRECOMP(_name, _feature_variants)    \
+    {                                         \
+@@ -40,6 +41,7 @@ struct pdsc_precomp_info {
+ static const struct pdsc_precomp_info pdsc_precomp_infos[] = {
+    PRECOMP(xfb_end, 0),
+    PRECOMP(xfb_init, 0),
++   PRECOMP(xfb_vertex_count, 0),
+ };
+ #undef PRECOMP
+ 
+diff --git a/src/imagination/pdsc/programs/pdsc_xfb_vertex_count.h b/src/imagination/pdsc/programs/pdsc_xfb_vertex_count.h
+new file mode 100644
+index 00000000..010a22a3
+--- /dev/null
++++ b/src/imagination/pdsc/programs/pdsc_xfb_vertex_count.h
+@@ -0,0 +1,86 @@
++/*
++ * Copyright © 2026 Imagination Technologies Ltd.
++ *
++ * SPDX-License-Identifier: MIT
++ */
++
++#include "common/pvr_iface.h"
++#include "pdsc/pdsc.h"
++#include "pdsc/pdsc_internal.h"
++
++static inline pdsc_program *
++pdsc_xfb_vertex_count_gen(void *mem_ctx, enum pdsc_feature features)
++{
++   pdsc_program *p = pdsc_program_create(mem_ctx, features, "xfb_vertex_count");
++
++   ALLOC_CONST64(p,
++                 counter_offset,
++                 PVR_XFB_VERTEX_COUNT_PATCH_ID_NEGATIVE_COUNTER_OFFSET);
++   /* Reciprocal of vertex_stride patched as ceil(2^32 / stride) by the CPU.
++    * Used in the MAD-based multiply-high division below.
++    */
++   ALLOC_CONST32(p,
++                 vertex_stride_recip,
++                 PVR_XFB_VERTEX_COUNT_PATCH_ID_VERTEX_STRIDE_RECIP);
++   ALLOC_CONST32(p,
++                 instance_count,
++                 PVR_XFB_VERTEX_COUNT_PATCH_ID_INSTANCE_COUNT);
++   ALLOC_CONST32(p,
++                 first_instance,
++                 PVR_XFB_VERTEX_COUNT_PATCH_ID_FIRST_INSTANCE);
++
++   ALLOC_TEMP64(p, tzero);
++   pdsc_limm(p, pdsc_ref_lo32(tzero), pdsc_ref_imm(0));
++   pdsc_limm(p, pdsc_ref_hi32(tzero), pdsc_ref_imm(0));
++
++   ALLOC_TEMP64_ARRAY(p, counter_buffer_value, 1);
++   ALLOC_TEMP32_ARRAY(p, draw_params, 4);
++   ALLOC_TEMP64(p, working_temp);
++
++   pdsc_ld(p,
++           counter_buffer_value,
++           PVR_XFB_VERTEX_COUNT_REF_ID_COUNTER_BUFFER_LD_DEST,
++           PVR_XFB_VERTEX_COUNT_PATCH_ID_COUNTER_BUFFER_LD_SRC0,
++           false);
++   pdsc_wdf(p);
++
++   pdsc_cmp(p, tzero, counter_offset, .cop = PDSC_COP_NE);
++   pdsc_setc(p, PDSC_PRED_P0);
++   pdsc_add64(p,
++              counter_buffer_value,
++              counter_buffer_value,
++              counter_offset,
++              .cc = true,
++              .sna = true);
++
++   pdsc_mov32(p,
++              pdsc_ref_elem32(draw_params, 0),
++              pdsc_ref_lo32(counter_buffer_value));
++
++   /* Divide draw_params[0] (byte count) by vertex_stride using magic-number
++    * multiply: floor(n / stride) = hi32(n * ceil(2^32 / stride)).
++    * pdsc_idiv is not a real HW instruction; use MAD + hi32 instead.
++    * (same pattern as pdsc_xfb_end.h counter-stride multiplication)
++    */
++   pdsc_mad(p,
++            working_temp,
++            pdsc_ref_elem32(draw_params, 0),
++            vertex_stride_recip,
++            tzero);
++   pdsc_mov32(p, pdsc_ref_elem32(draw_params, 0), pdsc_ref_hi32(working_temp));
++
++   pdsc_mov32(p, pdsc_ref_elem32(draw_params, 1), instance_count);
++   pdsc_limm(p, pdsc_ref_elem32(draw_params, 2), pdsc_ref_imm(0));
++   pdsc_mov32(p, pdsc_ref_elem32(draw_params, 3), first_instance);
++
++   pdsc_st(p,
++           pdsc_ref_elem32(draw_params, 0),
++           PVR_XFB_VERTEX_COUNT_REF_ID_OUTPUT_COUNT_BUFFER_ST_SRC0,
++           PVR_XFB_VERTEX_COUNT_PATCH_ID_OUTPUT_COUNT_BUFFER_ST_SRC0,
++           false);
++   pdsc_wdf(p);
++
++   pdsc_halt(p);
++
++   return p;
++}
+-- 
+2.47.3
+

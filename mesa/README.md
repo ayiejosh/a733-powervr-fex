@@ -347,7 +347,7 @@ because that checkout's only remote is **upstream `gitlab.freedesktop.org/mesa/m
 | file | what it is |
 |---|---|
 | `mesa-main-open-driver-all.patch` | the whole delta as one patch, like `mesa-main-local-all.patch` |
-| `open-driver-series/` | the commits as numbered `format-patch` files, in apply order: 0001-0043 from 2026-10-09, 0044-0098 from 2026-10-11, 0099-0105 from 2026-10-14, 0106-0269 from 2026-10-27 (the native `pvr` driver work and its probe tooling) |
+| `open-driver-series/` | the commits as numbered `format-patch` files, in apply order: 0001-0043 from 2026-10-09, 0044-0098 from 2026-10-11, 0099-0105 from 2026-10-14, 0106-0269 from 2026-10-27 (the native `pvr` driver work and its probe tooling), 0270-0293 from 2026-10-27 (the VK_EXT_transform_feedback port) |
 
 **Apply with:**
 
@@ -533,3 +533,28 @@ geometry stage times out (documented, with every client-visible input compared b
 working Vulkan client). GL on this board is therefore served through zink -> the open Vulkan driver
 (glmark2-es2 543-594 at 800x600, ahead of the vendor GL score 522), while the native GL frontend remains
 the open item.
+
+
+## Added 2026-10-27: VK_EXT_transform_feedback port, patches 0270-0293
+
+The official **Mesa MR !44385 "pvr: implement VK_EXT_transform_feedback"** (Ashish Chauhan, IMG; merged into
+Mesa main 2026-10-13, 20 commits) cherry-picked onto the perf branch, plus the two upstream u_trace
+prerequisite commits the base predates, plus two integration fixes — 24 more `format-patch` files
+(`0270…0293`), and `mesa-main-open-driver-all.patch` is regenerated as the whole delta against upstream
+`9a2b374`: **293 patches, 173 files, +25491 / -928** (`git am` of all 293 onto `9a2b374` reproduces the ported
+branch tree byte-identically).
+
+Integration notes:
+- `pvr_pipeline_destroy_shader_data()` gained a `vs` argument; the perf branch's alt-fragment and
+  versioned-shader retry call sites pass `false` / `stage == MESA_SHADER_VERTEX`.
+- The MR's dummy render-target dataset is created for fragment jobs outside a render pass; with the perf
+  branch's RT-dataset cache it has to be initialized **after** `pvr_rt_dataset_cache_init()` and finished
+  **before** `pvr_rt_dataset_cache_finish()` (the first ordering crashed in `pvr_rt_dataset_cache_take`).
+
+**Validated on the board** (open `powervr` kernel driver, official IMG firmware):
+- Vulkan `vkrender 512 3`: PASS (262144/262144 pixels);
+- zink through headless weston: **`GL_VERSION: OpenGL ES 3.1 Mesa 26.3.0-devel`** (the perf branch without
+  this port is GL 2.1 / ES 2.0);
+- glmark2 800x600: **608** with the port, against 543-594 for the same branch before it — GLES 3.1 arrived
+  with no performance regression. The driver still needs `PVR_I_WANT_A_BROKEN_VULKAN_DRIVER=1` (BXM-4-64 is
+  not declared conformant), as before.

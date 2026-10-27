@@ -1,0 +1,36 @@
+From 8f505d8f297dc8e2fe48113be310f73e1461e02a Mon Sep 17 00:00:00 2001
+From: Peter Quayle <peter.quayle@imgtec.com>
+Date: Fri, 25 Sep 2026 12:37:41 +0100
+Subject: [PATCH 01/24] pvr: increase the CSB dump nesting limit
+
+pvr_dump_begin()'s max_depth sets allowed_child_depth, which pvr_dump_ctx_push()
+decrements on each nested context and errors on at zero. The stream-out sub-dump
+nests a few levels deeper than 6 allows, so the dump truncates there rather than
+printing the contents.
+
+This value is likely a little larger than strictly required, but this is fine.
+
+Signed-off-by: Peter Quayle <peter.quayle@imgtec.com>
+Reviewed-by: Frank Binns <frank.binns@imgtec.com>
+Part-of: <https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/44385>
+(cherry picked from commit 1f7358e687d18237578919beb53d63598af25ec6)
+---
+ src/imagination/vulkan/rogue/pvr_dump_csb.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/imagination/vulkan/rogue/pvr_dump_csb.c b/src/imagination/vulkan/rogue/pvr_dump_csb.c
+index 666bde89..5af896cd 100644
+--- a/src/imagination/vulkan/rogue/pvr_dump_csb.c
++++ b/src/imagination/vulkan/rogue/pvr_dump_csb.c
+@@ -2390,7 +2390,7 @@ void pvr_csb_dump(const struct pvr_csb *const csb,
+ 
+    pvr_bo_store_dump(device);
+ 
+-   pvr_dump_begin(&root_ctx, stderr, "CONTROL STREAM DUMP", 6);
++   pvr_dump_begin(&root_ctx, stderr, "CONTROL STREAM DUMP", 10);
+ 
+    pvr_dump_field_u32(&root_ctx, "Frame num", frame_num);
+    pvr_dump_field_u32(&root_ctx, "Job num", job_num);
+-- 
+2.47.3
+

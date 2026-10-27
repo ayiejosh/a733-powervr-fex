@@ -1,0 +1,36 @@
+From a76b951363859128b00de5bf492e7093477a8147 Mon Sep 17 00:00:00 2001
+From: Ashish Chauhan <ashish.chauhan@imgtec.com>
+Date: Fri, 11 Sep 2026 02:01:45 +0100
+Subject: [PATCH 06/24] pdsc: add ST serialization support
+
+Signed-off-by: Ashish Chauhan <ashish.chauhan@imgtec.com>
+Acked-by: Frank Binns <frank.binns@imgtec.com>
+Part-of: <https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/44385>
+(cherry picked from commit 619b4e1b480d9a3e3a8a715d43802157c9e5942c)
+---
+ src/imagination/pdsc/pdsc_binary.c | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/src/imagination/pdsc/pdsc_binary.c b/src/imagination/pdsc/pdsc_binary.c
+index f1a2920d..44dbf8b0 100644
+--- a/src/imagination/pdsc/pdsc_binary.c
++++ b/src/imagination/pdsc/pdsc_binary.c
+@@ -199,6 +199,7 @@ void pdsc_serialize(struct blob *blob, const pdsc_program *p)
+    blob_write_uint16(blob, p->num_doutis);
+    blob_write_uint16(blob, p->num_doutcs);
+    blob_write_uint16(blob, p->num_lds);
++   blob_write_uint16(blob, p->num_sts);
+ 
+    pdsc_serialize_names(blob, &p->const_names);
+    pdsc_serialize_names(blob, &p->temp_names);
+@@ -308,6 +309,7 @@ pdsc_program *pdsc_deserialize(void *mem_ctx, struct blob_reader *blob)
+    p->num_doutis = blob_read_uint16(blob);
+    p->num_doutcs = blob_read_uint16(blob);
+    p->num_lds = blob_read_uint16(blob);
++   p->num_sts = blob_read_uint16(blob);
+ 
+    pdsc_deserialize_names(blob, p, &p->const_names);
+    pdsc_deserialize_names(blob, p, &p->temp_names);
+-- 
+2.47.3
+

@@ -1,0 +1,533 @@
+From d70e32a765042d88a4a6f6d9d338ba00b5890ed9 Mon Sep 17 00:00:00 2001
+From: Mohammadzafar Ziya <mohammadzafar.ziya@imgtec.com>
+Date: Thu, 2 Jul 2026 19:02:30 +0530
+Subject: [PATCH 23/24] pvr: Instrument draw and transfer u_trace markers
+
+Add marker-based u_trace instrumentation for compute, draw
+and transfer commands during command buffer recording.
+
+Emit begin/end tracepoints for compute, draw operations, and
+transfer operations, and pass the command buffer object ID to
+associate trace events with individual command buffers.
+
+Draw tracepoints cover draw, draw indexed, draw indirect
+indexed, and draw indirect.
+
+Transfer tracepoints cover blit, image copy, buffer copy,
+buffer-to-image, image-to-buffer, and fill operations.
+
+Extend the marker-based u_trace infrastructure to support graphics,
+compute, and transfer workloads. Add operation annotations
+for draw and transfer workloads, allowing individual command types to be
+identified in trace output.
+
+Signed-off-by: Mohammadzafar Ziya <mohammadzafar.ziya@imgtec.com>
+Reviewed-by: Luigi Santivetti <luigi.santivetti@imgtec.com>
+Tested-by: Gyeyoung Baek <gye976@gmail.com>
+Part-of: <https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/43853>
+(cherry picked from commit 51048338d3db061641003a4b18daec821792307d)
+---
+ src/imagination/ds/pvr_driver_ds.cc          | 35 +++++++++++++++
+ src/imagination/ds/pvr_driver_ds.h           | 47 ++++++++++++++++++++
+ src/imagination/ds/pvr_tracepoints.py        | 12 +++++
+ src/imagination/vulkan/pvr_arch_cmd_buffer.c | 36 ++++++++++++---
+ src/imagination/vulkan/pvr_utrace.h          | 46 +++++++++++++++++++
+ src/imagination/vulkan/rogue/pvr_blit.c      | 44 +++++++++++++++---
+ 6 files changed, 207 insertions(+), 13 deletions(-)
+
+diff --git a/src/imagination/ds/pvr_driver_ds.cc b/src/imagination/ds/pvr_driver_ds.cc
+index 1f54c540..a88ba7da 100644
+--- a/src/imagination/ds/pvr_driver_ds.cc
++++ b/src/imagination/ds/pvr_driver_ds.cc
+@@ -67,3 +67,38 @@ static void pvr_ds_end_marker(void)
+    util_gpuvis_end();
+ #endif
+ }
++
++extern "C" {
++
++#define PVR_DS_BEGIN_MARKER_CB(name)                              \
++   void pvr_ds_begin_##name(UNUSED struct u_trace_context *utctx, \
++                            UNUSED void *cs,                      \
++                            UNUSED const char *fmt,               \
++                            ...)                                  \
++   {                                                              \
++      va_list ap;                                                 \
++      va_start(ap, fmt);                                          \
++      pvr_ds_begin_marker(fmt, ap);                               \
++      va_end(ap);                                                 \
++   }
++
++#define PVR_DS_END_MARKER_CB(name)                              \
++   void pvr_ds_end_##name(UNUSED struct u_trace_context *utctx, \
++                          UNUSED void *cs,                      \
++                          UNUSED const char *fmt,               \
++                          ...)                                  \
++   {                                                            \
++      pvr_ds_end_marker();                                      \
++   }
++
++PVR_DS_BEGIN_MARKER_CB(compute)
++PVR_DS_END_MARKER_CB(compute)
++PVR_DS_BEGIN_MARKER_CB(draw)
++PVR_DS_END_MARKER_CB(draw)
++PVR_DS_BEGIN_MARKER_CB(transfer)
++PVR_DS_END_MARKER_CB(transfer)
++
++#undef PVR_DS_BEGIN_MARKER_CB
++#undef PVR_DS_END_MARKER_CB
++
++} /* extern "C" */
+diff --git a/src/imagination/ds/pvr_driver_ds.h b/src/imagination/ds/pvr_driver_ds.h
+index e8fce372..f1d5aa06 100644
+--- a/src/imagination/ds/pvr_driver_ds.h
++++ b/src/imagination/ds/pvr_driver_ds.h
+@@ -31,6 +31,53 @@ enum pvr_ds_tracepoint_flags {
+    PVR_DS_TRACEPOINT_FLAG_REPEAT_LAST = BITFIELD_BIT(2),
+ };
+ 
++enum pvr_transfer_op {
++   PVR_TRANSFER_OP_BLIT_IMAGE,
++   PVR_TRANSFER_OP_COPY_IMAGE,
++   PVR_TRANSFER_OP_COPY_BUFFER_TO_IMAGE,
++   PVR_TRANSFER_OP_COPY_IMAGE_TO_BUFFER,
++   PVR_TRANSFER_OP_COPY_BUFFER,
++};
++
++static inline const char *pvr_transfer_op_to_str(enum pvr_transfer_op op)
++{
++   switch (op) {
++   case PVR_TRANSFER_OP_BLIT_IMAGE:
++      return "blit_image";
++   case PVR_TRANSFER_OP_COPY_IMAGE:
++      return "copy_image";
++   case PVR_TRANSFER_OP_COPY_BUFFER_TO_IMAGE:
++      return "copy_buf_to_image";
++   case PVR_TRANSFER_OP_COPY_IMAGE_TO_BUFFER:
++      return "copy_image_to_buf";
++   case PVR_TRANSFER_OP_COPY_BUFFER:
++      return "copy_buffer";
++   }
++   return "unknown";
++}
++
++enum pvr_draw_op {
++   PVR_DRAW,
++   PVR_DRAW_INDEXED,
++   PVR_DRAW_INDIRECT,
++   PVR_DRAW_INDEXED_INDIRECT,
++};
++
++static inline const char *pvr_draw_op_to_str(enum pvr_draw_op op)
++{
++   switch (op) {
++   case PVR_DRAW:
++      return "draw";
++   case PVR_DRAW_INDEXED:
++      return "draw_indexed";
++   case PVR_DRAW_INDIRECT:
++      return "draw_indirect";
++   case PVR_DRAW_INDEXED_INDIRECT:
++      return "draw_indexed_indirect";
++   }
++   return "unknown";
++}
++
+ void pvr_driver_ds_init(void);
+ 
+ struct pvr_ds_device {
+diff --git a/src/imagination/ds/pvr_tracepoints.py b/src/imagination/ds/pvr_tracepoints.py
+index 9ba2ae63..d5130c80 100644
+--- a/src/imagination/ds/pvr_tracepoints.py
++++ b/src/imagination/ds/pvr_tracepoints.py
+@@ -66,6 +66,18 @@ def define_tracepoints(args):
+                  need_cs_param=True,
+                  compute=True)
+ 
++    # Graphics (Geom/Frag) workload events
++    begin_end_tp('draw',
++                 tp_args=[obj_id_arg,
++                          Arg(type='enum pvr_draw_op', var='op', c_format='%s', to_prim_type='pvr_draw_op_to_str({})'),],
++                 need_cs_param=True)
++
++    # Transfer workload events
++    begin_end_tp('transfer',
++                 tp_args=[obj_id_arg,
++                          Arg(type='enum pvr_transfer_op', var='op', c_format='%s', to_prim_type='pvr_transfer_op_to_str({})'),],
++                 need_cs_param=True)
++
+ 
+ def generate_code(args):
+     from u_trace import utrace_generate
+diff --git a/src/imagination/vulkan/pvr_arch_cmd_buffer.c b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
+index bddc09f0..34153c59 100644
+--- a/src/imagination/vulkan/pvr_arch_cmd_buffer.c
++++ b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
+@@ -7574,6 +7574,8 @@ static void pvr_cmd_dispatch(
+    struct pvr_sub_cmd_compute *sub_cmd;
+    VkResult result;
+ 
++   PVR_TRACE_BEGIN_COMPUTE(cmd_buffer);
++
+    pvr_arch_cmd_buffer_start_sub_cmd(cmd_buffer, PVR_SUB_CMD_TYPE_COMPUTE);
+ 
+    sub_cmd = &state->current_sub_cmd->compute;
+@@ -7584,7 +7586,7 @@ static void pvr_cmd_dispatch(
+       result =
+          pvr_cmd_upload_push_consts(cmd_buffer, PVR_STAGE_ALLOCATION_COMPUTE);
+       if (result != VK_SUCCESS)
+-         return;
++         goto end_cmd_dispatch;
+ 
+       /* Regenerate the PDS program to use the new push consts buffer. */
+       state->dirty.compute_desc_dirty = true;
+@@ -7599,7 +7601,7 @@ static void pvr_cmd_dispatch(
+          NULL,
+          &state->pds_compute_descriptor_data_offset);
+       if (result != VK_SUCCESS)
+-         return;
++         goto end_cmd_dispatch;
+    }
+ 
+    pvr_compute_update_shared(cmd_buffer, sub_cmd);
+@@ -7608,6 +7610,8 @@ static void pvr_cmd_dispatch(
+                              indirect_addr,
+                              base_group,
+                              workgroup_size);
++end_cmd_dispatch:
++   PVR_TRACE_END_COMPUTE(cmd_buffer);
+ }
+ 
+ void PVR_PER_ARCH(CmdDispatchBase)(VkCommandBuffer commandBuffer,
+@@ -10186,13 +10190,15 @@ void PVR_PER_ARCH(CmdDraw)(VkCommandBuffer commandBuffer,
+ 
+    PVR_CHECK_COMMAND_BUFFER_BUILDING_STATE(cmd_buffer);
+ 
++   PVR_TRACE_BEGIN_DRAW(cmd_buffer, PVR_DRAW);
++
+    pvr_update_draw_state(state, &draw_state);
+ 
+    pvr_clear_fold_note_reads(cmd_buffer);
+ 
+    result = pvr_validate_draw_state(cmd_buffer);
+    if (result != VK_SUCCESS)
+-      return;
++      goto end_cmd_draw;
+ 
+    /* Write the VDM control stream for the primitive. */
+    pvr_emit_vdm_index_list(cmd_buffer,
+@@ -10206,6 +10212,9 @@ void PVR_PER_ARCH(CmdDraw)(VkCommandBuffer commandBuffer,
+                            0U,
+                            0U,
+                            0U);
++
++end_cmd_draw:
++   PVR_TRACE_END_DRAW(cmd_buffer);
+ }
+ 
+ void PVR_PER_ARCH(CmdDrawIndexed)(VkCommandBuffer commandBuffer,
+@@ -10229,13 +10238,15 @@ void PVR_PER_ARCH(CmdDrawIndexed)(VkCommandBuffer commandBuffer,
+ 
+    PVR_CHECK_COMMAND_BUFFER_BUILDING_STATE(cmd_buffer);
+ 
++   PVR_TRACE_BEGIN_DRAW(cmd_buffer, PVR_DRAW_INDEXED);
++
+    pvr_update_draw_state(state, &draw_state);
+ 
+    pvr_clear_fold_note_reads(cmd_buffer);
+ 
+    result = pvr_validate_draw_state(cmd_buffer);
+    if (result != VK_SUCCESS)
+-      return;
++      goto end_cmd_draw_indexed;
+ 
+    /* Write the VDM control stream for the primitive. */
+    pvr_emit_vdm_index_list(cmd_buffer,
+@@ -10249,6 +10260,9 @@ void PVR_PER_ARCH(CmdDrawIndexed)(VkCommandBuffer commandBuffer,
+                            0U,
+                            0U,
+                            0U);
++
++end_cmd_draw_indexed:
++   PVR_TRACE_END_DRAW(cmd_buffer);
+ }
+ 
+ void PVR_PER_ARCH(CmdDrawIndexedIndirect)(VkCommandBuffer commandBuffer,
+@@ -10271,13 +10285,15 @@ void PVR_PER_ARCH(CmdDrawIndexedIndirect)(VkCommandBuffer commandBuffer,
+ 
+    PVR_CHECK_COMMAND_BUFFER_BUILDING_STATE(cmd_buffer);
+ 
++   PVR_TRACE_BEGIN_DRAW(cmd_buffer, PVR_DRAW_INDEXED_INDIRECT);
++
+    pvr_update_draw_state(state, &draw_state);
+ 
+    pvr_clear_fold_note_reads(cmd_buffer);
+ 
+    result = pvr_validate_draw_state(cmd_buffer);
+    if (result != VK_SUCCESS)
+-      return;
++      goto end_cmd_draw_indexed_indirect;
+ 
+    /* Write the VDM control stream for the primitive. */
+    pvr_emit_vdm_index_list(cmd_buffer,
+@@ -10291,6 +10307,9 @@ void PVR_PER_ARCH(CmdDrawIndexedIndirect)(VkCommandBuffer commandBuffer,
+                            offset,
+                            drawCount,
+                            stride);
++
++end_cmd_draw_indexed_indirect:
++   PVR_TRACE_END_DRAW(cmd_buffer);
+ }
+ 
+ void PVR_PER_ARCH(CmdDrawIndirect)(VkCommandBuffer commandBuffer,
+@@ -10312,13 +10331,15 @@ void PVR_PER_ARCH(CmdDrawIndirect)(VkCommandBuffer commandBuffer,
+ 
+    PVR_CHECK_COMMAND_BUFFER_BUILDING_STATE(cmd_buffer);
+ 
++   PVR_TRACE_BEGIN_DRAW(cmd_buffer, PVR_DRAW_INDIRECT);
++
+    pvr_update_draw_state(state, &draw_state);
+ 
+    pvr_clear_fold_note_reads(cmd_buffer);
+ 
+    result = pvr_validate_draw_state(cmd_buffer);
+    if (result != VK_SUCCESS)
+-      return;
++      goto end_cmd_draw_indirect;
+ 
+    /* Write the VDM control stream for the primitive. */
+    pvr_emit_vdm_index_list(cmd_buffer,
+@@ -10332,6 +10353,9 @@ void PVR_PER_ARCH(CmdDrawIndirect)(VkCommandBuffer commandBuffer,
+                            offset,
+                            drawCount,
+                            stride);
++
++end_cmd_draw_indirect:
++   PVR_TRACE_END_DRAW(cmd_buffer);
+ }
+ 
+ static VkResult
+diff --git a/src/imagination/vulkan/pvr_utrace.h b/src/imagination/vulkan/pvr_utrace.h
+index fc477a51..6ebb9038 100644
+--- a/src/imagination/vulkan/pvr_utrace.h
++++ b/src/imagination/vulkan/pvr_utrace.h
+@@ -33,6 +33,52 @@ void pvr_cmd_buffer_utrace_init(struct pvr_cmd_buffer *cmd_buffer);
+ /* Cleanup command buffer trace */
+ void pvr_cmd_buffer_utrace_fini(struct pvr_cmd_buffer *cmd_buffer);
+ 
++#define PVR_TRACE_ENABLED(_cmd_buffer) ((_cmd_buffer)->trace.utctx)
++
++#define PVR_TRACE_BEGIN_COMPUTE(_cmd_buffer)                            \
++   do {                                                                 \
++      if (PVR_TRACE_ENABLED(_cmd_buffer))                               \
++         trace_pvr_begin_compute(&(_cmd_buffer)->trace,                 \
++                                 NULL,                                  \
++                                 (uintptr_t) & (_cmd_buffer)->vk.base); \
++   } while (0)
++
++#define PVR_TRACE_END_COMPUTE(_cmd_buffer)                   \
++   do {                                                      \
++      if (PVR_TRACE_ENABLED(_cmd_buffer))                    \
++         trace_pvr_end_compute(&(_cmd_buffer)->trace, NULL); \
++   } while (0)
++
++#define PVR_TRACE_BEGIN_DRAW(_cmd_buffer, _op)                      \
++   do {                                                             \
++      if (PVR_TRACE_ENABLED(_cmd_buffer))                           \
++         trace_pvr_begin_draw(&(_cmd_buffer)->trace,                \
++                              NULL,                                 \
++                              (uintptr_t) & (_cmd_buffer)->vk.base, \
++                              (_op));                               \
++   } while (0)
++
++#define PVR_TRACE_END_DRAW(_cmd_buffer)                   \
++   do {                                                   \
++      if (PVR_TRACE_ENABLED(_cmd_buffer))                 \
++         trace_pvr_end_draw(&(_cmd_buffer)->trace, NULL); \
++   } while (0)
++
++#define PVR_TRACE_BEGIN_TRANSFER(_cmd_buffer, _op)                      \
++   do {                                                                 \
++      if (PVR_TRACE_ENABLED(_cmd_buffer))                               \
++         trace_pvr_begin_transfer(&(_cmd_buffer)->trace,                \
++                                  NULL,                                 \
++                                  (uintptr_t) & (_cmd_buffer)->vk.base, \
++                                  (_op));                               \
++   } while (0)
++
++#define PVR_TRACE_END_TRANSFER(_cmd_buffer)                   \
++   do {                                                       \
++      if (PVR_TRACE_ENABLED(_cmd_buffer))                     \
++         trace_pvr_end_transfer(&(_cmd_buffer)->trace, NULL); \
++   } while (0)
++
+ #ifdef __cplusplus
+ }
+ #endif
+diff --git a/src/imagination/vulkan/rogue/pvr_blit.c b/src/imagination/vulkan/rogue/pvr_blit.c
+index 61d0a789..164c1ebe 100644
+--- a/src/imagination/vulkan/rogue/pvr_blit.c
++++ b/src/imagination/vulkan/rogue/pvr_blit.c
+@@ -42,6 +42,7 @@
+ #include "pvr_physical_device.h"
+ #include "pvr_types.h"
+ #include "pvr_usc.h"
++#include "pvr_utrace.h"
+ #include "util/bitscan.h"
+ #include "util/list.h"
+ #include "util/macros.h"
+@@ -262,6 +263,8 @@ void pvr_rogue_CmdBlitImage2(VkCommandBuffer commandBuffer,
+ 
+    PVR_CHECK_COMMAND_BUFFER_BUILDING_STATE(cmd_buffer);
+ 
++   PVR_TRACE_BEGIN_TRANSFER(cmd_buffer, PVR_TRANSFER_OP_BLIT_IMAGE);
++
+    if (pBlitImageInfo->filter == VK_FILTER_LINEAR)
+       filter = PVR_FILTER_LINEAR;
+ 
+@@ -432,7 +435,7 @@ void pvr_rogue_CmdBlitImage2(VkCommandBuffer commandBuffer,
+             /* TODO: See if we can allocate all the transfer cmds in one go. */
+             transfer_cmd = pvr_transfer_cmd_alloc(cmd_buffer);
+             if (!transfer_cmd)
+-               return;
++               goto end_cmd_blit_image2;
+ 
+             transfer_cmd->sources[0].mappings[0].src_rect = src_rect;
+             transfer_cmd->sources[0].mappings[0].dst_rect = dst_rect;
+@@ -451,7 +454,7 @@ void pvr_rogue_CmdBlitImage2(VkCommandBuffer commandBuffer,
+                pvr_arch_cmd_buffer_add_transfer_cmd(cmd_buffer, transfer_cmd);
+             if (result != VK_SUCCESS) {
+                vk_free(&cmd_buffer->vk.pool->alloc, transfer_cmd);
+-               return;
++               goto end_cmd_blit_image2;
+             }
+ 
+             if (src_surface.mem_layout == PVR_MEMLAYOUT_3DTWIDDLED) {
+@@ -468,6 +471,9 @@ void pvr_rogue_CmdBlitImage2(VkCommandBuffer commandBuffer,
+          }
+       }
+    }
++
++end_cmd_blit_image2:
++   PVR_TRACE_END_TRANSFER(cmd_buffer);
+ }
+ 
+ static VkFormat pvr_get_copy_format(VkFormat format,
+@@ -834,6 +840,8 @@ void pvr_rogue_CmdCopyImage2(VkCommandBuffer commandBuffer,
+ 
+    PVR_CHECK_COMMAND_BUFFER_BUILDING_STATE(cmd_buffer);
+ 
++   PVR_TRACE_BEGIN_TRANSFER(cmd_buffer, PVR_TRANSFER_OP_COPY_IMAGE);
++
+    for (uint32_t i = 0U; i < pCopyImageInfo->regionCount; i++) {
+       VkResult result;
+ 
+@@ -867,7 +875,7 @@ void pvr_rogue_CmdCopyImage2(VkCommandBuffer commandBuffer,
+                                                             dst,
+                                                             &region);
+             if (result != VK_SUCCESS)
+-               return;
++               goto end_cmd_copy_image2;
+ 
+             /* Skip the next region as it has been processed with the last
+              * region.
+@@ -884,8 +892,11 @@ void pvr_rogue_CmdCopyImage2(VkCommandBuffer commandBuffer,
+                                                 dst,
+                                                 &pCopyImageInfo->pRegions[i]);
+       if (result != VK_SUCCESS)
+-         return;
++         goto end_cmd_copy_image2;
+    }
++
++end_cmd_copy_image2:
++   PVR_TRACE_END_TRANSFER(cmd_buffer);
+ }
+ 
+ VkResult
+@@ -1047,6 +1058,8 @@ void pvr_rogue_CmdCopyBufferToImage2(
+ 
+    PVR_CHECK_COMMAND_BUFFER_BUILDING_STATE(cmd_buffer);
+ 
++   PVR_TRACE_BEGIN_TRANSFER(cmd_buffer, PVR_TRANSFER_OP_COPY_BUFFER_TO_IMAGE);
++
+    for (uint32_t i = 0; i < pCopyBufferToImageInfo->regionCount; i++) {
+       const VkResult result =
+          pvr_copy_buffer_to_image_region(cmd_buffer,
+@@ -1054,8 +1067,11 @@ void pvr_rogue_CmdCopyBufferToImage2(
+                                          dst,
+                                          &pCopyBufferToImageInfo->pRegions[i]);
+       if (result != VK_SUCCESS)
+-         return;
++         goto end_cmd_copy_buffer_to_image2;
+    }
++
++end_cmd_copy_buffer_to_image2:
++   PVR_TRACE_END_TRANSFER(cmd_buffer);
+ }
+ 
+ VkResult
+@@ -1249,6 +1265,8 @@ void pvr_rogue_CmdCopyImageToBuffer2(
+ 
+    PVR_CHECK_COMMAND_BUFFER_BUILDING_STATE(cmd_buffer);
+ 
++   PVR_TRACE_BEGIN_TRANSFER(cmd_buffer, PVR_TRANSFER_OP_COPY_IMAGE_TO_BUFFER);
++
+    for (uint32_t i = 0U; i < pCopyImageToBufferInfo->regionCount; i++) {
+       const VkBufferImageCopy2 *region = &pCopyImageToBufferInfo->pRegions[i];
+ 
+@@ -1257,8 +1275,11 @@ void pvr_rogue_CmdCopyImageToBuffer2(
+                                                               dst->dev_addr,
+                                                               region);
+       if (result != VK_SUCCESS)
+-         return;
++         goto end_cmd_copy_image_to_buffer2;
+    }
++
++end_cmd_copy_image_to_buffer2:
++   PVR_TRACE_END_TRANSFER(cmd_buffer);
+ }
+ 
+ static void pvr_calc_mip_level_extents(const struct pvr_image *image,
+@@ -1740,6 +1761,8 @@ void pvr_rogue_CmdCopyBuffer2(VkCommandBuffer commandBuffer,
+ 
+    PVR_CHECK_COMMAND_BUFFER_BUILDING_STATE(cmd_buffer);
+ 
++   PVR_TRACE_BEGIN_TRANSFER(cmd_buffer, PVR_TRANSFER_OP_COPY_BUFFER);
++
+    for (uint32_t i = 0; i < pCopyBufferInfo->regionCount; i++) {
+       const VkResult result =
+          pvr_cmd_copy_buffer_region(cmd_buffer,
+@@ -1751,8 +1774,11 @@ void pvr_rogue_CmdCopyBuffer2(VkCommandBuffer commandBuffer,
+                                     0U,
+                                     false);
+       if (result != VK_SUCCESS)
+-         return;
++         goto end_cmd_copy_buffer2;
+    }
++
++end_cmd_copy_buffer2:
++   PVR_TRACE_END_TRANSFER(cmd_buffer);
+ }
+ 
+ void pvr_rogue_CmdFillBuffer(VkCommandBuffer commandBuffer,
+@@ -1766,6 +1792,8 @@ void pvr_rogue_CmdFillBuffer(VkCommandBuffer commandBuffer,
+ 
+    PVR_CHECK_COMMAND_BUFFER_BUILDING_STATE(cmd_buffer);
+ 
++   PVR_TRACE_BEGIN_TRANSFER(cmd_buffer, PVR_TRANSFER_OP_COPY_BUFFER);
++
+    fillSize = vk_buffer_range(&dst->vk, dstOffset, fillSize);
+ 
+    /* From the Vulkan spec:
+@@ -1786,6 +1814,8 @@ void pvr_rogue_CmdFillBuffer(VkCommandBuffer commandBuffer,
+                               fillSize,
+                               data,
+                               true);
++
++   PVR_TRACE_END_TRANSFER(cmd_buffer);
+ }
+ 
+ /**
+-- 
+2.47.3
+

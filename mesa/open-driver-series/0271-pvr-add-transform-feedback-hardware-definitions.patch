@@ -1,0 +1,294 @@
+From d54c8fddcecfbd2f5c5b7f1ccc32756d459322b2 Mon Sep 17 00:00:00 2001
+From: Ashish Chauhan <ashish.chauhan@imgtec.com>
+Date: Thu, 10 Sep 2026 23:34:13 +0100
+Subject: [PATCH 02/24] pvr: add transform feedback hardware definitions
+
+Signed-off-by: Ashish Chauhan <ashish.chauhan@imgtec.com>
+Reviewed-by: Frank Binns <frank.binns@imgtec.com>
+Part-of: <https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/44385>
+(cherry picked from commit 4878eaca80276021f654381e8a7831ac3e631259)
+---
+ src/imagination/common/device_info/axe-1-16m.h | 2 ++
+ src/imagination/common/device_info/bxe-2-32.h  | 2 ++
+ src/imagination/common/device_info/bxe-4-32.h  | 2 ++
+ src/imagination/common/device_info/bxm-4-64.h  | 4 ++++
+ src/imagination/common/device_info/bxs-4-64.h  | 2 ++
+ src/imagination/common/device_info/g6110.h     | 2 ++
+ src/imagination/common/device_info/ge7800.h    | 2 ++
+ src/imagination/common/device_info/ge8300.h    | 4 ++++
+ src/imagination/common/device_info/gx6250.h    | 4 ++++
+ src/imagination/common/device_info/gx6650.h    | 2 ++
+ src/imagination/common/pvr_device_info.h       | 2 ++
+ 11 files changed, 28 insertions(+)
+
+diff --git a/src/imagination/common/device_info/axe-1-16m.h b/src/imagination/common/device_info/axe-1-16m.h
+index d54a8820..ce40ab2d 100644
+--- a/src/imagination/common/device_info/axe-1-16m.h
++++ b/src/imagination/common/device_info/axe-1-16m.h
+@@ -61,6 +61,7 @@ static const struct pvr_device_features pvr_device_features_33_V_11_3 = {
+    .has_tpu_extended_integer_lookup = true,
+    .has_tpu_image_state_v2 = true,
+    .has_tpu_parallel_instances = true,
++   .has_transform_feedback_query_bits = true,
+    .has_unified_store_depth = true,
+    .has_usc_f16sop_u8 = true,
+    .has_usc_itr_parallel_instances = true,
+@@ -87,6 +88,7 @@ static const struct pvr_device_features pvr_device_features_33_V_11_3 = {
+    .tile_size_x = 16U,
+    .tile_size_y = 16U,
+    .tpu_parallel_instances = 1U,
++   .transform_feedback_query_bits = 32U,
+    .unified_store_depth = 64U,
+    .usc_itr_parallel_instances = 4U,
+    .usc_min_output_registers_per_pix = 1U,
+diff --git a/src/imagination/common/device_info/bxe-2-32.h b/src/imagination/common/device_info/bxe-2-32.h
+index 59b5e1b9..bc1441b9 100644
+--- a/src/imagination/common/device_info/bxe-2-32.h
++++ b/src/imagination/common/device_info/bxe-2-32.h
+@@ -50,6 +50,7 @@ static const struct pvr_device_features pvr_device_features_36_V_52_182 = {
+    .has_tpu_extended_integer_lookup = true,
+    .has_tpu_image_state_v2 = true,
+    .has_tpu_parallel_instances = true,
++   .has_transform_feedback_query_bits = true,
+    .has_unified_store_depth = true,
+    .has_usc_alu_roundingmode_rne = true,
+    .has_usc_f16sop_u8 = true,
+@@ -81,6 +82,7 @@ static const struct pvr_device_features pvr_device_features_36_V_52_182 = {
+    .tile_size_x = 16U,
+    .tile_size_y = 16U,
+    .tpu_parallel_instances = 2U,
++   .transform_feedback_query_bits = 32U,
+    .unified_store_depth = 128U,
+    .usc_itr_parallel_instances = 8U,
+    .usc_min_output_registers_per_pix = 2U,
+diff --git a/src/imagination/common/device_info/bxe-4-32.h b/src/imagination/common/device_info/bxe-4-32.h
+index 318b7967..1a3e038f 100644
+--- a/src/imagination/common/device_info/bxe-4-32.h
++++ b/src/imagination/common/device_info/bxe-4-32.h
+@@ -51,6 +51,7 @@ static const struct pvr_device_features pvr_device_features_36_V_54_182 = {
+    .has_tpu_extended_integer_lookup = true,
+    .has_tpu_image_state_v2 = true,
+    .has_tpu_parallel_instances = true,
++   .has_transform_feedback_query_bits = true,
+    .has_unified_store_depth = true,
+    .has_usc_alu_roundingmode_rne = true,
+    .has_usc_itrsmp = true,
+@@ -81,6 +82,7 @@ static const struct pvr_device_features pvr_device_features_36_V_54_182 = {
+    .tile_size_x = 16U,
+    .tile_size_y = 16U,
+    .tpu_parallel_instances = 4U,
++   .transform_feedback_query_bits = 32U,
+    .unified_store_depth = 208U,
+    .usc_itr_parallel_instances = 16U,
+    .usc_min_output_registers_per_pix = 2U,
+diff --git a/src/imagination/common/device_info/bxm-4-64.h b/src/imagination/common/device_info/bxm-4-64.h
+index ff990880..4dac6dbc 100644
+--- a/src/imagination/common/device_info/bxm-4-64.h
++++ b/src/imagination/common/device_info/bxm-4-64.h
+@@ -51,6 +51,7 @@ static const struct pvr_device_features pvr_device_features_36_V_104_182 = {
+    .has_tpu_extended_integer_lookup = true,
+    .has_tpu_image_state_v2 = true,
+    .has_tpu_parallel_instances = true,
++   .has_transform_feedback_query_bits = true,
+    .has_unified_store_depth = true,
+    .has_usc_alu_roundingmode_rne = true,
+    .has_usc_f16sop_u8 = true,
+@@ -81,6 +82,7 @@ static const struct pvr_device_features pvr_device_features_36_V_104_182 = {
+    .tile_size_x = 16U,
+    .tile_size_y = 16U,
+    .tpu_parallel_instances = 4U,
++   .transform_feedback_query_bits = 32U,
+    .unified_store_depth = 256U,
+    .usc_itr_parallel_instances = 16U,
+    .usc_min_output_registers_per_pix = 2U,
+@@ -164,6 +166,7 @@ static const struct pvr_device_features pvr_device_features_36_V_104_183 = {
+    .has_tpu_extended_integer_lookup = true,
+    .has_tpu_image_state_v2 = true,
+    .has_tpu_parallel_instances = true,
++   .has_transform_feedback_query_bits = true,
+    .has_unified_store_depth = true,
+    .has_usc_alu_roundingmode_rne = true,
+    .has_usc_f16sop_u8 = true,
+@@ -194,6 +197,7 @@ static const struct pvr_device_features pvr_device_features_36_V_104_183 = {
+    .tile_size_x = 16U,
+    .tile_size_y = 16U,
+    .tpu_parallel_instances = 4U,
++   .transform_feedback_query_bits = 32U,
+    .unified_store_depth = 256U,
+    .usc_itr_parallel_instances = 16U,
+    .usc_min_output_registers_per_pix = 2U,
+diff --git a/src/imagination/common/device_info/bxs-4-64.h b/src/imagination/common/device_info/bxs-4-64.h
+index fa60bbb0..b2f5de57 100644
+--- a/src/imagination/common/device_info/bxs-4-64.h
++++ b/src/imagination/common/device_info/bxs-4-64.h
+@@ -68,6 +68,7 @@ static const struct pvr_device_features pvr_device_features_36_V_104_796 = {
+    .has_tpu_extended_integer_lookup = true,
+    .has_tpu_image_state_v2 = true,
+    .has_tpu_parallel_instances = true,
++   .has_transform_feedback_query_bits = true,
+    .has_unified_store_depth = true,
+    .has_usc_alu_roundingmode_rne = true,
+    .has_usc_f16sop_u8 = true,
+@@ -99,6 +100,7 @@ static const struct pvr_device_features pvr_device_features_36_V_104_796 = {
+    .tile_size_x = 16U,
+    .tile_size_y = 16U,
+    .tpu_parallel_instances = 4U,
++   .transform_feedback_query_bits = 32U,
+    .unified_store_depth = 256U,
+    .usc_itr_parallel_instances = 16U,
+    .usc_min_output_registers_per_pix = 2U,
+diff --git a/src/imagination/common/device_info/g6110.h b/src/imagination/common/device_info/g6110.h
+index ca1b0f23..4af1bafa 100644
+--- a/src/imagination/common/device_info/g6110.h
++++ b/src/imagination/common/device_info/g6110.h
+@@ -34,6 +34,7 @@ static const struct pvr_device_features pvr_device_features_5_V_1_46 = {
+    .has_tile_size_x = true,
+    .has_tile_size_y = true,
+    .has_tpu_parallel_instances = true,
++   .has_transform_feedback_query_bits = true,
+    .has_unified_store_depth = true,
+    .has_usc_itr_parallel_instances = true,
+    .has_usc_min_output_registers_per_pix = true,
+@@ -57,6 +58,7 @@ static const struct pvr_device_features pvr_device_features_5_V_1_46 = {
+    .tile_size_x = 32U,
+    .tile_size_y = 32U,
+    .tpu_parallel_instances = 4U,
++   .transform_feedback_query_bits = 32U,
+    .unified_store_depth = 208U,
+    .usc_itr_parallel_instances = 16U,
+    .usc_min_output_registers_per_pix = 2U,
+diff --git a/src/imagination/common/device_info/ge7800.h b/src/imagination/common/device_info/ge7800.h
+index 53faaea5..65a35108 100644
+--- a/src/imagination/common/device_info/ge7800.h
++++ b/src/imagination/common/device_info/ge7800.h
+@@ -35,6 +35,7 @@ static const struct pvr_device_features pvr_device_features_15_V_1_64 = {
+       .has_tile_size_x = true,
+       .has_tile_size_y = true,
+       .has_tpu_parallel_instances = true,
++      .has_transform_feedback_query_bits = true,
+       .has_unified_store_depth = true,
+       .has_usc_f16sop_u8 = true,
+       .has_usc_itr_parallel_instances = true,
+@@ -59,6 +60,7 @@ static const struct pvr_device_features pvr_device_features_15_V_1_64 = {
+       .tile_size_x = 32U,
+       .tile_size_y = 32U,
+       .tpu_parallel_instances = 4U,
++      .transform_feedback_query_bits = 32U,
+       .unified_store_depth = 208U,
+       .usc_itr_parallel_instances = 16U,
+       .usc_min_output_registers_per_pix = 2U,
+diff --git a/src/imagination/common/device_info/ge8300.h b/src/imagination/common/device_info/ge8300.h
+index e3fccb3f..d620ee62 100644
+--- a/src/imagination/common/device_info/ge8300.h
++++ b/src/imagination/common/device_info/ge8300.h
+@@ -42,6 +42,7 @@ static const struct pvr_device_features pvr_device_features_22_V_54_30 = {
+    .has_tile_size_x = true,
+    .has_tile_size_y = true,
+    .has_tpu_parallel_instances = true,
++   .has_transform_feedback_query_bits = true,
+    .has_unified_store_depth = true,
+    .has_usc_f16sop_u8 = true,
+    .has_usc_itrsmp = true,
+@@ -68,6 +69,7 @@ static const struct pvr_device_features pvr_device_features_22_V_54_30 = {
+    .tile_size_x = 16U,
+    .tile_size_y = 16U,
+    .tpu_parallel_instances = 4U,
++   .transform_feedback_query_bits = 32U,
+    .unified_store_depth = 208U,
+    .usc_itr_parallel_instances = 16U,
+    .usc_min_output_registers_per_pix = 2U,
+@@ -165,6 +167,7 @@ static const struct pvr_device_features pvr_device_features_22_V_54_38 = {
+    .has_tile_size_x = true,
+    .has_tile_size_y = true,
+    .has_tpu_parallel_instances = true,
++   .has_transform_feedback_query_bits = true,
+    .has_unified_store_depth = true,
+    .has_usc_f16sop_u8 = true,
+    .has_usc_itrsmp = true,
+@@ -191,6 +194,7 @@ static const struct pvr_device_features pvr_device_features_22_V_54_38 = {
+    .tile_size_x = 16U,
+    .tile_size_y = 16U,
+    .tpu_parallel_instances = 4U,
++   .transform_feedback_query_bits = 32U,
+    .unified_store_depth = 208U,
+    .usc_itr_parallel_instances = 16U,
+    .usc_min_output_registers_per_pix = 2U,
+diff --git a/src/imagination/common/device_info/gx6250.h b/src/imagination/common/device_info/gx6250.h
+index c6d50d5d..d4ad50df 100644
+--- a/src/imagination/common/device_info/gx6250.h
++++ b/src/imagination/common/device_info/gx6250.h
+@@ -61,6 +61,7 @@ static const struct pvr_device_features pvr_device_features_4_V_2_51 = {
+    .has_tpu_extended_integer_lookup = true,
+    .has_tpu_image_state_v2 = true,
+    .has_tpu_parallel_instances = true,
++   .has_transform_feedback_query_bits = true,
+    .has_unified_store_depth = true,
+    .has_usc_f16sop_u8 = true,
+    .has_usc_itrsmp = true,
+@@ -88,6 +89,7 @@ static const struct pvr_device_features pvr_device_features_4_V_2_51 = {
+    .tile_size_x = 32U,
+    .tile_size_y = 32U,
+    .tpu_parallel_instances = 4U,
++   .transform_feedback_query_bits = 32U,
+    .unified_store_depth = 256U,
+    .usc_itr_parallel_instances = 8U,
+    .usc_min_output_registers_per_pix = 2U,
+@@ -173,6 +175,7 @@ static const struct pvr_device_features pvr_device_features_4_V_2_58 = {
+    .has_tpu_extended_integer_lookup = true,
+    .has_tpu_image_state_v2 = true,
+    .has_tpu_parallel_instances = true,
++   .has_transform_feedback_query_bits = true,
+    .has_unified_store_depth = true,
+    .has_usc_f16sop_u8 = true,
+    .has_usc_itrsmp = true,
+@@ -200,6 +203,7 @@ static const struct pvr_device_features pvr_device_features_4_V_2_58 = {
+    .tile_size_x = 32U,
+    .tile_size_y = 32U,
+    .tpu_parallel_instances = 4U,
++   .transform_feedback_query_bits = 32U,
+    .unified_store_depth = 256U,
+    .usc_itr_parallel_instances = 8U,
+    .usc_min_output_registers_per_pix = 2U,
+diff --git a/src/imagination/common/device_info/gx6650.h b/src/imagination/common/device_info/gx6650.h
+index dcb796a6..6f77d2a4 100644
+--- a/src/imagination/common/device_info/gx6650.h
++++ b/src/imagination/common/device_info/gx6650.h
+@@ -44,6 +44,7 @@ static const struct pvr_device_features pvr_device_features_4_V_6_62 = {
+    .has_tpu_extended_integer_lookup = true,
+    .has_tpu_image_state_v2 = true,
+    .has_tpu_parallel_instances = true,
++   .has_transform_feedback_query_bits = true,
+    .has_unified_store_depth = true,
+    .has_usc_f16sop_u8 = true,
+    .has_usc_itrsmp = true,
+@@ -71,6 +72,7 @@ static const struct pvr_device_features pvr_device_features_4_V_6_62 = {
+    .tile_size_x = 32U,
+    .tile_size_y = 32U,
+    .tpu_parallel_instances = 4U,
++   .transform_feedback_query_bits = 32U,
+    .unified_store_depth = 256U,
+    .usc_itr_parallel_instances = 8U,
+    .usc_min_output_registers_per_pix = 2U,
+diff --git a/src/imagination/common/pvr_device_info.h b/src/imagination/common/pvr_device_info.h
+index b50c36d7..b593425d 100644
+--- a/src/imagination/common/pvr_device_info.h
++++ b/src/imagination/common/pvr_device_info.h
+@@ -299,6 +299,7 @@ struct pvr_device_features {
+    bool has_tpu_extended_integer_lookup : 1;
+    bool has_tpu_image_state_v2 : 1;
+    bool has_tpu_parallel_instances : 1;
++   bool has_transform_feedback_query_bits : 1;
+    bool has_unified_store_depth : 1;
+    bool has_usc_alu_roundingmode_rne : 1;
+    bool has_usc_f16sop_u8 : 1;
+@@ -332,6 +333,7 @@ struct pvr_device_features {
+    uint32_t tile_size_x;
+    uint32_t tile_size_y;
+    uint32_t tpu_parallel_instances;
++   uint32_t transform_feedback_query_bits;
+    uint32_t unified_store_depth;
+    uint32_t usc_itr_parallel_instances;
+    uint32_t usc_min_output_registers_per_pix;
+-- 
+2.47.3
+

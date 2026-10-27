@@ -1,0 +1,652 @@
+From 28081a6c00b7507f3876df6a5e7ccd2b207ed461 Mon Sep 17 00:00:00 2001
+From: Ashish Chauhan <ashish.chauhan@imgtec.com>
+Date: Tue, 29 Sep 2026 14:55:44 +0100
+Subject: [PATCH 18/24] pvr: add transform feedback stream query support
+
+Signed-off-by: Ashish Chauhan <ashish.chauhan@imgtec.com>
+Acked-by: Frank Binns <frank.binns@imgtec.com>
+Part-of: <https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/44385>
+(cherry picked from commit ca28e1b9936a3091ee6cea1465e2b341671acfe1)
+---
+ src/imagination/vulkan/pvr_arch_cmd_buffer.c |   6 +-
+ src/imagination/vulkan/pvr_arch_cmd_query.c  |  11 +
+ src/imagination/vulkan/pvr_arch_xfb.c        | 294 +++++++++++++++++++
+ src/imagination/vulkan/pvr_cmd_buffer.h      |   5 +
+ src/imagination/vulkan/pvr_common.h          |   1 +
+ src/imagination/vulkan/pvr_device.h          |   2 +
+ src/imagination/vulkan/pvr_pipeline.h        |   3 +
+ src/imagination/vulkan/pvr_query.c           |  66 +++++
+ src/imagination/vulkan/pvr_xfb.h             |  38 +++
+ 9 files changed, 425 insertions(+), 1 deletion(-)
+
+diff --git a/src/imagination/vulkan/pvr_arch_cmd_buffer.c b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
+index 694d5e3c..90e62cb4 100644
+--- a/src/imagination/vulkan/pvr_arch_cmd_buffer.c
++++ b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
+@@ -2885,7 +2885,11 @@ VkResult pvr_arch_cmd_buffer_end_sub_cmd(struct pvr_cmd_buffer *cmd_buffer)
+       cmd_buffer->state.current_sub_cmd->event = (struct pvr_sub_cmd_event){
+          .type = PVR_EVENT_TYPE_BARRIER,
+          .barrier = {
+-            .wait_for_stage_mask = PVR_PIPELINE_STAGE_FRAG_BIT,
++            .wait_for_stage_mask =
++               query_pool->query_type ==
++                     VK_QUERY_TYPE_TRANSFORM_FEEDBACK_STREAM_EXT
++                  ? PVR_PIPELINE_STAGE_GEOM_BIT
++                  : PVR_PIPELINE_STAGE_FRAG_BIT,
+             .wait_at_stage_mask = PVR_PIPELINE_STAGE_QUERY_BIT,
+          },
+       };
+diff --git a/src/imagination/vulkan/pvr_arch_cmd_query.c b/src/imagination/vulkan/pvr_arch_cmd_query.c
+index a7d01638..1c63b6af 100644
+--- a/src/imagination/vulkan/pvr_arch_cmd_query.c
++++ b/src/imagination/vulkan/pvr_arch_cmd_query.c
+@@ -10,6 +10,7 @@
+ #include "pvr_macros.h"
+ #include "pvr_pass.h"
+ #include "pvr_query.h"
++#include "pvr_xfb.h"
+ 
+ void PVR_PER_ARCH(CmdResetQueryPool)(VkCommandBuffer commandBuffer,
+                                      VkQueryPool queryPool,
+@@ -234,6 +235,11 @@ void PVR_PER_ARCH(CmdBeginQueryIndexedEXT)(VkCommandBuffer commandBuffer,
+       pvr_occlusion_query_begin(cmd_buffer, pool, query);
+       break;
+ 
++   case VK_QUERY_TYPE_TRANSFORM_FEEDBACK_STREAM_EXT:
++      assert(index < PVR_XFB_MAX_STREAMS);
++      PVR_PER_ARCH(xfb_query_pool_begin)(cmd_buffer, pool, query);
++      break;
++
+    default:
+       UNREACHABLE("unsupported query type");
+    }
+@@ -254,6 +260,11 @@ void PVR_PER_ARCH(CmdEndQueryIndexedEXT)(VkCommandBuffer commandBuffer,
+       pvr_occlusion_query_end(cmd_buffer);
+       break;
+ 
++   case VK_QUERY_TYPE_TRANSFORM_FEEDBACK_STREAM_EXT:
++      assert(index < PVR_XFB_MAX_STREAMS);
++      PVR_PER_ARCH(xfb_query_pool_end)(cmd_buffer, pool, query);
++      break;
++
+    default:
+       UNREACHABLE("unsupported query type");
+    }
+diff --git a/src/imagination/vulkan/pvr_arch_xfb.c b/src/imagination/vulkan/pvr_arch_xfb.c
+index 407bc3bd..0264f506 100644
+--- a/src/imagination/vulkan/pvr_arch_xfb.c
++++ b/src/imagination/vulkan/pvr_arch_xfb.c
+@@ -25,6 +25,7 @@
+ #include "pvr_macros.h"
+ #include "pvr_physical_device.h"
+ #include "pvr_pipeline.h"
++#include "pvr_query.h"
+ #include "pvr_types.h"
+ #include "pvr_xfb.h"
+ 
+@@ -315,6 +316,47 @@ static VkResult pvr_xfb_end(struct pvr_cmd_buffer *cmd_buffer)
+                    : 0,
+    };
+ 
++   /* While a stream query is active, add this segment's primitive counts to
++    * its result elem, as the next transform feedback begin resets them.
++    */
++   const struct pvr_query_pool *const query_pool =
++      state->query_pools[PVR_QUERY_POOL_INDEX_XFB_STREAM_0];
++   const bool query_active = !!query_pool;
++   pvr_dev_addr_t query_result_addr = PVR_DEV_ADDR_INVALID;
++
++   if (query_active) {
++      const uint32_t query_idx =
++         state->query_pool_indices[PVR_QUERY_POOL_INDEX_XFB_STREAM_0];
++
++      query_result_addr =
++         PVR_DEV_ADDR_OFFSET(query_pool->result_buffer->dev_addr,
++                             query_pool->result_elem_stride * query_idx);
++   }
++
++   const struct pdsc_ld64_src0 query_result_ld_src0 = {
++      .slcmode = PDSC_SLC_MODE_LD_CACHED,
++      .ccpri = 0,
++      .ccslc = PDSC_CCSLC_LD_NORMAL,
++      .ccmcu = PDSC_CCMCU_LD_NORMAL,
++      .dest = pdsc_load_ref(*end_program,
++                            PVR_XFB_END_REF_ID_QUERY_RESULT_LD_DEST),
++      .cmode = PDSC_CMODE_LD_CACHED,
++      .count8 = 1, /* 1 × 8 bytes: both query result counters */
++      .srcadd = query_result_addr.addr,
++   };
++
++   const struct pdsc_st32_src0 query_result_st_src0 = {
++      .cmode = PDSC_CMODE_ST_WRITE_THROUGH,
++      .slcmode = PDSC_SLC_MODE_ST_WRITE_THROUGH,
++      .ccpri = 0,
++      .ccslc = PDSC_CCSLC_LD_NORMAL,
++      .ccmcu = PDSC_CCMCU_LD_NORMAL,
++      .count4 = 2, /* 2 × 4-byte words: query result counters */
++      .src = pdsc_load_ref(*end_program,
++                           PVR_XFB_END_REF_ID_QUERY_RESULT_ST_SRC0),
++      .dstadd = query_result_addr.addr,
++   };
++
+    pdsc_patch patches_end[] = {
+       { .patch_id = PVR_XFB_END_PATCH_ID_COUNTER_BUFFER_COUNT,
+         .value = end_input.counter_buffer_count },
+@@ -335,6 +377,16 @@ static VkResult pvr_xfb_end(struct pvr_cmd_buffer *cmd_buffer)
+         .value = end_input.has_store_counter_buffers
+                     ? pdsc_st32_src0_pack(*end_program, &st_src0)
+                     : 0 },
++
++      { .patch_id = PVR_XFB_END_PATCH_ID_QUERY_RESULT_LD_SRC0,
++        .value = query_active
++                    ? pdsc_ld64_src0_pack(*end_program, &query_result_ld_src0)
++                    : 0 },
++
++      { .patch_id = PVR_XFB_END_PATCH_ID_QUERY_RESULT_ST_SRC0,
++        .value = query_active
++                    ? pdsc_st32_src0_pack(*end_program, &query_result_st_src0)
++                    : 0 },
+    };
+ 
+    assert((ARRAY_SIZE(patches_end) < pdsc_program_data_size(*end_program)));
+@@ -865,3 +917,245 @@ void PVR_PER_ARCH(CmdEndTransformFeedbackEXT)(
+    if (state->gfx_pipeline->shader_state.xfb_shader_state.varying_count)
+       pvr_xfb_end(cmd_buffer);
+ }
++
++static void
++pvr_xfb_query_program_input_init(struct pvr_cmd_buffer *cmd_buffer,
++                                 struct pvr_query_pool *pool,
++                                 uint32_t query_idx,
++                                 struct pvr_pds_xfb_query_program_input *input)
++{
++   struct pvr_cmd_buffer_xfb_state *xfb_state = &cmd_buffer->state.xfb_state;
++
++   const uint32_t elem_size = pool->result_elem_stride;
++   const uint32_t result_offset = elem_size * query_idx;
++
++   input->availability_addr =
++      PVR_DEV_ADDR_OFFSET(pool->availability_buffer->dev_addr,
++                          query_idx * sizeof(uint32_t));
++   input->result_addr =
++      PVR_DEV_ADDR_OFFSET(pool->result_buffer->dev_addr, result_offset);
++   input->is_active = xfb_state->is_active;
++}
++
++static bool
++pvr_xfb_query_begin_program_generate(struct pvr_cmd_buffer *cmd_buffer,
++                                     struct pvr_query_pool *pool,
++                                     uint32_t query_idx)
++{
++   struct pvr_program_info *pds_query_upload =
++      &cmd_buffer->state.xfb_state.pds_query_begin_program;
++   struct pvr_pds_xfb_query_program_input input = { 0 };
++   const struct pvr_device_info *dev_info =
++      &cmd_buffer->device->pdevice->dev_info;
++   const uint32_t cache_line_size = pvr_get_slc_cache_line_size(dev_info);
++   pdsc_program **query_program;
++   VkResult result;
++
++   pvr_xfb_query_program_input_init(cmd_buffer, pool, query_idx, &input);
++
++   query_program = &cmd_buffer->device->pdsc_precomp_programs.xfb_query_begin;
++   *query_program = pdsc_precomp_xfb_query_begin_variant(NULL, 0);
++   pdsc_finalize_program(*query_program);
++
++   pds_query_upload->temp_size = pdsc_program_temps_used(*query_program);
++
++   const struct pdsc_st32_src0 availability_st_src0 = {
++      .cmode = PDSC_CMODE_ST_WRITE_THROUGH,
++      .slcmode = PDSC_SLC_MODE_ST_WRITE_THROUGH,
++      .ccpri = 0,
++      .ccslc = PDSC_CCSLC_LD_NORMAL,
++      .ccmcu = PDSC_CCMCU_LD_NORMAL,
++      .count4 = 1, /* 1 × 4-byte word: availability flag */
++      .src = pdsc_load_ref(*query_program,
++                           PVR_XFB_QUERY_BEGIN_REF_ID_AVAILABILITY_ST_SRC0),
++      .dstadd = input.availability_addr.addr,
++   };
++   const struct pdsc_st32_src0 result_st_src0 = {
++      .cmode = PDSC_CMODE_ST_WRITE_THROUGH,
++      .slcmode = PDSC_SLC_MODE_ST_WRITE_THROUGH,
++      .ccpri = 0,
++      .ccslc = PDSC_CCSLC_LD_NORMAL,
++      .ccmcu = PDSC_CCMCU_LD_NORMAL,
++      .count4 = 2, /* 2 × 4-byte words: query result counters */
++      .src = pdsc_load_ref(*query_program,
++                           PVR_XFB_QUERY_BEGIN_REF_ID_RESULT_ST_SRC0),
++      .dstadd = input.result_addr.addr,
++   };
++
++   pdsc_patch patches_begin[] = {
++      { .patch_id = PVR_XFB_QUERY_BEGIN_PATCH_ID_AVAILABILITY_ST_SRC0,
++        .value = pdsc_st32_src0_pack(*query_program, &availability_st_src0) },
++      { .patch_id = PVR_XFB_QUERY_BEGIN_PATCH_ID_RESULT_ST_SRC0,
++        .value = pdsc_st32_src0_pack(*query_program, &result_st_src0) },
++      { .patch_id = PVR_XFB_QUERY_BEGIN_PATCH_ID_OPEN_SEGMENT_SCALE,
++        .value = input.is_active ? UINT32_MAX : 0 },
++   };
++
++   assert((ARRAY_SIZE(patches_begin) < pdsc_program_data_size(*query_program)));
++   pdsc_patch_program(*query_program,
++                      ARRAY_SIZE(patches_begin),
++                      patches_begin,
++                      NULL);
++
++   result = pvr_arch_cmd_buffer_upload_pds(
++      cmd_buffer,
++      pdsc_program_data(*query_program),
++      pdsc_program_data_size(*query_program) / sizeof(uint32_t),
++      ROGUE_TA_STATE_STREAM_OUT1_PDS_DATA_SIZE_UNIT_SIZE,
++      pdsc_program_code(*query_program),
++      pdsc_program_code_size(*query_program) / sizeof(uint32_t),
++      ROGUE_TA_STATE_STREAM_OUT1_PDS_DATA_SIZE_UNIT_SIZE,
++      cache_line_size,
++      &pds_query_upload->pds_program);
++   if (result != VK_SUCCESS) {
++      pvr_cmd_buffer_set_error_unwarned(cmd_buffer, result);
++      return false;
++   }
++
++   return true;
++}
++
++static bool
++pvr_xfb_query_store_program_generate(struct pvr_cmd_buffer *cmd_buffer,
++                                     struct pvr_query_pool *pool,
++                                     uint32_t query_idx)
++{
++   struct pvr_program_info *pds_query_upload =
++      &cmd_buffer->state.xfb_state.pds_query_end_program;
++   struct pvr_pds_xfb_query_program_input input = { 0 };
++   const struct pvr_device_info *dev_info =
++      &cmd_buffer->device->pdevice->dev_info;
++   const uint32_t cache_line_size = pvr_get_slc_cache_line_size(dev_info);
++   pdsc_program **query_program;
++   VkResult result;
++
++   pvr_xfb_query_program_input_init(cmd_buffer, pool, query_idx, &input);
++
++   query_program = &cmd_buffer->device->pdsc_precomp_programs.xfb_query_end;
++   *query_program = pdsc_precomp_xfb_query_end_variant(NULL, 0);
++   pdsc_finalize_program(*query_program);
++
++   pds_query_upload->temp_size = pdsc_program_temps_used(*query_program);
++
++   const struct pdsc_ld64_src0 result_ld_src0 = {
++      .slcmode = PDSC_SLC_MODE_LD_CACHED,
++      .ccpri = 0,
++      .ccslc = PDSC_CCSLC_LD_NORMAL,
++      .ccmcu = PDSC_CCMCU_LD_NORMAL,
++      .dest = pdsc_load_ref(*query_program,
++                            PVR_XFB_QUERY_END_REF_ID_QUERY_COUNT_LD_DEST),
++      .cmode = PDSC_CMODE_LD_CACHED,
++      .count8 = 1, /* 1 × 8 bytes: both query result counters */
++      .srcadd = input.result_addr.addr,
++   };
++   const struct pdsc_st32_src0 result_written_st_src0 = {
++      .cmode = PDSC_CMODE_ST_WRITE_THROUGH,
++      .slcmode = PDSC_SLC_MODE_ST_WRITE_THROUGH,
++      .ccpri = 0,
++      .ccslc = PDSC_CCSLC_LD_NORMAL,
++      .ccmcu = PDSC_CCMCU_LD_NORMAL,
++      .count4 = 2, /* 2 × 4-byte words: query result counters */
++      .src = pdsc_load_ref(*query_program,
++                           PVR_XFB_QUERY_END_REF_ID_RESULT_WRITTEN_ST_SRC0),
++      .dstadd = input.result_addr.addr,
++   };
++   const struct pdsc_st32_src0 availability_st_src0 = {
++      .cmode = PDSC_CMODE_ST_WRITE_THROUGH,
++      .slcmode = PDSC_SLC_MODE_ST_WRITE_THROUGH,
++      .ccpri = 0,
++      .ccslc = PDSC_CCSLC_LD_NORMAL,
++      .ccmcu = PDSC_CCMCU_LD_NORMAL,
++      .count4 = 1, /* 1 × 4-byte word: availability flag */
++      .src = pdsc_load_ref(*query_program,
++                           PVR_XFB_QUERY_END_REF_ID_AVAILABILITY_ST_SRC0),
++      .dstadd = input.availability_addr.addr,
++   };
++
++   /* Segments that ended inside the query were already accumulated by the
++    * transform feedback end program, so only a segment still open needs
++    * adding. A zero patch value skips the load and store.
++    */
++   const bool add_open_segment = cmd_buffer->state.xfb_state.is_active;
++
++   pdsc_patch patches_end[] = {
++      { .patch_id = PVR_XFB_QUERY_END_PATCH_ID_QUERY_COUNT_LD_SRC0,
++        .value = add_open_segment
++                    ? pdsc_ld64_src0_pack(*query_program, &result_ld_src0)
++                    : 0 },
++      { .patch_id = PVR_XFB_QUERY_END_PATCH_ID_RESULT_WRITTEN_ST_SRC0,
++        .value = add_open_segment
++                    ? pdsc_st32_src0_pack(*query_program,
++                                          &result_written_st_src0)
++                    : 0 },
++      { .patch_id = PVR_XFB_QUERY_END_PATCH_ID_AVAILABILITY_ST_SRC0,
++        .value = pdsc_st32_src0_pack(*query_program, &availability_st_src0) },
++   };
++
++   assert((ARRAY_SIZE(patches_end) < pdsc_program_data_size(*query_program)));
++   pdsc_patch_program(*query_program,
++                      ARRAY_SIZE(patches_end),
++                      patches_end,
++                      NULL);
++
++   result = pvr_arch_cmd_buffer_upload_pds(
++      cmd_buffer,
++      pdsc_program_data(*query_program),
++      pdsc_program_data_size(*query_program) / sizeof(uint32_t),
++      ROGUE_TA_STATE_STREAM_OUT1_PDS_DATA_SIZE_UNIT_SIZE,
++      pdsc_program_code(*query_program),
++      pdsc_program_code_size(*query_program) / sizeof(uint32_t),
++      ROGUE_TA_STATE_STREAM_OUT1_PDS_DATA_SIZE_UNIT_SIZE,
++      cache_line_size,
++      &pds_query_upload->pds_program);
++   if (result != VK_SUCCESS) {
++      pvr_cmd_buffer_set_error_unwarned(cmd_buffer, result);
++      return false;
++   }
++
++   return true;
++}
++
++void PVR_PER_ARCH(xfb_query_pool_begin)(struct pvr_cmd_buffer *cmd_buffer,
++                                        struct pvr_query_pool *pool,
++                                        uint32_t query_idx)
++{
++   struct pvr_cmd_buffer_xfb_state *xfb_state = &cmd_buffer->state.xfb_state;
++   struct pvr_cmd_buffer_state *state = &cmd_buffer->state;
++   VkResult result;
++
++   if (!pvr_xfb_query_begin_program_generate(cmd_buffer, pool, query_idx))
++      return;
++
++   const uint32_t query_pool_index = PVR_QUERY_POOL_INDEX_XFB_STREAM_0;
++
++   state->query_pool_indices[query_pool_index] = query_idx;
++   state->query_pools[query_pool_index] = pool;
++
++   result = pvr_arch_emit_xfb_sync_state(cmd_buffer,
++                                         &xfb_state->pds_query_begin_program);
++   if (result != VK_SUCCESS)
++      return;
++
++   pvr_arch_set_xfb_main_program_ppp_state(cmd_buffer);
++}
++
++void PVR_PER_ARCH(xfb_query_pool_end)(struct pvr_cmd_buffer *cmd_buffer,
++                                      struct pvr_query_pool *pool,
++                                      uint32_t query_idx)
++{
++   struct pvr_cmd_buffer_xfb_state *xfb_state = &cmd_buffer->state.xfb_state;
++   struct pvr_cmd_buffer_state *state = &cmd_buffer->state;
++   VkResult result;
++
++   if (!pvr_xfb_query_store_program_generate(cmd_buffer, pool, query_idx))
++      return;
++
++   state->query_pools[PVR_QUERY_POOL_INDEX_XFB_STREAM_0] = NULL;
++
++   result = pvr_arch_emit_xfb_sync_state(cmd_buffer,
++                                         &xfb_state->pds_query_end_program);
++   if (result != VK_SUCCESS)
++      return;
++
++   pvr_arch_set_xfb_main_program_ppp_state(cmd_buffer);
++}
+diff --git a/src/imagination/vulkan/pvr_cmd_buffer.h b/src/imagination/vulkan/pvr_cmd_buffer.h
+index 23f49f6c..7b0c76ca 100644
+--- a/src/imagination/vulkan/pvr_cmd_buffer.h
++++ b/src/imagination/vulkan/pvr_cmd_buffer.h
+@@ -481,6 +481,10 @@ struct pvr_cmd_buffer_xfb_state {
+    struct pvr_program_info pds_init_program;
+    struct pvr_program_info pds_end_program;
+    struct pvr_program_info pds_draw_program;
++   struct pvr_program_info pds_query_begin_program;
++   struct pvr_program_info pds_query_end_program;
++
++   struct pvr_query_pool *pool;
+ };
+ 
+ struct pvr_cmd_buffer_state {
+@@ -569,6 +573,7 @@ struct pvr_cmd_buffer_state {
+ 
+    /* Query pool pointers indexed by query type */
+    const struct pvr_query_pool *query_pools[PVR_QUERY_POOL_INDEX_COUNT];
++   uint32_t query_pool_indices[PVR_QUERY_POOL_INDEX_COUNT];
+    bool vis_test_enabled;
+    uint32_t vis_reg;
+ 
+diff --git a/src/imagination/vulkan/pvr_common.h b/src/imagination/vulkan/pvr_common.h
+index ed5df72c..fe19ef32 100644
+--- a/src/imagination/vulkan/pvr_common.h
++++ b/src/imagination/vulkan/pvr_common.h
+@@ -257,6 +257,7 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(pvr_event, base, VkEvent, VK_OBJECT_TYPE_EVENT)
+ 
+ enum pvr_query_pool_index {
+    PVR_QUERY_POOL_INDEX_OCCLUSION,
++   PVR_QUERY_POOL_INDEX_XFB_STREAM_0,
+    PVR_QUERY_POOL_INDEX_COUNT,
+ };
+ 
+diff --git a/src/imagination/vulkan/pvr_device.h b/src/imagination/vulkan/pvr_device.h
+index cfb5e87a..8cdd4d3d 100644
+--- a/src/imagination/vulkan/pvr_device.h
++++ b/src/imagination/vulkan/pvr_device.h
+@@ -199,6 +199,8 @@ struct pvr_device {
+       pdsc_program *xfb_main;
+       pdsc_program *xfb_end;
+       pdsc_program *xfb_vertex_count;
++      pdsc_program *xfb_query_begin;
++      pdsc_program *xfb_query_end;
+    } pdsc_precomp_programs;
+ 
+    simple_mtx_t rs_mtx;
+diff --git a/src/imagination/vulkan/pvr_pipeline.h b/src/imagination/vulkan/pvr_pipeline.h
+index 859bb99c..d103cb62 100644
+--- a/src/imagination/vulkan/pvr_pipeline.h
++++ b/src/imagination/vulkan/pvr_pipeline.h
+@@ -252,6 +252,9 @@ pvr_stage_mask(VkPipelineStageFlags2 stage_mask)
+                      VK_PIPELINE_STAGE_2_CLEAR_BIT))
+       stages |= PVR_PIPELINE_STAGE_TRANSFER_BIT;
+ 
++   if (stage_mask & (VK_PIPELINE_STAGE_2_TRANSFORM_FEEDBACK_BIT_EXT))
++      stages |= PVR_PIPELINE_STAGE_QUERY_BIT;
++
+    return stages;
+ }
+ 
+diff --git a/src/imagination/vulkan/pvr_query.c b/src/imagination/vulkan/pvr_query.c
+index 669100a9..791b7499 100644
+--- a/src/imagination/vulkan/pvr_query.c
++++ b/src/imagination/vulkan/pvr_query.c
+@@ -32,6 +32,7 @@
+ #include <string.h>
+ #include <vulkan/vulkan.h>
+ 
++#include "hwdef/pvr_hw_utils.h"
+ #include "pvr_bo.h"
+ #include "pvr_csb.h"
+ #include "pvr_device.h"
+@@ -41,6 +42,7 @@
+ #include "pvr_macros.h"
+ #include "pvr_pass.h"
+ #include "pvr_physical_device.h"
++#include "pvr_xfb.h"
+ #include "util/macros.h"
+ #include "util/os_time.h"
+ #include "vk_log.h"
+@@ -52,6 +54,10 @@ static uint32_t pvr_reports_per_query(const struct pvr_query_pool *pool)
+    case VK_QUERY_TYPE_OCCLUSION:
+       return 1u;
+ 
++   case VK_QUERY_TYPE_TRANSFORM_FEEDBACK_STREAM_EXT:
++      /* {prims written, prims needed} */
++      return 2u;
++
+    default:
+       break;
+    }
+@@ -84,6 +90,31 @@ static VkResult pvr_occlusion_query_pool_setup(struct pvr_device *device,
+                           &pool->result_buffer);
+ }
+ 
++static VkResult pvr_xfb_query_pool_setup(struct pvr_device *device,
++                                         struct pvr_query_pool *pool)
++{
++   const uint32_t counter_size =
++      pvr_xfb_get_counter_bytes(&device->pdevice->dev_info);
++   const uint32_t cache_line_size =
++      pvr_get_slc_cache_line_size(&device->pdevice->dev_info);
++   const uint32_t elem_size =
++      ALIGN_POT(pool->query_report_count * counter_size,
++                PVR_XFB_QUERY_RESULT_ALIGN);
++   const uint64_t result_buffer_alloc_size =
++      (uint64_t)pool->query_count * elem_size;
++
++   pool->result_elem_stride = elem_size;
++
++   if (result_buffer_alloc_size > UINT32_MAX)
++      return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
++
++   return pvr_bo_suballoc(&device->suballoc_general,
++                          result_buffer_alloc_size,
++                          cache_line_size,
++                          true,
++                          &pool->result_buffer);
++}
++
+ static VkResult pvr_query_pool_setup(struct pvr_device *device,
+                                      struct pvr_query_pool *pool)
+ {
+@@ -102,6 +133,9 @@ static VkResult pvr_query_pool_setup(struct pvr_device *device,
+    case VK_QUERY_TYPE_OCCLUSION:
+       return pvr_occlusion_query_pool_setup(device, pool);
+ 
++   case VK_QUERY_TYPE_TRANSFORM_FEEDBACK_STREAM_EXT:
++      return pvr_xfb_query_pool_setup(device, pool);
++
+    default:
+       UNREACHABLE("Unsupported query type");
+    }
+@@ -113,6 +147,12 @@ pvr_occlusion_query_pool_cleanup(const struct pvr_query_pool *pool)
+    pvr_bo_suballoc_free(pool->result_buffer);
+ }
+ 
++static inline void
++pvr_xfb_query_pool_cleanup(const struct pvr_query_pool *pool)
++{
++   pvr_bo_suballoc_free(pool->result_buffer);
++}
++
+ static inline void pvr_query_pool_cleanup(const struct pvr_query_pool *pool)
+ {
+    if (!pool)
+@@ -123,6 +163,10 @@ static inline void pvr_query_pool_cleanup(const struct pvr_query_pool *pool)
+       pvr_occlusion_query_pool_cleanup(pool);
+       break;
+ 
++   case VK_QUERY_TYPE_TRANSFORM_FEEDBACK_STREAM_EXT:
++      pvr_xfb_query_pool_cleanup(pool);
++      break;
++
+    default:
+       break;
+    }
+@@ -272,6 +316,24 @@ pvr_occlusion_query_pool_get_result(struct pvr_device *device,
+    *count_out = count;
+ }
+ 
++static void
++pvr_xfb_query_pool_get_result(struct pvr_device *device,
++                              const struct pvr_query_pool *pool,
++                              uint32_t query_idx,
++                              uint64_t *result_out)
++{
++   const volatile uint32_t *counter_data =
++      pvr_bo_suballoc_get_map_addr(pool->result_buffer);
++   uint32_t offset =
++      query_idx * pool->result_elem_stride / sizeof(*counter_data);
++   uint64_t result = 0;
++
++   for (uint32_t i = 0; i < pool->query_report_count; i++)
++      result += counter_data[offset + i];
++
++   *result_out = result;
++}
++
+ VkResult pvr_GetQueryPoolResults(VkDevice _device,
+                                  VkQueryPool queryPool,
+                                  uint32_t firstQuery,
+@@ -324,6 +386,10 @@ VkResult pvr_GetQueryPoolResults(VkDevice _device,
+          pvr_occlusion_query_pool_get_result(device, pool, query_idx, &count);
+          break;
+ 
++      case VK_QUERY_TYPE_TRANSFORM_FEEDBACK_STREAM_EXT:
++         pvr_xfb_query_pool_get_result(device, pool, query_idx, &count);
++         break;
++
+       default:
+          UNREACHABLE("Unsupported query type");
+       }
+diff --git a/src/imagination/vulkan/pvr_xfb.h b/src/imagination/vulkan/pvr_xfb.h
+index 64812f7e..d9bb23a0 100644
+--- a/src/imagination/vulkan/pvr_xfb.h
++++ b/src/imagination/vulkan/pvr_xfb.h
+@@ -16,6 +16,7 @@
+ struct pvr_device;
+ struct pvr_physical_device;
+ struct pvr_cmd_buffer;
++struct pvr_query_pool;
+ struct pvr_suballoc_bo;
+ 
+ struct pvr_pds_xfb_buffer_info {
+@@ -85,7 +86,44 @@ struct pvr_pds_xfb_draw_program_input {
+    } data;
+ };
+ 
++struct pvr_pds_xfb_query_program_input {
++   bool is_active;
++
++   pvr_dev_addr_t result_addr;
++   pvr_dev_addr_t availability_addr;
++
++   pvr_dev_addr_t count_offset_addr;
++};
++
++/* pvr_xfb_get_counter_dwords - return the counter size in dword. */
++static inline uint32_t
++pvr_xfb_get_counter_dwords(const struct pvr_device_info *const dev_info)
++{
++   const uint32_t bits =
++      PVR_GET_FEATURE_VALUE(dev_info, transform_feedback_query_bits, 32U);
++   return bits == 64U ? 2 : 1;
++}
++
++/* pvr_xfb_get_counter_bytes - return the counter size in bytes. */
++static inline uint32_t
++pvr_xfb_get_counter_bytes(const struct pvr_device_info *const dev_info)
++{
++   const uint32_t bits =
++      PVR_GET_FEATURE_VALUE(dev_info, transform_feedback_query_bits, 32U);
++   return bits == 64U ? 8 : 4;
++}
++
++#define PVR_XFB_QUERY_RESULT_ALIGN 16
++
+ #ifdef PVR_PER_ARCH
+ 
++void PVR_PER_ARCH(xfb_query_pool_begin)(struct pvr_cmd_buffer *cmd_buffer,
++                                        struct pvr_query_pool *pool,
++                                        uint32_t query_idx);
++
++void PVR_PER_ARCH(xfb_query_pool_end)(struct pvr_cmd_buffer *cmd_buffer,
++                                      struct pvr_query_pool *pool,
++                                      uint32_t query_idx);
++
+ #endif /* PVR_PER_ARCH */
+ #endif /* PVR_XFB_H */
+-- 
+2.47.3
+

@@ -1,0 +1,181 @@
+From a23b47e407a5e25cca8325c5dd050ac3c43acc52 Mon Sep 17 00:00:00 2001
+From: Simon Perretta <simon.perretta@imgtec.com>
+Date: Mon, 12 Oct 2026 15:17:00 +0100
+Subject: [PATCH 19/24] pco: point size handling for xfb
+
+The point size output will get consumed and become inaccessible to xfb, so
+duplicate it into a varying (prior to clamping) if needed to ensure it will
+be usable.
+
+Signed-off-by: Simon Perretta <simon.perretta@imgtec.com>
+Acked-by: Frank Binns <frank.binns@imgtec.com>
+Part-of: <https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/44385>
+(cherry picked from commit 26cbd0b77ea92ea2d8d4543952525af872cb97a9)
+---
+ src/imagination/pco/pco_internal.h  |  1 +
+ src/imagination/pco/pco_nir.c       |  4 ++
+ src/imagination/pco/pco_nir_pvfio.c | 94 ++++++++++++++++++++++++++---
+ 3 files changed, 90 insertions(+), 9 deletions(-)
+
+diff --git a/src/imagination/pco/pco_internal.h b/src/imagination/pco/pco_internal.h
+index dc97a3f6..6e36186a 100644
+--- a/src/imagination/pco/pco_internal.h
++++ b/src/imagination/pco/pco_internal.h
+@@ -1845,6 +1845,7 @@ bool pco_nir_lower_vk(nir_shader *shader, pco_data *data);
+ bool pco_nir_pfo(nir_shader *shader, pco_fs_data *fs);
+ bool pco_nir_fold_pack_consts(nir_shader *shader);
+ bool pco_nir_point_size(nir_shader *shader);
++bool pco_nir_point_size_xfb(nir_shader *shader);
+ bool pco_nir_prop_access(nir_shader *shader);
+ bool pco_nir_pvi(nir_shader *shader, pco_vs_data *vs);
+ bool pco_opt(pco_shader *shader);
+diff --git a/src/imagination/pco/pco_nir.c b/src/imagination/pco/pco_nir.c
+index db9aa9c0..cac45351 100644
+--- a/src/imagination/pco/pco_nir.c
++++ b/src/imagination/pco/pco_nir.c
+@@ -1205,6 +1205,10 @@ void pco_lower_nir(pco_ctx *ctx, nir_shader *nir, pco_data *data)
+       NIR_PASS(_, nir, nir_lower_is_helper_invocation);
+       NIR_PASS(_, nir, pco_nir_lower_fs_intrinsics);
+    } else if (nir->info.stage == MESA_SHADER_VERTEX) {
++      /* If needed, duplicate the point size for xfb prior to it being clamped.
++       */
++      NIR_PASS(_, nir, pco_nir_point_size_xfb);
++
+       NIR_PASS(_,
+                nir,
+                nir_lower_point_size,
+diff --git a/src/imagination/pco/pco_nir_pvfio.c b/src/imagination/pco/pco_nir_pvfio.c
+index dc7df3c2..2a8ccc99 100644
+--- a/src/imagination/pco/pco_nir_pvfio.c
++++ b/src/imagination/pco/pco_nir_pvfio.c
+@@ -1028,7 +1028,7 @@ bool pco_nir_pvi(nir_shader *shader, pco_vs_data *vs)
+ }
+ 
+ /**
+- * \brief Checks if the point size is written.
++ * \brief Checks if the point size is written, saving the intrinsic if so.
+  *
+  * \param[in] b NIR builder.
+  * \param[in] intr NIR intrinsic instruction.
+@@ -1036,19 +1036,95 @@ bool pco_nir_pvi(nir_shader *shader, pco_vs_data *vs)
+  * \return True if the instruction was lowered.
+  */
+ static bool
+-check_psiz_write(nir_builder *b, nir_intrinsic_instr *intr, void *cb_data)
++find_psiz_write(nir_builder *b, nir_intrinsic_instr *intr, void *cb_data)
+ {
+    if (intr->intrinsic != nir_intrinsic_store_output)
+       return false;
+ 
+-   bool *writes_psiz = cb_data;
+-
+    struct nir_io_semantics io_semantics = nir_intrinsic_io_semantics(intr);
+-   *writes_psiz |= (io_semantics.location == VARYING_SLOT_PSIZ);
++   if (io_semantics.location == VARYING_SLOT_PSIZ) {
++      nir_intrinsic_instr **psiz_write = cb_data;
++      *psiz_write = intr;
++   }
+ 
+    return false;
+ }
+ 
++static inline nir_xfb_output_info *
++xfb_output_info_for_varying(const nir_shader *shader, gl_varying_slot location)
++{
++   if (!shader->xfb_info)
++      return NULL;
++
++   for (unsigned u = 0; u < shader->xfb_info->output_count; ++u)
++      if (shader->xfb_info->outputs[u].location == location)
++         return &shader->xfb_info->outputs[u];
++
++   return NULL;
++}
++
++/**
++ * \brief Vertex shader point size pass for xfb.
++ *
++ * \param[in,out] shader NIR shader.
++ * \return True if the pass made progress.
++ */
++bool pco_nir_point_size_xfb(nir_shader *shader)
++{
++   assert(shader->info.stage == MESA_SHADER_VERTEX);
++
++   nir_intrinsic_instr *psiz_write = NULL;
++   nir_shader_intrinsics_pass(shader,
++                              find_psiz_write,
++                              nir_metadata_all,
++                              &psiz_write);
++
++   nir_function_impl *impl = nir_shader_get_entrypoint(shader);
++
++   /* No point size written, nothing to do. */
++   if (!psiz_write)
++      return nir_no_progress(impl);
++
++   nir_xfb_output_info *xfb_output_info =
++      xfb_output_info_for_varying(shader, VARYING_SLOT_PSIZ);
++
++   /* No xfb outputs using point size. */
++   if (!xfb_output_info)
++      return nir_no_progress(impl);
++
++   /* Find unused varying slot to use and create the new variable. */
++   gl_varying_slot clone_slot = VARYING_SLOT_VAR0;
++   nir_foreach_shader_out_variable (var, shader) {
++      clone_slot = MAX2(clone_slot, var->data.location + 1);
++   }
++   assert(clone_slot < VARYING_SLOT_MAX);
++
++   nir_create_variable_with_location(shader,
++                                     nir_var_shader_out,
++                                     clone_slot,
++                                     glsl_float_type());
++
++   xfb_output_info->location = clone_slot;
++
++   nir_builder b = nir_builder_at(
++         nir_after_block(nir_impl_last_block(impl)));
++
++   nir_store_output(&b,
++         psiz_write->src[0].ssa,
++         psiz_write->src[1].ssa,
++         .base = 0,
++         .range = 1,
++         .write_mask = 1,
++         .component = 0,
++         .src_type = nir_type_float32,
++         .io_semantics = (nir_io_semantics){
++         .location = clone_slot,
++         .num_slots = 1,
++         });
++
++   return nir_progress(true, impl, nir_metadata_control_flow);
++}
++
+ /**
+  * \brief Vertex shader point size pass.
+  *
+@@ -1059,14 +1135,14 @@ bool pco_nir_point_size(nir_shader *shader)
+ {
+    assert(shader->info.stage == MESA_SHADER_VERTEX);
+ 
+-   bool writes_psiz = false;
++   nir_intrinsic_instr *psiz_write = NULL;
+    nir_shader_intrinsics_pass(shader,
+-                              check_psiz_write,
++                              find_psiz_write,
+                               nir_metadata_all,
+-                              &writes_psiz);
++                              &psiz_write);
+ 
+    /* Nothing to do if the shader already writes the point size. */
+-   if (writes_psiz)
++   if (psiz_write)
+       return false;
+ 
+    /* Create a point size variable if there isn't one. */
+-- 
+2.47.3
+
