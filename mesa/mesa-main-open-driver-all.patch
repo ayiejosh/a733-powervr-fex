@@ -31920,7 +31920,7 @@ index 00000000..d9bb23a0
 +#endif /* PVR_PER_ARCH */
 +#endif /* PVR_XFB_H */
 diff --git a/src/imagination/vulkan/rogue/pvr_blit.c b/src/imagination/vulkan/rogue/pvr_blit.c
-index b4929724..164c1ebe 100644
+index b4929724..09cacc84 100644
 --- a/src/imagination/vulkan/rogue/pvr_blit.c
 +++ b/src/imagination/vulkan/rogue/pvr_blit.c
 @@ -42,6 +42,7 @@
@@ -32051,7 +32051,7 @@ index b4929724..164c1ebe 100644
  }
  
  static void pvr_calc_mip_level_extents(const struct pvr_image *image,
-@@ -1407,6 +1429,155 @@ void pvr_rogue_CmdClearDepthStencilImage(
+@@ -1407,22 +1429,200 @@ void pvr_rogue_CmdClearDepthStencilImage(
                                   pRanges);
  }
  
@@ -32076,6 +32076,7 @@ index b4929724..164c1ebe 100644
 +                                      VkDeviceSize src_offset,
 +                                      pvr_dev_addr_t dst_addr,
 +                                      VkDeviceSize dst_offset,
++                                      VkDeviceSize dst_size,
 +                                      VkDeviceSize size)
 +{
 +   const uint32_t texel = sizeof(uint32_t);
@@ -32105,6 +32106,24 @@ index b4929724..164c1ebe 100644
 +      };
 +      s += w;
 +      d += w;
++   }
++
++   /* The clip blit loads and stores its whole box, which spans full rows when a copy crosses a row
++    * boundary: that box must stay inside the destination buffer, or the GPU writes (and faults on)
++    * memory past its end. Copies whose box would not fit take the plain path.
++    */
++   {
++      int32_t x0 = INT32_MAX, y0 = INT32_MAX, x1 = 0, y1 = 0;
++
++      for (uint32_t i = 0; i < num_pieces; i++) {
++         const VkRect2D *dr = &pieces[i].dst_rect;
++         x0 = MIN2(x0, dr->offset.x);
++         y0 = MIN2(y0, dr->offset.y);
++         x1 = MAX2(x1, dr->offset.x + (int32_t)dr->extent.width);
++         y1 = MAX2(y1, dr->offset.y + (int32_t)dr->extent.height);
++      }
++      if (((uint64_t)(y1 - 1) * row + x1) * texel > dst_size)
++         return false;
 +   }
 +
 +   struct pvr_sub_cmd *sub_cmd = cmd_buffer->state.current_sub_cmd;
@@ -32146,7 +32165,8 @@ index b4929724..164c1ebe 100644
 +         y1 = MAX2(y1, dr->offset.y + dr->extent.height);
 +      }
 +
-+      if ((uint64_t)(x1 - x0) * (y1 - y0) * texel > PVR_BUFFER_BATCH_MAX_BOX_BYTES)
++      if ((uint64_t)(x1 - x0) * (y1 - y0) * texel > PVR_BUFFER_BATCH_MAX_BOX_BYTES ||
++          ((uint64_t)(y1 - 1) * row + x1) * texel > dst_size)
 +         transfer_cmd = NULL;
 +   }
 +   if (!transfer_cmd) {
@@ -32207,7 +32227,12 @@ index b4929724..164c1ebe 100644
  static VkResult pvr_cmd_copy_buffer_region(struct pvr_cmd_buffer *cmd_buffer,
                                             pvr_dev_addr_t src_addr,
                                             VkDeviceSize src_offset,
-@@ -1418,11 +1589,18 @@ static VkResult pvr_cmd_copy_buffer_region(struct pvr_cmd_buffer *cmd_buffer,
+                                            pvr_dev_addr_t dst_addr,
+                                            VkDeviceSize dst_offset,
++                                           VkDeviceSize dst_size,
+                                            VkDeviceSize size,
+                                            uint32_t fill_data,
+                                            bool is_fill)
  {
     VkDeviceSize offset = 0;
  
@@ -32216,6 +32241,7 @@ index b4929724..164c1ebe 100644
 +                                             src_offset,
 +                                             dst_addr,
 +                                             dst_offset,
++                                             dst_size,
 +                                             size))
 +      return VK_SUCCESS;
     while (offset < size) {
@@ -32227,7 +32253,7 @@ index b4929724..164c1ebe 100644
        uint32_t texel_width;
        VkDeviceSize texels;
        VkFormat vk_format;
-@@ -1446,20 +1624,55 @@ static VkResult pvr_cmd_copy_buffer_region(struct pvr_cmd_buffer *cmd_buffer,
+@@ -1446,20 +1646,55 @@ static VkResult pvr_cmd_copy_buffer_region(struct pvr_cmd_buffer *cmd_buffer,
           texel_width = 1U;
        }
  
@@ -32290,7 +32316,15 @@ index b4929724..164c1ebe 100644
        transfer_cmd = pvr_transfer_cmd_alloc(cmd_buffer);
        if (!transfer_cmd)
           return VK_ERROR_OUT_OF_HOST_MEMORY;
-@@ -1548,6 +1761,8 @@ void pvr_rogue_CmdCopyBuffer2(VkCommandBuffer commandBuffer,
+@@ -1534,6 +1769,7 @@ void pvr_rogue_CmdUpdateBuffer(VkCommandBuffer commandBuffer,
+                               0,
+                               dst->dev_addr,
+                               dstOffset,
++                              dst->vk.size,
+                               dataSize,
+                               0U,
+                               false);
+@@ -1548,6 +1784,8 @@ void pvr_rogue_CmdCopyBuffer2(VkCommandBuffer commandBuffer,
  
     PVR_CHECK_COMMAND_BUFFER_BUILDING_STATE(cmd_buffer);
  
@@ -32299,7 +32333,12 @@ index b4929724..164c1ebe 100644
     for (uint32_t i = 0; i < pCopyBufferInfo->regionCount; i++) {
        const VkResult result =
           pvr_cmd_copy_buffer_region(cmd_buffer,
-@@ -1559,8 +1774,11 @@ void pvr_rogue_CmdCopyBuffer2(VkCommandBuffer commandBuffer,
+@@ -1555,12 +1793,16 @@ void pvr_rogue_CmdCopyBuffer2(VkCommandBuffer commandBuffer,
+                                     pCopyBufferInfo->pRegions[i].srcOffset,
+                                     dst->dev_addr,
+                                     pCopyBufferInfo->pRegions[i].dstOffset,
++                                    dst->vk.size,
+                                     pCopyBufferInfo->pRegions[i].size,
                                      0U,
                                      false);
        if (result != VK_SUCCESS)
@@ -32312,7 +32351,7 @@ index b4929724..164c1ebe 100644
  }
  
  void pvr_rogue_CmdFillBuffer(VkCommandBuffer commandBuffer,
-@@ -1574,6 +1792,8 @@ void pvr_rogue_CmdFillBuffer(VkCommandBuffer commandBuffer,
+@@ -1574,6 +1816,8 @@ void pvr_rogue_CmdFillBuffer(VkCommandBuffer commandBuffer,
  
     PVR_CHECK_COMMAND_BUFFER_BUILDING_STATE(cmd_buffer);
  
@@ -32321,7 +32360,11 @@ index b4929724..164c1ebe 100644
     fillSize = vk_buffer_range(&dst->vk, dstOffset, fillSize);
  
     /* From the Vulkan spec:
-@@ -1594,6 +1814,8 @@ void pvr_rogue_CmdFillBuffer(VkCommandBuffer commandBuffer,
+@@ -1591,9 +1835,12 @@ void pvr_rogue_CmdFillBuffer(VkCommandBuffer commandBuffer,
+                               0,
+                               dst->dev_addr,
+                               dstOffset,
++                              dst->vk.size,
                                fillSize,
                                data,
                                true);
@@ -32330,7 +32373,7 @@ index b4929724..164c1ebe 100644
  }
  
  /**
-@@ -2201,7 +2423,7 @@ static void pvr_clear_attachments(struct pvr_cmd_buffer *cmd_buffer,
+@@ -2201,7 +2448,7 @@ static void pvr_clear_attachments(struct pvr_cmd_buffer *cmd_buffer,
                  pass->hw_setup->render_count > 0);
           hw_render = pvr_arch_pass_info_get_hw_render(
              &cmd_buffer->state.render_pass_info,
