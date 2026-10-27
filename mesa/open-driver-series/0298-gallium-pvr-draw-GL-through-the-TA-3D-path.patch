@@ -1,0 +1,1271 @@
+From 0781a8338faf48e3a019ca3bbfffeac6abe55b91 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Tue, 27 Oct 2026 23:02:16 +0800
+Subject: [PATCH] gallium/pvr: draw GL through the TA/3D path
+
+pvr_draw.c moves the probe's verified render path into the driver:
+draws accumulate into one control stream per render target and the
+render (geometry + fragment) is submitted at flush, readback or target
+change. Each draw gets a TA state block from the GL state (viewport,
+region clip), a vertex PDS program built from the bound vertex elements
+and buffers, and the bound VS/FS. The FS is compiled per colour-buffer
+format; a colour clear becomes the render's background object; the
+end-of-tile program, the scissor table and the HWRT data set (sized
+from the framebuffer with pvr_hwrt_sizes) are built here. Anything the
+path does not handle yet falls back to the compute rasteriser.
+
+Fixes found on the way (a real GL draw exercises them, the probe did
+not):
+- the index-list packet never set index_base_addrmsb, so an index
+  buffer above 4 GiB was read from the wrong address;
+- the heap carveouts with the firmware's static programs were mapped
+  only by the probe (pvr_static_memory_init), so the TA read unmapped
+  memory;
+- fragment shaders were compiled with fs.z_replicate = 0, which makes
+  pco write the fragment depth over colour output 0, and without
+  no_alpha_to_coverage/skip_sample_check, which insert a coverage test
+  that reads a shared register nothing fills and discards every
+  fragment;
+- gl_FragColor (FRAG_RESULT_COLOR) now maps to DATA0 with the output
+  format and range set, as the Vulkan driver does;
+- the colour clear mask check compared the whole 32-bit mask to 0xf.
+
+The context also gets the hooks a GL draw needs: vertex elements and
+sampler state objects, sampler views, buffer/texture subdata, scissor/
+blend colour/clip/stipple, copy, a CPU blit for same-format copies,
+clears and barriers.
+
+A GLES2 program (EGL surfaceless, FBO, glClear + glDrawArrays with its
+own shaders) now renders the same image through the native driver as
+through zink: 32768 red pixels on green, Kick TA -> TA finished ->
+Kick 3D -> 3D finished. Not yet: varyings, uniforms, textures, depth,
+blending, culling, loading a target without a clear.
+---
+ src/gallium/drivers/pvr_native/meson.build   |   1 +
+ src/gallium/drivers/pvr_native/pvr_context.c | 138 +++-
+ src/gallium/drivers/pvr_native/pvr_context.h |   9 +-
+ src/gallium/drivers/pvr_native/pvr_csb.c     |   2 +
+ src/gallium/drivers/pvr_native/pvr_draw.c    | 732 +++++++++++++++++++
+ src/gallium/drivers/pvr_native/pvr_draw.h    |  27 +
+ src/gallium/drivers/pvr_native/pvr_shader.c  |  64 +-
+ src/gallium/drivers/pvr_native/pvr_shader.h  |  28 +
+ 8 files changed, 993 insertions(+), 8 deletions(-)
+ create mode 100644 src/gallium/drivers/pvr_native/pvr_draw.c
+ create mode 100644 src/gallium/drivers/pvr_native/pvr_draw.h
+
+diff --git a/src/gallium/drivers/pvr_native/meson.build b/src/gallium/drivers/pvr_native/meson.build
+index 577ab7f1..5c32796e 100644
+--- a/src/gallium/drivers/pvr_native/meson.build
++++ b/src/gallium/drivers/pvr_native/meson.build
+@@ -7,6 +7,7 @@
+ files_pvr = files(
+   'pvr_bo.c',
+   'pvr_context.c',
++  'pvr_draw.c',
+   'pvr_csb.c',
+   'pvr_resource.c',
+   'pvr_shader.c',
+diff --git a/src/gallium/drivers/pvr_native/pvr_context.c b/src/gallium/drivers/pvr_native/pvr_context.c
+index a33a9c13..1b64e32d 100644
+--- a/src/gallium/drivers/pvr_native/pvr_context.c
++++ b/src/gallium/drivers/pvr_native/pvr_context.c
+@@ -14,9 +14,12 @@
+ #include "util/u_surface.h"
+ 
+ #include "pvr_compute.h"
++#include "pvr_draw.h"
++#include "util/u_transfer.h"
+ #include "pvr_resource.h"
+ #include "pvr_screen.h"
+ #include "pvr_shader.h"
++#include "nir.h"
+ 
+ struct pvr_transfer {
+    struct pipe_transfer base;
+@@ -30,6 +33,7 @@ pvr_transfer_map(struct pipe_context *pctx, struct pipe_resource *pres,
+                  unsigned level, unsigned usage, const struct pipe_box *box,
+                  struct pipe_transfer **out_transfer)
+ {
++   pvr_draw_flush(pvr_context(pctx));
+    struct pvr_screen *screen = pvr_screen(pctx->screen);
+    struct pvr_resource *res = pvr_resource(pres);
+    struct pvr_transfer *trans;
+@@ -106,7 +110,7 @@ pvr_flush(struct pipe_context *pctx, UNUSED struct pipe_fence_handle **fence,
+           UNUSED unsigned flags)
+ {
+    struct pvr_context *ctx = pvr_context(pctx);
+-
++   pvr_draw_flush(ctx);
+    /* Completes any asynchronous compute-fallback draws (PVR_COMPUTE_ASYNC). */
+    pvr_compute_flush(ctx->compute);
+ }
+@@ -164,7 +168,7 @@ pvr_set_framebuffer_state(struct pipe_context *pctx,
+                           const struct pipe_framebuffer_state *state)
+ {
+    struct pvr_context *ctx = pvr_context(pctx);
+-
++   pvr_draw_flush(ctx);
+    /* Previously discarded. The draw path needs the render targets, and the copy takes
+     * the resource references that keep them alive while bound. */
+    util_copy_framebuffer_state(&ctx->fb, state);
+@@ -301,6 +305,11 @@ pvr_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
+    ctx->last_draw.instance_count = info->instance_count;
+    ctx->last_draw.num_draws = num_draws;
+ 
++   /* The TA/3D path for the state it supports; the compute fallback for the rest. */
++   if (indirect == NULL && pvr_draw_3d(ctx, info, draws, num_draws)) {
++      ctx->draws_executed++;
++      return;
++   }
+    /* Execute the draw through the compute fallback: rasterise the vertex stage's triangle into the bound
+     * colour buffer. */
+    if (ctx->fb.nr_cbufs > 0 && ctx->fb.cbufs[0].texture != NULL) {
+@@ -502,6 +511,10 @@ pvr_clear(struct pipe_context *pctx, unsigned buffers, uint32_t color_clear_mask
+          return;
+    }
+ 
++   if ((buffers & PIPE_CLEAR_COLOR0) && (color_clear_mask & 0xf) == 0xf && scissor_state == NULL)
++      pvr_draw_note_clear(ctx, color);
++   else
++      pvr_draw_flush(ctx);
+    for (unsigned i = 0; i < ctx->fb.nr_cbufs; i++) {
+       if ((buffers & (PIPE_CLEAR_COLOR0 << i)) == 0)
+          continue;
+@@ -509,7 +522,8 @@ pvr_clear(struct pipe_context *pctx, unsigned buffers, uint32_t color_clear_mask
+       if (ctx->fb.cbufs[i].texture == NULL)
+          continue;
+ 
+-      if (color_clear_mask != 0xf) {
++      /* four channel bits per colour buffer */
++      if (((color_clear_mask >> (4 * i)) & 0xf) != 0xf) {
+          static bool warned;
+ 
+          if (!warned) {
+@@ -557,7 +571,15 @@ pvr_shader_from_state(struct pipe_context *pctx, const struct pipe_shader_state
+       return NULL;
+    }
+ 
+-   return pvr_shader_create(state->ir.nir, screen->pco_ctx);
++   struct nir_shader *src = state->ir.nir->info.stage == MESA_SHADER_FRAGMENT
++                               ? nir_shader_clone(NULL, state->ir.nir)
++                               : NULL;
++   struct pvr_shader *shader = pvr_shader_create(state->ir.nir, screen->pco_ctx);
++   if (shader != NULL)
++      shader->src_nir = src;
++   else
++      ralloc_free(src);
++   return shader;
+ }
+ 
+ static void *
+@@ -595,12 +617,99 @@ pvr_delete_vs_state(UNUSED struct pipe_context *pctx, void *state)
+ {
+    pvr_shader_destroy(state);
+ }
++static void *
++pvr_create_vertex_elements_state(UNUSED struct pipe_context *pctx, unsigned count,
++                                 const struct pipe_vertex_element *elements)
++{
++   struct pvr_vertex_elements *ve = CALLOC_STRUCT(pvr_vertex_elements);
++   if (ve == NULL)
++      return NULL;
++   ve->count = MIN2(count, PIPE_MAX_ATTRIBS);
++   memcpy(ve->elements, elements, ve->count * sizeof(*elements));
++   return ve;
++}
++
++static void
++pvr_delete_vertex_elements_state(UNUSED struct pipe_context *pctx, void *state)
++{
++   FREE(state);
++}
++
++static void *
++pvr_create_sampler_state(UNUSED struct pipe_context *pctx, const struct pipe_sampler_state *state)
++{
++   return pvr_state_copy(state, sizeof(*state));
++}
++
++static struct pipe_sampler_view *
++pvr_create_sampler_view(struct pipe_context *pctx, struct pipe_resource *texture,
++                        const struct pipe_sampler_view *templ)
++{
++   struct pipe_sampler_view *view = CALLOC_STRUCT(pipe_sampler_view);
++   if (view == NULL)
++      return NULL;
++   *view = *templ;
++   view->texture = NULL;
++   pipe_resource_reference(&view->texture, texture);
++   view->context = pctx;
++   pipe_reference_init(&view->reference, 1);
++   return view;
++}
++
++/* State the draw path does not consume yet: accepted so the state tracker can set it. */
++static void pvr_set_scissor_states(UNUSED struct pipe_context *p, UNUSED unsigned s, UNUSED unsigned n,
++                                   UNUSED const struct pipe_scissor_state *st) {}
++static void pvr_set_blend_color(UNUSED struct pipe_context *p, UNUSED const struct pipe_blend_color *c) {}
++static void pvr_set_clip_state(UNUSED struct pipe_context *p, UNUSED const struct pipe_clip_state *c) {}
++static void pvr_set_polygon_stipple(UNUSED struct pipe_context *p, UNUSED const struct pipe_poly_stipple *s) {}
++static void pvr_texture_barrier(UNUSED struct pipe_context *p, UNUSED unsigned flags) {}
++static void pvr_memory_barrier(UNUSED struct pipe_context *p, UNUSED unsigned flags) {}
++static void pvr_flush_resource(UNUSED struct pipe_context *p, UNUSED struct pipe_resource *r) {}
++static void pvr_invalidate_resource(UNUSED struct pipe_context *p, UNUSED struct pipe_resource *r) {}
++
++/* shortcut: no GPU blit yet. Same-format, unscaled copies go through the CPU; anything else is
++ * reported and skipped. */
++static void
++pvr_blit(struct pipe_context *pctx, const struct pipe_blit_info *info)
++{
++   if (info->src.format == info->dst.format && info->src.box.width == info->dst.box.width &&
++       info->src.box.height == info->dst.box.height && info->mask == PIPE_MASK_RGBA &&
++       !info->scissor_enable) {
++      util_resource_copy_region(pctx, info->dst.resource, info->dst.level, info->dst.box.x,
++                                info->dst.box.y, info->dst.box.z, info->src.resource,
++                                info->src.level, &info->src.box);
++      return;
++   }
++   static bool warned;
++   if (!warned) {
++      warned = true;
++      mesa_logw("pvr: blit with conversion or scaling is not supported yet; skipped");
++   }
++}
++
++static void
++pvr_clear_render_target(struct pipe_context *pctx, struct pipe_surface *dst,
++                        const union pipe_color_union *color, unsigned x, unsigned y,
++                        unsigned w, unsigned h, UNUSED bool render_condition_enabled)
++{
++   pvr_draw_flush(pvr_context(pctx));
++   util_clear_render_target(pctx, dst, color, x, y, w, h);
++}
++
++static void
++pvr_clear_depth_stencil(struct pipe_context *pctx, struct pipe_surface *dst, unsigned flags,
++                        double depth, unsigned stencil, unsigned x, unsigned y, unsigned w,
++                        unsigned h, UNUSED bool render_condition_enabled)
++{
++   pvr_draw_flush(pvr_context(pctx));
++   util_clear_depth_stencil(pctx, dst, flags, depth, stencil, x, y, w, h);
++}
+ 
+ static void
+ pvr_context_destroy(struct pipe_context *pctx)
+ {
+    struct pvr_context *ctx = pvr_context(pctx);
+-
++   pvr_draw_destroy(ctx);
+    pvr_compute_state_finish(ctx->compute);
+    util_unreference_framebuffer_state(&ctx->fb);
+    FREE(ctx);
+@@ -657,6 +766,25 @@ pvr_context_create(struct pipe_screen *pscreen, UNUSED void *priv,
+    ctx->base.set_constant_buffer = pvr_set_constant_buffer;
+    ctx->base.set_vertex_buffers = pvr_set_vertex_buffers;
+    ctx->base.bind_vertex_elements_state = pvr_bind_vertex_elements_state;
++   ctx->base.create_vertex_elements_state = pvr_create_vertex_elements_state;
++   ctx->base.delete_vertex_elements_state = pvr_delete_vertex_elements_state;
++   ctx->base.create_sampler_state = pvr_create_sampler_state;
++   ctx->base.delete_sampler_state = pvr_delete_state;
++   ctx->base.create_sampler_view = pvr_create_sampler_view;
++   ctx->base.buffer_subdata = u_default_buffer_subdata;
++   ctx->base.texture_subdata = u_default_texture_subdata;
++   ctx->base.set_scissor_states = pvr_set_scissor_states;
++   ctx->base.set_blend_color = pvr_set_blend_color;
++   ctx->base.set_clip_state = pvr_set_clip_state;
++   ctx->base.set_polygon_stipple = pvr_set_polygon_stipple;
++   ctx->base.texture_barrier = pvr_texture_barrier;
++   ctx->base.memory_barrier = pvr_memory_barrier;
++   ctx->base.flush_resource = pvr_flush_resource;
++   ctx->base.invalidate_resource = pvr_invalidate_resource;
++   ctx->base.resource_copy_region = util_resource_copy_region;
++   ctx->base.blit = pvr_blit;
++   ctx->base.clear_render_target = pvr_clear_render_target;
++   ctx->base.clear_depth_stencil = pvr_clear_depth_stencil;
+    ctx->base.draw_vbo = pvr_draw_vbo;
+    ctx->base.set_stencil_ref = pvr_set_stencil_ref;
+    ctx->base.set_sample_mask = pvr_set_sample_mask;
+diff --git a/src/gallium/drivers/pvr_native/pvr_context.h b/src/gallium/drivers/pvr_native/pvr_context.h
+index 23e21400..57b6e662 100644
+--- a/src/gallium/drivers/pvr_native/pvr_context.h
++++ b/src/gallium/drivers/pvr_native/pvr_context.h
+@@ -14,7 +14,13 @@
+ 
+ struct pvr_shader;
+ struct pvr_compute_state;
++struct pvr_draw_state;
+ 
++/* The driver's vertex-elements object: a copy of the elements the state tracker created. */
++struct pvr_vertex_elements {
++   unsigned count;
++   struct pipe_vertex_element elements[PIPE_MAX_ATTRIBS];
++};
+ struct pvr_context {
+    struct pipe_context base;
+ 
+@@ -45,7 +51,8 @@ struct pvr_context {
+ 
+    /* The compute fallback's GPU resources and compute context, built on the first draw. */
+    struct pvr_compute_state *compute;
+-
++   /* The TA/3D draw path (pvr_draw.c), built on the first draw it can take. */
++   struct pvr_draw_state *draw;
+    /* Draws that reached the GPU through the compute fallback. */
+    unsigned draws_executed;
+ 
+diff --git a/src/gallium/drivers/pvr_native/pvr_csb.c b/src/gallium/drivers/pvr_native/pvr_csb.c
+index 9f7a9906..5b0fa300 100644
+--- a/src/gallium/drivers/pvr_native/pvr_csb.c
++++ b/src/gallium/drivers/pvr_native/pvr_csb.c
+@@ -192,6 +192,8 @@ pvr_csb_emit_index_list(struct pvr_csb *csb, uint64_t index_addr, uint32_t index
+    struct ROGUE_VDMCTRL_INDEX_LIST0 list0 = {
+       .block_type = ROGUE_VDMCTRL_BLOCK_TYPE_INDEX_LIST,
+       .index_addr_present = have_addr,
++      /* bits 39:32 of the index buffer address (csbgen shifts by 32); the LSB word carries the rest */
++      .index_base_addrmsb = index_addr,
+       .index_count_present = true,
+       .index_instance_count_present = have_instances,
+       /* The capture leaves degenerate-culling and patch count at their defaults: this part has no
+diff --git a/src/gallium/drivers/pvr_native/pvr_draw.c b/src/gallium/drivers/pvr_native/pvr_draw.c
+new file mode 100644
+index 00000000..08dac7f8
+--- /dev/null
++++ b/src/gallium/drivers/pvr_native/pvr_draw.c
+@@ -0,0 +1,732 @@
++/* Copyright 2026 The Mesa authors
++ * SPDX-License-Identifier: MIT
++ *
++ * The TA/3D draw path, ported from the probe's verified render (pvr_probe.c) and the Vulkan
++ * driver's render setup. See pvr_draw.h.
++ */
++#include <inttypes.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++#include "pvr_draw.h"
++#include "pvr_bo.h"
++#include "pvr_context.h"
++#include "pvr_csb.h"
++#include "pvr_hwrt.h"
++#include "pvr_resource.h"
++#include "pvr_screen.h"
++#include "pvr_shader.h"
++#include "pvr_static.h"
++#include "pvr_vm.h"
++
++#include "nir_builder.h"
++#include "pco/pco_data.h"
++#include "pds/pvr_pds.h"
++#include "pipe/p_state.h"
++#include "util/format/u_format.h"
++#include "util/log.h"
++#include "util/macros.h"
++#include "util/u_math.h"
++#include "util/u_inlines.h"
++
++#define ARENA_GENERAL_SIZE (1u << 20)
++#define ARENA_PDS_SIZE (256u << 10)
++#define CTRL_SIZE (64u << 10)
++
++struct pvr_draw_arena {
++   struct pvr_bo bo;
++   uint64_t addr;
++   uint32_t used;
++};
++
++struct pvr_draw_bg {
++   uint32_t color;
++   uint64_t pds_offset;
++};
++
++struct pvr_draw_state {
++   bool ready, failed;
++   /* The heap carveouts with the firmware's static programs (VDM sync, pixel event, fence): the
++    * TA reads them at every kick. */
++   struct pvr_static_memory sm;
++   struct pvr_gpu_context gctx;
++   struct pvr_bo fl_bo[2];
++   uint64_t fl_addr[2];
++   uint32_t fl_handle[2];
++
++   /* HWRT data set for the current target size: tpc, vheap, mlist0, mlist1, rgn0, rgn1. */
++   uint32_t dset, dset_w, dset_h;
++   struct pvr_bo hw_bo[6];
++   uint64_t hw_addr[6];
++
++   struct pvr_draw_arena gen; /* general heap: TA blocks, scissor, indices */
++   struct pvr_draw_arena pds; /* PDS heap: per-draw vertex programs */
++   struct pvr_bo ctrl_bo;
++   uint64_t ctrl_addr;
++   struct pvr_csb ctrl;
++   struct pvr_bo bct_bo;
++   uint64_t bct_addr;
++
++   /* The open render. */
++   bool open;
++   unsigned ndraws;
++   struct pipe_resource *rt;
++   uint32_t rt_w, rt_h;
++
++   bool clear_valid;
++   uint32_t clear_color;
++
++   /* Caches. */
++   uint64_t eot_rt_addr;
++   uint64_t eot_pds_offset;
++   struct pvr_draw_bg bg[4];
++   unsigned nr_bg;
++};
++
++static struct pvr_screen *
++draw_screen(struct pvr_context *ctx)
++{
++   return pvr_screen(ctx->base.screen);
++}
++
++/* A buffer mapped into the general heap through the VA allocator. */
++static bool
++draw_general_bo(struct pvr_screen *scr, uint64_t size, uint64_t flags, struct pvr_bo *bo,
++                uint64_t *addr, bool cpu)
++{
++   size = ALIGN_POT(MAX2(size, 4096), 4096);
++   if (!pvr_bo_create_flags(scr->fd, size, 1, flags, bo))
++      return false;
++   *addr = pvr_vm_alloc(&scr->vm, bo->size, scr->vm.general.page_size);
++   if (*addr == 0 || !pvr_vm_map(&scr->vm, *addr, bo->handle, bo->size))
++      return false;
++   return !cpu || pvr_bo_map(scr->fd, bo);
++}
++
++static void *
++arena_alloc(struct pvr_draw_arena *a, uint32_t size, uint32_t align, uint64_t *addr)
++{
++   uint32_t at = ALIGN_POT(a->used, align);
++   if (at + size > a->bo.size)
++      return NULL;
++   a->used = at + size;
++   *addr = a->addr + at;
++   return (uint8_t *)a->bo.map + at;
++}
++
++static bool
++draw_init(struct pvr_context *ctx, struct pvr_draw_state *d)
++{
++   struct pvr_screen *scr = draw_screen(ctx);
++   const uint32_t local_pages =
++      (uint32_t)(ALIGN_POT(scr->dev_runtime_info.min_free_list_size, 65536) / 4096);
++
++   if (d->ready || d->failed)
++      return d->ready;
++   d->failed = true;
++   if (!scr->vm_valid || !pvr_static_memory_init(&scr->vm, &scr->dev_info, &d->sm) ||
++       !pvr_gpu_context_create(&scr->vm, &scr->dev_info, &d->gctx))
++      return false;
++   /* Free lists: PM-owned, no CPU access (same sizes the probe and Vulkan use). */
++   if (!draw_general_bo(scr, (uint64_t)local_pages * 4, DRM_PVR_BO_PM_FW_PROTECT, &d->fl_bo[0],
++                        &d->fl_addr[0], false) ||
++       !draw_general_bo(scr, 65536 * 4, DRM_PVR_BO_PM_FW_PROTECT, &d->fl_bo[1], &d->fl_addr[1],
++                        false) ||
++       !pvr_free_list_create(&scr->vm, d->fl_addr[0], local_pages, local_pages, 0, 0,
++                             &d->fl_handle[0]) ||
++       !pvr_free_list_create(&scr->vm, d->fl_addr[1], 512, 65536, 256, 13, &d->fl_handle[1]))
++      return false;
++   if (!draw_general_bo(scr, ARENA_GENERAL_SIZE, DRM_PVR_BO_ALLOW_CPU_USERSPACE_ACCESS,
++                        &d->gen.bo, &d->gen.addr, true) ||
++       !draw_general_bo(scr, CTRL_SIZE, DRM_PVR_BO_ALLOW_CPU_USERSPACE_ACCESS, &d->ctrl_bo,
++                        &d->ctrl_addr, true) ||
++       !draw_general_bo(scr, 4096, DRM_PVR_BO_ALLOW_CPU_USERSPACE_ACCESS, &d->bct_bo,
++                        &d->bct_addr, true))
++      return false;
++   d->pds.addr = pvr_vm_heap_alloc(&scr->vm, DRM_PVR_HEAP_PDS_CODE_DATA, ARENA_PDS_SIZE, 4096,
++                                   &d->pds.bo);
++   if (d->pds.addr == 0 || !pvr_bo_map(scr->fd, &d->pds.bo))
++      return false;
++   d->failed = false;
++   d->ready = true;
++   return true;
++}
++
++/* The HWRT data set for a target size, sized from pvr_hwrt_sizes(). */
++static bool
++draw_hwrt(struct pvr_context *ctx, struct pvr_draw_state *d, uint32_t w, uint32_t h)
++{
++   struct pvr_screen *scr = draw_screen(ctx);
++   struct pvr_hwrt_sizes sz;
++   uint64_t sizes[6];
++   static const uint64_t flags[6] = { 0, 0, DRM_PVR_BO_PM_FW_PROTECT, DRM_PVR_BO_PM_FW_PROTECT,
++                                      0, 0 };
++
++   if (d->dset != 0 && d->dset_w == w && d->dset_h == h)
++      return true;
++   /* shortcut: the previous data set and its buffers are leaked on a size change; free them
++    * (destroy ioctl + unmap) once targets change size often. */
++   d->dset = 0;
++   if (!pvr_hwrt_sizes(&scr->dev_info, w, h, 1, 1, &sz))
++      return false;
++   sizes[0] = sz.tpc_size;
++   sizes[1] = 4096; /* VHEAP table, single layer: no RTC */
++   sizes[2] = sizes[3] = 4096; /* MLIST: ~1 KiB for a 256 MiB global free list */
++   sizes[4] = sizes[5] = sz.region_header_size;
++   for (unsigned i = 0; i < 6; i++) {
++      if (!draw_general_bo(scr, sizes[i], flags[i], &d->hw_bo[i], &d->hw_addr[i], false))
++         return false;
++   }
++   struct pvr_hwrt_dataset_desc desc = {
++      .tpc_dev_addr = d->hw_addr[0],
++      .tpc_size = (uint32_t)sz.tpc_size,
++      .tpc_stride = sz.tpc_stride,
++      .vheap_table_dev_addr = d->hw_addr[1],
++      .pm_mlist_dev_addr = { d->hw_addr[2], d->hw_addr[3] },
++      .region_header_dev_addr = { d->hw_addr[4], d->hw_addr[5] },
++      .free_list_handles = { d->fl_handle[0], d->fl_handle[1] },
++      .width = w,
++      .height = h,
++      .samples = 1,
++      .layers = 1,
++      .region_header_size = (uint32_t)sz.region_header_size,
++   };
++   if (!pvr_hwrt_dataset_create(&scr->vm, &desc, &d->dset))
++      return false;
++   d->dset_w = w;
++   d->dset_h = h;
++   return true;
++}
++
++/* USC code into the USC heap; returns the heap-relative offset or 0. */
++static uint32_t
++draw_upload_usc(struct pvr_screen *scr, const void *code, unsigned size)
++{
++   struct pvr_bo bo = { 0 };
++   const uint64_t addr = pvr_vm_heap_alloc(&scr->vm, DRM_PVR_HEAP_USC_CODE, size, 16, &bo);
++   if (addr == 0 || !pvr_bo_map(scr->fd, &bo))
++      return 0;
++   memcpy(bo.map, code, size);
++   return (uint32_t)(addr - scr->vm.heaps[DRM_PVR_HEAP_USC_CODE].base);
++}
++
++/* Persistent PDS bytes into the PDS heap; returns the heap-relative offset or 0. */
++static uint64_t
++draw_upload_pds(struct pvr_screen *scr, const void *bytes, unsigned size)
++{
++   struct pvr_bo bo = { 0 };
++   const uint64_t addr = pvr_vm_heap_alloc(&scr->vm, DRM_PVR_HEAP_PDS_CODE_DATA, size, 16, &bo);
++   if (addr == 0 || !pvr_bo_map(scr->fd, &bo))
++      return 0;
++   memcpy(bo.map, bytes, size);
++   return addr - scr->vm.heaps[DRM_PVR_HEAP_PDS_CODE_DATA].base;
++}
++
++/* A fragment program: USC code plus its PDS kick program (data + code contiguous). */
++static bool
++draw_upload_fs(struct pvr_screen *scr, struct pvr_shader *fs)
++{
++   struct pvr_shader_pds_launcher_info info;
++   uint8_t prog[1024] = { 0 };
++   uint32_t len;
++
++   if (fs->pds_offset != 0)
++      return true;
++   fs->usc_offset = draw_upload_usc(scr, fs->binary, fs->binary_size);
++   if (fs->usc_offset == 0)
++      return false;
++   len = pvr_shader_pds_launcher(fs, fs->usc_offset, prog, sizeof(prog), &info);
++   if (len == 0)
++      return false;
++   fs->pds_offset = (uint32_t)draw_upload_pds(scr, prog, len);
++   fs->pds_data_dwords = info.data_dwords;
++   return fs->pds_offset != 0;
++}
++
++/* The background object for a clear colour: a constant-colour fragment program. */
++static uint64_t
++draw_bg_program(struct pvr_context *ctx, struct pvr_draw_state *d, uint32_t color)
++{
++   struct pvr_screen *scr = draw_screen(ctx);
++   nir_builder b;
++   struct pvr_shader *bg;
++
++   for (unsigned i = 0; i < d->nr_bg; i++) {
++      if (d->bg[i].color == color)
++         return d->bg[i].pds_offset;
++   }
++   b = nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, pco_nir_options(), "pvr_bg");
++   b.shader->info.internal = false;
++   nir_frag_store_pco(&b, nir_imm_int(&b, (int)color), .base = 0);
++   nir_jump(&b, nir_jump_return);
++   bg = pvr_shader_create(b.shader, scr->pco_ctx);
++   if (bg == NULL || !draw_upload_fs(scr, bg))
++      return 0;
++   /* shortcut: four cached colours, round robin; the evicted programs stay allocated. */
++   const unsigned slot = d->nr_bg < ARRAY_SIZE(d->bg) ? d->nr_bg++ : (color & 3);
++   d->bg[slot] = (struct pvr_draw_bg){ .color = color, .pds_offset = bg->pds_offset };
++   return bg->pds_offset;
++}
++
++/* The end-of-tile program for a target address: PBE state words baked into a USC program, kicked by
++ * a PDS pixel-event data segment. */
++static uint64_t
++draw_eot_program(struct pvr_context *ctx, struct pvr_draw_state *d, uint64_t rt_addr,
++                 enum pipe_format format)
++{
++   struct pvr_screen *scr = draw_screen(ctx);
++   struct pvr_shader_eot eot = { 0 };
++   struct pvr_pds_event_program program = { 0 };
++   uint32_t state_words[2];
++   uint32_t staging[64] = { 0 };
++   uint32_t usc_offset;
++
++   if (d->eot_rt_addr == rt_addr && d->eot_pds_offset != 0)
++      return d->eot_pds_offset;
++   pvr_csb_pbe_state_words(rt_addr, format, 0, state_words);
++   if (!pvr_shader_eot_create(scr->pco_ctx, &eot, state_words))
++      return 0;
++   usc_offset = draw_upload_usc(scr, eot.binary, eot.binary_size);
++   if (usc_offset == 0)
++      return 0;
++   pvr_pds_setup_doutu(&program.task_control, usc_offset, eot.temps,
++                       PVR_ROGUE_PDSINST_DOUT_FIELDS_DOUTU_SAMPLE_RATE_INSTANCE, false);
++   pvr_pds_generate_pixel_event(&program, NULL, PDS_GENERATE_SIZES, &scr->dev_info);
++   if (program.data_size > ARRAY_SIZE(staging))
++      return 0;
++   pvr_pds_generate_pixel_event(&program, staging, PDS_GENERATE_DATA_SEGMENT, &scr->dev_info);
++   d->eot_pds_offset = draw_upload_pds(scr, staging, program.data_size * 4);
++   d->eot_rt_addr = rt_addr;
++   return d->eot_pds_offset;
++}
++
++static bool
++draw_topology(enum mesa_prim mode, enum ROGUE_VDMCTRL_PRIMITIVE_TOPOLOGY *out)
++{
++   switch (mode) {
++   case MESA_PRIM_POINTS: *out = ROGUE_VDMCTRL_PRIMITIVE_TOPOLOGY_POINT_LIST; return true;
++   case MESA_PRIM_LINES: *out = ROGUE_VDMCTRL_PRIMITIVE_TOPOLOGY_LINE_LIST; return true;
++   case MESA_PRIM_LINE_STRIP: *out = ROGUE_VDMCTRL_PRIMITIVE_TOPOLOGY_LINE_STRIP; return true;
++   case MESA_PRIM_TRIANGLES: *out = ROGUE_VDMCTRL_PRIMITIVE_TOPOLOGY_TRI_LIST; return true;
++   case MESA_PRIM_TRIANGLE_STRIP: *out = ROGUE_VDMCTRL_PRIMITIVE_TOPOLOGY_TRI_STRIP; return true;
++   case MESA_PRIM_TRIANGLE_FAN: *out = ROGUE_VDMCTRL_PRIMITIVE_TOPOLOGY_TRI_FAN; return true;
++   default: return false;
++   }
++}
++
++/* Pack a clear colour for an 8-bit-per-channel target. */
++static uint32_t
++draw_pack_color(enum pipe_format format, const union pipe_color_union *c)
++{
++   uint32_t packed = 0;
++   util_format_pack_rgba(format, &packed, c->f, 1);
++   return packed;
++}
++
++static bool
++draw_format_ok(enum pipe_format f)
++{
++   return f == PIPE_FORMAT_R8G8B8A8_UNORM || f == PIPE_FORMAT_B8G8R8A8_UNORM ||
++          f == PIPE_FORMAT_R8G8B8X8_UNORM || f == PIPE_FORMAT_B8G8R8X8_UNORM;
++}
++
++/* The vertex attribute fetch program and its data segment for the bound vertex elements. */
++static bool
++draw_vertex_program(struct pvr_context *ctx, struct pvr_draw_state *d, struct pvr_shader *vs,
++                    uint64_t *code_off, uint64_t *data_off, uint32_t *temps,
++                    uint32_t *data_dwords)
++{
++   struct pvr_screen *scr = draw_screen(ctx);
++   const struct pvr_vertex_elements *ve = ctx->velements_state;
++   struct pvr_pds_vertex_dma dmas[16];
++   struct pvr_pds_vertex_primary_program_input input = { .dma_list = dmas };
++   struct pvr_pds_info info = { 0 };
++   uint64_t vb_addr[PIPE_MAX_ATTRIBS] = { 0 };
++   uint32_t vb_stride[PIPE_MAX_ATTRIBS] = { 0 };
++   const uint64_t pds_base = scr->vm.heaps[DRM_PVR_HEAP_PDS_CODE_DATA].base;
++   uint64_t code_addr, data_addr;
++   uint32_t *code, *data;
++   bool ok = true;
++
++   if (ve == NULL)
++      return false;
++   for (unsigned i = 0; i < vs->nr_inputs; i++) {
++      const struct pipe_vertex_element *el;
++      const struct pipe_vertex_buffer *vb;
++      if (vs->inputs[i].element >= ve->count)
++         return false;
++      el = &ve->elements[vs->inputs[i].element];
++      if (el->vertex_buffer_index >= ctx->nr_vertex_buffers || el->instance_divisor != 0)
++         return false;
++      vb = &ctx->vertex_buffers[el->vertex_buffer_index];
++      /* shortcut: float32 attributes only (the DMA copies dwords; pco reads them as float). */
++      if (vb->is_user_buffer || vb->buffer.resource == NULL ||
++          util_format_description(el->src_format)->channel[0].type != UTIL_FORMAT_TYPE_FLOAT ||
++          util_format_get_blocksize(el->src_format) % 4 != 0)
++         return false;
++      vb_addr[el->vertex_buffer_index] =
++         pvr_resource(vb->buffer.resource)->dev_addr + vb->buffer_offset;
++      vb_stride[el->vertex_buffer_index] = el->src_stride;
++      dmas[i] = (struct pvr_pds_vertex_dma){
++         .offset = el->src_offset,
++         .stride = el->src_stride,
++         .size_in_dwords = util_format_get_blocksize(el->src_format) / 4,
++         .attrib_size_in_bytes = util_format_get_blocksize(el->src_format),
++         .destination = vs->inputs[i].vtxin,
++         .binding_index = el->vertex_buffer_index,
++      };
++   }
++   input.dma_count = vs->nr_inputs;
++   pvr_pds_setup_doutu(&input.usc_task_control, 0, vs->temps,
++                       PVR_ROGUE_PDSINST_DOUT_FIELDS_DOUTU_SAMPLE_RATE_INSTANCE, false);
++   info.entries_size_in_bytes = 4096;
++   info.entries = calloc(1, info.entries_size_in_bytes);
++   if (info.entries == NULL)
++      return false;
++   pvr_pds_generate_vertex_primary_program(&input, NULL, &info, false, &scr->dev_info);
++   code = arena_alloc(&d->pds, info.code_size_in_dwords * 4, 64, &code_addr);
++   data = arena_alloc(&d->pds, MAX2(info.data_size_in_dwords, 1) * 4, 64, &data_addr);
++   if (code == NULL || data == NULL) {
++      free(info.entries);
++      return false;
++   }
++   pvr_pds_generate_vertex_primary_program(&input, code, &info, false, &scr->dev_info);
++   memset(data, 0, info.data_size_in_dwords * 4);
++
++   /* Patch the data segment from the const map. Offsets are in dwords. */
++   const uint8_t *entry = (const uint8_t *)info.entries;
++   const uint8_t *end = entry + MIN2(info.entries_written_size_in_bytes, info.entries_size_in_bytes);
++   while (ok && entry + sizeof(struct pvr_const_map_entry) <= end) {
++      const struct pvr_const_map_entry *hdr = (const void *)entry;
++      switch (hdr->type) {
++      case PVR_PDS_CONST_MAP_ENTRY_TYPE_DOUTU_ADDRESS: {
++         const struct pvr_const_map_entry_doutu_address *e = (const void *)entry;
++         uint64_t v = 0;
++         pvr_set_usc_execution_address64(&v, vs->usc_offset);
++         v |= e->doutu_control;
++         memcpy(&data[e->const_offset], &v, 8);
++         entry += sizeof(*e);
++         break;
++      }
++      case PVR_PDS_CONST_MAP_ENTRY_TYPE_VERTEX_ATTRIBUTE_ADDRESS: {
++         const struct pvr_const_map_entry_vertex_attribute_address *e = (const void *)entry;
++         const uint64_t v = vb_addr[e->binding_index] + e->offset;
++         memcpy(&data[e->const_offset], &v, 8);
++         entry += sizeof(*e);
++         break;
++      }
++      case PVR_PDS_CONST_MAP_ENTRY_TYPE_VERTEX_ATTRIBUTE_STRIDE: {
++         const struct pvr_const_map_entry_vertex_attribute_stride *e = (const void *)entry;
++         data[e->const_offset] = vb_stride[e->binding_index];
++         entry += sizeof(*e);
++         break;
++      }
++      case PVR_PDS_CONST_MAP_ENTRY_TYPE_LITERAL32: {
++         const struct pvr_const_map_entry_literal32 *e = (const void *)entry;
++         data[e->const_offset] = e->literal_value;
++         entry += sizeof(*e);
++         break;
++      }
++      case PVR_PDS_CONST_MAP_ENTRY_TYPE_LITERAL64: {
++         const struct pvr_const_map_entry_literal64 *e = (const void *)entry;
++         memcpy(&data[e->const_offset], &e->literal_value, 8);
++         entry += sizeof(*e);
++         break;
++      }
++      default:
++         mesa_loge("pvr: draw: no patch rule for PDS const-map entry type %u", hdr->type);
++         ok = false;
++      }
++   }
++   *code_off = code_addr - pds_base;
++   *data_off = data_addr - pds_base;
++   *temps = info.temps_required;
++   *data_dwords = info.data_size_in_dwords;
++   free(info.entries);
++   return ok;
++}
++
++static bool
++draw_open(struct pvr_context *ctx, struct pvr_draw_state *d, struct pipe_resource *rt,
++          uint32_t w, uint32_t h)
++{
++   if (!draw_hwrt(ctx, d, w, h))
++      return false;
++   d->gen.used = 0;
++   d->pds.used = 0;
++   pvr_csb_init(&d->ctrl, d->ctrl_bo.map, d->ctrl_bo.size, PVR_CSB_LINK_DWORDS);
++   pipe_resource_reference(&d->rt, rt);
++   d->rt_w = w;
++   d->rt_h = h;
++   d->ndraws = 0;
++   d->open = true;
++   return true;
++}
++
++bool
++pvr_draw_3d(struct pvr_context *ctx, const struct pipe_draw_info *info,
++            const struct pipe_draw_start_count_bias *draws, unsigned num_draws)
++{
++   struct pvr_screen *scr = draw_screen(ctx);
++   struct pvr_draw_state *d;
++   struct pipe_resource *rt = ctx->fb.nr_cbufs ? ctx->fb.cbufs[0].texture : NULL;
++   struct pvr_shader *vs = ctx->vs, *fs = ctx->fs;
++   enum ROGUE_VDMCTRL_PRIMITIVE_TOPOLOGY topo;
++
++   if (getenv("PVR_NATIVE_COMPUTE_FALLBACK") || num_draws != 1 || rt == NULL || vs == NULL ||
++       fs == NULL || fs->src_nir == NULL || !draw_format_ok(ctx->fb.cbufs[0].format) ||
++       !draw_topology(info->mode, &topo) ||
++       info->instance_count != 1 || draws[0].count == 0)
++      return false;
++   if (info->index_size && draws[0].index_bias != 0)
++      return false;
++
++   if (ctx->draw == NULL)
++      ctx->draw = calloc(1, sizeof(struct pvr_draw_state));
++   d = ctx->draw;
++   if (d == NULL || !draw_init(ctx, d))
++      return false;
++
++   /* The fragment shader variant for this target format. */
++   if (fs->variant == NULL || fs->variant_format != ctx->fb.cbufs[0].format) {
++      fs->variant = pvr_shader_create_fs(nir_shader_clone(NULL, fs->src_nir), scr->pco_ctx,
++                                         ctx->fb.cbufs[0].format);
++      fs->variant_format = ctx->fb.cbufs[0].format;
++      if (fs->variant == NULL)
++         return false;
++   }
++   struct pvr_shader *fsv = fs->variant;
++   if (!draw_upload_fs(scr, fsv))
++      return false;
++   if (vs->usc_offset == 0 && (vs->usc_offset = draw_upload_usc(scr, vs->binary, vs->binary_size)) == 0)
++      return false;
++
++   if (d->open && (d->rt != rt || d->rt_w != ctx->fb.width || d->rt_h != ctx->fb.height))
++      pvr_draw_flush(ctx);
++   if (!d->open && !draw_open(ctx, d, rt, ctx->fb.width, ctx->fb.height))
++      return false;
++
++   /* Vertex fetch program. */
++   uint64_t vcode, vdata;
++   uint32_t vtemps, vdwords;
++   if (!draw_vertex_program(ctx, d, vs, &vcode, &vdata, &vtemps, &vdwords))
++      return false;
++
++   /* TA state block. */
++   uint64_t ta_addr;
++   uint32_t *ta = arena_alloc(&d->gen, 256, 64, &ta_addr);
++   if (ta == NULL)
++      return false;
++   struct pvr_csb block;
++   const struct pvr_ta_presence pres = {
++      .ispctl = true, .ispctl_fa = true, .ispctl_fb = true, .ispctl_dbsc = true,
++      .pds_state_ptr0 = true, .pds_state_ptr3 = true, .region_clip = true, .viewport = true,
++      .viewport_count = 1, .wclamp = true, .outselects = true, .varying_words = true,
++      .ppp_ctrl = true, .stream_out_size = true,
++   };
++   const struct pvr_ta_ispctl ispctl = { .bpres = true };
++   const struct ROGUE_TA_STATE_ISPA ispa = {
++      .objtype = ROGUE_TA_OBJTYPE_TRIANGLE,
++      .passtype = ROGUE_TA_PASSTYPE_OPAQUE,
++      .dwritedisable = true,
++      .dcmpmode = ROGUE_TA_CMPMODE_ALWAYS,
++      .pointlinewidth = 15,
++   };
++   const struct ROGUE_TA_STATE_ISPB ispb = {
++      .scmpmode = ROGUE_TA_CMPMODE_ALWAYS,
++      .sop1 = ROGUE_TA_ISPB_STENCILOP_KEEP,
++      .sop2 = ROGUE_TA_ISPB_STENCILOP_KEEP,
++      .sop3 = ROGUE_TA_ISPB_STENCILOP_KEEP,
++   };
++   const struct ROGUE_TA_STATE_ISPDBSC dbsc = { 0 };
++   const struct pvr_pds_sizes pds_sizes = {
++      .usc_varying_bytes = fsv->coeffs * 4,
++      .usc_shared_count = fsv->shareds,
++   };
++   const struct pipe_viewport_state *pv = &ctx->viewports[0];
++   const struct pvr_viewport_words vp = {
++      .a0 = fui(pv->translate[0]), .m0 = fui(pv->scale[0]),
++      .a1 = fui(pv->translate[1]), .m1 = fui(pv->scale[1]),
++      .a2 = fui(pv->translate[2]), .m2 = fui(pv->scale[2]),
++   };
++   const struct ROGUE_TA_STATE_VARYING0 varying0 = { 0 };
++   const struct ROGUE_TA_STATE_VARYING1 varying1 = { 0 };
++   /* shortcut: no face culling yet (draws both faces; visible output is the same for closed
++    * meshes). Map rasterizer->cull_face/front_ccw when a scene needs it. */
++   const struct ROGUE_TA_STATE_PPP_CTRL ppp_ctrl = {
++      .cullmode = ROGUE_TA_CULLMODE_NO_CULLING,
++      .clip_mode = ROGUE_TA_CLIP_MODE_FRONT_REAR,
++      .drawclippededges = true,
++      .flatshade_vtx = ROGUE_TA_FLATSHADE_VTX_VERTEX_0,
++      .wclampen = true,
++   };
++   const struct pvr_ta_output_sel outsel = { .vtxsize = vs->vtxouts, .psprite_size_pres = true };
++   struct pvr_region_clip clip;
++   pvr_region_clip_from_rect(0, 0, d->rt_w, d->rt_h, 16, &clip);
++   pvr_csb_init(&block, ta, 256, 0);
++   if (!pvr_csb_emit_ta_state_header(&block, &pres) ||
++       !pvr_csb_emit_ta_ispctl(&block, NULL, true, &ispctl) ||
++       !pvr_csb_emit_ta_isp_a(&block, &ispa) || !pvr_csb_emit_ta_isp_b(&block, &ispb) ||
++       !pvr_csb_emit_ta_isp_dbsc(&block, &dbsc) ||
++       !pvr_csb_emit_ta_pds_base(&block, PVR_PDS_BASE_SHADER, fsv->pds_offset) ||
++       !pvr_csb_emit_ta_pds_base(&block, PVR_PDS_BASE_TEXUNICODE, 0) ||
++       !pvr_csb_emit_ta_pds_sizeinfo(&block, &pds_sizes, true, 0) ||
++       !pvr_csb_emit_ta_pds_base(&block, PVR_PDS_BASE_UNIFORMDATA, 0) ||
++       !pvr_csb_emit_ta_region_clip(&block, &clip) || !pvr_csb_emit_ta_viewport(&block, &vp) ||
++       !pvr_csb_emit_ta_wclamp(&block, PVR_TA_WCLAMP_MIN_W) ||
++       !pvr_csb_emit_ta_output_sel(&block, &outsel) ||
++       !pvr_csb_emit_ta_varying(&block, &varying0, &varying1) ||
++       !pvr_csb_emit_ta_ppp_ctrl(&block, &ppp_ctrl) || !pvr_csb_emit_ta_stream_out(&block) ||
++       block.overflowed)
++      return false;
++
++   /* Indices: the draw's own, or a generated 0..count-1 list offset by start. */
++   uint64_t idx_addr;
++   enum ROGUE_VDMCTRL_INDEX_SIZE isize;
++   if (info->index_size) {
++      if (info->has_user_indices) {
++         void *p = arena_alloc(&d->gen, draws[0].count * info->index_size, 16, &idx_addr);
++         if (p == NULL)
++            return false;
++         memcpy(p, (const uint8_t *)info->index.user + draws[0].start * info->index_size,
++                draws[0].count * info->index_size);
++      } else {
++         idx_addr = pvr_resource(info->index.resource)->dev_addr +
++                    (uint64_t)draws[0].start * info->index_size;
++      }
++      isize = info->index_size == 1 ? ROGUE_VDMCTRL_INDEX_SIZE_B8
++            : info->index_size == 2 ? ROGUE_VDMCTRL_INDEX_SIZE_B16
++                                    : ROGUE_VDMCTRL_INDEX_SIZE_B32;
++   } else {
++      uint32_t *p = arena_alloc(&d->gen, draws[0].count * 4, 16, &idx_addr);
++      if (p == NULL)
++         return false;
++      for (unsigned i = 0; i < draws[0].count; i++)
++         p[i] = draws[0].start + i;
++      isize = ROGUE_VDMCTRL_INDEX_SIZE_B32;
++   }
++
++   struct pvr_vdm_vs vdm_vs = {
++      .pds_data_addr = vdata,
++      .pds_code_addr = vcode,
++      .output_size = vs->vtxouts,
++      .usc_unified_bytes = vs->vtxins * 4,
++      .pds_temp_dwords = vtemps,
++      .pds_data_dwords = vdwords,
++   };
++   uint32_t vdm_words = 0;
++   pvr_vdm_cam_size(&scr->dev_info, vs->vtxouts, true, &vdm_vs.cam_size, &vdm_vs.max_instances);
++   if (!pvr_csb_emit_ppp_state(&d->ctrl, ta_addr, pvr_csb_size(&block) / 4) ||
++       !pvr_csb_emit_vdm_state(&d->ctrl, false, 0, &vdm_vs, &vdm_words) ||
++       !pvr_csb_emit_index_list(&d->ctrl, idx_addr, draws[0].count, 1, isize, topo) ||
++       pvr_csb_overflowed(&d->ctrl))
++      return false;
++   d->ndraws++;
++   return true;
++}
++
++void
++pvr_draw_note_clear(struct pvr_context *ctx, const union pipe_color_union *color)
++{
++   struct pvr_draw_state *d = ctx->draw;
++   if (ctx->fb.nr_cbufs == 0)
++      return;
++   if (d == NULL) {
++      ctx->draw = d = calloc(1, sizeof(struct pvr_draw_state));
++      if (d == NULL)
++         return;
++   }
++   /* A clear after draws starts a new render. */
++   if (d->open && d->ndraws)
++      pvr_draw_flush(ctx);
++   d->clear_valid = true;
++   d->clear_color = draw_pack_color(ctx->fb.cbufs[0].format, color);
++}
++
++void
++pvr_draw_flush(struct pvr_context *ctx)
++{
++   struct pvr_screen *scr = draw_screen(ctx);
++   struct pvr_draw_state *d = ctx->draw;
++   if (d == NULL || !d->open)
++      return;
++   d->open = false;
++   if (d->ndraws == 0)
++      goto done;
++
++   struct pvr_resource *rt = pvr_resource(d->rt);
++   const enum pipe_format fmt = d->rt->format;
++   uint64_t term_addr, sc_addr;
++   uint32_t *term = arena_alloc(&d->gen, 64, 64, &term_addr);
++   uint32_t *sc = arena_alloc(&d->gen, 16, 16, &sc_addr);
++   if (term == NULL || sc == NULL)
++      goto done;
++
++   /* Terminate block and stream end. */
++   {
++      struct pvr_csb tb;
++      const struct pvr_ta_presence tpres = { .terminate = true };
++      struct pvr_region_clip tclip;
++      pvr_region_clip_from_rect(0, 0, d->rt_w, d->rt_h, 32, &tclip);
++      const struct ROGUE_TA_STATE_TERMINATE0 t0 = {
++         .clip_right = tclip.right, .clip_top = tclip.top, .clip_bottom = tclip.bottom,
++      };
++      const struct ROGUE_TA_STATE_TERMINATE1 t1 = { .clip_left = tclip.left, .render_target = 0 };
++      pvr_csb_init(&tb, term, 64, 0);
++      if (!pvr_csb_emit_ta_state_header(&tb, &tpres) || !pvr_csb_emit_ta_terminate(&tb, &t0, &t1) ||
++          !pvr_csb_emit_ppp_state(&d->ctrl, term_addr, pvr_csb_size(&tb) / 4) ||
++          !pvr_csb_emit_stream_terminate(&d->ctrl) || pvr_csb_overflowed(&d->ctrl))
++         goto done;
++   }
++   /* One full-target scissor rectangle (IPF SCISSOR_WORD_0/1). */
++   sc[0] = d->rt_w;
++   sc[1] = d->rt_h;
++
++   const uint64_t eot = draw_eot_program(ctx, d, rt->dev_addr, fmt);
++   if (!d->clear_valid && !getenv("PVR_NATIVE_QUIET"))
++      mesa_logw("pvr: draw: render without a clear; the background is not loaded yet, so the "
++                "target's previous content is replaced");
++   const uint64_t bg = draw_bg_program(ctx, d, d->clear_valid ? d->clear_color : 0);
++   uint64_t pbe_words[3] = { 0 };
++   if (eot == 0 || bg == 0 ||
++       !pvr_csb_pbe_words(fmt, rt->stride, d->rt_w, d->rt_h, pbe_words))
++      goto done;
++
++   _Alignas(8) uint8_t gstream[256];
++   _Alignas(8) uint8_t fstream[1024];
++   const uint32_t glen =
++      pvr_geom_static_stream(gstream, sizeof(gstream), d->ctrl_addr, d->bct_addr, true, 0, false,
++                             1, 0, PVR_HAS_QUIRK(&scr->dev_info, 49927));
++   const uint32_t flen =
++      pvr_frag_static_stream(fstream, sizeof(fstream), pbe_words, 1, (uint32_t)eot, false);
++   if (glen == 0 || flen == 0)
++      goto done;
++   uint64_t bgnd[3], pr_bgnd[3];
++   pvr_csb_pds_bgnd_words((uint32_t)bg, (uint32_t)bg, (uint32_t)bg, 0, 0, 0, bgnd);
++   pvr_csb_pds_bgnd_words((uint32_t)bg, (uint32_t)bg, (uint32_t)bg, 0, 0, 0, pr_bgnd);
++   pvr_frag_static_stream_fill_bgnd(fstream, sizeof(fstream), d->bct_addr, bgnd, pr_bgnd);
++   /* shortcut: ISP scalars from the verified 512x512 single-colour draw (review item A14). */
++   pvr_frag_static_stream_set_isp(fstream, sizeof(fstream), 0x00007ff8u, 0x80035000u, 0x00000201u);
++   ((uint32_t *)fstream)[2] = (uint32_t)sc_addr; /* isp_scissor_base after the 2-dword header */
++   ((uint32_t *)fstream)[3] = (uint32_t)(sc_addr >> 32);
++
++   if (!pvr_job_submit_render(&scr->vm, d->gctx.handle, gstream, glen, fstream, flen, d->dset, 0))
++      mesa_loge("pvr: draw: the render did not complete (%u draws)", d->ndraws);
++
++done:
++   d->clear_valid = false;
++   d->ndraws = 0;
++   pipe_resource_reference(&d->rt, NULL);
++}
++
++void
++pvr_draw_destroy(struct pvr_context *ctx)
++{
++   if (ctx->draw == NULL)
++      return;
++   pvr_draw_flush(ctx);
++   /* shortcut: GPU objects of the draw path are released with the VM at screen destruction. */
++   free(ctx->draw);
++   ctx->draw = NULL;
++}
+diff --git a/src/gallium/drivers/pvr_native/pvr_draw.h b/src/gallium/drivers/pvr_native/pvr_draw.h
+new file mode 100644
+index 00000000..1f730d3e
+--- /dev/null
++++ b/src/gallium/drivers/pvr_native/pvr_draw.h
+@@ -0,0 +1,27 @@
++/* Copyright 2026 The Mesa authors
++ * SPDX-License-Identifier: MIT
++ *
++ * The fixed-function draw path: GL draws go through the TA (geometry) and ISP/3D (fragment) stages.
++ * Draws accumulate into one control stream per render target; the render is submitted at flush,
++ * readback or target change. Unsupported state returns false so the caller can fall back.
++ */
++#ifndef PVR_DRAW_H
++#define PVR_DRAW_H
++
++#include <stdbool.h>
++#include <stdint.h>
++
++struct pvr_context;
++struct pipe_draw_info;
++struct pipe_draw_start_count_bias;
++union pipe_color_union;
++
++bool pvr_draw_3d(struct pvr_context *ctx, const struct pipe_draw_info *info,
++                 const struct pipe_draw_start_count_bias *draws, unsigned num_draws);
++/* Submit the open render, if any. */
++void pvr_draw_flush(struct pvr_context *ctx);
++/* A colour clear of cbuf 0: the next render's background object writes this colour. */
++void pvr_draw_note_clear(struct pvr_context *ctx, const union pipe_color_union *color);
++void pvr_draw_destroy(struct pvr_context *ctx);
++
++#endif /* PVR_DRAW_H */
+diff --git a/src/gallium/drivers/pvr_native/pvr_shader.c b/src/gallium/drivers/pvr_native/pvr_shader.c
+index a49d7592..bf5213b9 100644
+--- a/src/gallium/drivers/pvr_native/pvr_shader.c
++++ b/src/gallium/drivers/pvr_native/pvr_shader.c
+@@ -11,6 +11,7 @@
+ #include "stdlib.h"
+ 
+ #include "util/log.h"
++#include "util/format/u_format.h"
+ 
+ bool pvr_shader_compile_data(pco_ctx *ctx, struct nir_shader *nir,
+                                     pco_data *data, pco_shader **shader_out,
+@@ -229,8 +230,8 @@ pvr_shader_init_vs_alloc(struct nir_shader *nir, pco_data *data)
+    }
+ }
+ 
+-struct pvr_shader *
+-pvr_shader_create(struct nir_shader *nir, pco_ctx *ctx)
++static struct pvr_shader *
++pvr_shader_create_with(struct nir_shader *nir, pco_ctx *ctx, enum pipe_format color_format)
+ {
+    struct pvr_shader *shader = calloc(1, sizeof(*shader));
+    pco_data data = { 0 };
+@@ -238,6 +239,17 @@ pvr_shader_create(struct nir_shader *nir, pco_ctx *ctx)
+    if (shader == NULL)
+       return NULL;
+ 
++   if (nir->info.stage == MESA_SHADER_FRAGMENT) {
++      data.fs.output_formats[FRAG_RESULT_DATA0] = color_format;
++      /* No depth replication into a colour output: 0 would mean "replicate into output 0", which
++       * makes pco write the fragment's depth over the colour (the Vulkan driver sets ~0u too). */
++      data.fs.z_replicate = ~0u;
++      /* Single-sampled with sample 0 enabled and no alpha-to-coverage (all this driver renders):
++       * without these pco inserts runtime coverage checks that read a dynamic-state shared
++       * register nothing here fills, and the zero mask discards every fragment. */
++      data.fs.no_alpha_to_coverage = true;
++      data.fs.skip_sample_check = true;
++   }
+    if (!pvr_shader_compile_data(ctx, nir, &data, &shader->pco, &shader->binary,
+                                 &shader->binary_size)) {
+       free(shader);
+@@ -263,9 +275,35 @@ pvr_shader_create(struct nir_shader *nir, pco_ctx *ctx)
+       shader->phase_change = data.fs.uses.phase_change;
+    }
+ 
++   if (nir->info.stage == MESA_SHADER_VERTEX) {
++      nir_foreach_shader_in_variable (var, nir) {
++         const pco_range *r;
++         if (var->data.location < 0 || var->data.location >= VERT_ATTRIB_MAX ||
++             shader->nr_inputs >= ARRAY_SIZE(shader->inputs))
++            continue;
++         r = &data.vs.attribs[var->data.location];
++         shader->inputs[shader->nr_inputs].element = var->data.driver_location;
++         shader->inputs[shader->nr_inputs].vtxin = r->start;
++         shader->inputs[shader->nr_inputs].dwords = r->count;
++         shader->nr_inputs++;
++      }
++   }
++
+    return shader;
+ }
+ 
++struct pvr_shader *
++pvr_shader_create(struct nir_shader *nir, pco_ctx *ctx)
++{
++   return pvr_shader_create_with(nir, ctx, PIPE_FORMAT_NONE);
++}
++
++struct pvr_shader *
++pvr_shader_create_fs(struct nir_shader *nir, pco_ctx *ctx, enum pipe_format color_format)
++{
++   return pvr_shader_create_with(nir, ctx, color_format);
++}
++
+ /* The one-attribute vertex DMA both builders are generated from. Shared so the code and its data
+  * segment always describe the same fetch: a program patched against a different DMA than it was
+  * generated for is a mismatch nothing downstream would catch. */
+@@ -502,6 +540,9 @@ pvr_shader_destroy(struct pvr_shader *shader)
+    if (shader == NULL)
+       return;
+ 
++   if (shader->variant)
++      pvr_shader_destroy(shader->variant);
++   ralloc_free(shader->src_nir);
+    ralloc_free(shader->pco);
+    free(shader);
+ }
+@@ -525,6 +566,14 @@ pvr_shader_compile_data(pco_ctx *ctx, struct nir_shader *nir, pco_data *data,
+    if (nir->info.stage == MESA_SHADER_VERTEX)
+       pvr_shader_init_vs_formats(nir, data);
+ 
++   /* GL's single colour output arrives as FRAG_RESULT_COLOR; pco and the output map work on
++    * DATA0..7, as the Vulkan driver's shaders do. */
++   if (nir->info.stage == MESA_SHADER_FRAGMENT) {
++      nir_foreach_shader_out_variable (var, nir) {
++         if (var->data.location == FRAG_RESULT_COLOR)
++            var->data.location = FRAG_RESULT_DATA0;
++      }
++   }
+    pco_preprocess_nir(ctx, nir, data);
+    pco_lower_nir(ctx, nir, data);
+    pco_postprocess_nir(ctx, nir, data);
+@@ -532,6 +581,17 @@ pvr_shader_compile_data(pco_ctx *ctx, struct nir_shader *nir, pco_data *data,
+    if (nir->info.stage == MESA_SHADER_VERTEX)
+       pvr_shader_init_vs_alloc(nir, data);
+ 
++   /* The colour output goes to output register 0, sized for the target format (Vulkan's
++    * pvr_setup_fs_outputs with one output-register MRT). */
++   if (nir->info.stage == MESA_SHADER_FRAGMENT &&
++       data->fs.output_formats[FRAG_RESULT_DATA0] != PIPE_FORMAT_NONE &&
++       nir_find_variable_with_location(nir, nir_var_shader_out, FRAG_RESULT_DATA0) != NULL) {
++      data->fs.outputs[FRAG_RESULT_DATA0] = (pco_range){
++         .start = 0,
++         .count = DIV_ROUND_UP(util_format_get_blocksize(
++                                  data->fs.output_formats[FRAG_RESULT_DATA0]), 4),
++      };
++   }
+    shader = pco_trans_nir(ctx, nir, data, NULL);
+    if (shader == NULL) {
+       mesa_loge("pvr: pco failed to translate %s", nir->info.name);
+diff --git a/src/gallium/drivers/pvr_native/pvr_shader.h b/src/gallium/drivers/pvr_native/pvr_shader.h
+index c988af11..c7dd68bf 100644
+--- a/src/gallium/drivers/pvr_native/pvr_shader.h
++++ b/src/gallium/drivers/pvr_native/pvr_shader.h
+@@ -14,6 +14,8 @@
+ 
+ #include "pco/pco.h"
+ 
++#include "util/format/u_formats.h"
++
+ struct nir_shader;
+ 
+ /* The end-of-tile (pixel-event) program: a tiny USC shader whose only job is to emit the pixel at
+@@ -55,9 +57,35 @@ struct pvr_shader {
+    unsigned shareds;
+    unsigned coeffs;
+    bool phase_change;
++
++   /* Vertex shader: where each vertex element lands in the vtxin registers (filled from pco's
++    * attribute map). element is the pipe_vertex_element index (the input's driver_location). */
++   unsigned nr_inputs;
++   struct {
++      uint8_t element;
++      uint8_t vtxin;
++      uint8_t dwords;
++   } inputs[16];
++
++   /* Fragment shader created from pipe state: the NIR to build per-format variants from, and the
++    * last variant (owned here). */
++   struct nir_shader *src_nir;
++   struct pvr_shader *variant;
++   enum pipe_format variant_format;
++
++   /* Draw-path upload of this shader (pvr_draw.c): USC code offset, FS kick program offset and
++    * sizes, 0 until uploaded. */
++   uint32_t usc_offset;
++   uint32_t pds_offset;
++   uint32_t pds_data_dwords;
++   uint32_t pds_temps;
+ };
+ 
+ struct pvr_shader *pvr_shader_create(struct nir_shader *nir, pco_ctx *ctx);
++/* A fragment shader built for one colour-buffer format: gl_FragColor/DATA0 is packed to that format
++ * in output register 0, which is what the end-of-tile program reads. */
++struct pvr_shader *pvr_shader_create_fs(struct nir_shader *nir, pco_ctx *ctx,
++                                        enum pipe_format color_format);
+ 
+ /* Compile any stage and hand back pco's data section as well (the compute path needs it). */
+ bool pvr_shader_compile_data(pco_ctx *ctx, struct nir_shader *nir, pco_data *data,
+-- 
+2.47.3
+

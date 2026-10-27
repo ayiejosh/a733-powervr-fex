@@ -584,3 +584,20 @@ runs `TA finished -> 3D finished` with no fault and the GPU writes the whole tar
 black (no visible triangle yet) - that is the next item, so native GL is not usable yet. Note for anyone
 bisecting: a terminate-only VDM stream hangs the TA even for the working Vulkan driver, so it is not a valid
 "minimal" test.
+
+## Added 2026-10-27 (night): native GL draws through the TA/3D path, patches 0297-0298
+
+- **0297** the probe's render drew only its background: ISPCTL enables scissoring and the fragment stream left
+  `CR_ISP_SCISSOR_BASE` at 0. With a full-target scissor table the probe triangle renders.
+- **0298** `pvr_draw.c` moves that render path into the driver's `draw_vbo`: draws accumulate into one control
+  stream per render target and the render is submitted at flush, readback or target change; the vertex PDS program
+  is built from the GL vertex elements; the FS is compiled per colour format; a colour clear becomes the background
+  object. Found on the way: the index-list packet dropped address bits 39:32; the firmware static-program carveouts
+  were only mapped by the probe; fragment shaders were built with `z_replicate = 0` (depth written over the colour)
+  and with runtime coverage checks that read an unset shared register (every fragment discarded).
+
+Result: a GLES2 program (`open-driver-perf/tools/pvrcap/gltri.c`: surfaceless EGL, FBO, `glClear` + `glDrawArrays`
+with its own shaders) renders the same image through the native driver (`MESA_LOADER_DRIVER_OVERRIDE=pvr`) as through
+zink - 32768 red pixels on green, `Kick TA -> TA finished -> Kick 3D -> 3D finished`. Native GL is not complete yet:
+varyings, uniforms, textures, depth, blending, culling and loading a target without a clear are still missing, so
+glmark2 does not run on it yet.
