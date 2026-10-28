@@ -1,0 +1,279 @@
+MESA: info: pvr: PowerVR B-Series BXM-4-64 (36.56.104.183), device_id 0x36104183, gpu_id 0x240038006800b7
+MESA: info: pvr: pvr_screen_create fd=5 -> PowerVR B-Series BXM-4-64 (36.56.104.183) (draw path: compute fallback until the 3D path is usable)
+MESA: info: pvr: static area heap 0 usage 1 offset 0x0 size 128
+MESA: info: pvr: static area heap 0 usage 3 offset 0x80 size 1024
+MESA: info: pvr: static area heap 1 usage 2 offset 0x0 size 128
+MESA: info: pvr: static area heap 1 usage 0 offset 0x80 size 128
+MESA: info: pvr: static area heap 2 usage 2 offset 0x0 size 128
+MESA: info: pvr: 6 heaps; general base 0x8000000000 size 137438953472 carveout 1152 usable 0x8000000480 (137438952320 bytes), page 4096, vm_context 1
+MESA: info: pvr: static memory: YUV CSC table at general+0x80
+MESA: info: pvr: static memory: 12 bytes of firmware programs in 3 carveouts
+MESA: info: pvr: GPU context 1 (render), callstack 0x9fff208000, VDM state 0x9fff20a000, GEOM state 0x9fff209000, static state 192 bytes
+=======================================================
+    glmark2 2023.01
+=======================================================
+    OpenGL Information
+    GL_VENDOR:      Imagination Technologies
+    GL_RENDERER:    PowerVR B-Series BXM-4-64 (36.56.104.183)
+    GL_VERSION:     OpenGL ES 2.0 Mesa 26.3.0-devel (git-f747e6431b)
+    Surface Config: buf=32 r=8 g=8 b=8 a=8 depth=32 stencil=0 samples=0
+    Surface Size:   800x600 windowed
+=======================================================
+MESA: info: pvr: static memory: YUV CSC table at general+0x80
+MESA: info: pvr: static memory: 12 bytes of firmware programs in 3 carveouts
+MESA: info: pvr: GPU context 2 (render), callstack 0x9ffefa3000, VDM state 0x9ffefa5000, GEOM state 0x9ffefa4000, static state 192 bytes
+[build] use-vbo=false: FPS: 509 FrameTime: 1.965 ms
+MESA: info: pvr: static memory: YUV CSC table at general+0x80
+MESA: info: pvr: static memory: 12 bytes of firmware programs in 3 carveouts
+MESA: info: pvr: GPU context 3 (render), callstack 0x9ffed3e000, VDM state 0x9ffed40000, GEOM state 0x9ffed3f000, static state 192 bytes
+[build] use-vbo=true: FPS: 1125 FrameTime: 0.889 ms
+MESA: info: pvr: static memory: YUV CSC table at general+0x80
+MESA: info: pvr: static memory: 12 bytes of firmware programs in 3 carveouts
+MESA: info: pvr: GPU context 4 (render), callstack 0x9ffead9000, VDM state 0x9ffeadb000, GEOM state 0x9ffeada000, static state 192 bytes
+[texture] texture-filter=nearest: FPS: 1310 FrameTime: 0.763 ms
+MESA: info: pvr: static memory: YUV CSC table at general+0x80
+MESA: info: pvr: static memory: 12 bytes of firmware programs in 3 carveouts
+MESA: info: pvr: GPU context 5 (render), callstack 0x9ffe874000, VDM state 0x9ffe876000, GEOM state 0x9ffe875000, static state 192 bytes
+[texture] texture-filter=linear: FPS: 1314 FrameTime: 0.761 ms
+MESA: info: pvr: static memory: YUV CSC table at general+0x80
+MESA: info: pvr: static memory: 12 bytes of firmware programs in 3 carveouts
+MESA: info: pvr: GPU context 6 (render), callstack 0x9ffe60f000, VDM state 0x9ffe611000, GEOM state 0x9ffe610000, static state 192 bytes
+MESA: error: pvr: transfer_map on a twiddled depth or mipmapped resource is not supported
+MESA: error: util_resource_copy_region: mapping dst-texture failed
+MESA: error: pvr: transfer_map on a twiddled depth or mipmapped resource is not supported
+MESA: error: util_resource_copy_region: mapping dst-texture failed
+MESA: error: pvr: transfer_map on a twiddled depth or mipmapped resource is not supported
+MESA: error: util_resource_copy_region: mapping dst-texture failed
+MESA: error: pvr: transfer_map on a twiddled depth or mipmapped resource is not supported
+MESA: error: util_resource_copy_region: mapping dst-texture failed
+MESA: error: pvr: transfer_map on a twiddled depth or mipmapped resource is not supported
+MESA: error: util_resource_copy_region: mapping dst-texture failed
+MESA: error: pvr: transfer_map on a twiddled depth or mipmapped resource is not supported
+MESA: error: util_resource_copy_region: mapping dst-texture failed
+MESA: error: pvr: transfer_map on a twiddled depth or mipmapped resource is not supported
+MESA: error: util_resource_copy_region: mapping dst-texture failed
+MESA: error: pvr: transfer_map on a twiddled depth or mipmapped resource is not supported
+MESA: error: util_resource_copy_region: mapping dst-texture failed
+MESA: error: pvr: transfer_map on a twiddled depth or mipmapped resource is not supported
+MESA: error: util_resource_copy_region: mapping dst-texture failed
+MESA: warning: pvr: blit with conversion or scaling is not supported yet; skipped
+[texture] texture-filter=mipmap: FPS: 1296 FrameTime: 0.772 ms
+MESA: info: pvr: static memory: YUV CSC table at general+0x80
+MESA: info: pvr: static memory: 12 bytes of firmware programs in 3 carveouts
+MESA: info: pvr: GPU context 7 (render), callstack 0x9ffe3aa000, VDM state 0x9ffe3ac000, GEOM state 0x9ffe3ab000, static state 192 bytes
+[shading] shading=gouraud: FPS: 879 FrameTime: 1.138 ms
+MESA: info: pvr: static memory: YUV CSC table at general+0x80
+MESA: info: pvr: static memory: 12 bytes of firmware programs in 3 carveouts
+MESA: info: pvr: GPU context 8 (render), callstack 0x9ffe145000, VDM state 0x9ffe147000, GEOM state 0x9ffe146000, static state 192 bytes
+[shading] shading=blinn-phong-inf: FPS: 744 FrameTime: 1.346 ms
+MESA: info: pvr: static memory: YUV CSC table at general+0x80
+MESA: info: pvr: static memory: 12 bytes of firmware programs in 3 carveouts
+MESA: info: pvr: GPU context 9 (render), callstack 0x9ffdee0000, VDM state 0x9ffdee2000, GEOM state 0x9ffdee1000, static state 192 bytes
+[shading] shading=phong: FPS: 612 FrameTime: 1.636 ms
+MESA: info: pvr: static memory: YUV CSC table at general+0x80
+MESA: info: pvr: static memory: 12 bytes of firmware programs in 3 carveouts
+MESA: info: pvr: GPU context 10 (render), callstack 0x9ffdc7b000, VDM state 0x9ffdc7d000, GEOM state 0x9ffdc7c000, static state 192 bytes
+[shading] shading=cel: FPS: 499 FrameTime: 2.007 ms
+MESA: info: pvr: static memory: YUV CSC table at general+0x80
+MESA: info: pvr: static memory: 12 bytes of firmware programs in 3 carveouts
+MESA: info: pvr: GPU context 11 (render), callstack 0x9ffda16000, VDM state 0x9ffda18000, GEOM state 0x9ffda17000, static state 192 bytes
+[bump] bump-render=high-poly: FPS: 395 FrameTime: 2.537 ms
+MESA: info: pvr: static memory: YUV CSC table at general+0x80
+MESA: info: pvr: static memory: 12 bytes of firmware programs in 3 carveouts
+MESA: info: pvr: GPU context 12 (render), callstack 0x9ffd7b1000, VDM state 0x9ffd7b3000, GEOM state 0x9ffd7b2000, static state 192 bytes
+[bump] bump-render=normals: FPS: 1261 FrameTime: 0.794 ms
+MESA: info: pvr: static memory: YUV CSC table at general+0x80
+MESA: info: pvr: static memory: 12 bytes of firmware programs in 3 carveouts
+MESA: info: pvr: GPU context 13 (render), callstack 0x9ffd54c000, VDM state 0x9ffd54e000, GEOM state 0x9ffd54d000, static state 192 bytes
+[bump] bump-render=height: FPS: 925 FrameTime: 1.082 ms
+MESA: info: pvr: static memory: YUV CSC table at general+0x80
+MESA: info: pvr: static memory: 12 bytes of firmware programs in 3 carveouts
+MESA: info: pvr: GPU context 14 (render), callstack 0x9ffd2e7000, VDM state 0x9ffd2e9000, GEOM state 0x9ffd2e8000, static state 192 bytes
+[effect2d] kernel=0,1,0;1,-4,1;0,1,0;: FPS: 717 FrameTime: 1.396 ms
+MESA: info: pvr: static memory: YUV CSC table at general+0x80
+MESA: info: pvr: static memory: 12 bytes of firmware programs in 3 carveouts
+MESA: info: pvr: GPU context 15 (render), callstack 0x9ffd082000, VDM state 0x9ffd084000, GEOM state 0x9ffd083000, static state 192 bytes
+[effect2d] kernel=1,1,1,1,1;1,1,1,1,1;1,1,1,1,1;: FPS: 329 FrameTime: 3.048 ms
+MESA: info: pvr: static memory: YUV CSC table at general+0x80
+MESA: info: pvr: static memory: 12 bytes of firmware programs in 3 carveouts
+MESA: info: pvr: GPU context 16 (render), callstack 0x9ffce1d000, VDM state 0x9ffce1f000, GEOM state 0x9ffce1e000, static state 192 bytes
+[pulsar] light=false:quads=5:texture=false: FPS: 1235 FrameTime: 0.810 ms
+MESA: info: pvr: static memory: YUV CSC table at general+0x80
+MESA: info: pvr: static memory: 12 bytes of firmware programs in 3 carveouts
+MESA: info: pvr: GPU context 17 (render), callstack 0x9ffcbb8000, VDM state 0x9ffcbba000, GEOM state 0x9ffcbb9000, static state 192 bytes
+[desktop] blur-radius=5:effect=blur:passes=1:separable=true:windows=4: FPS: 103 FrameTime: 9.758 ms
+MESA: info: pvr: static memory: YUV CSC table at general+0x80
+MESA: info: pvr: static memory: 12 bytes of firmware programs in 3 carveouts
+MESA: info: pvr: GPU context 18 (render), callstack 0x9ffc953000, VDM state 0x9ffc955000, GEOM state 0x9ffc954000, static state 192 bytes
+[desktop] effect=shadow:windows=4: FPS: 305 FrameTime: 3.285 ms
+MESA: info: pvr: static memory: YUV CSC table at general+0x80
+MESA: info: pvr: static memory: 12 bytes of firmware programs in 3 carveouts
+MESA: info: pvr: GPU context 19 (render), callstack 0x9ffc6ee000, VDM state 0x9ffc6f0000, GEOM state 0x9ffc6ef000, static state 192 bytes
+[buffer] columns=200:interleave=false:update-dispersion=0.9:update-fraction=0.5:update-method=map: FPS: 359 FrameTime: 2.787 ms
+MESA: info: pvr: static memory: YUV CSC table at general+0x80
+MESA: info: pvr: static memory: 12 bytes of firmware programs in 3 carveouts
+MESA: info: pvr: GPU context 20 (render), callstack 0x9ffc489000, VDM state 0x9ffc48b000, GEOM state 0x9ffc48a000, static state 192 bytes
+[buffer] columns=200:interleave=false:update-dispersion=0.9:update-fraction=0.5:update-method=subdata: FPS: 340 FrameTime: 2.949 ms
+MESA: info: pvr: static memory: YUV CSC table at general+0x80
+MESA: info: pvr: static memory: 12 bytes of firmware programs in 3 carveouts
+MESA: info: pvr: GPU context 21 (render), callstack 0x9ffc224000, VDM state 0x9ffc226000, GEOM state 0x9ffc225000, static state 192 bytes
+[buffer] columns=200:interleave=true:update-dispersion=0.9:update-fraction=0.5:update-method=map: FPS: 379 FrameTime: 2.641 ms
+MESA: info: pvr: static memory: YUV CSC table at general+0x80
+MESA: info: pvr: static memory: 12 bytes of firmware programs in 3 carveouts
+MESA: info: pvr: GPU context 22 (render), callstack 0x9ffbfbf000, VDM state 0x9ffbfc1000, GEOM state 0x9ffbfc0000, static state 192 bytes
+[ideas] speed=duration: FPS: 803 FrameTime: 1.246 ms
+MESA: info: pvr: static memory: YUV CSC table at general+0x80
+MESA: info: pvr: static memory: 12 bytes of firmware programs in 3 carveouts
+MESA: info: pvr: GPU context 23 (render), callstack 0x9ffbd5a000, VDM state 0x9ffbd5c000, GEOM state 0x9ffbd5b000, static state 192 bytes
+[jellyfish] <default>: FPS: 365 FrameTime: 2.740 ms
+MESA: info: pvr: static memory: YUV CSC table at general+0x80
+MESA: info: pvr: static memory: 12 bytes of firmware programs in 3 carveouts
+MESA: info: pvr: GPU context 24 (render), callstack 0x9ffbaf5000, VDM state 0x9ffbaf7000, GEOM state 0x9ffbaf6000, static state 192 bytes
+MESA: error: pvr: transfer_map on a twiddled depth or mipmapped resource is not supported
+MESA: error: util_resource_copy_region: mapping dst-texture failed
+MESA: error: pvr: transfer_map on a twiddled depth or mipmapped resource is not supported
+MESA: error: util_resource_copy_region: mapping dst-texture failed
+MESA: error: pvr: transfer_map on a twiddled depth or mipmapped resource is not supported
+MESA: error: util_resource_copy_region: mapping dst-texture failed
+MESA: error: pvr: transfer_map on a twiddled depth or mipmapped resource is not supported
+MESA: error: util_resource_copy_region: mapping dst-texture failed
+MESA: error: pvr: transfer_map on a twiddled depth or mipmapped resource is not supported
+MESA: error: util_resource_copy_region: mapping dst-texture failed
+MESA: error: pvr: transfer_map on a twiddled depth or mipmapped resource is not supported
+MESA: error: util_resource_copy_region: mapping dst-texture failed
+MESA: error: pvr: transfer_map on a twiddled depth or mipmapped resource is not supported
+MESA: error: util_resource_copy_region: mapping dst-texture failed
+MESA: error: pvr: transfer_map on a twiddled depth or mipmapped resource is not supported
+MESA: error: util_resource_copy_region: mapping dst-texture failed
+MESA: error: pvr: transfer_map on a twiddled depth or mipmapped resource is not supported
+MESA: error: util_resource_copy_region: mapping dst-texture failed
+MESA: error: pvr: transfer_map on a twiddled depth or mipmapped resource is not supported
+MESA: error: util_resource_copy_region: mapping dst-texture failed
+MESA: error: pvr: transfer_map on a twiddled depth or mipmapped resource is not supported
+MESA: error: util_resource_copy_region: mapping dst-texture failed
+MESA: error: pvr: transfer_map on a twiddled depth or mipmapped resource is not supported
+MESA: error: util_resource_copy_region: mapping dst-texture failed
+MESA: error: pvr: transfer_map on a twiddled depth or mipmapped resource is not supported
+MESA: error: util_resource_copy_region: mapping dst-texture failed
+MESA: error: pvr: transfer_map on a twiddled depth or mipmapped resource is not supported
+MESA: error: util_resource_copy_region: mapping dst-texture failed
+MESA: error: pvr: transfer_map on a twiddled depth or mipmapped resource is not supported
+MESA: error: util_resource_copy_region: mapping dst-texture failed
+MESA: error: pvr: transfer_map on a twiddled depth or mipmapped resource is not supported
+MESA: error: util_resource_copy_region: mapping dst-texture failed
+MESA: error: pvr: transfer_map on a twiddled depth or mipmapped resource is not supported
+MESA: error: util_resource_copy_region: mapping dst-texture failed
+MESA: error: pvr: transfer_map on a twiddled depth or mipmapped resource is not supported
+MESA: error: util_resource_copy_region: mapping dst-texture failed
+MESA: error: pvr: transfer_map on a twiddled depth or mipmapped resource is not supported
+MESA: error: util_resource_copy_region: mapping dst-texture failed
+MESA: error: pvr: transfer_map on a twiddled depth or mipmapped resource is not supported
+MESA: error: util_resource_copy_region: mapping dst-texture failed
+MESA: error: pvr: transfer_map on a twiddled depth or mipmapped resource is not supported
+MESA: error: util_resource_copy_region: mapping dst-texture failed
+MESA: error: pvr: transfer_map on a twiddled depth or mipmapped resource is not supported
+MESA: error: util_resource_copy_region: mapping dst-texture failed
+MESA: error: pvr: transfer_map on a twiddled depth or mipmapped resource is not supported
+MESA: error: util_resource_copy_region: mapping dst-texture failed
+MESA: error: pvr: transfer_map on a twiddled depth or mipmapped resource is not supported
+MESA: error: util_resource_copy_region: mapping dst-texture failed
+MESA: error: pvr: transfer_map on a twiddled depth or mipmapped resource is not supported
+MESA: error: util_resource_copy_region: mapping dst-texture failed
+MESA: error: pvr: transfer_map on a twiddled depth or mipmapped resource is not supported
+MESA: error: util_resource_copy_region: mapping dst-texture failed
+MESA: error: pvr: transfer_map on a twiddled depth or mipmapped resource is not supported
+MESA: error: util_resource_copy_region: mapping dst-texture failed
+MESA: error: pvr: transfer_map on a twiddled depth or mipmapped resource is not supported
+MESA: error: util_resource_copy_region: mapping dst-texture failed
+MESA: error: pvr: transfer_map on a twiddled depth or mipmapped resource is not supported
+MESA: error: util_resource_copy_region: mapping dst-texture failed
+MESA: error: pvr: transfer_map on a twiddled depth or mipmapped resource is not supported
+MESA: error: util_resource_copy_region: mapping dst-texture failed
+MESA: error: pvr: transfer_map on a twiddled depth or mipmapped resource is not supported
+MESA: error: util_resource_copy_region: mapping dst-texture failed
+MESA: error: pvr: transfer_map on a twiddled depth or mipmapped resource is not supported
+MESA: error: util_resource_copy_region: mapping dst-texture failed
+MESA: error: pvr: transfer_map on a twiddled depth or mipmapped resource is not supported
+MESA: error: util_resource_copy_region: mapping dst-texture failed
+MESA: error: pvr: transfer_map on a twiddled depth or mipmapped resource is not supported
+MESA: error: util_resource_copy_region: mapping dst-texture failed
+MESA: error: pvr: transfer_map on a twiddled depth or mipmapped resource is not supported
+MESA: error: util_resource_copy_region: mapping dst-texture failed
+MESA: error: pvr: transfer_map on a twiddled depth or mipmapped resource is not supported
+MESA: error: util_resource_copy_region: mapping dst-texture failed
+MESA: error: pvr: transfer_map on a twiddled depth or mipmapped resource is not supported
+MESA: error: util_resource_copy_region: mapping dst-texture failed
+MESA: error: pvr: transfer_map on a twiddled depth or mipmapped resource is not supported
+MESA: error: util_resource_copy_region: mapping dst-texture failed
+MESA: error: pvr: transfer_map on a twiddled depth or mipmapped resource is not supported
+MESA: error: util_resource_copy_region: mapping dst-texture failed
+MESA: error: pvr: transfer_map on a twiddled depth or mipmapped resource is not supported
+MESA: error: util_resource_copy_region: mapping dst-texture failed
+MESA: error: pvr: transfer_map on a twiddled depth or mipmapped resource is not supported
+MESA: error: util_resource_copy_region: mapping dst-texture failed
+MESA: error: pvr: transfer_map on a twiddled depth or mipmapped resource is not supported
+MESA: error: util_resource_copy_region: mapping dst-texture failed
+MESA: error: pvr: transfer_map on a twiddled depth or mipmapped resource is not supported
+MESA: error: util_resource_copy_region: mapping dst-texture failed
+MESA: error: pvr: transfer_map on a twiddled depth or mipmapped resource is not supported
+MESA: error: util_resource_copy_region: mapping dst-texture failed
+MESA: error: pvr: transfer_map on a twiddled depth or mipmapped resource is not supported
+MESA: error: util_resource_copy_region: mapping dst-texture failed
+MESA: error: pvr: transfer_map on a twiddled depth or mipmapped resource is not supported
+MESA: error: util_resource_copy_region: mapping dst-texture failed
+MESA: error: pvr: transfer_map on a twiddled depth or mipmapped resource is not supported
+MESA: error: util_resource_copy_region: mapping dst-texture failed
+MESA: error: pvr: transfer_map on a twiddled depth or mipmapped resource is not supported
+MESA: error: util_resource_copy_region: mapping dst-texture failed
+MESA: error: pvr: transfer_map on a twiddled depth or mipmapped resource is not supported
+MESA: error: util_resource_copy_region: mapping dst-texture failed
+MESA: error: pvr: transfer_map on a twiddled depth or mipmapped resource is not supported
+MESA: error: util_resource_copy_region: mapping dst-texture failed
+MESA: error: pvr: transfer_map on a twiddled depth or mipmapped resource is not supported
+MESA: error: util_resource_copy_region: mapping dst-texture failed
+MESA: error: pvr: transfer_map on a twiddled depth or mipmapped resource is not supported
+MESA: error: util_resource_copy_region: mapping dst-texture failed
+[terrain] <default>: FPS: 27 FrameTime: 37.769 ms
+MESA: info: pvr: static memory: YUV CSC table at general+0x80
+MESA: info: pvr: static memory: 12 bytes of firmware programs in 3 carveouts
+MESA: info: pvr: GPU context 25 (render), callstack 0x9ffb890000, VDM state 0x9ffb892000, GEOM state 0x9ffb891000, static state 192 bytes
+[shadow] <default>: FPS: 322 FrameTime: 3.108 ms
+MESA: info: pvr: static memory: YUV CSC table at general+0x80
+MESA: info: pvr: static memory: 12 bytes of firmware programs in 3 carveouts
+MESA: info: pvr: GPU context 26 (render), callstack 0x9ffb62b000, VDM state 0x9ffb62d000, GEOM state 0x9ffb62c000, static state 192 bytes
+[refract] <default>: FPS: 108 FrameTime: 9.260 ms
+MESA: info: pvr: static memory: YUV CSC table at general+0x80
+MESA: info: pvr: static memory: 12 bytes of firmware programs in 3 carveouts
+MESA: info: pvr: GPU context 27 (render), callstack 0x9ffb3c6000, VDM state 0x9ffb3c8000, GEOM state 0x9ffb3c7000, static state 192 bytes
+[conditionals] fragment-steps=0:vertex-steps=0: FPS: 1346 FrameTime: 0.743 ms
+MESA: info: pvr: static memory: YUV CSC table at general+0x80
+MESA: info: pvr: static memory: 12 bytes of firmware programs in 3 carveouts
+MESA: info: pvr: GPU context 28 (render), callstack 0x9ffb161000, VDM state 0x9ffb163000, GEOM state 0x9ffb162000, static state 192 bytes
+[conditionals] fragment-steps=5:vertex-steps=0: FPS: 809 FrameTime: 1.237 ms
+MESA: info: pvr: static memory: YUV CSC table at general+0x80
+MESA: info: pvr: static memory: 12 bytes of firmware programs in 3 carveouts
+MESA: info: pvr: GPU context 29 (render), callstack 0x9ffaefc000, VDM state 0x9ffaefe000, GEOM state 0x9ffaefd000, static state 192 bytes
+[conditionals] fragment-steps=0:vertex-steps=5: FPS: 1340 FrameTime: 0.746 ms
+MESA: info: pvr: static memory: YUV CSC table at general+0x80
+MESA: info: pvr: static memory: 12 bytes of firmware programs in 3 carveouts
+MESA: info: pvr: GPU context 30 (render), callstack 0x9ffac97000, VDM state 0x9ffac99000, GEOM state 0x9ffac98000, static state 192 bytes
+[function] fragment-complexity=low:fragment-steps=5: FPS: 1001 FrameTime: 0.999 ms
+MESA: info: pvr: static memory: YUV CSC table at general+0x80
+MESA: info: pvr: static memory: 12 bytes of firmware programs in 3 carveouts
+MESA: info: pvr: GPU context 31 (render), callstack 0x9ffaa32000, VDM state 0x9ffaa34000, GEOM state 0x9ffaa33000, static state 192 bytes
+[function] fragment-complexity=medium:fragment-steps=5: FPS: 632 FrameTime: 1.584 ms
+MESA: info: pvr: static memory: YUV CSC table at general+0x80
+MESA: info: pvr: static memory: 12 bytes of firmware programs in 3 carveouts
+MESA: info: pvr: GPU context 32 (render), callstack 0x9ffa7cd000, VDM state 0x9ffa7cf000, GEOM state 0x9ffa7ce000, static state 192 bytes
+[loop] fragment-loop=false:fragment-steps=5:vertex-steps=5: FPS: 998 FrameTime: 1.003 ms
+MESA: info: pvr: static memory: YUV CSC table at general+0x80
+MESA: info: pvr: static memory: 12 bytes of firmware programs in 3 carveouts
+MESA: info: pvr: GPU context 33 (render), callstack 0x9ffa568000, VDM state 0x9ffa56a000, GEOM state 0x9ffa569000, static state 192 bytes
+[loop] fragment-steps=5:fragment-uniform=false:vertex-steps=5: FPS: 1014 FrameTime: 0.987 ms
+MESA: info: pvr: static memory: YUV CSC table at general+0x80
+MESA: info: pvr: static memory: 12 bytes of firmware programs in 3 carveouts
+MESA: info: pvr: GPU context 34 (render), callstack 0x9ffa303000, VDM state 0x9ffa305000, GEOM state 0x9ffa304000, static state 192 bytes
+[loop] fragment-steps=5:fragment-uniform=true:vertex-steps=5: FPS: 814 FrameTime: 1.229 ms
+=======================================================
+                                  glmark2 Score: 732 
+=======================================================
