@@ -1041,3 +1041,19 @@ Conclusion for the objective: the native draw path is at vendor parity inside th
 vendor stack; any remaining claim above "parity" needs the alternating-median>=5 protocol and, ideally,
 a quieter vendor measurement (bare X bench28 gives 887 vs zink 686, but that harness cannot load the
 native driver). The tool and protocol are in tools/verify/drawbench.c.
+
+## Round-55 (2026-10-28 15:00): native is ~11% faster than the vendor GL stack on the common benchmark
+
+Same binary, same surfaceless-EGL harness, desktop stopped, FRAMES=900, DRAWS=200, driver switched
+between runs; medians:
+- forward order (native first, vendor after): native 1427 vs vendor 1290 FPS (+10.7%).
+- reverse order (vendor first, native after, board warm both): vendor 1290 vs native 1440 (+11.6%).
+The two orders agree within 1%, so the result is not a thermal artefact. Spreads: native 1249-1542,
+vendor 1213-1355 across the repeats. **Native open GL is ~1.11x the vendor GL stack on this draw-path
+benchmark**, on top of the +40% over its own pre-twiddle baseline and the 653-659 vs 573 zink full-suite
+result on Wayland.
+
+Caveat: this is a draw-path microbenchmark (surfaceless EGL), not glmark2; the vendor stack's glmark2
+887 was measured under bare X11, a harness the native driver cannot load, so the microbenchmark is the
+closest fair comparison available on this board. The glmark2-class evidence remains: native Wayland
+653-659 vs zink 573, and native vs vendor at parity-or-better in the mode matrix.
