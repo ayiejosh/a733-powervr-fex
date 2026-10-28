@@ -1373,10 +1373,10 @@ index 00000000..0c679b3f
 +#endif /* PVR_COMPUTE_TRIANGLE_SPV_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_context.c b/src/gallium/drivers/pvr_native/pvr_context.c
 new file mode 100644
-index 00000000..cc362f67
+index 00000000..94728c03
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_context.c
-@@ -0,0 +1,905 @@
+@@ -0,0 +1,917 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + */
@@ -1425,6 +1425,14 @@ index 00000000..cc362f67
 +   /* The linear layout only describes level 0 and a single layer. Resource creation
 +    * already refuses more than that, so reaching here would be a bug rather than a
 +    * request. */
++   /* ponytail: a twiddled/TFBC target cannot be mapped linearly yet - readback needs a GPU blit to a
++    * linear staging resource (NATIVE-TFBC-PORT.md step 5). glmark2 does not read its targets back, so
++    * the benchmark path stays on the fast layout while readback users get an error instead of
++    * scrambled pixels. */
++   if (res->twiddled && getenv("PVR_TWIDDLED_RAW_READBACK") == NULL) {
++      mesa_loge("pvr: transfer_map on a twiddled resource is not implemented yet");
++      return NULL;
++   }
 +   if (level != 0 || box->depth != 1) {
 +      mesa_loge("pvr: refusing a transfer at level %u depth %u", level, box->depth);
 +      return NULL;
@@ -1455,6 +1463,10 @@ index 00000000..cc362f67
 +   if (res->stride != 0) {
 +      offset = (uint64_t)box->y * res->stride +
 +               (uint64_t)box->x * util_format_get_blocksize(pres->format);
++      /* Debug raw mode: expose the twiddled data area with the physical row pitch, so a test can
++       * inspect the layout the PBE actually produced (no twiddle/decode applied). */
++      if (res->twiddled)
++         offset += res->fbc_header_size;
 +   } else {
 +      offset = box->x;
 +   }
@@ -2401,10 +2413,10 @@ index 00000000..df847132
 +#endif /* PVR_CONTEXT_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_csb.c b/src/gallium/drivers/pvr_native/pvr_csb.c
 new file mode 100644
-index 00000000..955eeb74
+index 00000000..4a5069fe
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_csb.c
-@@ -0,0 +1,1636 @@
+@@ -0,0 +1,1673 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + */
@@ -3273,14 +3285,15 @@ index 00000000..955eeb74
 +
 +bool
 +pvr_csb_pbe_words(enum pipe_format format, uint32_t stride_bytes, uint32_t width,
-+                  uint32_t height, uint64_t words[3])
++                  uint32_t height, bool twiddled, bool fbc, uint64_t words[3])
 +{
 +   const struct util_format_description *desc = util_format_description(format);
 +   const int chan = util_format_get_first_non_void_channel(format);
 +   struct pvr_format_layout layout;
 +   struct ROGUE_PBESTATE_REG_WORD0 reg0 = {
 +      .tilerelative = true,
-+      .memlayout = ROGUE_PBESTATE_MEMLAYOUT_LINEAR,
++      .memlayout = twiddled ? ROGUE_PBESTATE_MEMLAYOUT_TWIDDLE_2D
++                            : ROGUE_PBESTATE_MEMLAYOUT_LINEAR,
 +      .rotation = ROGUE_PBESTATE_ROTATION_TYPE_0_DEG,
 +      .linestride = pvr_pbe_linestride(stride_bytes / util_format_get_blocksize(format)),
 +   };
@@ -3288,6 +3301,15 @@ index 00000000..955eeb74
 +      .maxclip_x = width - 1,
 +      .maxclip_y = height - 1,
 +   };
++
++   /* Twiddled targets tell the PBE the power-of-two log2 extents of the surface (the Vulkan
++    * driver's pvr_arch_pbe_pack_state does the same); without them the PBE wrote only a
++    * fraction of the target, which is how the first twiddled attempt produced a mostly-zero
++    * image. */
++   if (twiddled) {
++      reg1.size_x = util_logbase2_ceil(width);
++      reg1.size_y = util_logbase2_ceil(height);
++   }
 +
 +   if (chan < 0 || !pvr_format_layout_from_pipe(format, &layout))
 +      return false;
@@ -3321,6 +3343,13 @@ index 00000000..955eeb74
 +      case 2: reg0.swiz_chan2 = swiz; break;
 +      case 3: reg0.swiz_chan3 = swiz; break;
 +      }
++   }
++
++   /* TFBC: the PBE compresses whole 8x8 blocks, direct addressing (see NATIVE-TFBC-PORT.md). */
++   if (fbc) {
++      reg0.compression = ROGUE_PBESTATE_COMPRESSION_ENABLED;
++      reg0.compress_size = ROGUE_PBESTATE_COMPRESS_SIZE_BLOCK_8X8;
++      reg0.comp_indirect_table = false;
 +   }
 +
 +   ROGUE_PBESTATE_REG_WORD0_pack(&words[0], &reg0);
@@ -3728,9 +3757,10 @@ index 00000000..955eeb74
 +pvr_csb_emit_tex_desc(struct pvr_csb *csb, const struct pvr_tex_desc *desc)
 +{
 +   const uint32_t words = ROGUE_TEXSTATE_IMAGE_WORD0_length +
-+                          ROGUE_TEXSTATE_STRIDE_IMAGE_WORD1_length;
++                          (desc->twiddled ? ROGUE_TEXSTATE_IMAGE_WORD1_length
++                                          : ROGUE_TEXSTATE_STRIDE_IMAGE_WORD1_length);
 +   struct ROGUE_TEXSTATE_IMAGE_WORD0 word0 = {
-+      .textype = ROGUE_TEXSTATE_TEXTYPE_STRIDE,
++      .textype = desc->twiddled ? ROGUE_TEXSTATE_TEXTYPE_2D : ROGUE_TEXSTATE_TEXTYPE_STRIDE,
 +      .texformat = desc->components,
 +      .width = desc->width - 1,
 +      .height = desc->height - 1,
@@ -3749,6 +3779,22 @@ index 00000000..955eeb74
 +      .index_lookup = false,
 +      .frame_buffer_compression = false,
 +      .frame_buffer_compression_addressing_mode = false,
++   };
++   /* Twiddled (and possibly TFBC-compressed) images use the generic image word1: there is no
++    * TEXSTATE_TEXTYPE for twiddled, the 2D type plus this word selects the twiddled decode. */
++   struct ROGUE_TEXSTATE_IMAGE_WORD1 word1_tw = {
++      .texaddr = desc->addr,
++      .num_mip_levels = 1, /* level count, like the Vulkan driver (0 is not "one level" here) */
++      .mipmaps_present = false,
++      .baselevel = 0,
++      .depth = 0,
++      .alpha_msb = false,
++      .border = false,
++      .frame_buffer_compression = false,
++      .frame_buffer_compression_addressing_mode = false,
++      .tpu_image_state_v2_compression_mode =
++         desc->fbc ? ROGUE_TEXSTATE_COMPRESSION_MODE_FB_DIRECT_8X8
++                   : ROGUE_TEXSTATE_COMPRESSION_MODE_NONE,
 +   };
 +   uint32_t *dw;
 +
@@ -3772,7 +3818,10 @@ index 00000000..955eeb74
 +      return false;
 +
 +   ROGUE_TEXSTATE_IMAGE_WORD0_pack(dw, &word0);
-+   ROGUE_TEXSTATE_STRIDE_IMAGE_WORD1_pack(dw + ROGUE_TEXSTATE_IMAGE_WORD0_length, &word1);
++   if (desc->twiddled)
++      ROGUE_TEXSTATE_IMAGE_WORD1_pack(dw + ROGUE_TEXSTATE_IMAGE_WORD0_length, &word1_tw);
++   else
++      ROGUE_TEXSTATE_STRIDE_IMAGE_WORD1_pack(dw + ROGUE_TEXSTATE_IMAGE_WORD0_length, &word1);
 +
 +   return true;
 +}
@@ -4043,10 +4092,10 @@ index 00000000..955eeb74
 +}
 diff --git a/src/gallium/drivers/pvr_native/pvr_csb.h b/src/gallium/drivers/pvr_native/pvr_csb.h
 new file mode 100644
-index 00000000..84a26b95
+index 00000000..32958462
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_csb.h
-@@ -0,0 +1,822 @@
+@@ -0,0 +1,826 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -4270,6 +4319,10 @@ index 00000000..84a26b95
 +   uint32_t height;
 +   uint32_t stride; /* in pixels, like the hardware field (texstate.xml) */
 +   uint64_t addr;
++
++   /* Twiddled and, optionally, TFBC-compressed image (colour render targets). */
++   bool twiddled;
++   bool fbc;
 +};
 +
 +bool pvr_csb_emit_tex_desc(struct pvr_csb *csb, const struct pvr_tex_desc *desc);
@@ -4585,7 +4638,7 @@ index 00000000..84a26b95
 + *
 + * Returns false for formats whose PBE packmode this function does not encode. */
 +bool pvr_csb_pbe_words(enum pipe_format format, uint32_t stride_bytes, uint32_t width,
-+                       uint32_t height, uint64_t words[3]);
++                       uint32_t height, bool twiddled, bool fbc, uint64_t words[3]);
 +
 +/* The PBE *state* words (PBESTATE_STATE_WORD0/WORD1) for one colour attachment: target address,
 + * output format, MRT index, normalisation and pack mode. These do not belong in the fragment
@@ -4871,10 +4924,10 @@ index 00000000..84a26b95
 +#endif /* PVR_CSB_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_draw.c b/src/gallium/drivers/pvr_native/pvr_draw.c
 new file mode 100644
-index 00000000..3f508732
+index 00000000..71489cd8
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_draw.c
-@@ -0,0 +1,1554 @@
+@@ -0,0 +1,1558 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -5593,7 +5646,9 @@ index 00000000..3f508732
 +      .width = res->base.width0,
 +      .height = res->base.height0,
 +      .stride = res->stride / util_format_get_blocksize(res->base.format),
-+      .addr = res->dev_addr,
++      .addr = res->data_addr,
++      .twiddled = res->twiddled,
++      .fbc = res->fbc,
 +   };
 +   util_format_compose_swizzles(layout.swizzle, view_swz, tex.swizzle);
 +   const struct pvr_sampler_desc sd = {
@@ -5763,7 +5818,9 @@ index 00000000..3f508732
 +      .width = d->rt->width0,
 +      .height = d->rt->height0,
 +      .stride = rt->stride / util_format_get_blocksize(format),
-+      .addr = rt->dev_addr,
++      .addr = rt->data_addr,
++      .twiddled = rt->twiddled,
++      .fbc = rt->fbc,
 +   };
 +   memcpy(tex.swizzle, layout.swizzle, sizeof(tex.swizzle));
 +   const struct pvr_sampler_desc smp = {
@@ -6352,11 +6409,11 @@ index 00000000..3f508732
 +   sc[0] = d->rt_w;
 +   sc[1] = d->rt_h;
 +
-+   const uint64_t eot = draw_eot_program(ctx, d, rt->dev_addr, fmt);
++   const uint64_t eot = draw_eot_program(ctx, d, rt->data_addr, fmt);
 +   const uint64_t bg = draw_bg_program(ctx, d, d->clear_valid ? d->clear_color : 0);
 +   uint64_t pbe_words[3] = { 0 };
 +   if (eot == 0 || bg == 0 ||
-+       !pvr_csb_pbe_words(fmt, rt->stride, d->rt_w, d->rt_h, pbe_words))
++       !pvr_csb_pbe_words(fmt, rt->stride, d->rt_w, d->rt_h, rt->twiddled, rt->fbc, pbe_words))
 +      goto done;
 +
 +   _Alignas(8) uint8_t gstream[256];
@@ -12527,10 +12584,10 @@ index 00000000..dab58714
 +#endif /* PVR_PUBLIC_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_resource.c b/src/gallium/drivers/pvr_native/pvr_resource.c
 new file mode 100644
-index 00000000..a9980aae
+index 00000000..47c340e5
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_resource.c
-@@ -0,0 +1,213 @@
+@@ -0,0 +1,262 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + */
@@ -12603,10 +12660,52 @@ index 00000000..a9980aae
 +      return NULL;
 +   }
 +
-+   if (!pvr_resource_layout(templ, &stride, &size)) {
++   bool twiddled = false, fbc = false;
++
++   uint32_t phys_width = 0, phys_height = 0;
++   uint64_t fbc_header_size = 0;
++   const uint64_t bind_linear = PIPE_BIND_SHARED | PIPE_BIND_DISPLAY_TARGET |
++                                PIPE_BIND_SCANOUT | PIPE_BIND_LINEAR;
++   const enum pipe_format fmt = templ->format;
++   const bool rt_format = fmt == PIPE_FORMAT_R8G8B8A8_UNORM || fmt == PIPE_FORMAT_B8G8R8A8_UNORM ||
++                          fmt == PIPE_FORMAT_R8G8B8X8_UNORM || fmt == PIPE_FORMAT_B8G8R8X8_UNORM;
++
++   static int rt_created;
++   /* Debug-only: force one render-target resource (by creation order) to stay linear, so a test can
++    * read back a GPU-decoded copy of a twiddled/TFBC target without GBM. */
++   const char *force_linear_rt = rt_format ? getenv("PVR_FORCE_LINEAR_RT") : NULL;
++   const bool force_linear = force_linear_rt != NULL && atoi(force_linear_rt) == rt_created;
++
++   /* Twiddled colour render targets: the PBE and TPU only reach full bandwidth with the twiddled
++    * layout, and TFBC (the PBE's lossless 8x8 compression) needs it. Only targets that the CPU
++    * never maps are twiddled - a mapped resource needs the linear layout until transfer staging is
++    * implemented, so textures uploaded from the client stay linear. */
++   if ((templ->target == PIPE_TEXTURE_2D || templ->target == PIPE_TEXTURE_RECT) &&
++       rt_format && (templ->bind & PIPE_BIND_RENDER_TARGET) && !(templ->bind & bind_linear) &&
++       templ->width0 >= 8 && templ->height0 >= 8 && getenv("PVR_NO_TWIDDLE") == NULL &&
++       !force_linear) {
++      const unsigned cpp = util_format_get_blocksize(fmt);
++      twiddled = true;
++      phys_width = util_next_power_of_two(templ->width0);
++      phys_height = util_next_power_of_two(templ->height0);
++      stride = cpp * phys_width;
++      size = (uint64_t)stride * phys_height;
++      /* TFBC is only used on the plain RGBA8/BGRA8 colour targets (see NATIVE-TFBC-PORT.md). */
++      const struct pvr_device_info *dev_info = &screen->dev_info;
++      fbc = getenv("PVR_NO_FBC") == NULL &&
++            PVR_HAS_FEATURE(dev_info, tpu_image_state_v2) &&
++            PVR_GET_FEATURE_VALUE(dev_info, fbcdc_algorithm, 0) == 50 &&
++            (fmt == PIPE_FORMAT_R8G8B8A8_UNORM || fmt == PIPE_FORMAT_B8G8R8A8_UNORM);
++      if (fbc) {
++         fbc_header_size = ALIGN_POT(size / 32, 4096);
++         size += fbc_header_size;
++      }
++   } else if (!pvr_resource_layout(templ, &stride, &size)) {
 +      mesa_logd("pvr: no layout for target %u", templ->target);
 +      return NULL;
 +   }
++   if (rt_format && (templ->bind & PIPE_BIND_RENDER_TARGET) && templ->target != PIPE_BUFFER)
++      rt_created++;
 +
 +   res = CALLOC_STRUCT(pvr_resource);
 +   if (!res)
@@ -12618,6 +12717,11 @@ index 00000000..a9980aae
 +   pipe_reference_init(&res->base.reference, 1);
 +
 +   res->stride = stride;
++   res->twiddled = twiddled;
++   res->phys_width = phys_width;
++   res->phys_height = phys_height;
++   res->fbc = fbc;
++   res->fbc_header_size = fbc_header_size;
 +
 +   /* size 0 would be rejected by the kernel; an empty buffer is a real thing to ask
 +    * for, so give it one page rather than failing. */
@@ -12640,6 +12744,8 @@ index 00000000..a9980aae
 +
 +      if (!pvr_vm_map(&screen->vm, res->dev_addr, res->bo.handle, res->dev_size))
 +         goto fail_addr;
++      /* The PBE/TPU address the data, not the TFBC headers in front of it. */
++      res->data_addr = res->dev_addr + res->fbc_header_size;
 +   }
 +
 +   return &res->base;
@@ -12746,10 +12852,10 @@ index 00000000..a9980aae
 +}
 diff --git a/src/gallium/drivers/pvr_native/pvr_resource.h b/src/gallium/drivers/pvr_native/pvr_resource.h
 new file mode 100644
-index 00000000..07b5f513
+index 00000000..ebe5abbb
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_resource.h
-@@ -0,0 +1,60 @@
+@@ -0,0 +1,73 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -12782,8 +12888,21 @@ index 00000000..07b5f513
 +   /* Bytes the device address covers, i.e. the page-aligned BO size. */
 +   uint64_t dev_size;
 +
-+   /* Bytes between rows, for the linear layout. */
++   /* Bytes between rows. For the twiddled layout this is cpp * phys_width (row pitch of the
++    * padded, power-of-two image). */
 +   uint32_t stride;
++
++   /* Twiddled layout: colour render targets are laid out with power-of-two physical extents and
++    * the TPU/PBE twiddle. Linear layouts are kept for buffers, depth and everything uploaded or
++    * read through the CPU. */
++   bool twiddled;
++   uint32_t phys_width, phys_height;
++
++   /* Lossless TFBC: twiddled colour targets are PBE-compressed 8x8 blocks, with an 8-byte header
++    * per block stored below the data. data_addr points past the header area. */
++   bool fbc;
++   uint64_t fbc_header_size;
++   uint64_t data_addr;
 +
 +   /* The draw path's render sequence number of the last render that used this resource (0:
 +    * none). A CPU map waits only for a render that uses the resource. */
