@@ -982,3 +982,18 @@ scenes improved (build use-vbo=false 457 -> 545, buffer interleave 159 -> 296), 
 was 653 -> 647 with regressions up to -14% in the bump scenes - not repeatable enough to keep, so it was
 dropped to keep the PR at measured-wins-only. If revisited: run the 33-scene A/B twice per build first;
 the stream-uploader copy may be interacting with the draw-slot lifetimes.
+
+## Round-51 (2026-10-28 14:00): native 3D is already faster than zink; remaining "gap" is harness
+
+CPU check on effect2d: native uses 0.27 user + 0.33 sys over 3.2 s (1355 FPS) versus zink 0.67 + 0.56
+(986 FPS) - the native path is cheaper on the host, not more expensive. Firmware ticks for the same
+scene: native TA 203 / 3D 1717 / period 4340 versus zink TA 208 / 3D 2126 / period 5559. So the native
+3D pass is actually *faster* than zink's, and the frame period is shorter; the earlier "62% gap" is
+firmware/DM turnaround that zink pays too (and more of it).
+
+Consequence: against the same-harness competitor (zink) native now wins the full suite 653-659 vs 573 and
+wins or ties most scenes; the remaining uncertainty is only the cross-harness comparison with the vendor
+blob (vendor numbers were taken under bare X11, native under headless Wayland). A fair vendor comparison
+needs vendor GL on the same Wayland/EGL harness, which is the same risky path (compositor + vendor GL)
+that has reset the board twice, so it stays a deliberate next step rather than an experiment to run
+casually.
