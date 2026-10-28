@@ -84,3 +84,11 @@ Twiddled ZLS depth buffers: full Wayland suite 471 linear -> 542 twiddled colour
 Sampled depth textures twiddled: shadow 201 -> 290 FPS, desktop 80 -> 106; full Wayland suite 659
 (471 linear baseline, +40%). PR #12 head fc0f7a6 (patches 0316-0318). Board vendor + desktop, 0 faults,
 firmware original. Next: depth pixel verification, CPU readback staging, multi-render overhead.
+## 2026-10-28 17:xx: twiddled readback + GPU depth clears (patch 0319)
+CPU maps of twiddled/TFBC colour targets now go through a GPU-made linear staging copy (written back on
+unmap), so glReadPixels on FBOs and uploads into render-target textures work again; every full depth
+clear is a ZLS background depth (depth-only clears were dropped on twiddled depth). Test-only hooks
+PVR_TWIDDLED_RAW_READBACK / PVR_FORCE_LINEAR_RT and a per-draw getenv removed; pvr_probe build fixed
+(it failed since 0316). gltri gate (all modes incl. new GLTRI_SUBIMG) matches zink. Native glmark2
+off-screen through weston + Xwayland runs all scenes: 669 (schedutil, no isolation; 528 before
+0316-0318). Open: 61 uploads to mip levels > 0 fail (0315 keeps level 0 only - real mipmaps needed).

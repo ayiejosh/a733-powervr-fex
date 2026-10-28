@@ -1373,10 +1373,10 @@ index 00000000..0c679b3f
 +#endif /* PVR_COMPUTE_TRIANGLE_SPV_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_context.c b/src/gallium/drivers/pvr_native/pvr_context.c
 new file mode 100644
-index 00000000..94728c03
+index 00000000..e98003db
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_context.c
-@@ -0,0 +1,917 @@
+@@ -0,0 +1,943 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + */
@@ -1403,6 +1403,8 @@ index 00000000..94728c03
 +
 +struct pvr_transfer {
 +   struct pipe_transfer base;
++   /* A twiddled/TFBC target is mapped through a linear copy the GPU makes (and writes back). */
++   struct pipe_resource *staging;
 +};
 +
 +/* Shared by the buffer and texture entry points: this Mesa version split the old
@@ -1425,13 +1427,36 @@ index 00000000..94728c03
 +   /* The linear layout only describes level 0 and a single layer. Resource creation
 +    * already refuses more than that, so reaching here would be a bug rather than a
 +    * request. */
-+   /* ponytail: a twiddled/TFBC target cannot be mapped linearly yet - readback needs a GPU blit to a
-+    * linear staging resource (NATIVE-TFBC-PORT.md step 5). glmark2 does not read its targets back, so
-+    * the benchmark path stays on the fast layout while readback users get an error instead of
-+    * scrambled pixels. */
-+   if (res->twiddled && getenv("PVR_TWIDDLED_RAW_READBACK") == NULL) {
-+      mesa_loge("pvr: transfer_map on a twiddled resource is not implemented yet");
-+      return NULL;
++   /* A twiddled/TFBC colour target is read and written through a linear copy: the GPU decodes it
++    * into the staging resource (unless the whole content is discarded) and, after a write, encodes
++    * it back on unmap. Twiddled depth is only written by the ZLS. */
++   if (res->twiddled) {
++      struct pvr_context *ctx = pvr_context(pctx);
++      if (util_format_is_depth_or_stencil(pres->format) || level != 0 || box->depth != 1) {
++         mesa_loge("pvr: transfer_map on a twiddled depth or mipmapped resource is not supported");
++         return NULL;
++      }
++      struct pipe_resource templ = *pres;
++      templ.bind = PIPE_BIND_RENDER_TARGET | PIPE_BIND_SAMPLER_VIEW | PIPE_BIND_LINEAR;
++      templ.last_level = 0;
++      templ.next = NULL;
++      struct pipe_resource *staging = pctx->screen->resource_create(pctx->screen, &templ);
++      if (staging == NULL)
++         return NULL;
++      if (!(usage & PIPE_MAP_DISCARD_WHOLE_RESOURCE) && !pvr_draw_blit(ctx, staging, pres)) {
++         pipe_resource_reference(&staging, NULL);
++         return NULL;
++      }
++      void *map = pvr_transfer_map(pctx, staging, 0, usage & ~PIPE_MAP_UNSYNCHRONIZED, box,
++                                   out_transfer);
++      if (map == NULL) {
++         pipe_resource_reference(&staging, NULL);
++         return NULL;
++      }
++      struct pvr_transfer *t = (struct pvr_transfer *)*out_transfer;
++      pipe_resource_reference(&t->base.resource, pres);
++      t->staging = staging;
++      return map;
 +   }
 +   if (level != 0 || box->depth != 1) {
 +      mesa_loge("pvr: refusing a transfer at level %u depth %u", level, box->depth);
@@ -1463,10 +1488,6 @@ index 00000000..94728c03
 +   if (res->stride != 0) {
 +      offset = (uint64_t)box->y * res->stride +
 +               (uint64_t)box->x * util_format_get_blocksize(pres->format);
-+      /* Debug raw mode: expose the twiddled data area with the physical row pitch, so a test can
-+       * inspect the layout the PBE actually produced (no twiddle/decode applied). */
-+      if (res->twiddled)
-+         offset += res->fbc_header_size;
 +   } else {
 +      offset = box->x;
 +   }
@@ -1477,10 +1498,14 @@ index 00000000..94728c03
 +}
 +
 +static void
-+pvr_transfer_unmap(UNUSED struct pipe_context *pctx, struct pipe_transfer *transfer)
++pvr_transfer_unmap(struct pipe_context *pctx, struct pipe_transfer *transfer)
 +{
 +   struct pvr_transfer *trans = (struct pvr_transfer *)transfer;
-+
++   if (trans->staging != NULL) {
++      if (trans->base.usage & PIPE_MAP_WRITE)
++         pvr_draw_blit(pvr_context(pctx), trans->base.resource, trans->staging);
++      pipe_resource_reference(&trans->staging, NULL);
++   }
 +   pipe_resource_reference(&trans->base.resource, NULL);
 +   FREE(trans);
 +}
@@ -2009,9 +2034,10 @@ index 00000000..94728c03
 +      }
 +
 +      /* A full depth clear with a GPU colour clear is the render's background depth. */
-+      if ((flags & PIPE_CLEAR_DEPTH) && gpu_cleared &&
-+          !util_format_has_stencil(util_format_description(ctx->fb.zsbuf.format)) &&
-+          pvr_draw_note_zclear(ctx, depth))
++      /* Any full depth clear is the render's background depth (the ZLS writes it); the CPU
++       * cannot fill a twiddled depth buffer. Stencil is not supported yet. */
++      if ((flags & PIPE_CLEAR_DEPTH) && scissor_state == NULL &&
++          ((gpu_cleared && pvr_draw_note_zclear(ctx, depth)) || pvr_draw_clear_depth(ctx, depth)))
 +         flags &= ~PIPE_CLEAR_DEPTH;
 +      if (flags != 0) {
 +         util_clear_depth_stencil(pctx, &ctx->fb.zsbuf, flags, depth, stencil, dstx,
@@ -4927,10 +4953,10 @@ index 00000000..22f38fcb
 +#endif /* PVR_CSB_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_draw.c b/src/gallium/drivers/pvr_native/pvr_draw.c
 new file mode 100644
-index 00000000..74438bc4
+index 00000000..b98c2f4c
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_draw.c
-@@ -0,0 +1,1564 @@
+@@ -0,0 +1,1632 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -5076,6 +5102,8 @@ index 00000000..74438bc4
 +   unsigned nr_load;
 +   /* The colour target of a depth-only framebuffer, and the texture an unbound unit reads. */
 +   struct pipe_resource *scratch_rt;
++   /* A blit render: the background loads this resource instead of the target. */
++   struct pipe_resource *load_src;
 +   struct pipe_resource *black;
 +   unsigned nr_bg;
 +};
@@ -5769,7 +5797,9 @@ index 00000000..74438bc4
 +draw_load_program(struct pvr_context *ctx, struct pvr_draw_state *d, uint64_t bgnd[3])
 +{
 +   struct pvr_screen *scr = draw_screen(ctx);
-+   const struct pvr_resource *rt = pvr_resource(d->rt);
++   /* The texture read: the target itself, or a blit's source (same size and format). */
++   struct pipe_resource *src = d->load_src ? d->load_src : d->rt;
++   const struct pvr_resource *rt = pvr_resource(src);
 +   const enum pipe_format format = d->rt->format;
 +   struct pvr_shader *fs = NULL;
 +   struct pvr_format_layout layout;
@@ -5818,8 +5848,8 @@ index 00000000..74438bc4
 +   uint32_t *binding = u + (fs->tex_dst[0] - fs->shared_dma_start);
 +   struct pvr_tex_desc tex = {
 +      .components = layout.components,
-+      .width = d->rt->width0,
-+      .height = d->rt->height0,
++      .width = src->width0,
++      .height = src->height0,
 +      .stride = rt->stride / util_format_get_blocksize(format),
 +      .addr = rt->data_addr,
 +      .twiddled = rt->twiddled,
@@ -6037,14 +6067,12 @@ index 00000000..74438bc4
 +   return true;
 +}
 +
-+bool
-+pvr_draw_3d(struct pvr_context *ctx, const struct pipe_draw_info *info,
-+            const struct pipe_draw_start_count_bias *draws, unsigned num_draws)
++/* The colour target the framebuffer renders into: colour buffer 0, or for a depth-only framebuffer
++ * a scratch colour target of its size. */
++static struct pipe_resource *
++draw_fb_target(struct pvr_context *ctx)
 +{
-+   struct pvr_screen *scr = draw_screen(ctx);
-+   struct pvr_draw_state *d;
 +   struct pipe_resource *rt = ctx->fb.nr_cbufs ? ctx->fb.cbufs[0].texture : NULL;
-+   /* A depth-only framebuffer renders into a scratch colour target of its size. */
 +   if (rt == NULL && ctx->fb.zsbuf.texture != NULL && ctx->draw != NULL) {
 +      struct pvr_draw_state *dd = ctx->draw;
 +      if (dd->scratch_rt == NULL || dd->scratch_rt->width0 != ctx->fb.width ||
@@ -6061,11 +6089,21 @@ index 00000000..74438bc4
 +      }
 +      rt = dd->scratch_rt;
 +   }
++   return rt;
++}
++
++bool
++pvr_draw_3d(struct pvr_context *ctx, const struct pipe_draw_info *info,
++            const struct pipe_draw_start_count_bias *draws, unsigned num_draws)
++{
++   struct pvr_screen *scr = draw_screen(ctx);
++   struct pvr_draw_state *d;
++   struct pipe_resource *rt = draw_fb_target(ctx);
 +   const enum pipe_format rt_format = rt ? rt->format : PIPE_FORMAT_NONE;
 +   struct pvr_shader *vs = ctx->vs, *fs = ctx->fs;
 +   enum ROGUE_VDMCTRL_PRIMITIVE_TOPOLOGY topo;
 +
-+   if (getenv("PVR_NATIVE_COMPUTE_FALLBACK") || num_draws != 1 || rt == NULL || vs == NULL ||
++   if (num_draws != 1 || rt == NULL || vs == NULL ||
 +       fs == NULL || fs->src_nir == NULL || !draw_format_ok(rt_format) ||
 +       !draw_topology(info->mode, &topo) ||
 +       info->instance_count != 1 || draws[0].count == 0)
@@ -6344,6 +6382,61 @@ index 00000000..74438bc4
 +   return true;
 +}
 +
++/* Opens a render on the framebuffer for a clear, keeping one already open without draws. */
++static bool
++draw_open_fb(struct pvr_context *ctx)
++{
++   struct pvr_draw_state *d = ctx->draw;
++   if (d == NULL) {
++      ctx->draw = d = calloc(1, sizeof(struct pvr_draw_state));
++      if (d == NULL)
++         return false;
++   }
++   struct pipe_resource *rt = draw_fb_target(ctx);
++   if (rt == NULL || !draw_format_ok(rt->format))
++      return false;
++   if (d->open && (d->ndraws != 0 || d->rt != rt || d->zs != ctx->fb.zsbuf.texture))
++      pvr_draw_flush(ctx);
++   return d->open || (draw_init(ctx, d) && draw_open(ctx, d, rt, ctx->fb.width, ctx->fb.height));
++}
++
++bool
++pvr_draw_clear_depth(struct pvr_context *ctx, float depth)
++{
++   struct pvr_draw_state *d = ctx->draw;
++   if (ctx->fb.zsbuf.texture == NULL || draw_zls_format(ctx->fb.zsbuf.texture->format) < 0 ||
++       !draw_open_fb(ctx))
++      return false;
++   d = ctx->draw;
++   if (d->zs != ctx->fb.zsbuf.texture)
++      return false;
++   d->zclear_valid = true;
++   d->zclear = depth;
++   return true;
++}
++
++bool
++pvr_draw_blit(struct pvr_context *ctx, struct pipe_resource *dst, struct pipe_resource *src)
++{
++   struct pvr_draw_state *d = ctx->draw;
++   if (dst->width0 != src->width0 || dst->height0 != src->height0 ||
++       dst->format != src->format || !draw_format_ok(dst->format))
++      return false;
++   pvr_draw_flush(ctx);
++   if (d == NULL) {
++      ctx->draw = d = calloc(1, sizeof(struct pvr_draw_state));
++      if (d == NULL)
++         return false;
++   }
++   if (!draw_init(ctx, d) || !draw_open(ctx, d, dst, dst->width0, dst->height0))
++      return false;
++   pipe_resource_reference(&d->zs, NULL);
++   draw_use(d, src);
++   pipe_resource_reference(&d->load_src, src);
++   pvr_draw_flush(ctx);
++   return true;
++}
++
 +void
 +pvr_draw_resource_sync(struct pvr_context *ctx, const struct pvr_resource *res)
 +{
@@ -6381,7 +6474,7 @@ index 00000000..74438bc4
 +      return;
 +   d->open = false;
 +   /* A recorded clear is a render even without draws: it is the only place the clear happens. */
-+   if (d->ndraws == 0 && !d->clear_valid)
++   if (d->ndraws == 0 && !d->clear_valid && d->load_src == NULL && !d->zclear_valid)
 +      goto done;
 +
 +   struct pvr_resource *rt = pvr_resource(d->rt);
@@ -6470,6 +6563,7 @@ index 00000000..74438bc4
 +   d->clear_valid = false;
 +   d->zclear_valid = false;
 +   pipe_resource_reference(&d->zs, NULL);
++   pipe_resource_reference(&d->load_src, NULL);
 +   d->ndraws = 0;
 +   pipe_resource_reference(&d->rt, NULL);
 +}
@@ -6497,10 +6591,10 @@ index 00000000..74438bc4
 +}
 diff --git a/src/gallium/drivers/pvr_native/pvr_draw.h b/src/gallium/drivers/pvr_native/pvr_draw.h
 new file mode 100644
-index 00000000..02299807
+index 00000000..97a03b4b
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_draw.h
-@@ -0,0 +1,42 @@
+@@ -0,0 +1,52 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -6515,6 +6609,8 @@ index 00000000..02299807
 +#include <stdint.h>
 +#include "util/format/u_formats.h"
 +
++struct pipe_resource;
++
 +struct pvr_context;
 +struct pipe_draw_info;
 +struct pipe_draw_start_count_bias;
@@ -6527,6 +6623,14 @@ index 00000000..02299807
 +/* A colour clear of cbuf 0: the next render's background object writes this colour. */
 +bool pvr_draw_note_clear(struct pvr_context *ctx, const union pipe_color_union *color);
 +void pvr_draw_destroy(struct pvr_context *ctx);
++
++/* A full depth clear of the framebuffer's depth buffer as the render's background depth, opening a
++ * render (that reloads the colour target) if none without draws is open. */
++bool pvr_draw_clear_depth(struct pvr_context *ctx, float depth);
++
++/* GPU copy of src into dst (same size and format, colour target formats): one render whose
++ * background reads src. Asynchronous; a CPU map of dst waits for it. */
++bool pvr_draw_blit(struct pvr_context *ctx, struct pipe_resource *dst, struct pipe_resource *src);
 +
 +/* Records a full depth clear for the render a colour clear just opened; false if not possible. */
 +bool pvr_draw_note_zclear(struct pvr_context *ctx, float depth);
@@ -6663,7 +6767,7 @@ index 00000000..716dbcb8
 +#endif /* PVR_HWRT_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
 new file mode 100644
-index 00000000..87c21d3c
+index 00000000..b58b6647
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_probe.c
 @@ -0,0 +1,5896 @@
@@ -7612,7 +7716,7 @@ index 00000000..87c21d3c
 +             * stride, swizzles, clip extents - the address and format live in the pixel-event
 +             * program). They have to be built BEFORE the stream, and into their own buffer: building
 +             * the stream over its own PBE source replaces the words with the stream header. */
-+            if (!pvr_csb_pbe_words(PIPE_FORMAT_R8G8B8A8_UNORM, RTW * 4, RTW, RTH, pbe_words)) {
++            if (!pvr_csb_pbe_words(PIPE_FORMAT_R8G8B8A8_UNORM, RTW * 4, RTW, RTH, false, false, pbe_words)) {
 +               printf("hwrt:          could not encode the PBE words\n");
 +               ok2 = false;
 +            }
@@ -12593,10 +12697,10 @@ index 00000000..dab58714
 +#endif /* PVR_PUBLIC_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_resource.c b/src/gallium/drivers/pvr_native/pvr_resource.c
 new file mode 100644
-index 00000000..4c90fe87
+index 00000000..8b335877
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_resource.c
-@@ -0,0 +1,276 @@
+@@ -0,0 +1,268 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + */
@@ -12679,11 +12783,6 @@ index 00000000..4c90fe87
 +   const bool rt_format = fmt == PIPE_FORMAT_R8G8B8A8_UNORM || fmt == PIPE_FORMAT_B8G8R8A8_UNORM ||
 +                          fmt == PIPE_FORMAT_R8G8B8X8_UNORM || fmt == PIPE_FORMAT_B8G8R8X8_UNORM;
 +
-+   static int rt_created;
-+   /* Debug-only: force one render-target resource (by creation order) to stay linear, so a test can
-+    * read back a GPU-decoded copy of a twiddled/TFBC target without GBM. */
-+   const char *force_linear_rt = rt_format ? getenv("PVR_FORCE_LINEAR_RT") : NULL;
-+   const bool force_linear = force_linear_rt != NULL && atoi(force_linear_rt) == rt_created;
 +
 +   /* Twiddled colour render targets: the PBE and TPU only reach full bandwidth with the twiddled
 +    * layout, and TFBC (the PBE's lossless 8x8 compression) needs it. Only targets that the CPU
@@ -12691,8 +12790,7 @@ index 00000000..4c90fe87
 +    * implemented, so textures uploaded from the client stay linear. */
 +   if ((templ->target == PIPE_TEXTURE_2D || templ->target == PIPE_TEXTURE_RECT) &&
 +       rt_format && (templ->bind & PIPE_BIND_RENDER_TARGET) && !(templ->bind & bind_linear) &&
-+       templ->width0 >= 8 && templ->height0 >= 8 && getenv("PVR_NO_TWIDDLE") == NULL &&
-+       !force_linear) {
++       templ->width0 >= 8 && templ->height0 >= 8 && getenv("PVR_NO_TWIDDLE") == NULL) {
 +      const unsigned cpp = util_format_get_blocksize(fmt);
 +      twiddled = true;
 +      phys_width = util_next_power_of_two(templ->width0);
@@ -12713,7 +12811,7 @@ index 00000000..4c90fe87
 +              util_format_is_depth_or_stencil(fmt) && (templ->bind & PIPE_BIND_DEPTH_STENCIL) &&
 +              !(templ->bind & bind_linear) &&
 +              fmt != PIPE_FORMAT_S8_UINT && templ->width0 >= 8 && templ->height0 >= 8 &&
-+              getenv("PVR_NO_TWIDDLE") == NULL && !force_linear) {
++              getenv("PVR_NO_TWIDDLE") == NULL) {
 +      /* The ZLS can load/store twiddled depth buffers too, with the same power-of-two layout as the
 +       * colour targets (depth textures are sampled through the twiddled descriptor as well). Skip
 +       * stencil-only buffers. */
@@ -12727,8 +12825,6 @@ index 00000000..4c90fe87
 +      mesa_logd("pvr: no layout for target %u", templ->target);
 +      return NULL;
 +   }
-+   if (rt_format && (templ->bind & PIPE_BIND_RENDER_TARGET) && templ->target != PIPE_BUFFER)
-+      rt_created++;
 +
 +   res = CALLOC_STRUCT(pvr_resource);
 +   if (!res)

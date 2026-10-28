@@ -196,6 +196,12 @@ int main(void)
    }
 
    unsigned char *px = malloc((size_t)W * H * 4);
+   if (getenv("GLTRI_SUBIMG") && getenv("GLTRI_TEX")) {
+      /* Write into the rendered target with the CPU: a 16x16 blue patch at the origin. */
+      static unsigned char blue[16 * 16 * 4];
+      for (int i = 0; i < 16 * 16; i++) { blue[4*i+2] = 255; blue[4*i+3] = 255; }
+      glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 16, 16, GL_RGBA, GL_UNSIGNED_BYTE, blue);
+   }
    glReadPixels(0, 0, W, H, GL_RGBA, GL_UNSIGNED_BYTE, px);
    printf("glGetError: 0x%x\n", glGetError());
    long red = 0, green = 0, other = 0;
@@ -217,6 +223,12 @@ int main(void)
       for (long i = 0; i < (long)W * H * 4; i++) sum = sum * 31 + px[i];
       unsigned char *q = px + 4 * (200 * W + 256);
       printf("sample checksum %016lx pixel (256,200) %02x %02x %02x %02x\n", sum, q[0], q[1], q[2], q[3]);
+      return 0;
+   }
+   if (getenv("GLTRI_SUBIMG")) {
+      unsigned char *q = px + 4 * (5 * W + 5), *r = px + 4 * (200 * W + 256);
+      printf("subimg patch (5,5) %02x %02x %02x  triangle (256,200) %02x %02x %02x\n",
+             q[0], q[1], q[2], r[0], r[1], r[2]);
       return 0;
    }
    if (getenv("GLTRI_ZTEST")) {
