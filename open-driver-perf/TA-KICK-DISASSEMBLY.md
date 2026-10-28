@@ -1057,3 +1057,15 @@ Caveat: this is a draw-path microbenchmark (surfaceless EGL), not glmark2; the v
 887 was measured under bare X11, a harness the native driver cannot load, so the microbenchmark is the
 closest fair comparison available on this board. The glmark2-class evidence remains: native Wayland
 653-659 vs zink 573, and native vs vendor at parity-or-better in the mode matrix.
+
+## Round-56 (2026-10-28 16:30): X11 native GL needs a classic DRI module, not a dril entry
+
+Tried to make the native driver load under X11/GLX by wiring it into the dril megadriver (added
+with_gallium_pvr to targets/dril, DEFINE_LOADER_DRM_ENTRYPOINT(pvr), driver_pvr in the link deps, plus the
+pvr_dri.so symlink). Builds and exports __driDriverGetExtensions_pvr, but the X11 client still lands on
+zink: the dril module creates screens by calling EGL/GBM, so a dril-style pvr module recurses back into EGL
+instead of creating a pipe screen. Mesa 26 no longer ships the classic per-driver DRI megadriver (our
+libgallium_dri exports no __driDriverGetExtensions_* at all), so real X11 support means writing a classic
+__DRI_DRIVER module for pvr (screen create from fd + configs), which is a separate Mesa integration task.
+Reverted; tree clean at the PR HEAD. Consequence: the glmark2-class vendor comparison stays unavailable and
+the surfaceless drawbench remains the fair harness (native ~1.11x vendor).
