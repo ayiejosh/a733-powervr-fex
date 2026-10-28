@@ -2413,10 +2413,10 @@ index 00000000..df847132
 +#endif /* PVR_CONTEXT_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_csb.c b/src/gallium/drivers/pvr_native/pvr_csb.c
 new file mode 100644
-index 00000000..4a5069fe
+index 00000000..a4c5434e
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_csb.c
-@@ -0,0 +1,1673 @@
+@@ -0,0 +1,1675 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + */
@@ -4019,7 +4019,7 @@ index 00000000..4a5069fe
 +pvr_frag_static_stream_set_zls(void *stream, uint32_t stream_len,
 +                               const struct pvr_device_info *dev_info, uint32_t zls_format,
 +                               uint64_t zbase, uint32_t width, uint32_t height, bool load,
-+                               bool store, uint32_t bgdepth, uint32_t zls_stride)
++                               bool store, uint32_t bgdepth, uint32_t zls_stride, bool twiddled)
 +{
 +   const uint32_t pbe_dwords = PVR_MAX_COLOR_ATTACHMENTS * ROGUE_NUM_PBESTATE_REG_WORDS * 2;
 +   const uint32_t ctrl_off = (PVR_FRAG_PRE_PBE_DWORDS + pbe_dwords +
@@ -4054,6 +4054,8 @@ index 00000000..4a5069fe
 +      .zstoreen = store,
 +      .forcezload = load,
 +      .forcezstore = store,
++      .loadtwiddled = twiddled,
++      .storetwiddled = twiddled,
 +   };
 +   const struct ROGUE_CR_ISP_ZLOAD_BASE base = { .addr = zbase };
 +   ROGUE_CR_ISP_ZLSCTL_pack(&dw[zlsctl_off / 4], &ctl);
@@ -4092,10 +4094,10 @@ index 00000000..4a5069fe
 +}
 diff --git a/src/gallium/drivers/pvr_native/pvr_csb.h b/src/gallium/drivers/pvr_native/pvr_csb.h
 new file mode 100644
-index 00000000..32958462
+index 00000000..22f38fcb
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_csb.h
-@@ -0,0 +1,826 @@
+@@ -0,0 +1,827 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -4620,7 +4622,8 @@ index 00000000..32958462
 +bool pvr_frag_static_stream_set_zls(void *stream, uint32_t stream_len,
 +                                    const struct pvr_device_info *dev_info, uint32_t zls_format,
 +                                    uint64_t zbase, uint32_t width, uint32_t height, bool load,
-+                                    bool store, uint32_t bgdepth, uint32_t zls_stride);
++                                    bool store, uint32_t bgdepth, uint32_t zls_stride,
++                                    bool twiddled);
 +
 +bool pvr_csb_emit_ta_pds_sizeinfo(struct pvr_csb *csb, const struct pvr_pds_sizes *sizes,
 +                                  bool tri_merge_disable, uint32_t batchnum);
@@ -4924,10 +4927,10 @@ index 00000000..32958462
 +#endif /* PVR_CSB_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_draw.c b/src/gallium/drivers/pvr_native/pvr_draw.c
 new file mode 100644
-index 00000000..71489cd8
+index 00000000..74438bc4
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_draw.c
-@@ -0,0 +1,1558 @@
+@@ -0,0 +1,1564 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -6441,10 +6444,16 @@ index 00000000..71489cd8
 +      const uint32_t bgdepth = zf == ROGUE_CR_ZLS_FORMAT_TYPE_16BITINT ? _mesa_float_to_unorm(zc, 16)
 +                             : zf == ROGUE_CR_ZLS_FORMAT_TYPE_24BITINT ? _mesa_float_to_unorm(zc, 24)
 +                                                                       : fui(zc);
-+      /* Load unless cleared this render; always store, for later renders and readers. */
++      /* Load unless cleared this render; always store, for later renders and readers. For a
++       * twiddled depth buffer the ZLS stream carries the (power-of-two) surface extents and the
++       * layer size; the linear path keeps the buffer size it has always used. */
++      const uint32_t zwidth = zr->twiddled ? zr->phys_width : d->zs->width0;
++      const uint32_t zheight = zr->twiddled ? zr->phys_height : d->zs->height0;
++      const uint32_t zstride = zr->twiddled ? (uint32_t)((uint64_t)zr->stride * zr->phys_height)
++                                            : (uint32_t)zr->dev_size;
 +      if (!pvr_frag_static_stream_set_zls(fstream, flen, &scr->dev_info, zf, zr->dev_addr,
-+                                          d->zs->width0, d->zs->height0, !d->zclear_valid, true,
-+                                          bgdepth, (uint32_t)zr->dev_size))
++                                          zwidth, zheight, !d->zclear_valid, true,
++                                          bgdepth, zstride, zr->twiddled))
 +         goto done;
 +      frag_flags |= DRM_PVR_SUBMIT_JOB_FRAG_CMD_DEPTHBUFFER;
 +   }
@@ -12584,10 +12593,10 @@ index 00000000..dab58714
 +#endif /* PVR_PUBLIC_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_resource.c b/src/gallium/drivers/pvr_native/pvr_resource.c
 new file mode 100644
-index 00000000..47c340e5
+index 00000000..3cce9e50
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_resource.c
-@@ -0,0 +1,262 @@
+@@ -0,0 +1,276 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + */
@@ -12700,6 +12709,20 @@ index 00000000..47c340e5
 +         fbc_header_size = ALIGN_POT(size / 32, 4096);
 +         size += fbc_header_size;
 +      }
++   } else if ((templ->target == PIPE_TEXTURE_2D || templ->target == PIPE_TEXTURE_RECT) &&
++              util_format_is_depth_or_stencil(fmt) && (templ->bind & PIPE_BIND_DEPTH_STENCIL) &&
++              !(templ->bind & PIPE_BIND_SAMPLER_VIEW) && !(templ->bind & bind_linear) &&
++              fmt != PIPE_FORMAT_S8_UINT && templ->width0 >= 8 && templ->height0 >= 8 &&
++              getenv("PVR_NO_TWIDDLE") == NULL && !force_linear) {
++      /* The ZLS can load/store twiddled depth buffers too, with the same power-of-two layout as the
++       * colour targets. Skip depth textures (they are sampled through the linear descriptor) and
++       * stencil-only buffers. */
++      const unsigned cpp = util_format_get_blocksize(fmt);
++      twiddled = true;
++      phys_width = util_next_power_of_two(templ->width0);
++      phys_height = util_next_power_of_two(templ->height0);
++      stride = cpp * phys_width;
++      size = (uint64_t)stride * phys_height;
 +   } else if (!pvr_resource_layout(templ, &stride, &size)) {
 +      mesa_logd("pvr: no layout for target %u", templ->target);
 +      return NULL;
