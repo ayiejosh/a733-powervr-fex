@@ -1,0 +1,38 @@
+From f747e6431b042938a58e180fbe7c13468d42fe8f Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 12:18:24 +0800
+Subject: [PATCH] gallium/pvr: twiddle sampled depth textures too
+
+The depth twiddling skipped depth textures because shadow samples its depth buffer; that left the
+shadow path on the linear ZLS and linear depth sampling. The twiddled ZLS and the twiddled TPU
+descriptor cover depth formats as well, so depth/stencil attachments that are also sampled now get the
+same power-of-two layout (stencil-only buffers still stay linear).
+
+Wayland harness: shadow 201 -> 290 FPS (+44%), desktop 80 -> 106 (+32%), build unchanged at ~1130;
+full glmark2 suite 641 -> 659 (+40% over the 471 linear baseline). No GPU faults. The depth sampling
+path still needs a pixel-level test (the colour two-pass test does not cover depth values).
+---
+ src/gallium/drivers/pvr_native/pvr_resource.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_resource.c b/src/gallium/drivers/pvr_native/pvr_resource.c
+index 3cce9e50..4c90fe87 100644
+--- a/src/gallium/drivers/pvr_native/pvr_resource.c
++++ b/src/gallium/drivers/pvr_native/pvr_resource.c
+@@ -112,11 +112,11 @@ pvr_resource_create(struct pipe_screen *pscreen, const struct pipe_resource *tem
+       }
+    } else if ((templ->target == PIPE_TEXTURE_2D || templ->target == PIPE_TEXTURE_RECT) &&
+               util_format_is_depth_or_stencil(fmt) && (templ->bind & PIPE_BIND_DEPTH_STENCIL) &&
+-              !(templ->bind & PIPE_BIND_SAMPLER_VIEW) && !(templ->bind & bind_linear) &&
++              !(templ->bind & bind_linear) &&
+               fmt != PIPE_FORMAT_S8_UINT && templ->width0 >= 8 && templ->height0 >= 8 &&
+               getenv("PVR_NO_TWIDDLE") == NULL && !force_linear) {
+       /* The ZLS can load/store twiddled depth buffers too, with the same power-of-two layout as the
+-       * colour targets. Skip depth textures (they are sampled through the linear descriptor) and
++       * colour targets (depth textures are sampled through the twiddled descriptor as well). Skip
+        * stencil-only buffers. */
+       const unsigned cpp = util_format_get_blocksize(fmt);
+       twiddled = true;
+-- 
+2.47.3
+

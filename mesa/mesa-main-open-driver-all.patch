@@ -12593,7 +12593,7 @@ index 00000000..dab58714
 +#endif /* PVR_PUBLIC_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_resource.c b/src/gallium/drivers/pvr_native/pvr_resource.c
 new file mode 100644
-index 00000000..3cce9e50
+index 00000000..4c90fe87
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_resource.c
 @@ -0,0 +1,276 @@
@@ -12711,11 +12711,11 @@ index 00000000..3cce9e50
 +      }
 +   } else if ((templ->target == PIPE_TEXTURE_2D || templ->target == PIPE_TEXTURE_RECT) &&
 +              util_format_is_depth_or_stencil(fmt) && (templ->bind & PIPE_BIND_DEPTH_STENCIL) &&
-+              !(templ->bind & PIPE_BIND_SAMPLER_VIEW) && !(templ->bind & bind_linear) &&
++              !(templ->bind & bind_linear) &&
 +              fmt != PIPE_FORMAT_S8_UINT && templ->width0 >= 8 && templ->height0 >= 8 &&
 +              getenv("PVR_NO_TWIDDLE") == NULL && !force_linear) {
 +      /* The ZLS can load/store twiddled depth buffers too, with the same power-of-two layout as the
-+       * colour targets. Skip depth textures (they are sampled through the linear descriptor) and
++       * colour targets (depth textures are sampled through the twiddled descriptor as well). Skip
 +       * stencil-only buffers. */
 +      const unsigned cpp = util_format_get_blocksize(fmt);
 +      twiddled = true;
