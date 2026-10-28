@@ -1,0 +1,78 @@
+From b9d1084e38408222f216d2a3c7919a5fbaa89cd6 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 23:51:17 +0800
+Subject: [PATCH 321/324] gallium/pvr: read the layout debug switches once, as
+ PVR_NATIVE_DEBUG
+
+PVR_NO_TWIDDLE and PVR_NO_FBC were getenv() calls in every
+resource_create. They are now PVR_NATIVE_DEBUG=no_twiddle,no_fbc, parsed
+once at screen creation into screen flags.
+---
+ src/gallium/drivers/pvr_native/pvr_resource.c | 6 +++---
+ src/gallium/drivers/pvr_native/pvr_screen.c   | 4 ++++
+ src/gallium/drivers/pvr_native/pvr_screen.h   | 3 +++
+ 3 files changed, 10 insertions(+), 3 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_resource.c b/src/gallium/drivers/pvr_native/pvr_resource.c
+index 8b335877..a7ffc980 100644
+--- a/src/gallium/drivers/pvr_native/pvr_resource.c
++++ b/src/gallium/drivers/pvr_native/pvr_resource.c
+@@ -87,7 +87,7 @@ pvr_resource_create(struct pipe_screen *pscreen, const struct pipe_resource *tem
+     * implemented, so textures uploaded from the client stay linear. */
+    if ((templ->target == PIPE_TEXTURE_2D || templ->target == PIPE_TEXTURE_RECT) &&
+        rt_format && (templ->bind & PIPE_BIND_RENDER_TARGET) && !(templ->bind & bind_linear) &&
+-       templ->width0 >= 8 && templ->height0 >= 8 && getenv("PVR_NO_TWIDDLE") == NULL) {
++       templ->width0 >= 8 && templ->height0 >= 8 && !screen->no_twiddle) {
+       const unsigned cpp = util_format_get_blocksize(fmt);
+       twiddled = true;
+       phys_width = util_next_power_of_two(templ->width0);
+@@ -96,7 +96,7 @@ pvr_resource_create(struct pipe_screen *pscreen, const struct pipe_resource *tem
+       size = (uint64_t)stride * phys_height;
+       /* TFBC is only used on the plain RGBA8/BGRA8 colour targets (see NATIVE-TFBC-PORT.md). */
+       const struct pvr_device_info *dev_info = &screen->dev_info;
+-      fbc = getenv("PVR_NO_FBC") == NULL &&
++      fbc = !screen->no_fbc &&
+             PVR_HAS_FEATURE(dev_info, tpu_image_state_v2) &&
+             PVR_GET_FEATURE_VALUE(dev_info, fbcdc_algorithm, 0) == 50 &&
+             (fmt == PIPE_FORMAT_R8G8B8A8_UNORM || fmt == PIPE_FORMAT_B8G8R8A8_UNORM);
+@@ -108,7 +108,7 @@ pvr_resource_create(struct pipe_screen *pscreen, const struct pipe_resource *tem
+               util_format_is_depth_or_stencil(fmt) && (templ->bind & PIPE_BIND_DEPTH_STENCIL) &&
+               !(templ->bind & bind_linear) &&
+               fmt != PIPE_FORMAT_S8_UINT && templ->width0 >= 8 && templ->height0 >= 8 &&
+-              getenv("PVR_NO_TWIDDLE") == NULL) {
++              !screen->no_twiddle) {
+       /* The ZLS can load/store twiddled depth buffers too, with the same power-of-two layout as the
+        * colour targets (depth textures are sampled through the twiddled descriptor as well). Skip
+        * stencil-only buffers. */
+diff --git a/src/gallium/drivers/pvr_native/pvr_screen.c b/src/gallium/drivers/pvr_native/pvr_screen.c
+index de3a9c08..2abd3018 100644
+--- a/src/gallium/drivers/pvr_native/pvr_screen.c
++++ b/src/gallium/drivers/pvr_native/pvr_screen.c
+@@ -320,6 +320,10 @@ pvr_screen_create(int fd, const struct pipe_screen_config *config,
+    if (!screen->vm_valid)
+       mesa_logi("pvr: no GPU address space; resources will not be creatable");
+ 
++   const char *dbg = getenv("PVR_NATIVE_DEBUG");
++   screen->no_twiddle = dbg != NULL && strstr(dbg, "no_twiddle") != NULL;
++   screen->no_fbc = dbg != NULL && strstr(dbg, "no_fbc") != NULL;
++
+    screen->base.destroy = pvr_destroy_screen;
+    screen->base.get_name = pvr_get_name;
+    screen->base.get_vendor = pvr_get_vendor;
+diff --git a/src/gallium/drivers/pvr_native/pvr_screen.h b/src/gallium/drivers/pvr_native/pvr_screen.h
+index fa8a763f..d6fc7c95 100644
+--- a/src/gallium/drivers/pvr_native/pvr_screen.h
++++ b/src/gallium/drivers/pvr_native/pvr_screen.h
+@@ -46,6 +46,9 @@ struct pvr_screen {
+     * a useful distinction when probing a node this driver cannot drive. */
+    struct pvr_vm vm;
+    bool vm_valid;
++
++   /* PVR_NATIVE_DEBUG=no_twiddle,no_fbc: linear (or uncompressed) render targets, read once. */
++   bool no_twiddle, no_fbc;
+ };
+ 
+ static inline struct pvr_screen *
+-- 
+2.47.3
+

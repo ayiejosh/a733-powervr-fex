@@ -92,3 +92,19 @@ PVR_TWIDDLED_RAW_READBACK / PVR_FORCE_LINEAR_RT and a per-draw getenv removed; p
 (it failed since 0316). gltri gate (all modes incl. new GLTRI_SUBIMG) matches zink. Native glmark2
 off-screen through weston + Xwayland runs all scenes: 669 (schedutil, no isolation; 528 before
 0316-0318). Open: 61 uploads to mip levels > 0 fail (0315 keeps level 0 only - real mipmaps needed).
+## 2026-10-29: real mipmaps, big render targets, multi-render costs, client arrays (patches 0320-0324)
+- 0320: region header buffers sized for the whole tile grid. Renders of 32x32 tiles and more
+  (1024x1024 and up: refract's 1600x1200 target, the shadow map, terrain) lost every tile before;
+  gltri now renders correctly from 1000x1000 to 4096x4096.
+- 0321: PVR_NO_TWIDDLE / PVR_NO_FBC are now PVR_NATIVE_DEBUG=no_twiddle,no_fbc, read once.
+- 0322: real mipmaps: twiddled mip chains laid out as the Vulkan pvr_image, per-level descriptors
+  and sampling (mip filter LINEAR only, quirk 51025 LOD rounding), uploads/readback per level,
+  render to a level, GPU generate_mipmap, npot_textures. 0 "transfer_map ... mipmapped" errors
+  (61 before). New gltri modes GLTRI_MIP / GENMIP / MIPRT / MIPLL match zink checksums.
+- 0323: per-render costs: small colour-only renders share a power-of-two data set class, one mip
+  generation shader per format, 4 render slots (max 2 in flight per data set), clear-only renders
+  deferred into the next render of the target (gltri GLTRI_DEFER matches zink).
+- 0324: released buffer objects reused: build use-vbo=false 491 -> 950 FPS (vendor 862).
+Full native glmark2 off-screen (perf governor, cores 6-7): 748, 0 errors, 0 MMU faults; terrain
+11 -> 19, shadow 185 -> 224, desktop shadow 311 -> 419 vs the mipmap-only state. Note: fwtime.sh
+left fw_trace_mask at 0xffffffff, which costs ~10-20% on every scene; it now resets it to 0.

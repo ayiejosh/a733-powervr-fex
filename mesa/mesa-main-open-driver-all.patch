@@ -1373,10 +1373,10 @@ index 00000000..0c679b3f
 +#endif /* PVR_COMPUTE_TRIANGLE_SPV_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_context.c b/src/gallium/drivers/pvr_native/pvr_context.c
 new file mode 100644
-index 00000000..e98003db
+index 00000000..f89d1216
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_context.c
-@@ -0,0 +1,943 @@
+@@ -0,0 +1,970 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + */
@@ -1424,26 +1424,32 @@ index 00000000..e98003db
 +   struct pvr_transfer *trans;
 +   uint64_t offset;
 +
-+   /* The linear layout only describes level 0 and a single layer. Resource creation
-+    * already refuses more than that, so reaching here would be a bug rather than a
-+    * request. */
-+   /* A twiddled/TFBC colour target is read and written through a linear copy: the GPU decodes it
-+    * into the staging resource (unless the whole content is discarded) and, after a write, encodes
-+    * it back on unmap. Twiddled depth is only written by the ZLS. */
++   /* A twiddled/TFBC colour target (or a level of a twiddled mip chain) is read and written
++    * through a linear copy of the level: the GPU decodes it into the staging resource (unless the
++    * content is discarded) and, after a write, encodes it back on unmap. Twiddled depth is only
++    * written by the ZLS. */
 +   if (res->twiddled) {
 +      struct pvr_context *ctx = pvr_context(pctx);
-+      if (util_format_is_depth_or_stencil(pres->format) || level != 0 || box->depth != 1) {
-+         mesa_loge("pvr: transfer_map on a twiddled depth or mipmapped resource is not supported");
++      if (util_format_is_depth_or_stencil(pres->format) || level > pres->last_level ||
++          box->depth != 1) {
++         mesa_loge("pvr: transfer_map on twiddled depth or level %u of %u is not supported", level,
++                   pres->last_level);
 +         return NULL;
 +      }
 +      struct pipe_resource templ = *pres;
 +      templ.bind = PIPE_BIND_RENDER_TARGET | PIPE_BIND_SAMPLER_VIEW | PIPE_BIND_LINEAR;
++      templ.width0 = u_minify(pres->width0, level);
++      templ.height0 = u_minify(pres->height0, level);
 +      templ.last_level = 0;
 +      templ.next = NULL;
 +      struct pipe_resource *staging = pctx->screen->resource_create(pctx->screen, &templ);
 +      if (staging == NULL)
 +         return NULL;
-+      if (!(usage & PIPE_MAP_DISCARD_WHOLE_RESOURCE) && !pvr_draw_blit(ctx, staging, pres)) {
++      /* A write that replaces the whole level needs no read back. */
++      const bool whole = (usage & PIPE_MAP_DISCARD_WHOLE_RESOURCE) ||
++                         ((usage & PIPE_MAP_DISCARD_RANGE) && box->x == 0 && box->y == 0 &&
++                          box->width == (int)templ.width0 && box->height == (int)templ.height0);
++      if (!whole && !pvr_draw_blit(ctx, staging, 0, pres, level, false)) {
 +         pipe_resource_reference(&staging, NULL);
 +         return NULL;
 +      }
@@ -1455,6 +1461,7 @@ index 00000000..e98003db
 +      }
 +      struct pvr_transfer *t = (struct pvr_transfer *)*out_transfer;
 +      pipe_resource_reference(&t->base.resource, pres);
++      t->base.level = level;
 +      t->staging = staging;
 +      return map;
 +   }
@@ -1503,7 +1510,8 @@ index 00000000..e98003db
 +   struct pvr_transfer *trans = (struct pvr_transfer *)transfer;
 +   if (trans->staging != NULL) {
 +      if (trans->base.usage & PIPE_MAP_WRITE)
-+         pvr_draw_blit(pvr_context(pctx), trans->base.resource, trans->staging);
++         pvr_draw_blit(pvr_context(pctx), trans->base.resource, trans->base.level,
++                       trans->staging, 0, false);
 +      pipe_resource_reference(&trans->staging, NULL);
 +   }
 +   pipe_resource_reference(&trans->base.resource, NULL);
@@ -2157,6 +2165,23 @@ index 00000000..e98003db
 +static void pvr_flush_resource(UNUSED struct pipe_context *p, UNUSED struct pipe_resource *r) {}
 +static void pvr_invalidate_resource(UNUSED struct pipe_context *p, UNUSED struct pipe_resource *r) {}
 +
++/* A copy of a whole level between colour target resources is one GPU render (instead of two
++ * staging copies through the CPU); anything else goes through the CPU maps. */
++static void
++pvr_resource_copy_region(struct pipe_context *pctx, struct pipe_resource *dst, unsigned dst_level,
++                         unsigned dstx, unsigned dsty, unsigned dstz, struct pipe_resource *src,
++                         unsigned src_level, const struct pipe_box *box)
++{
++   if (dst->target != PIPE_BUFFER && src->target != PIPE_BUFFER && dstx == 0 && dsty == 0 &&
++       dstz == 0 && box->x == 0 && box->y == 0 && box->z == 0 && box->depth == 1 &&
++       dst->format == src->format &&
++       box->width == (int)u_minify(src->width0, src_level) &&
++       box->height == (int)u_minify(src->height0, src_level) &&
++       pvr_draw_blit(pvr_context(pctx), dst, dst_level, src, src_level, false))
++      return;
++   util_resource_copy_region(pctx, dst, dst_level, dstx, dsty, dstz, src, src_level, box);
++}
++
 +/* shortcut: no GPU blit yet. Same-format, unscaled copies go through the CPU; anything else is
 + * reported and skipped. */
 +static void
@@ -2165,7 +2190,7 @@ index 00000000..e98003db
 +   if (info->src.format == info->dst.format && info->src.box.width == info->dst.box.width &&
 +       info->src.box.height == info->dst.box.height && info->mask == PIPE_MASK_RGBA &&
 +       !info->scissor_enable) {
-+      util_resource_copy_region(pctx, info->dst.resource, info->dst.level, info->dst.box.x,
++      pctx->resource_copy_region(pctx, info->dst.resource, info->dst.level, info->dst.box.x,
 +                                info->dst.box.y, info->dst.box.z, info->src.resource,
 +                                info->src.level, &info->src.box);
 +      return;
@@ -2215,17 +2240,19 @@ index 00000000..e98003db
 +   FREE(ctx);
 +}
 +
-+/* ponytail: the draw path samples level 0 only (linear, one descriptor), so generating a mip
-+ * chain would allocate data nothing can read. Keep the entry point non-NULL so the state
-+ * tracker does not fall back to util_gen_mipmap(), which would need per-level transfers this
-+ * driver does not have. Add real mip sampling with the TFBC/twiddled texture work. */
++/* Each level a GPU render of the 2x2 box filter of the one above it. A chain that keeps level 0
++ * only (a format the PBE cannot write, see pvr_resource_create) has nothing to generate. */
 +static bool
 +pvr_generate_mipmap(struct pipe_context *pctx, struct pipe_resource *pres,
 +                    enum pipe_format format, unsigned base_level, unsigned last_level,
-+                    unsigned first_layer, unsigned last_layer)
++                    UNUSED unsigned first_layer, UNUSED unsigned last_layer)
 +{
-+   (void)pctx; (void)pres; (void)format; (void)base_level; (void)last_level;
-+   (void)first_layer; (void)last_layer;
++   if (format != pres->format)
++      return false;
++   for (unsigned l = base_level + 1; l <= MIN2(last_level, pres->last_level); l++) {
++      if (!pvr_draw_blit(pvr_context(pctx), pres, l, pres, l - 1, true))
++         return false;
++   }
 +   return true;
 +}
 +
@@ -2297,7 +2324,7 @@ index 00000000..e98003db
 +   ctx->base.memory_barrier = pvr_memory_barrier;
 +   ctx->base.flush_resource = pvr_flush_resource;
 +   ctx->base.invalidate_resource = pvr_invalidate_resource;
-+   ctx->base.resource_copy_region = util_resource_copy_region;
++   ctx->base.resource_copy_region = pvr_resource_copy_region;
 +   ctx->base.blit = pvr_blit;
 +   ctx->base.clear_render_target = pvr_clear_render_target;
 +   ctx->base.clear_depth_stencil = pvr_clear_depth_stencil;
@@ -2439,10 +2466,10 @@ index 00000000..df847132
 +#endif /* PVR_CONTEXT_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_csb.c b/src/gallium/drivers/pvr_native/pvr_csb.c
 new file mode 100644
-index 00000000..a4c5434e
+index 00000000..914ca7a3
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_csb.c
-@@ -0,0 +1,1675 @@
+@@ -0,0 +1,1677 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + */
@@ -3311,7 +3338,7 @@ index 00000000..a4c5434e
 +
 +bool
 +pvr_csb_pbe_words(enum pipe_format format, uint32_t stride_bytes, uint32_t width,
-+                  uint32_t height, bool twiddled, bool fbc, uint64_t words[3])
++                  uint32_t height, uint32_t phys_height, bool twiddled, bool fbc, uint64_t words[3])
 +{
 +   const struct util_format_description *desc = util_format_description(format);
 +   const int chan = util_format_get_first_non_void_channel(format);
@@ -3331,10 +3358,11 @@ index 00000000..a4c5434e
 +   /* Twiddled targets tell the PBE the power-of-two log2 extents of the surface (the Vulkan
 +    * driver's pvr_arch_pbe_pack_state does the same); without them the PBE wrote only a
 +    * fraction of the target, which is how the first twiddled attempt produced a mostly-zero
-+    * image. */
++    * image. They are the allocated extents (the row pitch and phys_height): for a mip level of a
++    * non-power-of-two image those exceed the level's own size rounded up. */
 +   if (twiddled) {
-+      reg1.size_x = util_logbase2_ceil(width);
-+      reg1.size_y = util_logbase2_ceil(height);
++      reg1.size_x = util_logbase2_ceil(stride_bytes / util_format_get_blocksize(format));
++      reg1.size_y = util_logbase2_ceil(phys_height);
 +   }
 +
 +   if (chan < 0 || !pvr_format_layout_from_pipe(format, &layout))
@@ -3810,9 +3838,10 @@ index 00000000..a4c5434e
 +    * TEXSTATE_TEXTYPE for twiddled, the 2D type plus this word selects the twiddled decode. */
 +   struct ROGUE_TEXSTATE_IMAGE_WORD1 word1_tw = {
 +      .texaddr = desc->addr,
-+      .num_mip_levels = 1, /* level count, like the Vulkan driver (0 is not "one level" here) */
-+      .mipmaps_present = false,
-+      .baselevel = 0,
++      /* Level count, like the Vulkan driver (0 is not "one level" here). */
++      .num_mip_levels = MAX2(desc->num_levels, 1),
++      .mipmaps_present = desc->num_levels > 1,
++      .baselevel = desc->base_level,
 +      .depth = 0,
 +      .alpha_msb = false,
 +      .border = false,
@@ -4120,10 +4149,10 @@ index 00000000..a4c5434e
 +}
 diff --git a/src/gallium/drivers/pvr_native/pvr_csb.h b/src/gallium/drivers/pvr_native/pvr_csb.h
 new file mode 100644
-index 00000000..22f38fcb
+index 00000000..61abc377
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_csb.h
-@@ -0,0 +1,827 @@
+@@ -0,0 +1,833 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -4351,6 +4380,11 @@ index 00000000..22f38fcb
 +   /* Twiddled and, optionally, TFBC-compressed image (colour render targets). */
 +   bool twiddled;
 +   bool fbc;
++
++   /* A twiddled mip chain: levels sampled (0 or 1: none) and the first one. width/height are
++    * level 0's then. */
++   uint32_t num_levels;
++   uint32_t base_level;
 +};
 +
 +bool pvr_csb_emit_tex_desc(struct pvr_csb *csb, const struct pvr_tex_desc *desc);
@@ -4398,7 +4432,7 @@ index 00000000..22f38fcb
 +   enum pipe_tex_wrap wrap_r;
 +   enum pipe_tex_filter min_filter;
 +   enum pipe_tex_filter mag_filter;
-+   bool mip_filter;
++   bool mip_filter; /* linear between levels */
 +   float min_lod;
 +   float max_lod;
 +};
@@ -4667,7 +4701,8 @@ index 00000000..22f38fcb
 + *
 + * Returns false for formats whose PBE packmode this function does not encode. */
 +bool pvr_csb_pbe_words(enum pipe_format format, uint32_t stride_bytes, uint32_t width,
-+                       uint32_t height, bool twiddled, bool fbc, uint64_t words[3]);
++                       uint32_t height, uint32_t phys_height, bool twiddled, bool fbc,
++                       uint64_t words[3]);
 +
 +/* The PBE *state* words (PBESTATE_STATE_WORD0/WORD1) for one colour attachment: target address,
 + * output format, MRT index, normalisation and pack mode. These do not belong in the fragment
@@ -4953,10 +4988,10 @@ index 00000000..22f38fcb
 +#endif /* PVR_CSB_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_draw.c b/src/gallium/drivers/pvr_native/pvr_draw.c
 new file mode 100644
-index 00000000..b98c2f4c
+index 00000000..295c2573
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_draw.c
-@@ -0,0 +1,1632 @@
+@@ -0,0 +1,1842 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -5022,14 +5057,25 @@ index 00000000..b98c2f4c
 +   uint64_t pds_offset;
 +};
 +
-+/* The background object that reloads a target's previous contents, per target format. */
++/* The background object that reloads a target's previous contents, per target format; or, for a
++ * mip generation render (gen), that averages 2x2 texels of the level above. */
 +struct pvr_draw_load {
 +   enum pipe_format format;
++   bool gen;
 +   struct pvr_shader *fs;
 +};
 +
-+#define PVR_DRAW_HWRT_CACHE 4
-+#define PVR_DRAW_SLOTS 2
++/* An end-of-tile program, per target address and format. */
++struct pvr_draw_eot {
++   uint64_t addr;
++   enum pipe_format format;
++   uint64_t pds_offset;
++};
++
++/* Mip generation renders every level size of a chain (refract: about a dozen per frame), and a
++ * data set created on an eviction costs a wait and a firmware round trip. */
++#define PVR_DRAW_HWRT_CACHE 16
++#define PVR_DRAW_SLOTS 4
 +
 +struct pvr_draw_state {
 +   bool ready, failed;
@@ -5050,6 +5096,9 @@ index 00000000..b98c2f4c
 +      /* Which of the two render-target datas the next render uses: the reference moves to the
 +       * other one after every fragment submit. */
 +      uint32_t rt_data_idx;
++      /* The render that last used each RT data (0: none): a data set takes at most two renders in
++       * flight, one per RT data, however many slots there are. */
++      uint32_t data_seq[2];
 +      uint32_t fl_handle;
 +      struct pvr_bo bo[7];
 +      uint64_t addr[7];
@@ -5085,6 +5134,7 @@ index 00000000..b98c2f4c
 +   uint32_t seq;
 +   unsigned ndraws;
 +   struct pipe_resource *rt;
++   unsigned rt_level;
 +   uint32_t rt_w, rt_h;
 +
 +   bool clear_valid;
@@ -5095,15 +5145,20 @@ index 00000000..b98c2f4c
 +   float zclear;
 +
 +   /* Caches. */
-+   uint64_t eot_rt_addr;
-+   uint64_t eot_pds_offset;
++   struct pvr_draw_eot eot[32];
++   unsigned nr_eot;
 +   struct pvr_draw_bg bg[4];
-+   struct pvr_draw_load load[4];
++   struct pvr_draw_load load[8];
 +   unsigned nr_load;
 +   /* The colour target of a depth-only framebuffer, and the texture an unbound unit reads. */
 +   struct pipe_resource *scratch_rt;
-+   /* A blit render: the background loads this resource instead of the target. */
++   /* A blit render: the background loads this resource (level load_src_level) instead of the
++    * target; load_gen: a mip generation render, each pixel the 2x2 average of the source. */
 +   struct pipe_resource *load_src;
++   unsigned load_src_level;
++   /* Submit a clear-only render instead of deferring it (draw_materialize). */
++   bool no_defer;
++   bool load_gen;
 +   struct pipe_resource *black;
 +   unsigned nr_bg;
 +};
@@ -5297,7 +5352,7 @@ index 00000000..b98c2f4c
 +      sizes[0] = sz.tpc_size;
 +      sizes[1] = 4096; /* VHEAP table, single layer: no RTC */
 +      sizes[2] = sizes[3] = 4096; /* MLIST: ~1 KiB for a 256 MiB global free list */
-+      sizes[4] = sizes[5] = sz.region_header_size;
++      sizes[4] = sizes[5] = sz.region_headers_bytes;
 +      sizes[6] = (uint64_t)local_pages * 4;
 +      for (unsigned i = 0; i < ARRAY_SIZE(sizes); i++) {
 +         if (!draw_general_bo(scr, sizes[i], flags[i], &e->bo[i], &e->addr[i], false)) {
@@ -5624,6 +5679,25 @@ index 00000000..b98c2f4c
 +   return pvr_format_layout_from_pipe(format, &layout);
 +}
 +
++/* The texture descriptor of one level of a resource, as an image of its own: a twiddled level is
++ * the power-of-two image the PBE writes, so it is described with its allocated extents (only
++ * the logical part of it is ever addressed). */
++static void
++draw_level_desc(const struct pvr_resource *res, unsigned level,
++                enum ROGUE_TEXSTATE_FORMAT components, struct pvr_tex_desc *tex)
++{
++   const bool level0 = level == 0;
++   *tex = (struct pvr_tex_desc){
++      .components = components,
++      .width = level0 ? res->base.width0 : pvr_resource_level_phys_w(res, level),
++      .height = level0 ? res->base.height0 : pvr_resource_level_phys_h(res, level),
++      .stride = pvr_resource_level_stride(res, level) / util_format_get_blocksize(res->base.format),
++      .addr = pvr_resource_level_addr(res, level),
++      .twiddled = res->twiddled,
++      .fbc = res->fbc,
++   };
++}
++
 +/* One combined image sampler for texture unit u of a stage: image words, image meta (zero: 2D,
 + * one layer, no packing), sampler words, sampler meta (compare op NEVER, 0). */
 +static bool
@@ -5672,26 +5746,41 @@ index 00000000..b98c2f4c
 +      draw_use(ctx->draw, view->texture);
 +   const unsigned char view_swz[4] = { view->swizzle_r, view->swizzle_g, view->swizzle_b,
 +                                       view->swizzle_a };
-+   struct pvr_tex_desc tex = {
-+      .components = layout.components,
-+      .width = res->base.width0,
-+      .height = res->base.height0,
-+      .stride = res->stride / util_format_get_blocksize(res->base.format),
-+      .addr = res->data_addr,
-+      .twiddled = res->twiddled,
-+      .fbc = res->fbc,
-+   };
++   /* A mip filter samples the view's levels of the chain; without one (or with one level) the
++    * view's first level is described as an image of its own. */
++   const unsigned first = MIN2(view->u.tex.first_level, res->base.last_level);
++   const unsigned last = MIN2(view->u.tex.last_level, res->base.last_level);
++   const bool chain = smp->min_mip_filter != PIPE_TEX_MIPFILTER_NONE && last > first;
++   struct pvr_tex_desc tex;
++   draw_level_desc(res, chain ? 0 : first, layout.components, &tex);
++   if (chain) {
++      tex.num_levels = last - first + 1;
++      tex.base_level = first;
++   }
 +   util_format_compose_swizzles(layout.swizzle, view_swz, tex.swizzle);
-+   const struct pvr_sampler_desc sd = {
++   struct pvr_sampler_desc sd = {
 +      .wrap_s = smp->wrap_s,
 +      .wrap_t = smp->wrap_t,
 +      .wrap_r = smp->wrap_r,
 +      .min_filter = smp->min_img_filter,
 +      .mag_filter = smp->mag_img_filter,
-+      .mip_filter = smp->min_mip_filter != PIPE_TEX_MIPFILTER_NONE,
++      .mip_filter = chain && smp->min_mip_filter == PIPE_TEX_MIPFILTER_LINEAR,
 +      .min_lod = smp->min_lod,
 +      .max_lod = smp->max_lod,
 +   };
++   if (chain) {
++      /* As the Vulkan sampler: the hardware picks min or mag filter from the clamped LOD, so a
++       * clamp that rules one out uses the other; and with quirk 51025 nearest-mip rounding adds
++       * its 0.5 before the clamp, so the bounds carry it too. */
++      if (sd.min_lod > 0.0f)
++         sd.mag_filter = sd.min_filter;
++      if (sd.max_lod <= 0.0f)
++         sd.min_filter = sd.mag_filter;
++      if (!sd.mip_filter && PVR_HAS_QUIRK(&draw_screen(ctx)->dev_info, 51025)) {
++         sd.min_lod += 0.5f;
++         sd.max_lod += 0.5f;
++      }
++   }
 +   pvr_csb_init(&csb, out, ROGUE_NUM_TEXSTATE_DWORDS * 4, 0);
 +   if (!pvr_csb_emit_tex_desc(&csb, &tex) || csb.overflowed)
 +      return false;
@@ -5799,15 +5888,17 @@ index 00000000..b98c2f4c
 +   struct pvr_screen *scr = draw_screen(ctx);
 +   /* The texture read: the target itself, or a blit's source (same size and format). */
 +   struct pipe_resource *src = d->load_src ? d->load_src : d->rt;
++   const unsigned src_level = d->load_src ? d->load_src_level : d->rt_level;
 +   const struct pvr_resource *rt = pvr_resource(src);
 +   const enum pipe_format format = d->rt->format;
++   const bool gen = d->load_gen;
 +   struct pvr_shader *fs = NULL;
 +   struct pvr_format_layout layout;
 +
 +   if (!pvr_format_layout_from_pipe(format, &layout))
 +      return false;
 +   for (unsigned i = 0; i < d->nr_load; i++) {
-+      if (d->load[i].format == format)
++      if (d->load[i].format == format && d->load[i].gen == gen)
 +         fs = d->load[i].fs;
 +   }
 +   if (fs == NULL) {
@@ -5817,26 +5908,47 @@ index 00000000..b98c2f4c
 +                                              "color");
 +      out->data.location = FRAG_RESULT_DATA0;
 +      nir_def *xy = nir_f2i32(&b, nir_trim_vector(&b, nir_load_frag_coord(&b), 2));
-+      nir_tex_instr *tex = nir_tex_instr_create(b.shader, 2);
-+      tex->op = nir_texop_txf;
-+      tex->sampler_dim = GLSL_SAMPLER_DIM_2D;
-+      tex->dest_type = nir_type_float32;
-+      tex->coord_components = 2;
-+      tex->texture_index = 0;
-+      tex->sampler_index = 0;
-+      tex->src[0] = nir_tex_src_for_ssa(nir_tex_src_coord, xy);
-+      tex->src[1] = nir_tex_src_for_ssa(nir_tex_src_lod, nir_imm_int(&b, 0));
-+      nir_def_init(&tex->instr, &tex->def, 4, 32);
-+      nir_builder_instr_insert(&b, &tex->instr);
-+      nir_store_var(&b, out, &tex->def, 0xf);
++      nir_def *color = NULL;
++      /* Load: the texel at the pixel. Generation: the box filter of the 2x2 texels under it, the
++       * odd last row/column clamped onto the edge (the source level's last texel, a uniform). */
++      nir_def *last = gen ? nir_load_uniform(&b, 2, 32, nir_imm_int(&b, 0), .base = 0, .range = 1,
++                                             .dest_type = nir_type_int32)
++                          : NULL;
++      for (unsigned i = 0; i < (gen ? 4u : 1u); i++) {
++         nir_def *c = xy;
++         if (gen) {
++            c = nir_iadd(&b, nir_ishl_imm(&b, xy, 1), nir_imm_ivec2(&b, i & 1, i >> 1));
++            c = nir_imin(&b, c, last);
++         }
++         nir_tex_instr *tex = nir_tex_instr_create(b.shader, 2);
++         tex->op = nir_texop_txf;
++         tex->sampler_dim = GLSL_SAMPLER_DIM_2D;
++         tex->dest_type = nir_type_float32;
++         tex->coord_components = 2;
++         tex->texture_index = 0;
++         tex->sampler_index = 0;
++         tex->src[0] = nir_tex_src_for_ssa(nir_tex_src_coord, c);
++         tex->src[1] = nir_tex_src_for_ssa(nir_tex_src_lod, nir_imm_int(&b, 0));
++         nir_def_init(&tex->instr, &tex->def, 4, 32);
++         nir_builder_instr_insert(&b, &tex->instr);
++         color = color ? nir_fadd(&b, color, &tex->def) : &tex->def;
++      }
++      if (gen)
++         color = nir_fmul_imm(&b, color, 0.25);
++      nir_store_var(&b, out, color, 0xf);
 +      BITSET_SET(b.shader->info.textures_used, 0);
 +      BITSET_SET(b.shader->info.textures_used_by_txf, 0);
 +      fs = pvr_shader_create_fs(b.shader, scr->pco_ctx, format, NULL);
-+      if (fs == NULL || !draw_upload_fs(scr, fs) || fs->tex_mask != 1)
++      if (fs == NULL || !draw_upload_fs(scr, fs) || fs->tex_mask != 1 ||
++          (gen && fs->uniform_dwords < 2)) {
++         mesa_loge("pvr: draw: no load program (%s, gen %d)", util_format_short_name(format), gen);
 +         return false;
-+      /* shortcut: four cached formats, round robin; the evicted shader stays allocated. */
-+      const unsigned slot = d->nr_load < ARRAY_SIZE(d->load) ? d->nr_load++ : (format & 3);
-+      d->load[slot] = (struct pvr_draw_load){ .format = format, .fs = fs };
++      }
++      /* shortcut: eight cached variants, round robin; the evicted shader stays allocated. */
++      const unsigned slot = d->nr_load < ARRAY_SIZE(d->load)
++                               ? d->nr_load++
++                               : (format * 2 + gen) % ARRAY_SIZE(d->load);
++      d->load[slot] = (struct pvr_draw_load){ .format = format, .gen = gen, .fs = fs };
 +   }
 +
 +   /* The shared block: the target as a texture, read with NEAREST. */
@@ -5846,15 +5958,13 @@ index 00000000..b98c2f4c
 +      return false;
 +   memset(u, 0, fs->shared_dma_dwords * 4);
 +   uint32_t *binding = u + (fs->tex_dst[0] - fs->shared_dma_start);
-+   struct pvr_tex_desc tex = {
-+      .components = layout.components,
-+      .width = src->width0,
-+      .height = src->height0,
-+      .stride = rt->stride / util_format_get_blocksize(format),
-+      .addr = rt->data_addr,
-+      .twiddled = rt->twiddled,
-+      .fbc = rt->fbc,
-+   };
++   if (gen) {
++      int32_t *last = (int32_t *)(u + (fs->uniform_dst - fs->shared_dma_start));
++      last[0] = (int32_t)u_minify(src->width0, src_level) - 1;
++      last[1] = (int32_t)u_minify(src->height0, src_level) - 1;
++   }
++   struct pvr_tex_desc tex;
++   draw_level_desc(rt, src_level, layout.components, &tex);
 +   memcpy(tex.swizzle, layout.swizzle, sizeof(tex.swizzle));
 +   const struct pvr_sampler_desc smp = {
 +      .wrap_s = PIPE_TEX_WRAP_CLAMP_TO_EDGE,
@@ -5901,8 +6011,10 @@ index 00000000..b98c2f4c
 +   uint32_t staging[64] = { 0 };
 +   uint32_t usc_offset;
 +
-+   if (d->eot_rt_addr == rt_addr && d->eot_pds_offset != 0)
-+      return d->eot_pds_offset;
++   for (unsigned i = 0; i < d->nr_eot; i++) {
++      if (d->eot[i].addr == rt_addr && d->eot[i].format == format)
++         return d->eot[i].pds_offset;
++   }
 +   pvr_csb_pbe_state_words(rt_addr, format, 0, state_words);
 +   if (!pvr_shader_eot_create(scr->pco_ctx, &eot, state_words))
 +      return 0;
@@ -5915,9 +6027,15 @@ index 00000000..b98c2f4c
 +   if (program.data_size > ARRAY_SIZE(staging))
 +      return 0;
 +   pvr_pds_generate_pixel_event(&program, staging, PDS_GENERATE_DATA_SEGMENT, &scr->dev_info);
-+   d->eot_pds_offset = draw_upload_pds(scr, staging, program.data_size * 4);
-+   d->eot_rt_addr = rt_addr;
-+   return d->eot_pds_offset;
++   const uint64_t pds_offset = draw_upload_pds(scr, staging, program.data_size * 4);
++   if (pds_offset == 0)
++      return 0;
++   /* shortcut: 32 cached targets, round robin; the evicted programs stay allocated. */
++   const unsigned slot = d->nr_eot < ARRAY_SIZE(d->eot) ? d->nr_eot++
++                                                        : (unsigned)(rt_addr >> 12) % ARRAY_SIZE(d->eot);
++   d->eot[slot] = (struct pvr_draw_eot){ .addr = rt_addr, .format = format,
++                                         .pds_offset = pds_offset };
++   return pds_offset;
 +}
 +
 +static bool
@@ -6034,10 +6152,30 @@ index 00000000..b98c2f4c
 +
 +static bool
 +draw_open(struct pvr_context *ctx, struct pvr_draw_state *d, struct pipe_resource *rt,
-+          uint32_t w, uint32_t h)
++          unsigned level, uint32_t w, uint32_t h, struct pipe_resource *zs)
 +{
-+   if (!draw_hwrt(ctx, d, w, h))
++   if (zs && draw_zls_format(zs->format) < 0)
++      zs = NULL;
++   /* A small colour-only render (mip levels, small targets) uses the data set of its size class:
++    * a power of two from 32 to 256 per side. The region clip, terminate clip and PBE clip keep it
++    * to its own extent; without that a mip chain (terrain: 19 level sizes per frame) evicted and
++    * recreated data sets on every render. With depth the ZLS stores whole tiles of the data set,
++    * so those keep their exact size. */
++   uint32_t dw = w, dh = h;
++   if (zs == NULL && w <= 256 && h <= 256) {
++      dw = MAX2(util_next_power_of_two(w), 32);
++      dh = MAX2(util_next_power_of_two(h), 32);
++   }
++   if (!draw_hwrt(ctx, d, dw, dh))
 +      return false;
++   {
++      struct pvr_draw_hwrt *e = d->cur_hwrt;
++      const uint32_t prev = e->data_seq[e->rt_data_idx];
++      for (unsigned i = 0; prev != 0 && i < PVR_DRAW_SLOTS; i++) {
++         if (d->slots[i].sync != 0 && d->slots[i].seq == prev)
++            draw_slot_idle(draw_screen(ctx), &d->slots[i]);
++      }
++   }
 +   /* The next slot: its previous render must be done before its memory is rewritten. */
 +   {
 +      const unsigned next = (d->cur_slot + 1) % PVR_DRAW_SLOTS;
@@ -6053,13 +6191,25 @@ index 00000000..b98c2f4c
 +   d->pds.used = 0;
 +   pvr_csb_init(&d->ctrl, d->ctrl_bo.map, d->ctrl_bo.size, PVR_CSB_LINK_DWORDS);
 +   pipe_resource_reference(&d->rt, rt);
++   d->rt_level = level;
 +   d->seq++;
 +   draw_use(d, rt);
-+   struct pipe_resource *zs = ctx->fb.zsbuf.texture;
-+   pipe_resource_reference(&d->zs, zs && draw_zls_format(zs->format) >= 0 ? zs : NULL);
++   pipe_resource_reference(&d->zs, zs);
 +   if (d->zs)
 +      draw_use(d, d->zs);
 +   d->zclear_valid = false;
++   /* A deferred clear of the target or depth buffer is where this render starts. */
++   struct pvr_resource *rres = pvr_resource(rt);
++   if (rres->clear_pending && level == 0) {
++      d->clear_valid = true;
++      d->clear_color = rres->clear_color;
++   }
++   rres->clear_pending = false;
++   if (d->zs && pvr_resource(d->zs)->zclear_pending) {
++      d->zclear_valid = true;
++      d->zclear = pvr_resource(d->zs)->zclear;
++      pvr_resource(d->zs)->zclear_pending = false;
++   }
 +   d->rt_w = w;
 +   d->rt_h = h;
 +   d->ndraws = 0;
@@ -6090,6 +6240,56 @@ index 00000000..b98c2f4c
 +      rt = dd->scratch_rt;
 +   }
 +   return rt;
++}
++
++/* Submits a deferred clear of a resource that is about to be read other than as a render's
++ * target: a colour clear as a clear-only render into it, a depth clear as one into a scratch
++ * colour target of its size with it as the depth buffer. */
++static void
++draw_materialize(struct pvr_context *ctx, struct pipe_resource *pres)
++{
++   struct pvr_resource *res = pvr_resource(pres);
++   struct pvr_draw_state *d = ctx->draw;
++   if (d == NULL || pres == NULL || (!res->clear_pending && !res->zclear_pending))
++      return;
++   pvr_draw_flush(ctx);
++   struct pipe_resource *rt = pres, *zs = NULL;
++   if (res->zclear_pending) {
++      const struct pipe_resource templ = {
++         .target = PIPE_TEXTURE_2D, .format = PIPE_FORMAT_R8G8B8A8_UNORM,
++         .width0 = pres->width0, .height0 = pres->height0, .depth0 = 1, .array_size = 1,
++         .bind = PIPE_BIND_RENDER_TARGET,
++      };
++      rt = ctx->base.screen->resource_create(ctx->base.screen, &templ);
++      zs = pres;
++   }
++   if (rt != NULL && draw_init(ctx, d) &&
++       draw_open(ctx, d, rt, 0, pres->width0, pres->height0, zs)) {
++      d->no_defer = true;
++      pvr_draw_flush(ctx);
++      d->no_defer = false;
++   }
++   res->clear_pending = res->zclear_pending = false;
++   if (rt != pres)
++      pipe_resource_reference(&rt, NULL);
++}
++
++/* The mip level of the framebuffer's colour target (0 for the depth-only scratch target). */
++static unsigned
++draw_fb_level(struct pvr_context *ctx)
++{
++   return ctx->fb.nr_cbufs && ctx->fb.cbufs[0].texture ? ctx->fb.cbufs[0].level : 0;
++}
++
++/* The open render is the framebuffer's (target rt): same target, level, size and depth buffer. */
++static bool
++draw_open_is_fb(struct pvr_context *ctx, struct pvr_draw_state *d, struct pipe_resource *rt)
++{
++   struct pipe_resource *zs = ctx->fb.zsbuf.texture;
++   if (zs && draw_zls_format(zs->format) < 0)
++      zs = NULL;
++   return d->open && d->rt == rt && d->rt_level == draw_fb_level(ctx) &&
++          d->rt_w == ctx->fb.width && d->rt_h == ctx->fb.height && d->zs == zs;
 +}
 +
 +bool
@@ -6175,13 +6375,23 @@ index 00000000..b98c2f4c
 +   }
 +   if (!draw_upload_fs(scr, fsv))
 +      return false;
++   /* Textures with a deferred clear get it before this render can read them. */
++   for (unsigned st = 0; st < 2; st++) {
++      for (unsigned u = 0; u < PVR_MAX_TEXTURE_UNITS; u++) {
++         struct pipe_sampler_view *v = ctx->views[st][u];
++         if (v && v->texture && (pvr_resource(v->texture)->clear_pending ||
++                                 pvr_resource(v->texture)->zclear_pending))
++            draw_materialize(ctx, v->texture);
++      }
++   }
 +   if (vs->usc_offset == 0 && (vs->usc_offset = draw_upload_usc(scr, vs->binary, vs->binary_size)) == 0)
 +      return false;
 +
-+   if (d->open && (d->rt != rt || d->rt_w != ctx->fb.width || d->rt_h != ctx->fb.height ||
-+                   d->zs != ctx->fb.zsbuf.texture))
++   const unsigned level = draw_fb_level(ctx);
++   if (d->open && !draw_open_is_fb(ctx, d, rt))
 +      pvr_draw_flush(ctx);
-+   if (!d->open && !draw_open(ctx, d, rt, ctx->fb.width, ctx->fb.height))
++   if (!d->open && !draw_open(ctx, d, rt, level, ctx->fb.width, ctx->fb.height,
++                                    ctx->fb.zsbuf.texture))
 +      return false;
 +
 +   /* Vertex fetch program. */
@@ -6358,11 +6568,12 @@ index 00000000..b98c2f4c
 +      if (d == NULL)
 +         return false;
 +   }
-+   /* A clear after draws starts a new render. */
-+   if (d->open && d->ndraws)
++   /* A clear after draws (or of another target) starts a new render. */
++   if (d->open && (d->ndraws || !draw_open_is_fb(ctx, d, ctx->fb.cbufs[0].texture)))
 +      pvr_draw_flush(ctx);
 +   if (!d->open && (!draw_init(ctx, d) ||
-+                    !draw_open(ctx, d, ctx->fb.cbufs[0].texture, ctx->fb.width, ctx->fb.height)))
++                    !draw_open(ctx, d, ctx->fb.cbufs[0].texture, draw_fb_level(ctx),
++                               ctx->fb.width, ctx->fb.height, ctx->fb.zsbuf.texture)))
 +      return false;
 +   d->clear_valid = true;
 +   d->clear_color = draw_pack_color(ctx->fb.cbufs[0].format, color);
@@ -6395,9 +6606,12 @@ index 00000000..b98c2f4c
 +   struct pipe_resource *rt = draw_fb_target(ctx);
 +   if (rt == NULL || !draw_format_ok(rt->format))
 +      return false;
-+   if (d->open && (d->ndraws != 0 || d->rt != rt || d->zs != ctx->fb.zsbuf.texture))
++   const unsigned level = draw_fb_level(ctx);
++   if (d->open && (d->ndraws != 0 || !draw_open_is_fb(ctx, d, rt)))
 +      pvr_draw_flush(ctx);
-+   return d->open || (draw_init(ctx, d) && draw_open(ctx, d, rt, ctx->fb.width, ctx->fb.height));
++   return d->open ||
++          (draw_init(ctx, d) && draw_open(ctx, d, rt, level, ctx->fb.width, ctx->fb.height,
++                                    ctx->fb.zsbuf.texture));
 +}
 +
 +bool
@@ -6416,10 +6630,12 @@ index 00000000..b98c2f4c
 +}
 +
 +bool
-+pvr_draw_blit(struct pvr_context *ctx, struct pipe_resource *dst, struct pipe_resource *src)
++pvr_draw_blit(struct pvr_context *ctx, struct pipe_resource *dst, unsigned dst_level,
++              struct pipe_resource *src, unsigned src_level, bool gen)
 +{
 +   struct pvr_draw_state *d = ctx->draw;
-+   if (dst->width0 != src->width0 || dst->height0 != src->height0 ||
++   const uint32_t w = u_minify(dst->width0, dst_level), h = u_minify(dst->height0, dst_level);
++   if ((!gen && (w != u_minify(src->width0, src_level) || h != u_minify(src->height0, src_level))) ||
 +       dst->format != src->format || !draw_format_ok(dst->format))
 +      return false;
 +   pvr_draw_flush(ctx);
@@ -6428,19 +6644,24 @@ index 00000000..b98c2f4c
 +      if (d == NULL)
 +         return false;
 +   }
-+   if (!draw_init(ctx, d) || !draw_open(ctx, d, dst, dst->width0, dst->height0))
++   draw_materialize(ctx, src);
++   if (!draw_init(ctx, d) || !draw_open(ctx, d, dst, dst_level, w, h, NULL))
 +      return false;
-+   pipe_resource_reference(&d->zs, NULL);
++   d->clear_valid = false; /* a deferred clear of dst is overwritten */
 +   draw_use(d, src);
 +   pipe_resource_reference(&d->load_src, src);
++   d->load_src_level = src_level;
++   d->load_gen = gen;
 +   pvr_draw_flush(ctx);
 +   return true;
 +}
 +
 +void
-+pvr_draw_resource_sync(struct pvr_context *ctx, const struct pvr_resource *res)
++pvr_draw_resource_sync(struct pvr_context *ctx, struct pvr_resource *res)
 +{
 +   struct pvr_draw_state *d = ctx->draw;
++   if (res->clear_pending || res->zclear_pending)
++      draw_materialize(ctx, &res->base);
 +   if (d == NULL || res->render_seq == 0)
 +      return;
 +   if (d->open && res->render_seq == d->seq)
@@ -6476,6 +6697,25 @@ index 00000000..b98c2f4c
 +   /* A recorded clear is a render even without draws: it is the only place the clear happens. */
 +   if (d->ndraws == 0 && !d->clear_valid && d->load_src == NULL && !d->zclear_valid)
 +      goto done;
++   /* A render that only clears is not submitted: the clear waits on the resources for the next
++    * render into them (or for a reader, draw_materialize). Apps clear the window, render an
++    * offscreen pass, then come back: that was a full clear render plus a full load render.
++    * Not for buffers other processes read. */
++   {
++      const unsigned shared = PIPE_BIND_SHARED | PIPE_BIND_DISPLAY_TARGET | PIPE_BIND_SCANOUT;
++      if (d->ndraws == 0 && d->load_src == NULL && !d->no_defer && d->rt_level == 0 &&
++          !(d->rt->bind & shared)) {
++         if (d->clear_valid) {
++            pvr_resource(d->rt)->clear_pending = true;
++            pvr_resource(d->rt)->clear_color = d->clear_color;
++         }
++         if (d->zclear_valid && d->zs) {
++            pvr_resource(d->zs)->zclear_pending = true;
++            pvr_resource(d->zs)->zclear = d->zclear;
++         }
++         goto done;
++      }
++   }
 +
 +   struct pvr_resource *rt = pvr_resource(d->rt);
 +   const enum pipe_format fmt = d->rt->format;
@@ -6505,11 +6745,14 @@ index 00000000..b98c2f4c
 +   sc[0] = d->rt_w;
 +   sc[1] = d->rt_h;
 +
-+   const uint64_t eot = draw_eot_program(ctx, d, rt->data_addr, fmt);
++   const uint64_t eot =
++      draw_eot_program(ctx, d, pvr_resource_level_addr(rt, d->rt_level), fmt);
 +   const uint64_t bg = draw_bg_program(ctx, d, d->clear_valid ? d->clear_color : 0);
 +   uint64_t pbe_words[3] = { 0 };
 +   if (eot == 0 || bg == 0 ||
-+       !pvr_csb_pbe_words(fmt, rt->stride, d->rt_w, d->rt_h, rt->twiddled, rt->fbc, pbe_words))
++       !pvr_csb_pbe_words(fmt, pvr_resource_level_stride(rt, d->rt_level), d->rt_w, d->rt_h,
++                          pvr_resource_level_phys_h(rt, d->rt_level), rt->twiddled, rt->fbc,
++                          pbe_words))
 +      goto done;
 +
 +   _Alignas(8) uint8_t gstream[256];
@@ -6557,6 +6800,7 @@ index 00000000..b98c2f4c
 +                              &d->slots[d->cur_slot].sync))
 +      mesa_loge("pvr: draw: the render was not submitted (%u draws)", d->ndraws);
 +   d->slots[d->cur_slot].seq = d->seq;
++   d->cur_hwrt->data_seq[d->cur_hwrt->rt_data_idx] = d->seq;
 +   d->cur_hwrt->rt_data_idx ^= 1;
 +
 +done:
@@ -6564,6 +6808,7 @@ index 00000000..b98c2f4c
 +   d->zclear_valid = false;
 +   pipe_resource_reference(&d->zs, NULL);
 +   pipe_resource_reference(&d->load_src, NULL);
++   d->load_gen = false;
 +   d->ndraws = 0;
 +   pipe_resource_reference(&d->rt, NULL);
 +}
@@ -6591,10 +6836,10 @@ index 00000000..b98c2f4c
 +}
 diff --git a/src/gallium/drivers/pvr_native/pvr_draw.h b/src/gallium/drivers/pvr_native/pvr_draw.h
 new file mode 100644
-index 00000000..97a03b4b
+index 00000000..705251f1
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_draw.h
-@@ -0,0 +1,52 @@
+@@ -0,0 +1,54 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -6628,9 +6873,11 @@ index 00000000..97a03b4b
 + * render (that reloads the colour target) if none without draws is open. */
 +bool pvr_draw_clear_depth(struct pvr_context *ctx, float depth);
 +
-+/* GPU copy of src into dst (same size and format, colour target formats): one render whose
-+ * background reads src. Asynchronous; a CPU map of dst waits for it. */
-+bool pvr_draw_blit(struct pvr_context *ctx, struct pipe_resource *dst, struct pipe_resource *src);
++/* GPU copy of level src_level of src into level dst_level of dst (same format, colour target
++ * formats; same extent, or with gen the next smaller mip level, each pixel the 2x2 average): one
++ * render whose background reads src. Asynchronous; a CPU map of dst waits for it. */
++bool pvr_draw_blit(struct pvr_context *ctx, struct pipe_resource *dst, unsigned dst_level,
++                   struct pipe_resource *src, unsigned src_level, bool gen);
 +
 +/* Records a full depth clear for the render a colour clear just opened; false if not possible. */
 +bool pvr_draw_note_zclear(struct pvr_context *ctx, float depth);
@@ -6638,7 +6885,7 @@ index 00000000..97a03b4b
 +/* Before a CPU access: submits the open render if it uses the resource, then waits for the
 + * last render that used it. */
 +struct pvr_resource;
-+void pvr_draw_resource_sync(struct pvr_context *ctx, const struct pvr_resource *res);
++void pvr_draw_resource_sync(struct pvr_context *ctx, struct pvr_resource *res);
 +
 +/* The syncobj of the latest submitted render (0: none in flight). */
 +uint32_t pvr_draw_last_sync(struct pvr_context *ctx);
@@ -6649,10 +6896,10 @@ index 00000000..97a03b4b
 +#endif /* PVR_DRAW_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_hwrt.c b/src/gallium/drivers/pvr_native/pvr_hwrt.c
 new file mode 100644
-index 00000000..391d47b5
+index 00000000..51cf476f
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_hwrt.c
-@@ -0,0 +1,81 @@
+@@ -0,0 +1,91 @@
 +/* Render-target sizing for a HWRT data set.
 + *
 + * This lives in its own translation unit on purpose: the hwdef helpers and the generated csbgen
@@ -6719,6 +6966,16 @@ index 00000000..391d47b5
 +      rgn = DIV_ROUND_UP(rgn * rogue_get_region_header_size(dev_info), 4);
 +   }
 +   out->region_header_size = rgn;
++   /* The TA writes a region header of rogue_get_region_header_size() dwords per tile group (one
++    * group per 2x2 tiles with the version-2 simple format) over the whole macrotile grid. Sizing
++    * the buffer with the region count alone (or the reference's count times the dword count, as
++    * bytes) only fits while the page rounding absorbs it: renders of 32x32 tiles and more (e.g.
++    * 1024x1024) lost every tile. */
++   {
++      const uint32_t group = simple && spf_ver == 2 ? 2 : 1;
++      const uint64_t groups = (uint64_t)(mtx * mtile_x1 / group) * (mty * mtile_y1 / group);
++      out->region_headers_bytes = ALIGN_POT(groups * rogue_get_region_header_size(dev_info) * 4, 64);
++   }
 +
 +   max_mt = MAX2(util_next_power_of_two64((uint64_t)mtx * mtile_x1),
 +                 util_next_power_of_two64((uint64_t)mty * mtile_y1));
@@ -6736,10 +6993,10 @@ index 00000000..391d47b5
 +}
 diff --git a/src/gallium/drivers/pvr_native/pvr_hwrt.h b/src/gallium/drivers/pvr_native/pvr_hwrt.h
 new file mode 100644
-index 00000000..716dbcb8
+index 00000000..7c2fb328
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_hwrt.h
-@@ -0,0 +1,25 @@
+@@ -0,0 +1,26 @@
 +#ifndef PVR_HWRT_H
 +#define PVR_HWRT_H
 +
@@ -6756,7 +7013,8 @@ index 00000000..716dbcb8
 +   uint32_t tiles_per_mtile_x, tiles_per_mtile_y;
 +   uint64_t tpc_size;
 +   uint32_t tpc_stride;
-+   uint64_t region_header_size;
++   uint64_t region_header_size; /* the ISP region size the data set is created with */
++   uint64_t region_headers_bytes; /* the region header buffer of one RT data */
 +   bool simple_parameter_format;
 +   uint32_t simple_parameter_format_version;
 +};
@@ -6767,7 +7025,7 @@ index 00000000..716dbcb8
 +#endif /* PVR_HWRT_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
 new file mode 100644
-index 00000000..b58b6647
+index 00000000..698d3cfb
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_probe.c
 @@ -0,0 +1,5896 @@
@@ -7716,7 +7974,7 @@ index 00000000..b58b6647
 +             * stride, swizzles, clip extents - the address and format live in the pixel-event
 +             * program). They have to be built BEFORE the stream, and into their own buffer: building
 +             * the stream over its own PBE source replaces the words with the stream header. */
-+            if (!pvr_csb_pbe_words(PIPE_FORMAT_R8G8B8A8_UNORM, RTW * 4, RTW, RTH, false, false, pbe_words)) {
++            if (!pvr_csb_pbe_words(PIPE_FORMAT_R8G8B8A8_UNORM, RTW * 4, RTW, RTH, RTH, false, false, pbe_words)) {
 +               printf("hwrt:          could not encode the PBE words\n");
 +               ok2 = false;
 +            }
@@ -12697,10 +12955,10 @@ index 00000000..dab58714
 +#endif /* PVR_PUBLIC_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_resource.c b/src/gallium/drivers/pvr_native/pvr_resource.c
 new file mode 100644
-index 00000000..8b335877
+index 00000000..77bcb2d8
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_resource.c
-@@ -0,0 +1,268 @@
+@@ -0,0 +1,330 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + */
@@ -12759,10 +13017,6 @@ index 00000000..8b335877
 +   uint32_t stride = 0;
 +   uint64_t size = 0;
 +
-+   /* ponytail: mip chains are not sampled by the level-0-only texture descriptors, so it is
-+    * enough that the resource exists - allocate level 0 and let generate_mipmap() be a
-+    * no-op. Refusing mipmapped textures made any GL texture with a mipmap min filter fail
-+    * with GL_OUT_OF_MEMORY (glmark2 refract's colour target). */
 +   if (templ->array_size != 1 || templ->nr_samples > 1) {
 +      mesa_logd("pvr: refusing an arrayed/multisampled resource");
 +      return NULL;
@@ -12788,9 +13042,31 @@ index 00000000..8b335877
 +    * layout, and TFBC (the PBE's lossless 8x8 compression) needs it. Only targets that the CPU
 +    * never maps are twiddled - a mapped resource needs the linear layout until transfer staging is
 +    * implemented, so textures uploaded from the client stay linear. */
-+   if ((templ->target == PIPE_TEXTURE_2D || templ->target == PIPE_TEXTURE_RECT) &&
++   const bool mips = templ->target == PIPE_TEXTURE_2D && templ->last_level > 0;
++   unsigned last_level = 0;
++   uint32_t level_offset[PIPE_MAX_TEXTURE_LEVELS] = { 0 };
++   if (mips && rt_format && !(templ->bind & bind_linear) && !screen->no_twiddle) {
++      /* A mip chain is twiddled whatever the bind flags (the GPU uploads and generates its
++       * levels), laid out as the Vulkan driver's pvr_image_plane_setup_mip_levels: power-of-two
++       * levels back to back, and the hardware expects room for the full chain down to 1x1.
++       * No TFBC, as in Vulkan (it compresses single-level images only). */
++      const unsigned cpp = util_format_get_blocksize(fmt);
++      twiddled = true;
++      last_level = templ->last_level;
++      phys_width = util_next_power_of_two(templ->width0);
++      phys_height = util_next_power_of_two(templ->height0);
++      stride = cpp * phys_width;
++      for (unsigned l = 0;; l++) {
++         if (l < PIPE_MAX_TEXTURE_LEVELS)
++            level_offset[l] = (uint32_t)size;
++         const uint32_t lw = u_minify(phys_width, l), lh = u_minify(phys_height, l);
++         size += (uint64_t)cpp * lw * lh;
++         if (lw == 1 && lh == 1)
++            break;
++      }
++   } else if ((templ->target == PIPE_TEXTURE_2D || templ->target == PIPE_TEXTURE_RECT) &&
 +       rt_format && (templ->bind & PIPE_BIND_RENDER_TARGET) && !(templ->bind & bind_linear) &&
-+       templ->width0 >= 8 && templ->height0 >= 8 && getenv("PVR_NO_TWIDDLE") == NULL) {
++       templ->width0 >= 8 && templ->height0 >= 8 && !screen->no_twiddle) {
 +      const unsigned cpp = util_format_get_blocksize(fmt);
 +      twiddled = true;
 +      phys_width = util_next_power_of_two(templ->width0);
@@ -12799,7 +13075,7 @@ index 00000000..8b335877
 +      size = (uint64_t)stride * phys_height;
 +      /* TFBC is only used on the plain RGBA8/BGRA8 colour targets (see NATIVE-TFBC-PORT.md). */
 +      const struct pvr_device_info *dev_info = &screen->dev_info;
-+      fbc = getenv("PVR_NO_FBC") == NULL &&
++      fbc = !screen->no_fbc &&
 +            PVR_HAS_FEATURE(dev_info, tpu_image_state_v2) &&
 +            PVR_GET_FEATURE_VALUE(dev_info, fbcdc_algorithm, 0) == 50 &&
 +            (fmt == PIPE_FORMAT_R8G8B8A8_UNORM || fmt == PIPE_FORMAT_B8G8R8A8_UNORM);
@@ -12811,7 +13087,7 @@ index 00000000..8b335877
 +              util_format_is_depth_or_stencil(fmt) && (templ->bind & PIPE_BIND_DEPTH_STENCIL) &&
 +              !(templ->bind & bind_linear) &&
 +              fmt != PIPE_FORMAT_S8_UINT && templ->width0 >= 8 && templ->height0 >= 8 &&
-+              getenv("PVR_NO_TWIDDLE") == NULL) {
++              !screen->no_twiddle) {
 +      /* The ZLS can load/store twiddled depth buffers too, with the same power-of-two layout as the
 +       * colour targets (depth textures are sampled through the twiddled descriptor as well). Skip
 +       * stencil-only buffers. */
@@ -12831,7 +13107,17 @@ index 00000000..8b335877
 +      return NULL;
 +
 +   res->base = *templ;
-+   res->base.last_level = 0;
++   /* shortcut: a mip chain in a format the PBE cannot write (no GPU upload or generation for its
++    * levels) keeps level 0 only and is sampled at level 0; add CPU level transfers if one shows up. */
++   if (mips && last_level == 0) {
++      static bool warned;
++      if (!warned) {
++         warned = true;
++         mesa_logw("pvr: mipmapped %s stores level 0 only", util_format_short_name(fmt));
++      }
++   }
++   res->base.last_level = last_level;
++   memcpy(res->level_offset, level_offset, sizeof(level_offset));
 +   res->base.screen = pscreen;
 +   pipe_reference_init(&res->base.reference, 1);
 +
@@ -12846,6 +13132,24 @@ index 00000000..8b335877
 +    * for, so give it one page rather than failing. */
 +   if (size == 0)
 +      size = 4096;
++
++   /* A cached buffer of the same size: already mapped for the CPU and the GPU. */
++   if (templ->target == PIPE_BUFFER && screen->vm_valid) {
++      simple_mtx_lock(&screen->bo_cache_lock);
++      for (unsigned i = 0; i < screen->nr_bo_cache; i++) {
++         struct pvr_bo_cache_entry *e = &screen->bo_cache[i];
++         if (e->bo.size == ALIGN_POT(size, 4096)) {
++            res->bo = e->bo;
++            res->dev_addr = res->data_addr = e->dev_addr;
++            res->dev_size = e->dev_size;
++            *e = screen->bo_cache[--screen->nr_bo_cache];
++            break;
++         }
++      }
++      simple_mtx_unlock(&screen->bo_cache_lock);
++      if (res->dev_addr != 0)
++         return &res->base;
++   }
 +
 +   if (!pvr_bo_create(screen->fd, size, 1, &res->bo))
 +      goto fail;
@@ -12942,6 +13246,7 @@ index 00000000..8b335877
 +      goto fail_bo;
 +   if (!pvr_vm_map(&screen->vm, res->dev_addr, res->bo.handle, res->dev_size))
 +      goto fail_addr;
++   res->data_addr = res->dev_addr;
 +   return &res->base;
 +fail_addr:
 +   pvr_vm_free(&screen->vm, res->dev_addr, res->dev_size);
@@ -12958,6 +13263,21 @@ index 00000000..8b335877
 +   struct pvr_screen *screen = pvr_screen(pscreen);
 +   struct pvr_resource *res = pvr_resource(prsc);
 +
++   if (prsc->target == PIPE_BUFFER && res->dev_addr != 0 && res->bo.size <= (4u << 20)) {
++      simple_mtx_lock(&screen->bo_cache_lock);
++      if (screen->nr_bo_cache < ARRAY_SIZE(screen->bo_cache)) {
++         screen->bo_cache[screen->nr_bo_cache++] = (struct pvr_bo_cache_entry){
++            .bo = res->bo, .dev_addr = res->dev_addr, .dev_size = res->dev_size,
++         };
++         res->dev_addr = 0;
++      }
++      simple_mtx_unlock(&screen->bo_cache_lock);
++      if (res->dev_addr == 0) {
++         FREE(res);
++         return;
++      }
++   }
++
 +   /* The GPU mapping goes first, then the address, then the object - the same order
 +    * the Vulkan winsys tears down in. */
 +   if (res->dev_addr != 0) {
@@ -12971,10 +13291,10 @@ index 00000000..8b335877
 +}
 diff --git a/src/gallium/drivers/pvr_native/pvr_resource.h b/src/gallium/drivers/pvr_native/pvr_resource.h
 new file mode 100644
-index 00000000..ebe5abbb
+index 00000000..f53af579
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_resource.h
-@@ -0,0 +1,73 @@
+@@ -0,0 +1,117 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -12993,6 +13313,9 @@ index 00000000..ebe5abbb
 +#include "pipe/p_context.h"
 +#include "pipe/p_screen.h"
 +#include "pipe/p_state.h"
++
++#include "util/format/u_format.h"
++#include "util/u_math.h"
 +
 +#include "pvr_bo.h"
 +
@@ -13023,6 +13346,18 @@ index 00000000..ebe5abbb
 +   uint64_t fbc_header_size;
 +   uint64_t data_addr;
 +
++   /* Mip levels (base.last_level > 0): a twiddled chain laid out as the Vulkan driver's
++    * pvr_image, level l a power-of-two image of max(1, phys >> l) at level_offset[l] bytes past
++    * data_addr. Level 0 is at offset 0 for every resource. */
++   uint32_t level_offset[PIPE_MAX_TEXTURE_LEVELS];
++
++   /* A full clear recorded by a render that had nothing else to do: it was not submitted, and the
++    * next render into level 0 (or the depth buffer) starts with it instead of loading. Anything
++    * else that reads the resource submits it first (pvr_draw_materialize). */
++   bool clear_pending, zclear_pending;
++   uint32_t clear_color;
++   float zclear;
++
 +   /* The draw path's render sequence number of the last render that used this resource (0:
 +    * none). A CPU map waits only for a render that uses the resource. */
 +   uint32_t render_seq;
@@ -13047,13 +13382,42 @@ index 00000000..ebe5abbb
 +   return (struct pvr_resource *)prsc;
 +}
 +
++/* Physical (allocated) extent of a level: the power-of-two extent minified for a twiddled
++ * resource, the logical one otherwise (only level 0 exists then). */
++static inline uint32_t
++pvr_resource_level_phys_w(const struct pvr_resource *res, unsigned level)
++{
++   return res->twiddled ? u_minify(res->phys_width, level) : res->base.width0;
++}
++
++static inline uint32_t
++pvr_resource_level_phys_h(const struct pvr_resource *res, unsigned level)
++{
++   return res->twiddled ? u_minify(res->phys_height, level) : res->base.height0;
++}
++
++/* Row pitch of a level in bytes. */
++static inline uint32_t
++pvr_resource_level_stride(const struct pvr_resource *res, unsigned level)
++{
++   return level == 0 ? res->stride
++                      : util_format_get_stride(res->base.format,
++                                               pvr_resource_level_phys_w(res, level));
++}
++
++static inline uint64_t
++pvr_resource_level_addr(const struct pvr_resource *res, unsigned level)
++{
++   return res->data_addr + res->level_offset[level];
++}
++
 +#endif /* PVR_RESOURCE_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_screen.c b/src/gallium/drivers/pvr_native/pvr_screen.c
 new file mode 100644
-index 00000000..de3a9c08
+index 00000000..1a11ccd7
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_screen.c
-@@ -0,0 +1,394 @@
+@@ -0,0 +1,410 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -13226,6 +13590,14 @@ index 00000000..de3a9c08
 +
 +   if (screen->pco_ctx != NULL)
 +      ralloc_free(screen->pco_ctx);
++   for (unsigned i = 0; i < screen->nr_bo_cache; i++) {
++      struct pvr_bo_cache_entry *e = &screen->bo_cache[i];
++      pvr_bo_unmap(&e->bo);
++      pvr_vm_unmap(&screen->vm, e->dev_addr, e->dev_size);
++      pvr_vm_free(&screen->vm, e->dev_addr, e->dev_size);
++      pvr_bo_destroy(screen->fd, &e->bo);
++   }
++   simple_mtx_destroy(&screen->bo_cache_lock);
 +   if (screen->vm_valid)
 +      pvr_vm_finish(&screen->vm);
 +   if (screen->fd >= 0)
@@ -13309,6 +13681,9 @@ index 00000000..de3a9c08
 +      caps->max_texture_cube_levels = 0;
 +      caps->max_texture_3d_levels = 0;
 +      caps->max_texture_array_layers = 1;
++      /* Any extent samples and renders (twiddled levels are padded to powers of two). */
++      caps->npot_textures = true;
++      caps->generate_mipmap = true; /* GPU box filter renders, pvr_generate_mipmap */
 +
 +      /* Separate RGB/alpha blend equations. Not a guess: Mesa's own ES2 requirement
 +       * list (version.c compute_version_es2) is exactly three extensions -
@@ -13375,6 +13750,11 @@ index 00000000..de3a9c08
 +   screen->vm_valid = pvr_vm_init(fd, &screen->vm);
 +   if (!screen->vm_valid)
 +      mesa_logi("pvr: no GPU address space; resources will not be creatable");
++
++   simple_mtx_init(&screen->bo_cache_lock, mtx_plain);
++   const char *dbg = getenv("PVR_NATIVE_DEBUG");
++   screen->no_twiddle = dbg != NULL && strstr(dbg, "no_twiddle") != NULL;
++   screen->no_fbc = dbg != NULL && strstr(dbg, "no_fbc") != NULL;
 +
 +   screen->base.destroy = pvr_destroy_screen;
 +   screen->base.get_name = pvr_get_name;
@@ -13450,10 +13830,10 @@ index 00000000..de3a9c08
 +}
 diff --git a/src/gallium/drivers/pvr_native/pvr_screen.h b/src/gallium/drivers/pvr_native/pvr_screen.h
 new file mode 100644
-index 00000000..fa8a763f
+index 00000000..fc068036
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_screen.h
-@@ -0,0 +1,59 @@
+@@ -0,0 +1,75 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + */
@@ -13461,9 +13841,11 @@ index 00000000..fa8a763f
 +#define PVR_SCREEN_H
 +
 +#include "pipe/p_screen.h"
++#include "util/simple_mtx.h"
 +
 +#include "common/pvr_device_info.h"
 +#include "pco/pco.h"
++#include "pvr_bo.h"
 +#include "pvr_vm.h"
 +
 +struct pvr_screen {
@@ -13502,6 +13884,20 @@ index 00000000..fa8a763f
 +    * a useful distinction when probing a node this driver cannot drive. */
 +   struct pvr_vm vm;
 +   bool vm_valid;
++
++   /* PVR_NATIVE_DEBUG=no_twiddle,no_fbc: linear (or uncompressed) render targets, read once. */
++   bool no_twiddle, no_fbc;
++
++   /* Released buffer resources kept mapped (CPU and GPU) for reuse: the stream uploader replaces
++    * its 1 MiB buffer about once a frame with client arrays, and a new BO costs a kernel
++    * allocation, a VM map, an mmap and its page faults. A released resource is idle (renders hold
++    * references until they are waited for). */
++   simple_mtx_t bo_cache_lock;
++   struct pvr_bo_cache_entry {
++      struct pvr_bo bo;
++      uint64_t dev_addr, dev_size;
++   } bo_cache[8];
++   unsigned nr_bo_cache;
 +};
 +
 +static inline struct pvr_screen *

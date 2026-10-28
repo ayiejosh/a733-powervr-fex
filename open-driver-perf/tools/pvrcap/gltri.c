@@ -72,7 +72,8 @@ int main(void)
    if (st != GL_FRAMEBUFFER_COMPLETE) { fprintf(stderr, "fbo incomplete: status 0x%x, glGetError 0x%x\n", st, glGetError()); return 2; }
 
    GLuint p = glCreateProgram();
-   const int vary = getenv("GLTRI_VARYING") != NULL || getenv("GLTRI_SAMPLE") != NULL;
+   const int mip = getenv("GLTRI_MIP") != NULL;
+   const int vary = getenv("GLTRI_VARYING") != NULL || getenv("GLTRI_SAMPLE") != NULL || mip;
    if (getenv("GLTRI_MAT")) {
       glAttachShader(p, sh(GL_VERTEX_SHADER,
          "attribute vec3 pos; attribute vec3 nrm; uniform mat4 mvp; uniform mat4 nm; varying vec3 c;"
@@ -86,7 +87,8 @@ int main(void)
       : getenv("GLTRI_VSU") ? "attribute vec2 pos; uniform float s; void main() { gl_Position = vec4(pos * s, 0.0, 1.0); }"
       : "attribute vec2 pos; void main() { gl_Position = vec4(pos, 0.0, 1.0); }"));
    glAttachShader(p, sh(GL_FRAGMENT_SHADER, vary
-      ? (getenv("GLTRI_SAMPLE") ? "precision mediump float; varying vec2 v; uniform sampler2D t; void main() { gl_FragColor = texture2D(t, v); }"
+      ? (mip ? "precision mediump float; varying vec2 v; uniform sampler2D t; uniform float k; void main() { gl_FragColor = texture2D(t, v * k); }"
+         : getenv("GLTRI_SAMPLE") ? "precision mediump float; varying vec2 v; uniform sampler2D t; void main() { gl_FragColor = texture2D(t, v); }"
                                 : "precision mediump float; varying vec2 v; void main() { gl_FragColor = vec4(v, 0.0, 1.0); }")
       : getenv("GLTRI_UNIFORM")
       ? "precision mediump float; uniform vec2 rg; void main() { gl_FragColor = vec4(rg, 0.0, 1.0); }"
@@ -154,6 +156,50 @@ int main(void)
       glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
       glBindTexture(GL_TEXTURE_2D, st);
    }
+   if (mip) {
+      /* GLTRI_MIP=WxH: a mip chain sampled minified (LINEAR_MIPMAP_NEAREST, coordinates times
+       * GLTRI_MIPK). Each level uploaded as its own colour; GLTRI_GENMIP: level 0 red/blue columns
+       * and glGenerateMipmap (levels >= 1 purple); GLTRI_MIPRT=L: level L then cleared to yellow
+       * through an FBO bound to it. */
+      static const unsigned char col[][3] = { { 255, 0, 0 }, { 0, 255, 0 }, { 0, 0, 255 }, { 255, 0, 255 },
+         { 0, 255, 255 }, { 255, 255, 255 }, { 128, 0, 0 }, { 0, 128, 0 }, { 0, 0, 128 }, { 128, 128, 0 },
+         { 0, 128, 128 }, { 128, 0, 128 }, { 64, 64, 64 } };
+      int tw = 2048, th = 2048;
+      sscanf(getenv("GLTRI_MIP"), "%dx%d", &tw, &th);
+      GLuint mt;
+      glActiveTexture(GL_TEXTURE0);
+      glGenTextures(1, &mt); glBindTexture(GL_TEXTURE_2D, mt);
+      unsigned char *img = malloc((size_t)tw * th * 4);
+      int levels = 0;
+      for (int l = 0, w = tw, h = th;; l++, w = w > 1 ? w / 2 : 1, h = h > 1 ? h / 2 : 1) {
+         for (int i = 0; i < w * h; i++) {
+            const unsigned char *c = col[l % 13];
+            if (getenv("GLTRI_GENMIP")) c = col[(i % w) & 1 ? 2 : 0];
+            img[4*i] = c[0]; img[4*i+1] = c[1]; img[4*i+2] = c[2]; img[4*i+3] = 255;
+         }
+         glTexImage2D(GL_TEXTURE_2D, l, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, img);
+         levels++;
+         if (getenv("GLTRI_GENMIP") || (w == 1 && h == 1)) break;
+      }
+      if (getenv("GLTRI_GENMIP")) glGenerateMipmap(GL_TEXTURE_2D);
+      fprintf(stderr, "mip: %dx%d, %d level(s) uploaded, err 0x%x\n", tw, th, levels, glGetError());
+      /* GLTRI_MIPLL: LINEAR_MIPMAP_LINEAR (levels blended). */
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, getenv("GLTRI_MIPLL") ? GL_LINEAR_MIPMAP_LINEAR : GL_LINEAR_MIPMAP_NEAREST);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+      if (getenv("GLTRI_MIPRT")) {
+         GLuint lf;
+         glGenFramebuffers(1, &lf); glBindFramebuffer(GL_FRAMEBUFFER, lf);
+         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, mt, atoi(getenv("GLTRI_MIPRT")));
+         fprintf(stderr, "mip level fbo status 0x%x\n", glCheckFramebufferStatus(GL_FRAMEBUFFER));
+         glClearColor(1, 1, 0, 1);
+         glClear(GL_COLOR_BUFFER_BIT);
+         glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+      }
+      glUniform1f(glGetUniformLocation(p, "k"), getenv("GLTRI_MIPK") ? (float)atof(getenv("GLTRI_MIPK")) : 1.0f);
+      free(img);
+   }
    glViewport(0, 0, W, H);
    glClearColor(0, 1, 0, 1);
    if (getenv("GLTRI_CULL")) {
@@ -184,6 +230,21 @@ int main(void)
       glEnable(GL_BLEND);
       glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
    }
+   GLuint dfbo = 0;
+   if (getenv("GLTRI_DEFER")) {
+      /* A clear of the target, a clear-only pass on another FBO, then the draw on the first target
+       * without a clear: background blue, triangle red; the other FBO reads back yellow. */
+      glClearColor(0, 0, 1, 1);
+      glClear(GL_COLOR_BUFFER_BIT | (getenv("GLTRI_DEPTH") ? GL_DEPTH_BUFFER_BIT : 0));
+      GLuint dt;
+      glGenTextures(1, &dt); glBindTexture(GL_TEXTURE_2D, dt);
+      glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 64, 64, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+      glGenFramebuffers(1, &dfbo); glBindFramebuffer(GL_FRAMEBUFFER, dfbo);
+      glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, dt, 0);
+      glClearColor(1, 1, 0, 1);
+      glClear(GL_COLOR_BUFFER_BIT);
+      glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+   }
    if (!getenv("GLTRI_NODRAW"))
    glDrawArrays(GL_TRIANGLES, 0, 3);
    if (getenv("GLTRI_ZTEST")) {
@@ -202,6 +263,13 @@ int main(void)
       for (int i = 0; i < 16 * 16; i++) { blue[4*i+2] = 255; blue[4*i+3] = 255; }
       glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 16, 16, GL_RGBA, GL_UNSIGNED_BYTE, blue);
    }
+   if (dfbo) {
+      unsigned char q[4];
+      glBindFramebuffer(GL_FRAMEBUFFER, dfbo);
+      glReadPixels(5, 5, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, q);
+      glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+      printf("defer: other fbo (5,5) %02x %02x %02x\n", q[0], q[1], q[2]);
+   }
    glReadPixels(0, 0, W, H, GL_RGBA, GL_UNSIGNED_BYTE, px);
    printf("glGetError: 0x%x\n", glGetError());
    long red = 0, green = 0, other = 0;
@@ -218,7 +286,7 @@ int main(void)
       }
       putchar('\n');
    }
-   if (getenv("GLTRI_SAMPLE")) {
+   if (getenv("GLTRI_SAMPLE") || mip) {
       unsigned long sum = 0;
       for (long i = 0; i < (long)W * H * 4; i++) sum = sum * 31 + px[i];
       unsigned char *q = px + 4 * (200 * W + 256);
@@ -228,6 +296,12 @@ int main(void)
    if (getenv("GLTRI_SUBIMG")) {
       unsigned char *q = px + 4 * (5 * W + 5), *r = px + 4 * (200 * W + 256);
       printf("subimg patch (5,5) %02x %02x %02x  triangle (256,200) %02x %02x %02x\n",
+             q[0], q[1], q[2], r[0], r[1], r[2]);
+      return 0;
+   }
+   if (dfbo) {
+      unsigned char *q = px + 4 * (5 * W + 5), *r = px + 4 * (200 * W + 256);
+      printf("defer: background (5,5) %02x %02x %02x  triangle (256,200) %02x %02x %02x\n",
              q[0], q[1], q[2], r[0], r[1], r[2]);
       return 0;
    }
