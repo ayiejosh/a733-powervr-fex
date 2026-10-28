@@ -1,0 +1,139 @@
+From c5f610e93bdc87b98ae4321a999d2960aa734cfd Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Tue, 27 Oct 2026 19:57:05 +0800
+Subject: [PATCH 1/2] gallium/pvr: fix the two bugs that kept the native
+ client's TA from running
+
+The native geometry kick was processed by the firmware but the TA never
+finished (DM2 timed out, HWR). An ioctl-level capture and replay of the
+working Vulkan client and of the native probe showed that the native
+context, HWRT and free lists are fine: the native process runs the
+Vulkan draw data to "TA finished". The draw data the native driver
+builds was wrong in two ways, and each one alone hangs the TA:
+
+- pvr_vm_map() did not reserve code-heap pages. The shader stage maps
+  the vertex PDS program, its data and the VS/FS USC code at the first
+  usable page of the PDS and USC heaps, and the render context created
+  later allocates the same pages through pvr_vm_heap_alloc(). VM_MAP
+  then silently replaced the earlier mappings (drm_gpuvm unmaps what a
+  new mapping overlaps), so the VDM ran a zero-filled buffer as the
+  vertex PDS program. A mapping inside a code heap now moves that
+  heap's bump pointer past it.
+
+- pvr_shader_vertex_data() wrote the PDS const-map entries at byte
+  offsets, but the const map gives dword offsets, and it skipped the
+  LITERAL32/LITERAL64 entries. The DMA base, stride and control words
+  of the attribute fetch were therefore zero.
+
+With both fixed, the native geometry-only probe reaches "TA finished"
+(3 of 3 runs, no HWR). The full render now runs the 3D stage, which
+faults writing one row past the 512x512 render target: a separate bug.
+---
+ src/gallium/drivers/pvr_native/pvr_shader.c | 39 +++++++++++++++------
+ src/gallium/drivers/pvr_native/pvr_vm.c     | 13 ++++++-
+ 2 files changed, 40 insertions(+), 12 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_shader.c b/src/gallium/drivers/pvr_native/pvr_shader.c
+index c1034f6e..a49d7592 100644
+--- a/src/gallium/drivers/pvr_native/pvr_shader.c
++++ b/src/gallium/drivers/pvr_native/pvr_shader.c
+@@ -296,6 +296,17 @@ pvr_shader_vertex_primary_input(struct pvr_pds_vertex_primary_program_input *inp
+                        PVR_ROGUE_PDSINST_DOUT_FIELDS_DOUTU_SAMPLE_RATE_INSTANCE, false);
+ }
+ 
++/* PDS const-map offsets are in dwords (the Vulkan driver's PVR_WRITE indexes a typed buffer), not
++ * bytes: writing at a byte offset lands each value inside the previous one. */
++static void
++pvr_shader_data_write(void *data, uint32_t data_bytes, uint32_t const_offset_dw, const void *value,
++                      uint32_t value_bytes)
++{
++   const uint32_t at = const_offset_dw * sizeof(uint32_t);
++   if (at + value_bytes <= data_bytes)
++      memcpy((uint8_t *)data + at, value, value_bytes);
++}
++
+ uint32_t
+ pvr_shader_vertex_data(const struct pvr_device_info *dev_info,
+                        uint64_t vertex_buffer_addr, uint64_t usc_exec_addr,
+@@ -350,8 +361,7 @@ pvr_shader_vertex_data(const struct pvr_device_info *dev_info,
+          pvr_set_usc_execution_address64(&value, usc_exec_addr);
+          value |= e->doutu_control;
+ 
+-         if ((uint32_t)e->const_offset + sizeof(value) <= produced)
+-            memcpy((uint8_t *)data_out + e->const_offset, &value, sizeof(value));
++         pvr_shader_data_write(data_out, produced, e->const_offset, &value, sizeof(value));
+          entry += sizeof(*e);
+          break;
+       }
+@@ -360,8 +370,7 @@ pvr_shader_vertex_data(const struct pvr_device_info *dev_info,
+          const struct pvr_const_map_entry_vertex_attribute_address *e = (const void *)entry;
+          const uint64_t addr = vertex_buffer_addr + e->offset;
+ 
+-         if ((uint32_t)e->const_offset + sizeof(addr) <= produced)
+-            memcpy((uint8_t *)data_out + e->const_offset, &addr, sizeof(addr));
++         pvr_shader_data_write(data_out, produced, e->const_offset, &addr, sizeof(addr));
+          entry += sizeof(*e);
+          break;
+       }
+@@ -371,19 +380,27 @@ pvr_shader_vertex_data(const struct pvr_device_info *dev_info,
+ 
+          /* The DMA computes address = buffer + (index * stride) + offset; the stride is the one
+           * fact here that comes from the draw, not from the shader. */
+-         if ((uint32_t)e->const_offset + sizeof(stride) <= produced)
+-            memcpy((uint8_t *)data_out + e->const_offset, &stride, sizeof(stride));
++         pvr_shader_data_write(data_out, produced, e->const_offset, &stride, sizeof(stride));
+          entry += sizeof(*e);
+          break;
+       }
+ 
+-      case PVR_PDS_CONST_MAP_ENTRY_TYPE_LITERAL32:
+-         entry += sizeof(struct pvr_const_map_entry_literal32);
++      case PVR_PDS_CONST_MAP_ENTRY_TYPE_LITERAL32: {
++         /* Literals are values the generated code reads from the data segment (the DMA control
++          * word among them); skipping them leaves those constants zero. */
++         const struct pvr_const_map_entry_literal32 *e = (const void *)entry;
++         pvr_shader_data_write(data_out, produced, e->const_offset, &e->literal_value,
++                               sizeof(e->literal_value));
++         entry += sizeof(*e);
+          break;
+-
+-      case PVR_PDS_CONST_MAP_ENTRY_TYPE_LITERAL64:
+-         entry += sizeof(struct pvr_const_map_entry_literal64);
++      }
++      case PVR_PDS_CONST_MAP_ENTRY_TYPE_LITERAL64: {
++         const struct pvr_const_map_entry_literal64 *e = (const void *)entry;
++         pvr_shader_data_write(data_out, produced, e->const_offset, &e->literal_value,
++                               sizeof(e->literal_value));
++         entry += sizeof(*e);
+          break;
++      }
+ 
+       default:
+          /* An entry type with no patch rule here would leave a data word zero that the generator
+diff --git a/src/gallium/drivers/pvr_native/pvr_vm.c b/src/gallium/drivers/pvr_native/pvr_vm.c
+index f3869af5..ecafc4ed 100644
+--- a/src/gallium/drivers/pvr_native/pvr_vm.c
++++ b/src/gallium/drivers/pvr_native/pvr_vm.c
+@@ -1033,7 +1033,18 @@ pvr_vm_map(struct pvr_vm *vm, uint64_t dev_addr, uint32_t handle, uint64_t size)
+                 dev_addr, handle, size, strerror(errno));
+       return false;
+    }
+-
++   /* A buffer mapped at a chosen address inside a code heap has to move that heap's bump pointer
++    * past it. Otherwise a later pvr_vm_heap_alloc() hands out the same pages, and VM_MAP silently
++    * replaces the earlier mapping (drm_gpuvm unmaps what a new mapping overlaps): the GPU then
++    * runs whatever the newer buffer holds instead of the program that was placed there. */
++   for (uint16_t h = 0; h < DRM_PVR_HEAP_COUNT; h++) {
++      const struct pvr_heap *heap = &vm->heaps[h];
++      if (h == DRM_PVR_HEAP_GENERAL || heap->size == 0 || dev_addr < heap->base ||
++          dev_addr >= heap->base + heap->size)
++         continue;
++      if (vm->heap_next[h] < dev_addr + size)
++         vm->heap_next[h] = dev_addr + size;
++   }
+    return true;
+ }
+ 
+-- 
+2.47.3
+

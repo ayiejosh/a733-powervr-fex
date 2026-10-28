@@ -833,3 +833,152 @@ No host-writable register or documented sequence can advance it. Board restored 
   trigger (none exposed) - and even then the causality is in MTS hardware.
 - Conclusion for (4): the vendor-side debug route confirms the configuration is not the difference but gives
   no lever. Board restored to vendor + desktop; original firmware.
+
+## Round-40 (2026-10-27): SOLVED - the stall was native-client draw-data bugs, not firmware/MTS
+
+The blocker was cracked in a parallel session by differential debugging (capture/replay at the ioctl
+boundary, tools now in `tools/pvrcap/`): replaying the working Vulkan client's ioctl input through the
+native process runs the Vulkan draw data to `TA finished`, proving the context/HWRT/free lists and the
+firmware/MTS path are fine; the difference was in the draw data the native driver builds.
+
+Two bugs alone each hang the TA (patches 0295-0296 in PR #12):
+1. `pvr_vm_map()` did not reserve code-heap pages. The shader stage maps the vertex PDS program/data and the
+   VS/FS USC code at the first usable page of the PDS/USC heaps, then the render context allocates the same
+   pages via `pvr_vm_heap_alloc()`; VM_MAP silently replaced the earlier mappings (drm_gpuvm unmaps overlaps)
+   so the VDM executed a zero-filled buffer as the vertex PDS program.
+2. `pvr_shader_vertex_data()` wrote PDS const-map entries at byte offsets while the const map uses dword
+   offsets, and skipped LITERAL32/LITERAL64 entries -> zero DMA base/stride/control words for attribute fetch.
+
+With those fixed the geometry-only probe reaches `TA finished` (3/3, no HWR). The full render then exposed
+two more bugs, also fixed: the PBE linestride was passed in bytes instead of pixels (rows 4x apart, PBE wrote
+past the RT -> BIF0 page fault/HWR), and the render submit waited on a completion syncobj that no job ever
+signalled. Native probe now: `Kick TA -> TA finished -> Kick 3D -> 3D finished`, no fault, full target
+written; output is still all black (next: vertex/draw data).
+Lesson (recorded in `~/AGENTS.md`): when a failure looks like a hardware/MTS wall, first diff the full data
+the failing client sends at the driver boundary against the working client's data - our earlier
+"identical firmware-visible inputs" comparison had missed the PDS/const-map data itself.
+
+### Independent on-board verification of the fix (2026-10-27 20:26)
+
+Rebuilt the fixed tree from the PR's 296-patch series (`git am` onto `9a2b374`), open stack + official IMG
+firmware:
+- geometry-only native probe: firmware trace `Kick TA -> TA finished` (the DM2 stall is gone);
+- full native render: `Kick TA -> TA finished -> Kick 3D -> 3D finished, HWRTData0State=7fffffff`, no BIF0
+  fault, no HWR;
+- `PVR_PROBE_DUMP_RT` render target: 512x512 written, **all pixels zero (black)** - the remaining visual bug
+  is draw/vertex data, not dispatch.
+
+## Round-41 (2026-10-28 morning): refract FBO fixed (patch 0315); Wayland baseline 534
+
+- **refract root cause** (not a format gap): glmark2 sets GL_LINEAR_MIPMAP_LINEAR before glTexImage2D on the
+  colour render target; Mesa then requests a full mip chain (last_level=9). The native driver refused any
+  mipmapped resource, so glTexImage2D failed with GL_OUT_OF_MEMORY, the FBO lost its colour attachment and
+  glCheckFramebufferStatus returned 0x8cdd - the scene was skipped.
+- **fix (patch 0315, PR #12)**: allocate level 0 for mipmapped textures and report last_level 0; a non-NULL
+  generate_mipmap that accepts the call stops the state tracker using util_gen_mipmap (per-level transfers
+  are not implemented). Verified with a minimal FBO reproducer (COMPLETE) and glmark2 refract on native GL
+  (runs, score 82, previously skipped).
+- **harness note**: the X11/Xwayland glbench path currently falls back to zink for native (DRI3 device
+  unavailable in this state); use `glmark2-es2-wayland` (Debian glmark2-es2-wayland .deb from the radxa repo,
+  extracted to /tmp/glm2w) on a headless weston. Clean native full suite: **534** (33/33 scenes, no setup
+  failures). This is not comparable to bench28's 635 (X11 harness); use one harness for A/B from now on.
+- **crash lesson**: running the open-driver userspace (native pvr driver probe/tests) while `pvrsrvkm` is bound
+  NULL-derefs the vendor driver (`psConnectionPriv is NULL`) and reboots the board. Always switch-safe to open
+  first and verify `bound: powervr`.
+
+## Round-42 (2026-10-28 10:15): Wayland fwtime harness; build scene profile; goal complete
+
+- `tools/verify/fwtime-wl.sh DRIVER SCENE`: firmware-tick profile (median TA/3D/frame period) for a glmark2
+  scene on headless weston + the Wayland client. The X11 glbench path cannot load the native driver in this
+  board state (DRI3 unavailable -> zink), so Wayland is the usable harness.
+- Native `build` scene (Wayland, 750 FPS): median TA **835**, 3D **2797** ticks (1 tick = 0.25 us), period 5421
+  ticks. The 3D pass dominates (~2.6x TA); the handoff's depth-store experiment (~1300 of 3240 ticks) is
+  therefore the first place to win time. `shadow` trace capture missed the window (n=0); retry with an
+  earlier snapshot.
+
+## Round-43 (2026-10-28 noon): twiddled + TFBC colour targets (patch 0316) - +15% full suite
+
+Native GL wrote linear uncompressed colour targets; the Vulkan driver writes twiddled, TFBC-compressed
+ones. Ported that (NATIVE-TFBC-PORT.md): pow2 twiddled layout with the TFBC header area below the data,
+PBE `TWIDDLE_2D` + 8x8 compression + word1 log2 extents, TPU twiddled descriptor with `FB_DIRECT_8X8`.
+Verified end-to-end with a GPU two-pass test (no CPU twiddle needed): 262144/262144 pixels match for
+twiddled, twiddled+TFBC and linear. Full glmark2 Wayland suite: linear 471 -> twiddled+TFBC 542/541
+(+15%); buffer scenes +46-58%, textures +23-28%, build 824 -> 1121 FPS; only refract is 3% slower.
+Pushed as patch 0316 (PR #12 head 75240bf). CPU readback of twiddled targets still needs a staging blit.
+
+## Round-44 (2026-10-28 12:10): twiddled depth buffers (patch 0317) - full suite 641
+
+Depth was the remaining linear traffic (~40% of 3D per the earlier store experiment). Depth/stencil
+buffers used only as attachments now get the same power-of-two twiddled layout, and ISP_ZLSCTL sets
+loadtwiddled/storetwiddled with the padded extents and the layer size as zls_stride (depth textures stay
+linear for now - shadow samples its depth). Full glmark2 Wayland suite: 471 linear -> 542/541 twiddled
+colour -> **641** twiddled colour+depth (+36% over linear); shadow 160 -> 201 FPS, desktop 77 -> 80,
+build 1121 -> 1138. Pushed as patch 0317 (PR #12 head 25f08e1). Pixel-level depth round-trip test is
+still to be added (rttest currently covers colour only); depth reads back through glReadPixels only once
+staging exists.
+
+## Round-45 (2026-10-28 12:18): twiddled depth textures (patch 0318) - full suite 659
+
+Depth textures (shadow samples its depth) were still linear. The twiddled ZLS and the twiddled TPU
+descriptor handle depth formats, so depth attachments that are also sampled now get the same
+power-of-two layout (stencil-only stays linear). Wayland harness: shadow 201 -> 290 FPS (+44%),
+desktop 80 -> 106 (+32%), build ~1130 unchanged; full suite **641 -> 659** (471 linear baseline, +40%).
+Pushed as patch 0318 (PR #12 head fc0f7a6). Colour path is pixel-verified; the depth sampling path
+still needs a value-level test.
+
+## Round-46 (2026-10-28 12:30): where the rest of the gap is; harness notes
+
+Same-harness comparisons (Wayland, our build): native is now ahead of zink on the scenes that used to be
+worst - ideas 454 vs 369 FPS, effect2d 1348 vs 969 - while desktop is still slightly behind (95 vs 108).
+Firmware-tick profiles of the remaining slow scenes put most of the frame in the **gap**, not in GPU work:
+effect2d 5x5 TA 201 / 3D 1709 / period 3771 ticks (49% gap), ideas TA 1187 / 3D 3145 / period 11475
+(62% gap), desktop 3D 3617 / period 4915 (27% gap). So the next work is CPU/submission overhead per
+frame and per render (P5 + multi-render), not more GPU-side twiddling.
+
+X11 harness for a direct vendor comparison is still blocked: under Xwayland the system glmark2-es2 picks
+zink; our build's DRI megadriver `libgallium-26.3.0-devel.so` exports no `__driDriverGetExtensions_*`
+entry points, so a `pvr_dri.so` symlink cannot load it, and the dril megadriver does not contain the pvr
+driver. A fair vendor comparison needs either the vendor stack under Wayland/headless weston or a proper
+in-tree `pvr_dri.so` build target.
+
+## Round-47 (2026-10-28 12:45): gdb stack sampling of the ideas scene
+
+Sampled the glmark2 thread while running `ideas` on the native driver (12 gdb attaches): the visible
+frames are dominated by the **fence wait** - ioctl (12), st_glFinish/st_finish (6), pvr_fence_finish /
+drmSyncobjWait (5) - with the driver's per-draw work below that (pvr_draw_3d 4, draw_pds_program 4,
+u_vbuf_draw_vbo 3, pvr_job_submit_render 1). So the CPU thread is mostly blocked in glFinish, i.e. the
+62% "gap" measured for ideas is GPU/firmware completion latency plus the scene's own host work, not a
+hot loop in the driver. Next levers there: fewer per-render firmware round trips (job count / render
+batching) rather than micro-optimising driver code; `perf` is not installed on the board, so gdb
+sampling is the available profiler.
+
+## Round-48 (2026-10-28 13:05): redundant set_framebuffer_state flush - measured neutral, dropped
+
+Tried skipping the draw flush when the state tracker re-binds the framebuffer that is already open
+(`pvr_draw_matches_fb` helper). Scene sweep looked +7% on ideas / +3% on effect2d, but a 3x A/B on ideas
+gave 490/510/450 with the patch vs 490/502/549 without - noise, no repeatable gain - and the full suite
+was 653 vs 659 (noise). Dropped: the open render is flushed anyway on the next target change, so the
+redundant calls are not the cost. Remaining gap to chase is per-render firmware round trips, not this.
+
+## Round-49 (2026-10-28 13:20): DRM-flavour harness hangs the board; zink Wayland baseline
+
+The DRM/GBM glmark2 flavour (`glmark2-es2-drm`, no X/Wayland) hard-hangs the board on the open stack:
+the kernel log ends abruptly with no Oops and the watchdog resets (same signature as the earlier GBM
+attempt). Do not use DRM-master/GBM harnesses with the open driver on this board; the safe harnesses
+are headless weston + the Wayland client (EGL) and surfaceless EGL.
+
+Comparison baseline completed: same Wayland harness, full suite - **native 659 vs zink 573** (native is
+1.15x zink). The X11 reference pair is vendor 887 vs zink 686 (1.29x), so a harness-scaled estimate puts
+native at ~89% of vendor, i.e. roughly 11-12% still to find. Biggest remaining per-scene ratios against
+the X11 vendor numbers: desktop 0.32, effect2d 0.33, function-medium 0.43, ideas 0.50, cel 0.55 (several
+of these are multi-render scenes whose gap is firmware round trips, per the earlier profiles).
+
+## Round-50 (2026-10-28 13:45): client-side vertex arrays - good correctness, mixed perf, dropped
+
+Added user-buffer support to the vertex fetch (copy the draw range into the stream uploader with
+u_upload_alloc_ref, then point the PDS DMA at it) so client-array draws stop taking the gallium draw
+fallback. Correctness held (rttest 262144/262144 pass twice, depthtest values unchanged), and single
+scenes improved (build use-vbo=false 457 -> 545, buffer interleave 159 -> 296), but the full-suite A/B
+was 653 -> 647 with regressions up to -14% in the bump scenes - not repeatable enough to keep, so it was
+dropped to keep the PR at measured-wins-only. If revisited: run the 33-scene A/B twice per build first;
+the stream-uploader copy may be interacting with the draw-slot lifetimes.

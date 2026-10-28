@@ -49,3 +49,38 @@ Vendor `pvrsrvkm` + desktop, 0 kernel faults, open firmware original
   vendor + desktop. A reboot restores the open stack for further experiments.
 - Remaining work: (1) IMG-side observability ask for the DM2/TA stall (draft ready, needs the human to send);
   (2) after a reboot, optionally re-run the extra TF validation (`glmark2 --validate`, `vkcube`) for PR #12.
+
+## 2026-10-27 20:05: DM2/TA blocker SOLVED
+
+Native probe now reaches `Kick TA -> TA finished -> Kick 3D -> 3D finished` with no fault (was: DM2 timeout
++ HWR). Root cause was two native-driver draw-data bugs (VM_MAP silently replacing code-heap pages -> zero
+vertex PDS program; PDS const-map entries at byte instead of dword offsets), plus two 3D-stage bugs found once
+TA ran (PBE linestride in bytes instead of pixels; missing render-completion syncobj signal). Fixes are PR #12
+patches 0295-0296, found with the differential capture/replay tools in `tools/pvrcap/`.
+Still open: the render target is written but all black (draw/vertex data); and the PR merge + v0.1.2 release.
+
+## 2026-10-28 09:35: refract fixed (patch 0315), perf work ongoing
+
+Refract's FBO failure was the native driver refusing mipmapped textures (glmark2 asks for a full mip chain
+when the colour target uses a mipmap min filter); patch 0315 accepts them level-0-only with a no-op
+generate_mipmap. Verified: FBO reproducer COMPLETE, refract runs on native GL (82). Wayland harness clean full
+run: native 534 (33/33 scenes). Next: performance (TFBC/twiddled colour + depth, multi-render overhead) with
+the benchmark-optimization loop; PR #12 head now ebae1d2.
+
+## 2026-10-28 11:55: twiddled + TFBC colour targets (patch 0316)
+
+Native 3D targets are now twiddled + lossless-TFBC compressed (NATIVE-TFBC-PORT.md): full Wayland suite
+471 -> 542/541 (+15%), build scene 824 -> 1121 FPS, pixel-exact GPU two-pass verification; only refract
+3% slower. Patch 0316 pushed to PR #12 (head 75240bf). Board back on vendor + desktop, 0 faults.
+
+## 2026-10-28 12:10: twiddled depth (patch 0317) - full suite 641
+
+Twiddled ZLS depth buffers: full Wayland suite 471 linear -> 542 twiddled colour -> 641 colour+depth
+(+36% over linear); shadow 160 -> 201 FPS. Patch 0317 pushed (PR #12 head 25f08e1). Board vendor + desktop,
+0 faults, firmware original.
+
+## 2026-10-28 12:18: twiddled depth textures (patch 0318) - full suite 659
+
+Sampled depth textures twiddled: shadow 201 -> 290 FPS, desktop 80 -> 106; full Wayland suite 659
+(471 linear baseline, +40%). PR #12 head fc0f7a6 (patches 0316-0318). Board vendor + desktop, 0 faults,
+firmware original. Next: depth pixel verification, CPU readback staging, multi-render overhead.
