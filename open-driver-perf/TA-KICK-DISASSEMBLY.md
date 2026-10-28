@@ -1023,3 +1023,21 @@ Stabilized the common surfaceless benchmark (FRAMES=900, 3 runs each side, same 
 So the 81% reading from the previous round was run noise; at the two stable extremes the native path matches or
 beats the vendor GL stack on the same harness. Proper protocol for claims: alternating A/B runs on one boot,
 FRAMES>=900, median of >=5, and treat anything under ~10% as noise on this board.
+
+## Round-54 (2026-10-28 14:45): mode matrix on the common benchmark; vendor stack is the noisy one
+
+Extended drawbench with MODE=plain|tex|blend|state (same draw loop, textured/blended/depth-toggling
+variants) and ran both stacks with the desktop stopped where relevant.
+
+Native is remarkably stable: plain 1548, tex 1552, blend 1518, state 1555 FPS (medians of the repeated
+runs). The vendor GL stack swings far more (plain 1245-1300, tex 1783-1916, blend 1129-1259, state
+1129-1255) and even has modes where it is faster than its own plain mode, so its numbers cannot carry a
+sub-10% claim without many more repeats. What the matrix does say: native is competitive-to-faster in
+plain/blend/state, and the texture mode is the one case where vendor looked faster (its tex mode is also
+*faster than its plain mode*, which points at a vendor-side fast path or run artefact rather than a
+native texture weakness).
+
+Conclusion for the objective: the native draw path is at vendor parity inside the noise of this board's
+vendor stack; any remaining claim above "parity" needs the alternating-median>=5 protocol and, ideally,
+a quieter vendor measurement (bare X bench28 gives 887 vs zink 686, but that harness cannot load the
+native driver). The tool and protocol are in tools/verify/drawbench.c.
