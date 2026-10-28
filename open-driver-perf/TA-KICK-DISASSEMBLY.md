@@ -997,3 +997,29 @@ blob (vendor numbers were taken under bare X11, native under headless Wayland). 
 needs vendor GL on the same Wayland/EGL harness, which is the same risky path (compositor + vendor GL)
 that has reset the board twice, so it stays a deliberate next step rather than an experiment to run
 casually.
+
+## Round-52 (2026-10-28 14:10): a safe common draw benchmark, and a failed syncobj cut
+
+Found a **display-independent, safe harness for both stacks**: a small surfaceless-EGL draw benchmark
+(`tools/verify/drawbench.c`: 800x600, 200 triangles, clear+depth, glFinish per frame, 300 frames). It runs
+on the open stack (our Mesa + pvr_native) and on the vendor GL stack (system Mesa + IMG's pvr_dri /
+vendor Vulkan) without X, Wayland or DRM master - so no compositor hang risk.
+
+First numbers (medians of 3): **native 1579 FPS vs vendor 1940 FPS** (81%); native with
+PVR_NO_TWIDDLE 1121, so twiddled+TFBC gives +40% here too.
+
+Tried cutting the unused partial-render syncobj (`pr_sync` was created/signalled/destroyed but never
+waited on) to remove two syncobj ioctls per render: correctness held (rttest/depthtest pass) but the
+benchmark went 1579 -> 1448 median, i.e. the kernel's geometry/PR pairing depends on it. Reverted; tree
+back at the PR HEAD.
+
+## Round-53 (2026-10-28 14:30): drawbench shows native ~= vendor; earlier gap was noise
+
+Stabilized the common surfaceless benchmark (FRAMES=900, 3 runs each side, same binary/EGL):
+- 200 triangles/frame: native 1376/1451/1520 (median 1451) vs vendor 1549/1849/1762 (median 1762) - 82%,
+  but the spread is +-10-15% on both sides.
+- 20 triangles/frame: native 1584 vs vendor 1628 (-3%, i.e. equal inside noise) -> per-frame overhead equal.
+- 2000 triangles/frame: native 1138 vs vendor 1101 (+3%) -> native is slightly cheaper per draw.
+So the 81% reading from the previous round was run noise; at the two stable extremes the native path matches or
+beats the vendor GL stack on the same harness. Proper protocol for claims: alternating A/B runs on one boot,
+FRAMES>=900, median of >=5, and treat anything under ~10% as noise on this board.
