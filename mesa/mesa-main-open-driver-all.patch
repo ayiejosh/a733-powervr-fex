@@ -1373,10 +1373,10 @@ index 00000000..0c679b3f
 +#endif /* PVR_COMPUTE_TRIANGLE_SPV_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_context.c b/src/gallium/drivers/pvr_native/pvr_context.c
 new file mode 100644
-index 00000000..f89d1216
+index 00000000..7c28cd91
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_context.c
-@@ -0,0 +1,970 @@
+@@ -0,0 +1,976 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + */
@@ -2162,7 +2162,13 @@ index 00000000..f89d1216
 +static void pvr_set_polygon_stipple(UNUSED struct pipe_context *p, UNUSED const struct pipe_poly_stipple *s) {}
 +static void pvr_texture_barrier(UNUSED struct pipe_context *p, UNUSED unsigned flags) {}
 +static void pvr_memory_barrier(UNUSED struct pipe_context *p, UNUSED unsigned flags) {}
-+static void pvr_flush_resource(UNUSED struct pipe_context *p, UNUSED struct pipe_resource *r) {}
++/* Called on a window-system buffer before it is presented: a clear deferred on it must reach it
++ * (deferral already skips shared/scanout buffers; this covers a back buffer without those binds). */
++static void
++pvr_flush_resource(struct pipe_context *p, struct pipe_resource *r)
++{
++   pvr_draw_resource_materialize(pvr_context(p), pvr_resource(r));
++}
 +static void pvr_invalidate_resource(UNUSED struct pipe_context *p, UNUSED struct pipe_resource *r) {}
 +
 +/* A copy of a whole level between colour target resources is one GPU render (instead of two
@@ -4988,10 +4994,10 @@ index 00000000..61abc377
 +#endif /* PVR_CSB_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_draw.c b/src/gallium/drivers/pvr_native/pvr_draw.c
 new file mode 100644
-index 00000000..295c2573
+index 00000000..cbf27bbb
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_draw.c
-@@ -0,0 +1,1842 @@
+@@ -0,0 +1,1851 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -6203,8 +6209,8 @@ index 00000000..295c2573
 +   if (rres->clear_pending && level == 0) {
 +      d->clear_valid = true;
 +      d->clear_color = rres->clear_color;
++      rres->clear_pending = false;
 +   }
-+   rres->clear_pending = false;
 +   if (d->zs && pvr_resource(d->zs)->zclear_pending) {
 +      d->zclear_valid = true;
 +      d->zclear = pvr_resource(d->zs)->zclear;
@@ -6249,9 +6255,12 @@ index 00000000..295c2573
 +draw_materialize(struct pvr_context *ctx, struct pipe_resource *pres)
 +{
 +   struct pvr_resource *res = pvr_resource(pres);
-+   struct pvr_draw_state *d = ctx->draw;
-+   if (d == NULL || pres == NULL || (!res->clear_pending && !res->zclear_pending))
++   if (pres == NULL || (!res->clear_pending && !res->zclear_pending))
 +      return;
++   /* The clear may have been recorded by another context (a shared texture). */
++   if (ctx->draw == NULL && (ctx->draw = calloc(1, sizeof(struct pvr_draw_state))) == NULL)
++      return;
++   struct pvr_draw_state *d = ctx->draw;
 +   pvr_draw_flush(ctx);
 +   struct pipe_resource *rt = pres, *zs = NULL;
 +   if (res->zclear_pending) {
@@ -6657,6 +6666,12 @@ index 00000000..295c2573
 +}
 +
 +void
++pvr_draw_resource_materialize(struct pvr_context *ctx, struct pvr_resource *res)
++{
++   draw_materialize(ctx, &res->base);
++}
++
++void
 +pvr_draw_resource_sync(struct pvr_context *ctx, struct pvr_resource *res)
 +{
 +   struct pvr_draw_state *d = ctx->draw;
@@ -6836,10 +6851,10 @@ index 00000000..295c2573
 +}
 diff --git a/src/gallium/drivers/pvr_native/pvr_draw.h b/src/gallium/drivers/pvr_native/pvr_draw.h
 new file mode 100644
-index 00000000..705251f1
+index 00000000..755d4912
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_draw.h
-@@ -0,0 +1,54 @@
+@@ -0,0 +1,56 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -6886,6 +6901,8 @@ index 00000000..705251f1
 + * last render that used it. */
 +struct pvr_resource;
 +void pvr_draw_resource_sync(struct pvr_context *ctx, struct pvr_resource *res);
++/* Submits a deferred clear of the resource, if it has one (see draw_materialize). */
++void pvr_draw_resource_materialize(struct pvr_context *ctx, struct pvr_resource *res);
 +
 +/* The syncobj of the latest submitted render (0: none in flight). */
 +uint32_t pvr_draw_last_sync(struct pvr_context *ctx);

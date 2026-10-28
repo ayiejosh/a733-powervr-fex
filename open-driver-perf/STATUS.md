@@ -108,3 +108,14 @@ off-screen through weston + Xwayland runs all scenes: 669 (schedutil, no isolati
 Full native glmark2 off-screen (perf governor, cores 6-7): 748, 0 errors, 0 MMU faults; terrain
 11 -> 19, shadow 185 -> 224, desktop shadow 311 -> 419 vs the mipmap-only state. Note: fwtime.sh
 left fw_trace_mask at 0xffffffff, which costs ~10-20% on every scene; it now resets it to 0.
+## 2026-10-29: bench30 + patch 0325
+bench30 (glmark2-es2 off-screen, perf governor, cores 6-7, PR head 814181b = patches up to 0324):
+native 746/744, zink 676/671, vendor 884/879 (bench29: native 728/732, zink 680/677, vendor
+886/874). bench29 native terrain/shadow/refract (27/317/107) were measured with every tile of
+their >= 1024x1024 targets dropped (fixed in 0320); now 19/226/37 vs vendor 39/520/56, zink
+26/329/45. build use-vbo=false 952 (vendor 897), desktop shadow 420 (vendor 830), desktop blur
+116 (vendor 301), effect2d 719/328 (vendor 957/435).
+0325 (review fix of 0323): a deferred level-0 clear survived only if no render opened on another
+level of the same texture first; also flush_resource submits a deferred clear of a window buffer.
+Gate after 0325: full native glmark2 749, 0 errors, 0 MMU faults, gltri all modes match.
+Each of 0320-0325 builds on its own without warnings.

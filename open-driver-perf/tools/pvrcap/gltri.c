@@ -195,6 +195,12 @@ int main(void)
          fprintf(stderr, "mip level fbo status 0x%x\n", glCheckFramebufferStatus(GL_FRAMEBUFFER));
          glClearColor(1, 1, 0, 1);
          glClear(GL_COLOR_BUFFER_BIT);
+         if (getenv("GLTRI_MIPRT2")) {
+            /* Then another level of the same texture cleared cyan: the first clear must survive. */
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, mt, atoi(getenv("GLTRI_MIPRT2")));
+            glClearColor(0, 1, 1, 1);
+            glClear(GL_COLOR_BUFFER_BIT);
+         }
          glBindFramebuffer(GL_FRAMEBUFFER, fbo);
       }
       glUniform1f(glGetUniformLocation(p, "k"), getenv("GLTRI_MIPK") ? (float)atof(getenv("GLTRI_MIPK")) : 1.0f);
