@@ -1373,10 +1373,10 @@ index 00000000..0c679b3f
 +#endif /* PVR_COMPUTE_TRIANGLE_SPV_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_context.c b/src/gallium/drivers/pvr_native/pvr_context.c
 new file mode 100644
-index 00000000..cffc2896
+index 00000000..cc362f67
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_context.c
-@@ -0,0 +1,890 @@
+@@ -0,0 +1,905 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + */
@@ -2177,6 +2177,20 @@ index 00000000..cffc2896
 +   FREE(ctx);
 +}
 +
++/* ponytail: the draw path samples level 0 only (linear, one descriptor), so generating a mip
++ * chain would allocate data nothing can read. Keep the entry point non-NULL so the state
++ * tracker does not fall back to util_gen_mipmap(), which would need per-level transfers this
++ * driver does not have. Add real mip sampling with the TFBC/twiddled texture work. */
++static bool
++pvr_generate_mipmap(struct pipe_context *pctx, struct pipe_resource *pres,
++                    enum pipe_format format, unsigned base_level, unsigned last_level,
++                    unsigned first_layer, unsigned last_layer)
++{
++   (void)pctx; (void)pres; (void)format; (void)base_level; (void)last_level;
++   (void)first_layer; (void)last_layer;
++   return true;
++}
++
 +struct pipe_context *
 +pvr_context_create(struct pipe_screen *pscreen, UNUSED void *priv,
 +                   UNUSED unsigned flags)
@@ -2194,6 +2208,7 @@ index 00000000..cffc2896
 +   ctx->base.sampler_view_release = pvr_sampler_view_release;
 +
 +   ctx->base.buffer_map = pvr_transfer_map;
++   ctx->base.generate_mipmap = pvr_generate_mipmap;
 +   ctx->base.buffer_unmap = pvr_transfer_unmap;
 +   ctx->base.texture_map = pvr_transfer_map;
 +   ctx->base.texture_unmap = pvr_transfer_unmap;
@@ -12512,10 +12527,10 @@ index 00000000..dab58714
 +#endif /* PVR_PUBLIC_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_resource.c b/src/gallium/drivers/pvr_native/pvr_resource.c
 new file mode 100644
-index 00000000..4b928015
+index 00000000..a9980aae
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_resource.c
-@@ -0,0 +1,208 @@
+@@ -0,0 +1,213 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + */
@@ -12574,8 +12589,12 @@ index 00000000..4b928015
 +   uint32_t stride = 0;
 +   uint64_t size = 0;
 +
-+   if (templ->last_level != 0 || templ->array_size != 1 || templ->nr_samples > 1) {
-+      mesa_logd("pvr: refusing a mipmapped/arrayed/multisampled resource");
++   /* ponytail: mip chains are not sampled by the level-0-only texture descriptors, so it is
++    * enough that the resource exists - allocate level 0 and let generate_mipmap() be a
++    * no-op. Refusing mipmapped textures made any GL texture with a mipmap min filter fail
++    * with GL_OUT_OF_MEMORY (glmark2 refract's colour target). */
++   if (templ->array_size != 1 || templ->nr_samples > 1) {
++      mesa_logd("pvr: refusing an arrayed/multisampled resource");
 +      return NULL;
 +   }
 +
@@ -12594,6 +12613,7 @@ index 00000000..4b928015
 +      return NULL;
 +
 +   res->base = *templ;
++   res->base.last_level = 0;
 +   res->base.screen = pscreen;
 +   pipe_reference_init(&res->base.reference, 1);
 +
