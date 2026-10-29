@@ -17,6 +17,20 @@ stop_clients() {
    if pgrep -x X >/dev/null || pgrep -x kwin_x11 >/dev/null || pgrep -x startplasma-x11 >/dev/null; then
       echo "ABORT: X/kwin/plasma still alive"; exit 1
    fi
+   # A GPU connection still open while pvrsrvkm is removed NULL-derefs in the vendor kernel module
+   # (LinuxServicesConnectionFromFile, seen 2026-10-30 03:08 -> Oops -> hard reset). Wait for every
+   # client fd on the DRM nodes to close, then give the driver's connection teardown a moment.
+   i=0
+   while [ $i -lt 20 ]; do
+      busy=$(sudo fuser /dev/dri/card0 /dev/dri/card1 /dev/dri/renderD128 /dev/pvr 2>/dev/null | tr -d ' ')
+      [ -z "$busy" ] && break
+      sleep 0.5; i=$((i+1))
+   done
+   if [ -n "${busy:-}" ]; then
+      echo "ABORT: GPU device still open: $(sudo fuser -v /dev/dri/card0 /dev/dri/card1 2>&1 | tail -2)"
+      exit 1
+   fi
+   sync; sleep 1
 }
 case "$target" in
 open)
