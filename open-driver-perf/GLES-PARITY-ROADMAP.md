@@ -47,13 +47,10 @@ GL versions today (probe `open-perf/glinfo`):
   zink. `GL_OES_texture_half_float_linear` **DONE (patch 0338)** from `has_pbe_filterable_f16`;
   float_linear correctly still absent (no 32-bit float filtering in the hardware).
 - `GL_IMG_texture_npot`: alias advertising (we already do NPOT via OES_texture_npot)
-- **Cube maps (ES2 core) are missing entirely** - `resource_create` refuses PIPE_TEXTURE_CUBE and
-  `max_texture_cube_levels = 0`; a probe reproduces `Bad t->Target in
-  _mesa_test_texobj_completeness`/GL_INVALID_VALUE while zink renders the six faces correctly. Needs
-  cube resource layout (six twiddled faces, mips per face), `TEXSTATE_TEXTYPE_CUBE` + `word1.depth=5`
-  and `PCO_IMAGE_META_LAYER_SIZE`, cube uploads. This is the next big ES2-core item (and
-  `GL_OES_depth_texture_cube_map` builds on it). `GL_OES_texture_stencil8` is an ES3.1-era entry,
-  not an ES2 gap.
+- ~~Cube maps (ES2 core) are missing entirely~~ **DONE (patch 0339)**: six twiddled faces with
+  per-face mip chains, `TEXSTATE_TEXTYPE_CUBE` + `word1.depth=5`, `PCO_IMAGE_META_LAYER_SIZE` face
+  stride, layered transfer/mip-generation blits; single-level and mipmapped cubes match zink.
+  `GL_OES_depth_texture_cube_map` now only needs the depth format in the same layout.
 - `GL_EXT_texture_type_2_10_10_10_REV` **DONE (patch 0337)**: 1010102 sampler decode (TPU
   A2R10B10G10) matches zink. `GL_EXT_texture_format_BGRA8888` already advertised.
 
@@ -89,7 +86,7 @@ GL versions today (probe `open-perf/glinfo`):
 Board between tests: vendor + desktop + original firmware (`tools/verify/switch-safe.sh`). Never start GL
 harnesses while vendor is bound (caused a watchdog reset). Every feature needs its own gltri (or new test)
 mode comparing against zink checksums, plus the existing full gltri gate and 0 MMU faults before pushing.
-Patch series continues at the next number in `mesa/open-driver-series/` (currently 0338).
+Patch series continues at the next number in `mesa/open-driver-series/` (currently 0339).
 
 ### MRT design notes (recon 2026-10-29; implemented as patch 0332 - see round-73 notes for the
 `nir_lower_blend` colormask trap that ate attachment 1's store)

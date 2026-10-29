@@ -1587,3 +1587,36 @@ filtering, depth-texture-cube-map, stencil8; then the ES3 core work.
   `TEXSTATE_TEXTYPE_CUBE` with `word1.depth = 5` (array layers minus one, the reference's rule) and
   the per-layer stride in the pco image meta (`PCO_IMAGE_META_LAYER_SIZE`), plus cube upload support.
   This is the next hundred-percent-real gap to close; `GL_OES_depth_texture_cube_map` builds on it.
+
+## Round-81 (2026-10-29): cube maps - ES2 core feature restored
+
+Cube maps were ES2 core and completely refused by this driver (round-80's probe): Mesa reported "Bad
+t->Target in _mesa_test_texobj_completeness" and the texture stayed incomplete, while the hardware
+supports cube maps natively. Patch 0339 adds them:
+
+- **Layout**: six 2D twiddled faces, face-major, each face carrying its own mip chain down to 1x1 when
+  mipmapped, faces strided by a page-aligned layer size. This is the reference's
+  `pvr_image_plane_setup_mip_levels` layout (its `layer_size` includes the entire padded chain because
+  the hardware derives face strides from it).
+- **Descriptor**: `TEXTYPE_CUBE` + `IMAGE_WORD1.depth = faces - 1` (5), and the face stride in the pco
+  image metadata's `PCO_IMAGE_META_LAYER_SIZE` word - which sits right after the 4 image state words in
+  the combined image-sampler binding (the sampler state words then follow the 4 meta words).
+- **Transfers / uploads**: the transfer box's z selects the face; the existing "blit through a linear
+  staging resource" path now carries a layer for its render target and its background source (target
+  address = layer * layer_size past the level, a face read back as a 2D image at that address).
+  `glGenerateMipmap` walks each face's chain through the same layered blit.
+- caps->max_texture_cube_levels now follows the maximum 2D texture size; cube formats are limited to
+  the 8-bit RGBA/BGRA/RGBX/BGRX set the PBE can write.
+
+Verified against zink (`open-perf/cube_probe.c`, `cube_mip.c` - both now in tools/verify):
+- six distinctly coloured faces sampled with the six axis directions give exactly the face colours on
+  both drivers;
+- after `glGenerateMipmap`, sampling with `NEAREST_MIPMAP_NEAREST` at high minification keeps every
+  face's colour on both drivers (the per-face mip chain and face stride are right).
+Full gate green: 49 gltri modes (all native glGetError 0x0), 28 mip modes, rttest PASS
+(bad=0/262144), rt8test unchanged, MRT/sRGB/instancing/extension tests unchanged, 0 MMU faults.
+Patch 0339, series head `28c30f2c`.
+
+Note for the next benchmark round: the attempted three-way glmark2 run was invalid because the reboot
+had cleared `/tmp` and the glmark2 data symlink `/tmp/glm2egl` was missing (shaders not found,
+glmark2 aborted); the symlink is restored and the benchmark is clean to re-run.
