@@ -1272,3 +1272,17 @@ Measured with the same-binary EGL/X11 glmark2, perf governor, cores 6-7, two run
 Exported as patch 0329, series 329 tree-checked, PR pushed. This is the first native-vs-zink gap closed
 by the corrected harness; the remaining terrain cost is the per-level mip-chain render submits
 (round-64), next candidate for batching.
+
+## Round-66 (2026-10-29): loop scene weakness is GPU 3D execution, not host overhead
+
+The board reset (13:30 prev boot) had no Oops/panic/watchdog log: it was a hard reset while a GL harness
+was started with the vendor driver bound (the known unsafe pattern from round-56's notes) - the
+interrupted profiling command was the one running. No data or firmware impact; current boot clean.
+
+Profiling the remaining native-vs-zink deficits with the corrected harness, the shader-heavy `loop`
+scene: native 884 vs zink 1049 FPS, one render per frame, firmware trace medians per frame (ticks):
+native 4457 (GPU 3D ~2352, gaps ~2105), zink 4021 (GPU 3D ~2009, gaps ~2000). Host gaps are comparable;
+the ~17% extra **GPU 3D execution** is the difference - a code-generation/instruction-selection gap in
+pco's GLSL->NIR path versus zink's SPIR-V->NIR path, not a draw-path bookkeeping cost. Chasing it means
+compiler work on the fragment shader codegen for loop-heavy shaders; recorded, not attempted in this
+session. No driver change.
