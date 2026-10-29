@@ -1129,3 +1129,40 @@ Two harness findings from the open items:
      EGL/X11 (the distro binary is GLX), or the vendor run moved to an EGL/X11 harness as done here.
 
 No driver change in this round; tools updated (`tools/verify/{gltri.c,drawbench.c}`).
+
+## Round-60 (2026-10-29): the bench30 "native" numbers were zink - corrected glmark2-class measurement
+
+Found while building a same-binary comparison: the distro `glmark2-es2` X11 binary is **GLX**, and the
+native driver does not load through GLX, so `MESA_LOADER_DRIVER_OVERRIDE=pvr` silently fell back to zink.
+`native-1.txt`/`native-2.txt` of the last bench30 runs indeed read
+`GL_RENDERER: zink Vulkan 1.3(...)` - the "native 746/744" (and this session's 658/698) were **zink**, and
+the per-scene "old vs new" A/Bs that used glbench.sh measured zink as well. Only the Wayland glmark2
+(system `glmark2-es2-wayland`) and the EGL/surfaceless tests (gltri, drawbench with explicit
+`GL_RENDERER` checks) were really native.
+
+Fix: built glmark2 from source with `-Dflavors=x11-glesv2` (meson; libjpeg/libpng/zlib dev headers staged
+from .debs because apt dependency resolution is broken). That binary uses EGL/X11, so it loads the native
+driver under Xwayland, zink, or the vendor IMG GLES under bare Xorg - the same binary and platform for all
+three stacks. Installed durably at `open-perf/glm2x11/` (22 MiB, `glm2x11/bin/glmark2-es2`), driver script
+`open-perf/bench31.sh`.
+
+Corrected three-way, same binary `-Dflavors=x11-glesv2`, perf governor, client on cores 6-7, two runs:
+
+| stack | FPS scores | total FPS | GL_RENDERER |
+|---|---|---|---|
+| native (open stack, Xwayland) | **728 / 728** | 24068 | PowerVR B-Series BXM-4-64 (36.56.104.183) |
+| zink (open Vulkan, Xwayland)   | **775 / 775** | 25620 | zink Vulkan 1.3 (IMAGINATION_OPEN_SOURCE_MESA) |
+| vendor (pvrsrvkm, bare Xorg)   | **1199 / 1181** | 39607 | PowerVR B-Series BXM-4-64 (IMG GLES 3.2 24.2@6603887) |
+
+So the honest state is: **native is behind zink by ~6% and behind the vendor GLES by ~1.6x on this
+glmark2-class X11 harness**. The earlier claim of parity was harness-specific (EGL surfaceless
+drawbench: native 1427 vs vendor 1290, where the vendor path was zink-on-vendor-Vulkan, not the IMG GLES
+now measured). Per-scene, native's driver-specific deficits vs zink are terrain 0.70, refract 0.79,
+ideas 0.85, desktop blur 0.87, loop/conditionals 0.87-0.89, jellyfish 0.88; native wins effect2d and is
+level on shadow/build; the vendor gap is dominated by scenes where zink is also far ahead (desktop blur,
+ideas, effect=shadow), i.e. stack-wide, not one driver bug.
+
+Consequences: patches 0326/0327 correctness results stand (they were verified with gltri, which reports
+the native renderer and its own checksums), but their performance deltas in the commit messages were
+measured on the zink fallback and must be re-measured with bench31 or the Wayland binary before they are
+quoted. bench30.sh is superseded by bench31.sh.

@@ -101,3 +101,11 @@ gets the normal twiddled mip chain, closing the "mipmapped non-renderable format
 for this case. zink-identical checksums for plain 565 sampling and a CPU-uploaded 565 mip chain; full
 gltri gate passes; full glmark2 675 (DRI3 warning only), 0 faults. Series 327, PR pushed. R8/RG8 decode
 remains a known limitation (WIP branch `wip/linear-mips` kept locally).
+
+## 2026-10-29 13:00: methodology correction - bench30 native runs were zink
+
+The distro X11 glmark2 is GLX, which never loaded the native driver; bench30's "native" columns were
+zink. Built glmark2 with -Dflavors=x11-glesv2 (EGL/X11) so one binary measures all three stacks:
+native 728/728, zink 775/775, vendor IMG GLES 1199/1181 (totals 24.1k / 25.6k / 39.6k FPS).
+Corrected scripts/artifacts: open-perf/bench31.sh, open-perf/glm2x11/ (build kept out of git).
+Re-measure 0326/0327 perf deltas with bench31 before quoting them; correctness gates unchanged.
