@@ -2163,3 +2163,24 @@ Verified with `tools/verify/aniso_probe.c`: a 256x256 checker with generated mip
 (128,128,128 / 127,127,127); GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT reports 16. ES2 extension list
 69 -> 70. Full gate green (gltri 49, mip 28, rttest PASS, MRT 2/4, instancing, sRGB, border/mirror
 clamp probes, 0 faults). Patch 0345, series head `0bc92d43`.
+
+## Round-105 (2026-10-30): audit found glPolygonOffset (ES2 core) is not implemented - scoped
+
+Looking for the next ES2 gap, the depth-bias path turned out to be missing entirely: the driver emits
+no depth-bias table, `CR_ISP_DBIAS_BASE` points at whatever the captured stream had (a zero entry),
+and the rasterizer state's `offset_units`/`offset_scale` are never read. In the reference this is
+`sub_cmd->depth_bias_bo`: an array of `struct pvr_depth_bias_state { float constant_factor;
+float slope_factor; float clamp; }` uploaded per job, indexed by
+`ppp_state->depthbias_scissor_indices.depthbias_index`, with the constant factor pre-scaled by depth
+format (`pvr_calculate_final_depth_bias_contant_factor`, UNORM vs FLOAT equation, plus the
+`ROGUE_CR_ISP_CTL.dbias_is_int` mode on enhancement 42307). `VkPhysicalDeviceLimits.depthBiasClamp`
+is true for this device, so the hardware supports the full feature including clamp.
+
+So **glPolygonOffset is a missing ES2-core feature** (any app using it renders unoffset), and
+implementing it also unlocks `GL_EXT_polygon_offset_clamp`. Scope for the next session: (1) allocate a
+per-slot small BO for the bias table (written before submit, slot reuse already waits), (2) derive the
+entry from `pipe_rasterizer_state` offset_units/offset_scale/clamp with the reference's constant-factor
+scaling per depth format, (3) point `CR_ISP_DBIAS_BASE` at it and emit `TA_STATE_ISPCTL.dbenable` +
+`depthbias_index` in the control stream, (4) verify with a two-quad depth-offset probe and zink
+comparison. The probe drafted this round was inconclusive (both drivers rejected the quad, so its
+setup is wrong); leave a working probe to the implementation round.
