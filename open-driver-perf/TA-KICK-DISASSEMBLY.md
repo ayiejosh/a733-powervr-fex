@@ -1853,3 +1853,33 @@ tested with a controlled fragment-bound microbenchmark (drawbench) rather than m
 behaviour), (2) the TA/IPF pipeline configuration for many small draws/passes (tile counts, phantoms),
 (3) zink's render-pass behaviour (load/store choices) differing from this driver's clear/load model.
 The ISA comparison tooling and logs are kept (`/tmp/isa-dump/`), no driver change this round.
+
+## Round-88 (2026-10-30): the GPU gap is per-render-pass overhead, not fill/texture/vertex throughput
+
+Built `open-perf/drawbench2.c` (now tools/verify/drawbench2.c): fixed-work surfaceless-EGL
+microbenchmarks that run identically on native and zink. Per-mode fps (120 frames, glFinish/frame):
+
+| mode | native | zink | native/zink |
+|---|---|---|---|
+| fill (1 fullscreen quad) | 2181 | 1314 | **1.66** |
+| overdraw | 2457 | 1607 | 1.53 |
+| tex nearest | 1493 | 967 | 1.54 |
+| tex linear | 1473 | 926 | 1.59 |
+| mipmapped nearest | 1669 | 950 | 1.76 |
+| mipmapped linear | 1605 | 938 | 1.71 |
+| cube fetch | 1665 | 979 | 1.70 |
+| vertex 60k | 1140 | 973 | 1.17 |
+| **27 small (64x64) FBO passes + final draw per frame** | **150** | **709** | **0.21** |
+| 27 draws, one pass | 521 | 714 | 0.73 |
+
+So the native driver is **faster than zink at every per-primitive GPU operation** (fill, texture
+fetch nearest/linear, mip sampling, cube fetch, vertex throughput) but **4.9x slower when the frame is
+split across many small render passes**. With CPU accounting from the same tool (passes mode: wall
+801 ms vs cpu 275 ms over 120 frames) the per-pass gap is GPU-side: ~4.4 ms/frame of GPU time for 27
+tiny passes, i.e. ~0.16 ms per pass of pure pipeline overhead.
+
+That is the real explanation for the glmark2 scenes that still lose to zink: terrain and refract render
+about 27 passes per frame (mip levels/bloom), so they pay that overhead 27 times. Next investigation:
+what the per-pass GPU overhead is (job dispatch/barriers vs our flush's stream/sync sequence) - measure
+passes=1 vs 27 on both drivers, then look at batching multiple renders into fewer submits / barriers
+(as the reference does within a command buffer) instead of one submit-per-pass with syncobj waits.
