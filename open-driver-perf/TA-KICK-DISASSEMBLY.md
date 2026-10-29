@@ -1494,3 +1494,28 @@ tree reverted to the shipped 0334 state so nothing broken is advertised. Next pr
 generated PDS vertex program + const map (`pvr_pds_disasm.c` exists) for the 2-instance and
 3-instance cases and compare the instance-rate DDMAD src1/const entries with what the reference
 generates for a Vulkan instanced draw.
+
+## Round-77 (2026-10-29): instancing works - the instance count is encoded count-minus-one
+
+The round-76 "second instance-rate attribute misindexes the middle instance" turned out to be a
+one-field bug plus a phantom draw. `INDEX_LIST3.instance_count` is encoded **count-minus-one** (the
+reference writes `instance_count - 1`); passing the raw count made the hardware draw one instance too
+many, and that extra instance read past the end of the per-instance buffers - with zeroes there
+(robust fetch), it rendered a transparent-black triangle at the base offset, i.e. exactly the "broken
+middle instance" of a 3-instance draw. A pixel-row scan comparing native against zink made it
+obvious: at 2 instances the extra triangle was even visible as a third colour (the in-range third
+element of the test's buffer).
+
+Wiring in patch 0335 (the rest was already in the tree): accept `instance_count > 1`; pass the count
+to the index list (count-1 encoded); put per-instance vertex elements in PDS instance-rate mode with
+their divisor; set `caps->vs_instanceid` and `caps->vertex_element_instance_divisor`, the two caps
+the ES2 extension table gates `GL_EXT_draw_instanced` and `GL_EXT_instanced_arrays` on (without the
+latter, `glVertexAttribDivisorEXT` is `GL_INVALID_OPERATION` even though the draw is accepted).
+
+Verified against zink with `open-perf/inst_test.c`: 2/3/4 instances (per-instance offset vec2 +
+colour vec4, divisor 1) produce identical pixel-row scans, indexed instanced draws
+(`glDrawElementsInstancedEXT`) identical too, no phantom instance. Both extensions now advertised.
+Full gate green: 49 gltri modes (all native glGetError 0x0), 28 mip modes, rttest PASS
+(bad=0/262144), rt8test unchanged, 2/4-attachment and mixed-format MRT unchanged, 0 MMU faults.
+Patch 0335, series head `b9b44bb6`; PR #12 pushed. Known limits: no gl_InstanceID (ES3-only language
+feature), max 16 instances for this vertex-output size (VDM cam size).

@@ -2480,10 +2480,10 @@ index 00000000..df847132
 +#endif /* PVR_CONTEXT_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_csb.c b/src/gallium/drivers/pvr_native/pvr_csb.c
 new file mode 100644
-index 00000000..09a0417b
+index 00000000..3a03f907
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_csb.c
-@@ -0,0 +1,1691 @@
+@@ -0,0 +1,1695 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + */
@@ -2690,7 +2690,11 @@ index 00000000..09a0417b
 +   };
 +   struct ROGUE_VDMCTRL_INDEX_LIST1 list1 = { .index_base_addrlsb = index_addr };
 +   struct ROGUE_VDMCTRL_INDEX_LIST2 list2 = { .index_count = index_count };
-+   struct ROGUE_VDMCTRL_INDEX_LIST3 list3 = { .instance_count = instance_count };
++   /* The hardware encoding is count-minus-one: the reference writes `instance_count - 1`, and a raw
++    * count makes it draw one instance too many (an out-of-range instance reads zeroes from the
++    * per-instance buffers - seen as a transparent-black triangle at the base offset in the middle
++    * of an instanced draw). */
++   struct ROGUE_VDMCTRL_INDEX_LIST3 list3 = { .instance_count = instance_count - 1 };
 +   const uint32_t words = ROGUE_VDMCTRL_INDEX_LIST0_length +
 +                          (have_addr ? ROGUE_VDMCTRL_INDEX_LIST1_length : 0) +
 +                          ROGUE_VDMCTRL_INDEX_LIST2_length +
@@ -5016,10 +5020,10 @@ index 00000000..e833ae6c
 +#endif /* PVR_CSB_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_draw.c b/src/gallium/drivers/pvr_native/pvr_draw.c
 new file mode 100644
-index 00000000..80aba820
+index 00000000..9c8da975
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_draw.c
-@@ -0,0 +1,2008 @@
+@@ -0,0 +1,2014 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -6193,7 +6197,7 @@ index 00000000..80aba820
 +      if (vs->inputs[i].element >= ve->count)
 +         return false;
 +      el = &ve->elements[vs->inputs[i].element];
-+      if (el->vertex_buffer_index >= ctx->nr_vertex_buffers || el->instance_divisor != 0)
++      if (el->vertex_buffer_index >= ctx->nr_vertex_buffers)
 +         return false;
 +      vb = &ctx->vertex_buffers[el->vertex_buffer_index];
 +      /* shortcut: float32 attributes only (the DMA copies dwords; pco reads them as float). */
@@ -6212,6 +6216,10 @@ index 00000000..80aba820
 +         .attrib_size_in_bytes = util_format_get_blocksize(el->src_format),
 +         .destination = vs->inputs[i].vtxin,
 +         .binding_index = el->vertex_buffer_index,
++         /* Per-instance data: the PDS vertex program advances this attribute once per `divisor`
++          * instances instead of once per vertex (the reference sets the same flag/divisor). */
++         .flags = el->instance_divisor != 0 ? PVR_PDS_VERTEX_DMA_FLAGS_INSTANCE_RATE : 0,
++         .divisor = el->instance_divisor,
 +      };
 +   }
 +   input.dma_count = vs->nr_inputs;
@@ -6407,9 +6415,10 @@ index 00000000..80aba820
 +
 +   if (num_draws != 1 || rt == NULL || vs == NULL ||
 +       fs == NULL || fs->src_nir == NULL || !draw_format_ok(rt_format) ||
-+       !draw_topology(info->mode, &topo) ||
-+       info->instance_count != 1 || draws[0].count == 0)
++       !draw_topology(info->mode, &topo) || draws[0].count == 0)
 +      return false;
++   /* Gallium's instance_count is 0 for a non-instanced draw; the hardware takes 1. */
++   const uint32_t instance_count = MAX2(info->instance_count, 1);
 +   if (info->index_size && draws[0].index_bias != 0)
 +      return false;
 +   /* Both faces culled: no triangle survives (points and lines are not culled). */
@@ -6666,7 +6675,8 @@ index 00000000..80aba820
 +       (vu_dwords && !pvr_csb_emit_vdm_pds_state(&d->ctrl, vs->shareds, vu_data, vu_dwords,
 +                                                  vu_code)) ||
 +       !pvr_csb_emit_vdm_state(&d->ctrl, false, 0, &vdm_vs, &vdm_words) ||
-+       !pvr_csb_emit_index_list(&d->ctrl, idx_addr, draws[0].count, 1, isize, topo) ||
++       !pvr_csb_emit_index_list(&d->ctrl, idx_addr, draws[0].count, instance_count, isize,
++                                topo) ||
 +       pvr_csb_overflowed(&d->ctrl))
 +      return false;
 +   d->ndraws++;
@@ -13610,10 +13620,10 @@ index 00000000..f53af579
 +#endif /* PVR_RESOURCE_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_screen.c b/src/gallium/drivers/pvr_native/pvr_screen.c
 new file mode 100644
-index 00000000..051669ba
+index 00000000..d890876a
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_screen.c
-@@ -0,0 +1,420 @@
+@@ -0,0 +1,426 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -13886,6 +13896,12 @@ index 00000000..051669ba
 +      caps->max_texture_array_layers = 1;
 +      /* Any extent samples and renders (twiddled levels are padded to powers of two). */
 +      caps->npot_textures = true;
++      /* Instanced drawing: the index-list block carries the instance count and per-instance vertex
++       * attributes advance by their divisor (PDS instance-rate flag). ES2 GLSL has no
++       * gl_InstanceID, so the cap's system-value meaning only arises in ES3 shaders, which this
++       * driver does not expose yet. */
++      caps->vs_instanceid = true;
++      caps->vertex_element_instance_divisor = true;
 +      /* Multiple render targets: the PBE writes one emit per attachment (EOT program) and the
 +       * fragment variant maps data0..3. ES3 needs 4; v1 requires a shared format (see flush). */
 +      caps->max_render_targets = 4;

@@ -20,9 +20,10 @@ GL versions today (probe `open-perf/glinfo`):
   attachments must be one dword per pixel; no per-render-target blend state (ES2 has none).
 - 2D array + 3D textures: `resource_create` refuses them; twiddled/stride descriptors are 2D-only
 - UBOs: uniforms are push-constants/shared-reg only; needs a real constant-buffer binding path
-- Instancing (core; also EE: `GL_NV_draw_instanced`, `GL_NV_instanced_arrays`): driver wiring written
-  (round-76: instance count packet, PDS instance-rate divisor, caps) but the second instance-rate
-  attribute misindexes the middle instance at 3+ instances - see round-76 notes, WIP patch saved
+- ~~Instancing (core; also EE: `GL_NV_draw_instanced`, `GL_NV_instanced_arrays`)~~ **DONE (patch
+  0335)**: instance count in the index list (count-minus-one encoding), PDS instance-rate divisors,
+  `GL_EXT_draw_instanced` + `GL_EXT_instanced_arrays`; non-indexed and indexed instanced draws match
+  zink for 2/3/4 instances. Open: gl_InstanceID (needs ES3 GLSL), max 16 instances for large VS output
 - Compressed formats (ES3 requires ETC2/EAC; vendor also ships ASTC): absent or CPU-fallback only
 - sRGB formats and sRGB render targets (`GL_EXT_sRGB`, `_sRGB_write_control`, `_sRGB_decode`)
 - Integer vertex/fragment formats (ES3 core integer API; `_gpu_shader5` needs more)
@@ -62,10 +63,8 @@ GL versions today (probe `open-perf/glinfo`):
 2. ~~**MRT** (foundational, also ES3)~~ **DONE**: 2/4 targets, PBE state/EOT programs per attachment,
    fragment output map via pco, MRT GPU clear, mixed formats (RGBA8+BGRA8) and `mrt_test` matching
    zink; leftover MRT work is `GL_EXT_draw_buffers_indexed` and >32-bit attachment formats.
-3. **Instancing** (in progress, round-76): VDM index/instance state + PDS per-instance attribute
-   fetch (divisor) wired; one instance-rate attribute correct, two attributes misindex the middle
-   instance of 3+ - needs a PDS program dump comparison against the reference. Test:
-   `open-perf/inst_test.c` (3 instances, per-instance offset + colour, compared with zink).
+3. ~~**Instancing**~~ **DONE (patch 0335)**: VDM index/instance state + PDS per-instance attribute
+   fetch (divisor); test `open-perf/inst_test.c` matches zink (2/3/4 instances, indexed too).
 4. **ES3 texture/model core**: 2D-array + 3D textures, UBOs, integer formats, sRGB formats/RT, sampler
    objects, occlusion queries, MSAA 4x, primitive restart, then raise `essl_feature_level` to 300 and run
    GL-CTS/glmark2-es3 as the gate.
@@ -78,7 +77,7 @@ GL versions today (probe `open-perf/glinfo`):
 Board between tests: vendor + desktop + original firmware (`tools/verify/switch-safe.sh`). Never start GL
 harnesses while vendor is bound (caused a watchdog reset). Every feature needs its own gltri (or new test)
 mode comparing against zink checksums, plus the existing full gltri gate and 0 MMU faults before pushing.
-Patch series continues at the next number in `mesa/open-driver-series/` (currently 0334).
+Patch series continues at the next number in `mesa/open-driver-series/` (currently 0335).
 
 ### MRT design notes (recon 2026-10-29; implemented as patch 0332 - see round-73 notes for the
 `nir_lower_blend` colormask trap that ate attachment 1's store)
