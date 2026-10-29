@@ -2022,3 +2022,19 @@ readback path to cross-check, and check whether the mapping BO is CPU-coherent) 
 can be fitted. Parked here rather than guessing: a wrong twiddle writer corrupts every upload and is
 must-have-correct code. Next session: finish the 8x8 derivation, then implement `pvr_twiddle_copy()`
 and use it for depth-cube and ETC1 uploads.
+
+### Round-97: /tmp cleanup broke harness runs again - data path made explicit; glmark2 --validate assessed
+
+The board's `/tmp` is cleaned periodically, which deleted the `/tmp/glm2egl` shader-data symlink and
+silently produced invalid benchmark/validation runs twice (round-82 first attempt, round-93 first
+attempt, and a validation attempt today). `bench31.sh` and a new `tools/verify/validate.sh` now pass
+`--data-path /home/radxa/open-perf/glm2x11/share/glmark2` explicitly instead of relying on the
+compiled-in `/tmp` path - no symlink needed.
+
+`glmark2-es2 --validate` was then evaluated as a correctness gate: zink passes a small subset
+(e.g. `build use-vbo=true`, `texture texture-filter=linear`) while the native driver passes none of
+the 27 checks, but the validator is strict about exact pixels and fails most checks on zink too, so it
+is **not yet a usable gate** in this offscreen setup. Two options next: (a) use it differentially -
+for the scenes zink passes but native fails, do a direct native-vs-zink image diff of the same
+offscreen render; (b) rely on the existing targeted gates (gltri/mip/rttest/MRT/cube/sRGB/...) and add
+per-feature image comparisons. The differential scene list is the candidate-bug list to start from.
