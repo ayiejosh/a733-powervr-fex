@@ -1549,3 +1549,23 @@ Verified against zink with `open-perf/srgb_test.c`: sRGB texel bytes (128,64,32)
 identical. `GL_EXT_sRGB` is advertised on ES2 now. Full gate green: 49 gltri modes (all native
 glGetError 0x0), 28 mip modes, rttest PASS (bad=0/262144), rt8test unchanged, MRT 2/4/mixed unchanged,
 instancing unchanged, 0 MMU faults. Patch 0336, series head `0db1b4fd`; PR #12 pushed.
+
+## Round-79 (2026-10-29): three more ES2 extensions - derivatives, 10-bit packed colour, float textures
+
+Each of these was one missing piece of driver state, verified pixel-identical to zink with
+`open-perf/ext_texture_test.c`:
+
+- **`GL_OES_standard_derivatives`**: pco already lowers `nir_intrinsic_ddx/ddy` for the fragment stage
+  (the same lowering the Vulkan driver uses), so it only needed
+  `caps->fragment_shader_derivatives`. A shader doing `dFdx(v.x)*64, dFdy(v.y)*64` over a 64-pixel
+  quad renders (255,255,0,255) on both drivers.
+- **`GL_EXT_texture_type_2_10_10_10_REV`**: `R10G10B10A2_UNORM`/`B10G10R10A2_UNORM` as sampler views,
+  decoded by the TPU as `A2R10B10G10` (the reference's mapping; the pipe format's swizzle selects the
+  channel order). Packed texel (1023,512,256,3) decodes to (255,128,64,255) - identical.
+- **`GL_OES_texture_float`**: `R32G32B32A32_FLOAT` as a sampler view, decoded as
+  `F32F32F32F32`. Texel (0.25,0.5,0.75,1.0) decodes to (64,128,191,255) - identical.
+
+All three are advertised now. Full gate green: 49 gltri modes (all native glGetError 0x0), 28 mip
+modes, rttest PASS (bad=0/262144), rt8test unchanged, sRGB/MRT/instancing unchanged, 0 MMU faults.
+Patch 0337, series head `ba12e2e9`; PR #12 pushed. Next ES2 cheap items left: half-float linear
+filtering, depth-texture-cube-map, stencil8; then the ES3 core work.

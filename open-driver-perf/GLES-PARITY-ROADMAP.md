@@ -40,13 +40,15 @@ GL versions today (probe `open-perf/glinfo`):
 - `GL_EXT_texture_rg`: R8/RG8 sampler decode is currently unverified/black - implement TPU decode
   (WIP branch `wip/linear-mips` has the pck-info work), or convert; either way stop advertising formats
   that read back wrong
-- `GL_OES_standard_derivatives`, `GL_EXT_shader_texture_lod`, `GL_OES_fragment_precision_high`: check pco
-  codegen support and advertise if the instructions exist (dfdx/dfdy/textureLod)
-- `GL_OES_texture_float` / `half_float_linear`: RGBA16F path exists in the format table, needs caps+tests
+- `GL_OES_standard_derivatives` **DONE (patch 0337)**: pco lowers ddx/ddy; cap set, matches zink.
+  `GL_EXT_shader_texture_lod` is a Mesa-core gap (no ES2 entry in the extension table);
+  `GL_OES_fragment_precision_high` not in Mesa's list.
+- `GL_OES_texture_float` **DONE (patch 0337)**: RGBA32F sampler decode (TPU F32F32F32F32) matches
+  zink. `half_float_linear` still needs the filter cap path.
 - `GL_IMG_texture_npot`: alias advertising (we already do NPOT via OES_texture_npot)
 - `GL_OES_depth_texture_cube_map`, `GL_OES_texture_stencil8`: small resource/format work
-- `GL_EXT_texture_type_2_10_10_10_REV`, `GL_EXT_texture_format_BGRA8888`, `GL_IMG_texture_format_BGRA8888`:
-  format table + decode/encode
+- `GL_EXT_texture_type_2_10_10_10_REV` **DONE (patch 0337)**: 1010102 sampler decode (TPU
+  A2R10B10G10) matches zink. `GL_EXT_texture_format_BGRA8888` already advertised.
 
 **ES3.1/3.2-era extensions (vendor advertises; larger or software-emulated)**
 - Geometry/tessellation shaders (`GL_EXT_geometry_shader`, `_tessellation_shader`): hardware has no
@@ -80,7 +82,7 @@ GL versions today (probe `open-perf/glinfo`):
 Board between tests: vendor + desktop + original firmware (`tools/verify/switch-safe.sh`). Never start GL
 harnesses while vendor is bound (caused a watchdog reset). Every feature needs its own gltri (or new test)
 mode comparing against zink checksums, plus the existing full gltri gate and 0 MMU faults before pushing.
-Patch series continues at the next number in `mesa/open-driver-series/` (currently 0336).
+Patch series continues at the next number in `mesa/open-driver-series/` (currently 0337).
 
 ### MRT design notes (recon 2026-10-29; implemented as patch 0332 - see round-73 notes for the
 `nir_lower_blend` colormask trap that ate attachment 1's store)
