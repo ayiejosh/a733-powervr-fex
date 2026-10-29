@@ -21,11 +21,11 @@ native under Xwayland (open stack), zink under Xwayland, vendor IMG GLES under b
 ## Honest numbers (corrected harness, same binary, perf governor, client cores 6-7, two runs)
 | stack | scores | total FPS | renderer |
 |---|---|---|---|
-| native (open stack, Xwayland) | 740 / 741 | 24,454 | PowerVR B-Series BXM-4-64 (36.56.104.183) |
-| zink (open Vulkan, Xwayland) | 776 / 768 | 25,661 | zink Vulkan 1.3 open |
+| native (open stack, Xwayland) | 675 (680 / 671) | 23,9k | PowerVR B-Series BXM-4-64 (36.56.104.183) |
+| zink (open Vulkan, Xwayland) | 762 (763 / 761) | 25,2k | zink Vulkan 1.3 open |
 | vendor (pvrsrvkm, bare Xorg) | 1199 / 1181 | 39,607 | IMG GLES 3.2 24.2@6603887 |
 
-As of patch 0329 per-scene: native is behind zink by ~4.7% overall; remaining driver-specific deficits
+CORRECTED after reverting invalid patch 0329 (see round-68): native is behind zink by ~11% overall; remaining driver-specific deficits
 are terrain 0.81, build use-vbo=false 0.83, ideas 0.85, conditionals/loops 0.87-0.88, desktop blur 0.89;
 refract is now level with zink, native wins effect2d (1.04-1.09) and is level on shadow. The vendor gap is dominated by scenes where zink is
 also far ahead (desktop blur, ideas, effect=shadow) - i.e. stack-wide, not one driver bug.
@@ -41,8 +41,9 @@ zink-on-vendor-Vulkan): treat it as such.
 - **0328** USC/PDS program uploads bump-allocated from per-heap chunks instead of one VM-heap BO per
   program (fixes an unbounded kernel-BO/heap leak that terrain's per-frame program rebuilds hit).
   Terrain ioctl count 24022 -> 16896 (-30%), FPS unchanged (GPU/firmware bound).
-- **0329** blit renders skip the full-target background load (a fullscreen quad overwrites everything).
-  **refract 36 -> 44 FPS (+23%, level with zink)**, full suite 729 -> 745; gate 49/49.
+- **0329 (REVERTED by 0330)** claimed blit renders skip the background load; in this driver a blit IS a
+  load-program render, so the patch turned blits into no-ops (mip gen, readback broken). Its +23%/+2.2%
+  numbers were fake. Post-revert honest numbers: native 680/671 vs zink 763/761.
 - Tooling/measurement: `bench31.sh`, `glm2x11/` build, `gltri`/`drawbench` X11 modes, methodology
   correction records (round-60..64 in `TA-KICK-DISASSEMBLY.md`).
 - Board stays vendor + desktop + original firmware between sessions; 0 kernel faults at every

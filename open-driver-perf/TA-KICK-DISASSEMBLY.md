@@ -1296,3 +1296,23 @@ earlier sessions showed the same ambient dependence); no heap growth or crash pa
 arenas and the round-56..65 fixes survive repeated full runs.
 
 Board restored to vendor + desktop + original firmware after the soak.
+
+
+## Round-68 (2026-10-29): 0329 was invalid - blits ARE load-program renders; reverted as 0330
+
+Found while starting the ES3 work: twiddled rendering produced all-zero output on the current build
+(`rttest` bad=262140/262144, `gltri` readback zero) while `PVR_NATIVE_DEBUG=no_twiddle` passed. Bisect:
+0325, 0326, 0327 and 0328 all PASS; only **0329 fails** - and the mechanism is exact: in this driver a
+blit (`pvr_draw_blit`) is implemented **as a load-program render with no geometry** (the background
+program does the copy), so "blit renders skip the full-target background load" turned every blit into a
+clear-only no-op. Mip generation, twiddled readback and texture uploads through blits silently stopped
+copying.
+
+The 0329 "+23% refract, +2.2% suite" figures were therefore **fake speed from broken rendering** (glmark2
+does not validate pixels). 0329 is reverted by commit 0330 (exported as patch 0330), and the corrected
+same-session numbers are native **680/671** vs zink **763/761** - i.e. native is ~11% behind zink, not
+4.7%.
+
+Post-revert verification: `rttest` PASS (262144/262144), `gltri` readback correct, full `tri.sh` gate
+49/49, 0 MMU faults. Lesson recorded: every render-path patch needs a pixel-level readback check
+(`rttest` + a blit/mip readback test), not just benchmark scores.
