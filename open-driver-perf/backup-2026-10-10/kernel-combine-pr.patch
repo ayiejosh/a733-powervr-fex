@@ -1,0 +1,70 @@
+--- powervr/pvr_queue.c	2026-10-10 19:20:49.400145591 +0800
++++ powervr.combpr-exp/pvr_queue.c	2026-10-10 19:22:43.001193428 +0800
+@@ -626,7 +626,12 @@
+ 	mutex_unlock(&pvr_dev->queues.lock);
+ }
+ 
+-static void pvr_queue_submit_job_to_cccb(struct pvr_job *job)
++/*
++ * With @fence_only, only the fence checks are written: the partial render
++ * job of a combined geometry + partial render + fragment kick whose command is
++ * identical to the fragment one (see pvr_pr_job_combinable()).
++ */
++static void pvr_queue_write_job_to_cccb(struct pvr_job *job, bool fence_only)
+ {
+ 	struct pvr_queue *queue = container_of(job->base.sched, struct pvr_queue, scheduler);
+ 	struct rogue_fwif_ufo ufos[ROGUE_FWIF_CCB_CMD_MAX_UFOS];
+@@ -682,6 +687,8 @@
+ 						   sizeof(ufos[0]) * ufo_count, ufos, 0, 0);
+ 	}
+ 
++	if (fence_only)
++		return;
+ 	if (job->type == DRM_PVR_JOB_TYPE_GEOMETRY && job->paired_job) {
+ 		struct rogue_fwif_cmd_geom *cmd = job->cmd;
+ 
+@@ -704,6 +711,34 @@
+ 					   sizeof(ufos[0]), ufos, 0, 0);
+ }
+ 
++static void pvr_queue_submit_job_to_cccb(struct pvr_job *job)
++{
++	pvr_queue_write_job_to_cccb(job, false);
++}
++
++static bool combine_pr = true;
++module_param(combine_pr, bool, 0644);
++MODULE_PARM_DESC(combine_pr,
++		 "Drop the partial render command when it matches the chained fragment command");
++
++/*
++ * A partial render job followed by a chained fragment job with the same
++ * command (userspace builds them from the same state when the partial render
++ * needs no scratch buffer): only its fence goes to the CCCB and the firmware
++ * uses the fragment command if a partial render is needed, as the vendor
++ * driver does when it is given no separate 3D-PR command. The partial render
++ * job's done fence is satisfied by the fragment job's timeline update, which
++ * carries a later seqno.
++ */
++static bool pvr_pr_job_combinable(struct pvr_job *pr_job, struct pvr_job *frag_job)
++{
++	return combine_pr && frag_job &&
++	       pr_job->fw_ccb_cmd_type == ROGUE_FWIF_CCB_CMD_TYPE_FRAG_PR &&
++	       frag_job->fw_ccb_cmd_type == ROGUE_FWIF_CCB_CMD_TYPE_FRAG &&
++	       pr_job->cmd_len == frag_job->cmd_len &&
++	       !memcmp(pr_job->cmd, frag_job->cmd, pr_job->cmd_len);
++}
++
+ /**
+  * pvr_queue_run_job() - Submit a job to the FW.
+  * @sched_job: The job to submit.
+@@ -765,7 +800,8 @@
+ 		struct pvr_queue *frag_queue = job->ctx->queues.fragment;
+ 
+ 		/* Submit the fragment job along the geometry job and send a combined kick. */
+-		pvr_queue_submit_job_to_cccb(frag_job);
++		pvr_queue_write_job_to_cccb(frag_job,
++					    pvr_pr_job_combinable(frag_job, geom_job->chained_job));
+ 		if (geom_job->chained_job)
+ 			pvr_queue_submit_job_to_cccb(geom_job->chained_job);
+ 		pvr_cccb_send_kccb_combined_kick(pvr_dev,

@@ -1166,3 +1166,17 @@ Consequences: patches 0326/0327 correctness results stand (they were verified wi
 the native renderer and its own checksums), but their performance deltas in the commit messages were
 measured on the zink fallback and must be re-measured with bench31 or the Wayland binary before they are
 quoted. bench30.sh is superseded by bench31.sh.
+
+### Round-60 addendum: 0326/0327 re-measured on the corrected harness - neutral
+
+A/B with the same-binary EGL/X11 glmark2, alternating rebuilds, two full-suite runs each, perf
+governor, client pinned to cores 6-7:
+
+- base `e846a194` (0325): **722 / 722**
+- HEAD `c03a5859` (0326+0327): **723 / 726**
+
+So on the real native harness both patches are **correctness changes with no measurable full-suite
+performance effect** (the earlier "+0.5%" and shadow "+55%" deltas came from the zink fallback or a
+different harness/clock state, not the native driver). They stay in the series for the correctness they
+fix (depth-only colour traffic, RGB565 decode/mip chains); their commit messages predate the
+methodology discovery.

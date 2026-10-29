@@ -1,0 +1,20 @@
+76c76
+< 	pr_info("PVRDBG: ioctl create_bo\n");
+---
+> 	pr_debug("PVRDBG: ioctl create_bo\n");
+169c169
+< 	pr_info("PVRDBG: ioctl get_bo_mmap_offset\n");
+---
+> 	pr_debug("PVRDBG: ioctl get_bo_mmap_offset\n");
+1028c1028
+< 	pr_info("PVRDBG: ioctl vm_map\n");
+---
+> 	pr_debug("PVRDBG: ioctl vm_map\n");
+1124c1124
+< 	pr_info("PVRDBG: ioctl vm_unmap\n");
+---
+> 	pr_debug("PVRDBG: ioctl vm_unmap\n");
+1162c1162
+< 	pr_info("PVRDBG: ioctl submit_jobs\n");
+---
+> 	pr_debug("PVRDBG: ioctl submit_jobs\n");

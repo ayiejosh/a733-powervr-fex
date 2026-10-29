@@ -1,0 +1,33 @@
+From 2280bf4316c1b3edbd730d09968c2d737e4749de Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sat, 10 Oct 2026 01:50:28 +0800
+Subject: [PATCH 52/73] pco: back-propagate pixel output writes again
+
+try_back_prop_instr returned early for pixout destinations, ahead of the
+checks written for them (no alphaf/depthf in between, pixout not already
+a source of the producer). So every fragment shader ended with an extra
+mbyp into the output register. Let those checks decide instead; the last
+ALU op (e.g. the u8888 pack) now writes the output register directly.
+
+vkrender fragment shader 8 -> 7 groups. vkedge (MSAA, helper
+invocations, blending), vkrender pixel checks and output hashes pass;
+the discard probes behave exactly as before.
+---
+ src/imagination/pco/pco_opt.c | 1 -
+ 1 file changed, 1 deletion(-)
+
+diff --git a/src/imagination/pco/pco_opt.c b/src/imagination/pco/pco_opt.c
+index b9aedea..fac4293 100644
+--- a/src/imagination/pco/pco_opt.c
++++ b/src/imagination/pco/pco_opt.c
+@@ -263,7 +263,6 @@ static inline bool try_back_prop_instr(struct pco_use *uses, pco_instr *instr)
+ 
+    if (pco_ref_is_reg(*pdest_from) &&
+        pco_ref_get_reg_class(*pdest_from) == PCO_REG_CLASS_PIXOUT) {
+-      return false;
+ 
+       bool has_isp_fb = false;
+ 
+-- 
+2.47.3
+

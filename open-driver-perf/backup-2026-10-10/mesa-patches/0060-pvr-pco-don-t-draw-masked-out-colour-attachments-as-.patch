@@ -1,0 +1,75 @@
+From 283b0387cb4ed892d2fe60a580340d3d799fff87 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sat, 10 Oct 2026 09:47:39 +0800
+Subject: [PATCH 60/73] pvr/pco: don't draw masked-out colour attachments as an
+ opaque pass
+
+A colour attachment with a static colorWriteMask of 0 is left unwritten:
+nir_lower_blend drops its store and sets no framebuffer-fetch flag, so the
+pipeline got an OPAQUE pass type. Hidden surface removal then drops the
+background object for covered pixels, and the masked attachment loses its
+clear (or loaded) value.
+
+Before 9dc8497 every fragment shader carried a discard and ran as a
+punch-through pass, which hid this. Treat such pipelines like
+framebuffer-fetching ones and use a translucent pass.
+
+Fixes dEQP-VK.renderpasses.renderpass{1,2}.suballocation.
+attachment_write_mask.attachment_count_8.start_index_{1..7} (fail since
+9dc8497). renderpass/dynamic_rendering/copy_and_blit selection (9170
+cases) matches d253e35.
+---
+ src/imagination/pco/pco_data.h             | 5 +++++
+ src/imagination/pco/pco_nir.c              | 1 +
+ src/imagination/vulkan/pvr_arch_pipeline.c | 7 +++++++
+ 3 files changed, 13 insertions(+)
+
+diff --git a/src/imagination/pco/pco_data.h b/src/imagination/pco/pco_data.h
+index 8243e91..44f0f82 100644
+--- a/src/imagination/pco/pco_data.h
++++ b/src/imagination/pco/pco_data.h
+@@ -113,6 +113,11 @@ typedef struct _pco_fs_data {
+     */
+    bool no_alpha_to_coverage;
+ 
++   /* A bound colour attachment is statically masked out (colorWriteMask 0),
++    * so the shader leaves it unwritten.
++    */
++   bool masked_outputs;
++
+    pco_range tile_buffers;
+ 
+    pco_range sample_locations;
+diff --git a/src/imagination/pco/pco_nir.c b/src/imagination/pco/pco_nir.c
+index cb5dd25..221cf65 100644
+--- a/src/imagination/pco/pco_nir.c
++++ b/src/imagination/pco/pco_nir.c
+@@ -294,6 +294,7 @@ static void gather_fs_data(nir_shader *nir, pco_data *data)
+ 
+    data->fs.uses.fbfetch = nir->info.fs.uses_fbfetch_output;
+    data->fs.uses.fbfetch |= data->fs.meta_present.color_write_enable;
++   data->fs.uses.fbfetch |= data->fs.masked_outputs;
+ 
+    data->fs.uses.sample_shading |= nir->info.fs.uses_sample_shading;
+    data->fs.uses.sample_shading |= data->fs.uses.sample_locations;
+diff --git a/src/imagination/vulkan/pvr_arch_pipeline.c b/src/imagination/vulkan/pvr_arch_pipeline.c
+index 82093ca..60832f6 100644
+--- a/src/imagination/vulkan/pvr_arch_pipeline.c
++++ b/src/imagination/vulkan/pvr_arch_pipeline.c
+@@ -2305,6 +2305,13 @@ static void pvr_init_fs_blend(pco_data *data,
+       }
+ 
+       blend_opts->rt[u].colormask = rt->write_mask;
++
++      /* nir_lower_blend drops the store, so the attachment keeps what the
++       * background object wrote: the draw can't be an opaque pass, whose
++       * hidden surface removal would drop the background.
++       */
++      if (!rt->write_mask && blend_opts->rt[u].format != PIPE_FORMAT_NONE)
++         data->fs.masked_outputs = true;
+    }
+ }
+ 
+-- 
+2.47.3
+

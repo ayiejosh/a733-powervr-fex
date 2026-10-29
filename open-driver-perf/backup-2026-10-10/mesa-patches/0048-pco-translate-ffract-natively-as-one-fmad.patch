@@ -1,0 +1,58 @@
+From b703ee22dddb5c25952538a118556f97f80daaac Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sat, 10 Oct 2026 00:59:34 +0800
+Subject: [PATCH 48/73] pco: translate ffract natively as one fmad
+
+ffract was lowered by NIR to a floor and a subtract. fmad's third source
+takes both the floor and the negate modifier, so x * 1.0 + -floor(x)
+computes fract(x) in one instruction. x * 1.0 is exact and the single
+rounding of the exact sum equals the subtract's rounding, so results are
+bit-identical.
+
+cstpf main body 143 -> 111 instruction groups (5 -> 3 per loop iteration
+with the fsat fold); vkrender FS 12 -> 10.
+BXM-4-64 (A733), interleaved A/B, 5 runs each: cstpf 103.6 -> 127.7 M
+invocations/s, vkrender render-only 2048 4.89 -> 4.42 ms/frame, 512
+1.07 -> 1.01 ms/frame. cstp/cstpf/cstpi output hashes unchanged; vkedge
+and vkrender gates pass.
+---
+ src/imagination/pco/pco_nir.c       | 2 +-
+ src/imagination/pco/pco_trans_nir.c | 9 +++++++++
+ 2 files changed, 10 insertions(+), 1 deletion(-)
+
+diff --git a/src/imagination/pco/pco_nir.c b/src/imagination/pco/pco_nir.c
+index 425baa5..cb5dd25 100644
+--- a/src/imagination/pco/pco_nir.c
++++ b/src/imagination/pco/pco_nir.c
+@@ -51,7 +51,7 @@ static const nir_shader_compiler_options nir_options = {
+    .lower_device_index_to_zero = true,
+ 
+    .lower_fdiv = true,
+-   .lower_ffract = true,
++   .lower_ffract = false,
+    .lower_find_lsb = true,
+    .lower_fquantize2f16 = true,
+    /* The ALU has no flrp; trans_alu() has no case for it and hits
+diff --git a/src/imagination/pco/pco_trans_nir.c b/src/imagination/pco/pco_trans_nir.c
+index b250dd2..8509e8f 100644
+--- a/src/imagination/pco/pco_trans_nir.c
++++ b/src/imagination/pco/pco_trans_nir.c
+@@ -3817,6 +3817,15 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
+       instr = pco_fflr(&tctx->b, dest, src[0]);
+       break;
+ 
++   case nir_op_ffract:
++      /* x * 1.0 + -floor(x) in one fmad (x * 1.0 is exact). */
++      instr = pco_fmad(&tctx->b,
++                       dest,
++                       src[0],
++                       pco_fone,
++                       pco_ref_neg(pco_ref_flr(src[0])));
++      break;
++
+    case nir_op_fceil:
+       instr = pco_fceil(&tctx->b, dest, src[0]);
+       break;
+-- 
+2.47.3
+
