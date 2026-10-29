@@ -2228,3 +2228,17 @@ WIP saved as `/tmp/dbias-wip2.patch` with env switches (`PVR_DBIAS_NO_ENTRY`, `_
 sets for integer depth bias (search `dbias_is_int` producers) or test with a F32 depth target where
 the float equation applies and the int bit is unnecessary - that path may work today and would already
 fix glPolygonOffset for apps using a depth32 texture.
+
+## Round-108 (2026-10-30): int depth-bias mode hangs regardless of value; float-depth path unreachable
+
+Further `glPolygonOffset` probing:
+- The F32-depth route is **not reachable in ES2**: `GL_DEPTH_COMPONENT32F` is rejected by this driver's
+  ES2 format set (zink accepts it, native returns GL_INVALID_ENUM and renders nothing), so there is no
+  path where the hardware's float bias equation applies without the int bit.
+- With D16 depth and the int-mode bit set, even a moderate constant bias (units 16384 -> 0.5 depth) makes
+  the GPU stop completing the render - same hang as round-107, no kernel fault. The table/base plumbing
+  alone is safe (completes, no visual effect), so `ISP_CTL.dbias_is_int` needs something else enabled
+  (or the mode is broken on this firmware).
+- Next approach for a working feature: capture a vendor Vulkan draw that actually uses depth bias
+  (VkPipelineRasterizationState.depthBias* != 0) and diff its fragment/geometry stream against ours to
+  find the missing enable/bits, instead of guessing. WIP saved at `/tmp/dbias-wip3.patch`.
