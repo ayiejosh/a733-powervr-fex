@@ -1467,3 +1467,30 @@ Remaining MRT limits (honest): every attachment must be one dword per pixel (PBE
 four start positions; wider formats need a cumulative output-dword mapping), and per-render-target
 blend state is untracked because ES2 has none. Next MRT-adjacent work is `GL_EXT_draw_buffers_indexed`
 and then the ES3 core items (UBOs, 2D-array/3D textures, instancing).
+
+## Round-76 (2026-10-29): instancing - plumbing was already there, one PDS path still wrong
+
+MRT is closed; the next ES3 core item is instanced drawing. Reconnaissance showed the plumbing is
+mostly written already: `pvr_csb_emit_index_list()` emits the instance-count packet
+(`INDEX_LIST3`) and computes the stream length for it, the VDM state carries `vs_max_instances` from
+`pvr_vdm_cam_size()`, and the shared PDS vertex-DMA descriptor has
+`PVR_PDS_VERTEX_DMA_FLAGS_INSTANCE_RATE` + `divisor` (the Vulkan driver sets exactly those). What was
+missing was only the wiring: reject `instance_count != 1` and `instance_divisor != 0` removed; the
+instance count passed to the index list; per-instance attributes flagged/divided; and the two gallium
+caps the ES2 extension table gates on (`vs_instanceid` for `EXT_draw_instanced`, and
+`vertex_element_instance_divisor` for `EXT_instanced_arrays` - without the second,
+`glVertexAttribDivisorEXT` is `GL_INVALID_OPERATION` even though the draw call is accepted).
+
+Result of that wiring (open-perf/inst_test.c, 3 instances, per-instance offset vec2 + colour vec4,
+divisor 1): one instance-rate attribute works - all three instances render at the right positions -
+but with *two* instance-rate attributes the middle instance of a 3-instance draw reads past its
+per-instance buffers (position falls back to 0, colour becomes transparent black), while 2 instances
+are completely correct. So it is not the index list or the divisor flag; it is the second
+instance-rate DMA's instance indexing inside the PDS program / VDM iteration, which the reference
+exercises through the same shared PDS library.
+
+WIP saved as `open-perf/instancing-wip-2026-10-29.patch` (64 lines, driver-side wiring only), Mesa
+tree reverted to the shipped 0334 state so nothing broken is advertised. Next probe: dump the
+generated PDS vertex program + const map (`pvr_pds_disasm.c` exists) for the 2-instance and
+3-instance cases and compare the instance-rate DDMAD src1/const entries with what the reference
+generates for a Vulkan instanced draw.
