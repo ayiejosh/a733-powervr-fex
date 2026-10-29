@@ -1316,3 +1316,18 @@ same-session numbers are native **680/671** vs zink **763/761** - i.e. native is
 Post-revert verification: `rttest` PASS (262144/262144), `gltri` readback correct, full `tri.sh` gate
 49/49, 0 MMU faults. Lesson recorded: every render-path patch needs a pixel-level readback check
 (`rttest` + a blit/mip readback test), not just benchmark scores.
+
+## Round-69 (2026-10-29): patch 0331 - R8/RG8 render targets unlock GL_EXT_texture_rg (first parity extension)
+
+Phase 1 of GLES-PARITY-ROADMAP: Mesa gates the ES2 **GL_EXT_texture_rg** advertisement on R8/RG8 being
+renderable (the extension-format table probes RENDER_TARGET|SAMPLER_VIEW), so the driver held the
+extension back and every GL_R8/GL_RG8 upload failed with GL_INVALID_VALUE - which is why R8/RG8 sampling
+"read black" in earlier tests. Allowing the two formats as colour targets needs no new code paths: the
+PBE already writes them with the generic U8x4 packmode through the twiddled layout.
+
+Verified against zink: GL_EXT_texture_rg now advertised; R8 and RG8 sampling **identical to zink**
+(pixel 60 00 00 ff / 60 9f 00 ff, same checksum); R8/RG8 render-target clear+readback identical to zink
+(new `open-perf/rt8test.c`: (255,0) and (255,128)); full gltri gate 49/49, rttest PASS, 0 MMU faults.
+Known limitation kept: glReadPixels from an R8/RG8 FBO with a *different* read format needs Mesa's
+format-converting blit, which this driver still refuses (read in the native format; blit conversion is a
+separate roadmap item). Exported as patch 0331, series 331 tree-checked.

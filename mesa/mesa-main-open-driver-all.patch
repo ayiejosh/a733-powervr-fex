@@ -5005,10 +5005,10 @@ index 00000000..e833ae6c
 +#endif /* PVR_CSB_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_draw.c b/src/gallium/drivers/pvr_native/pvr_draw.c
 new file mode 100644
-index 00000000..0f6c974b
+index 00000000..909d87c3
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_draw.c
-@@ -0,0 +1,1887 @@
+@@ -0,0 +1,1892 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -6111,8 +6111,13 @@ index 00000000..0f6c974b
 +static bool
 +draw_format_ok(enum pipe_format f)
 +{
++   /* Every 8-bit colour target the PBE can write with the generic U8x4 packmode: the 8888 set
++    * plus the single/double-channel formats, which ES2 needs as render targets only so that
++    * EXT_texture_rg is advertised (Mesa gates it on R8/RG8 being renderable, table
++    * st_extension_format_mapping); rendering them works the same through the twiddled path. */
 +   return f == PIPE_FORMAT_R8G8B8A8_UNORM || f == PIPE_FORMAT_B8G8R8A8_UNORM ||
-+          f == PIPE_FORMAT_R8G8B8X8_UNORM || f == PIPE_FORMAT_B8G8R8X8_UNORM;
++          f == PIPE_FORMAT_R8G8B8X8_UNORM || f == PIPE_FORMAT_B8G8R8X8_UNORM ||
++          f == PIPE_FORMAT_R8_UNORM || f == PIPE_FORMAT_R8G8_UNORM;
 +}
 +
 +/* The vertex attribute fetch program and its data segment for the bound vertex elements. */
@@ -13478,10 +13483,10 @@ index 00000000..f53af579
 +#endif /* PVR_RESOURCE_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_screen.c b/src/gallium/drivers/pvr_native/pvr_screen.c
 new file mode 100644
-index 00000000..42a03c49
+index 00000000..35164778
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_screen.c
-@@ -0,0 +1,416 @@
+@@ -0,0 +1,417 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -13590,7 +13595,8 @@ index 00000000..42a03c49
 +   if ((bindings & (PIPE_BIND_RENDER_TARGET | PIPE_BIND_DISPLAY_TARGET | PIPE_BIND_SCANOUT |
 +                    PIPE_BIND_SHARED)) &&
 +       format != PIPE_FORMAT_R8G8B8A8_UNORM && format != PIPE_FORMAT_B8G8R8A8_UNORM &&
-+       format != PIPE_FORMAT_R8G8B8X8_UNORM && format != PIPE_FORMAT_B8G8R8X8_UNORM)
++       format != PIPE_FORMAT_R8G8B8X8_UNORM && format != PIPE_FORMAT_B8G8R8X8_UNORM &&
++       format != PIPE_FORMAT_R8_UNORM && format != PIPE_FORMAT_R8G8_UNORM)
 +      return false;
 +   if ((bindings & PIPE_BIND_DEPTH_STENCIL) &&
 +       format != PIPE_FORMAT_Z16_UNORM && format != PIPE_FORMAT_Z24X8_UNORM &&
