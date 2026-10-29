@@ -1347,3 +1347,32 @@ Two findings, no driver change:
    explicit-LOD extension therefore needs Mesa-core work, not pvr_native work - dropped from the cheap
    Phase-1 list (ponytail: no point shipping a cap that enables nothing).
 Verification after revert: plain gltri + rttest PASS, full `tri.sh` gate 49/49, 0 MMU faults.
+
+## Round-72 (2026-10-29): MRT v1 mostly working - three of four behaviours match zink; WIP saved
+
+Implemented the MRT foundation from the design notes and verified each behaviour against zink with
+`open-perf/mrt_test` (two RGBA8 attachments, `glDrawBuffersEXT`, `gl_FragData[0]=red [1]=blue`,
+sampled back through a second pass):
+
+- **Caps**: `max_render_targets = 4`, so st creates multi-attachment FBOs.
+- **Fragment variants**: per-attachment `data.fs.output_formats[DATA0+i]` and explicit
+  `data.fs.outputs[DATA0+i] = { .start = i, .count = dwords }` (the reference's
+  `usc_mrt_resource.reg.output_reg` equivalent); blend options per attachment.
+- **Flush**: PBE register words per attachment and one EOT program with one emit per attachment
+  (`pvr_shader_eot_create(nr, state_words)` using `nir_wop_pco` between emits and `freep` on the last);
+  `pvr_csb_pbe_state_words` sets `source_pos` from the attachment's output position (BIT0/32/64/96) and
+  `mrt_index`, matching the reference's output-register mapping.
+- **Clear**: a same-format MRT framebuffer takes the GPU clear path, the background program stores the
+  packed colour into every attachment's pixel-output dword, and the clear is submitted immediately
+  (deferred clears are single-resource only). CPU fills are skipped afterwards.
+- **MRT is only used when the render really is the framebuffer's** (`d->rt == cbufs[0]`, level match):
+  materialize/blit renders leave the framebuffer state pointing at another set and must stay
+  single-attachment.
+
+Verified: clear into both attachments matches zink ((64,128,191) each); a draw **without** a prior clear
+writes red to attachment 0 and blue to attachment 1, matching zink. **Remaining bug**: a draw that
+follows a GPU clear of the same MRT framebuffer updates attachment 0 but leaves attachment 1 at the
+clear colour (not black from the background, not blue from the shader), i.e. the second render's emit 1
+seems not to write. WIP saved on the board's local branch `wip/mrt` (not pushed); PR tree clean at
+`b75dcca1`. Next: compare the two renders' submitted EOT/PDS data (the cached program is reused) and the
+tile-buffer pixel data on the second render.
