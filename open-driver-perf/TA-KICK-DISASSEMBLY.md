@@ -1696,3 +1696,27 @@ capability-driven path that the override cannot toggle. Next probe: enumerate th
 builds offer and pinning one with glmark2's `--visual-config id=...`, plus `--results fps:cpu` to see
 whether the CPU side or the GPU side gets cheaper. The +19% itself is real and reproducible and is
 shipped as part of patch 0336 either way.
+
+### Round-83 second addendum: in-session A/B confirms a GPU-side capability effect
+
+Because separate-session comparisons could hide clock/thermal effects, the bisect edit was turned into a
+runtime switch (`PVR_NO_SRGB=1` returning false for sRGB formats in `pvr_is_format_supported`, temporary,
+not shipped) and A/B/A/B was run **in one weston session with one binary, interleaved** (`glmark2 -b
+build --results fps:cpu`):
+
+| run | fps | frame | user cpu | system |
+|---|---|---|---|---|
+| sRGB accepted | 1315 | 0.760 ms | 0.085 ms | 0.079 ms |
+| sRGB refused | 1108 | 0.902 ms | 0.058 ms | 0.079 ms |
+| sRGB accepted | 1337 | 0.748 ms | 0.067 ms | 0.079 ms |
+| sRGB refused | 1115 | 0.896 ms | 0.058 ms | 0.078 ms |
+
+So the ~18% is real, in-process, and on the **GPU side** (frame time drops while CPU time, if anything,
+is *higher* when fast). Together with the earlier facts (GL extension string irrelevant via
+MESA_EXTENSION_OVERRIDE; EGL config lists byte-identical, 60 configs on both builds; pipe framebuffer
+and depth formats identical) this points at a Mesa internal choice made from driver *format capability*
+rather than from any extension or EGL attribute. The mechanism is still not identified; next probes:
+(1) print the pipe formats of every draw target/FBO the scene actually renders to (not only the first
+default-framebuffer draw) and the depth/stencil formats, (2) `MESA_DEBUG=1`/state trace to see whether
+the fragment shader variant or the number of GPU passes changes, (3) count submitted frag/geom jobs per
+frame in both modes (PVR_FRAG_LOG-style counters). The +19% itself is shipped regardless (patch 0336).
