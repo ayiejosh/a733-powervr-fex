@@ -1441,3 +1441,29 @@ Deferred with evidence, not by assumption:
   `journalctl -b -1` and `reboot-tracker` recorded `SOURCE=power-loss`; the last GPU activity was a
   pvrsrvkm probe + HDMI re-mode ~2.5 min earlier, the same hard-reset signature as the earlier
   vendor-bound GL resets. Keep using `switch-safe.sh`/`gl-open.sh` and end sessions on vendor+desktop.
+
+## Round-75 (2026-10-29): mixed-format MRT, and the BGRA8 render-target swap explained
+
+The BGRA8 target bug found in round-74 (clear via PBE, sampled back red/blue swapped) was a packing
+mismatch between the two paths that write pixel data. pco packs shader colour outputs in *logical*
+channel order and the PBE applies the target format's channel swizzle itself - visible in the
+reference, where `to_pbe_format()` maps `B8G8R8A8_UNORM` to `R8G8B8A8_UNORM` before packing the
+shader output. The background clear program instead packed the clear colour with
+`util_format_pack_rgba(target format)`, i.e. in memory order, and then the PBE swizzled it again:
+two reorders, so red and blue swapped. Fix: pack the background colour with the same format pco would
+use (`draw_pbe_pack_format()`), and the BGRA8 target is byte-correct.
+
+With that the mixed-format MRT work deferred in round-74 could be turned on: the flush no longer falls
+back to attachment 0, the fragment variant is compiled for the actual attachment format set (each
+output packed for its own format), and the GPU clear covers mixed formats because the background
+program carries one packed colour per attachment. Verified with `mrt_test` (RGBA8 + BGRA8):
+clear -> both attachments (64 128 191 255); draw -> attachment0 (128 0 0 255) and attachment1
+(255 0 0 255), each packed for its own format; 2- and 4-attachment same-format modes unchanged.
+Full gate green: 49 gltri modes (all native glGetError 0x0), 28 mip modes, rttest PASS
+(bad=0/262144), rt8test unchanged (255 0 / 255 128), 0 MMU faults. Patch 0334, series head
+`5027d7c4`; PR #12 pushed.
+
+Remaining MRT limits (honest): every attachment must be one dword per pixel (PBE `source_pos` has only
+four start positions; wider formats need a cumulative output-dword mapping), and per-render-target
+blend state is untracked because ES2 has none. Next MRT-adjacent work is `GL_EXT_draw_buffers_indexed`
+and then the ES3 core items (UBOs, 2D-array/3D textures, instancing).

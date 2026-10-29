@@ -15,8 +15,9 @@ GL versions today (probe `open-perf/glinfo`):
 - ~~MRT: >1 colour attachment end-to-end~~ **DONE (2026-10-29, patches 0332 + 0333)**: 2 and 4
   colour attachments, per-attachment EOT emits + PBE words, fragment data0..3 -> output dwords,
   MRT GPU clear, pixel-output width derived from the dword count; `GL_EXT_draw_buffers` advertised;
-  mrt_test matches zink for 1/2/4 targets. Open MRT sub-items: mixed formats, BGRA8 render-target
-  byte order (red/blue swapped, pre-existing).
+  mrt_test matches zink for 1/2/4 targets and for mixed RGBA8+BGRA8 (patch 0334: PBE source data is
+  packed in logical channel order, which also fixed BGRA8 targets). Open MRT sub-items: all
+  attachments must be one dword per pixel; no per-render-target blend state (ES2 has none).
 - 2D array + 3D textures: `resource_create` refuses them; twiddled/stride descriptors are 2D-only
 - UBOs: uniforms are push-constants/shared-reg only; needs a real constant-buffer binding path
 - Instancing (core; also EE: `GL_NV_draw_instanced`, `GL_NV_instanced_arrays`): draw path rejects
@@ -58,8 +59,8 @@ GL versions today (probe `open-perf/glinfo`):
    caps, float/half-float caps, 1010102/BGRA/IMG_npot/depth-cube/stencil8 format work. Every extension
    added must have a gltri mode proving it renders identically to zink.
 2. ~~**MRT** (foundational, also ES3)~~ **DONE**: 2/4 targets, PBE state/EOT programs per attachment,
-   fragment output map via pco, MRT GPU clear, `mrt_test` matching zink; leftover MRT work is mixed
-   formats, BGRA8 byte order, and `GL_EXT_draw_buffers_indexed`.
+   fragment output map via pco, MRT GPU clear, mixed formats (RGBA8+BGRA8) and `mrt_test` matching
+   zink; leftover MRT work is `GL_EXT_draw_buffers_indexed` and >32-bit attachment formats.
 3. **Instancing**: VDM index/instance state + PDS per-instance attribute fetch (divisor), tests:
    instanced triangle with per-instance offset, matching zink.
 4. **ES3 texture/model core**: 2D-array + 3D textures, UBOs, integer formats, sRGB formats/RT, sampler
@@ -74,7 +75,7 @@ GL versions today (probe `open-perf/glinfo`):
 Board between tests: vendor + desktop + original firmware (`tools/verify/switch-safe.sh`). Never start GL
 harnesses while vendor is bound (caused a watchdog reset). Every feature needs its own gltri (or new test)
 mode comparing against zink checksums, plus the existing full gltri gate and 0 MMU faults before pushing.
-Patch series continues at the next number in `mesa/open-driver-series/` (currently 0333).
+Patch series continues at the next number in `mesa/open-driver-series/` (currently 0334).
 
 ### MRT design notes (recon 2026-10-29; implemented as patch 0332 - see round-73 notes for the
 `nir_lower_blend` colormask trap that ate attachment 1's store)

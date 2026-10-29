@@ -1373,10 +1373,10 @@ index 00000000..0c679b3f
 +#endif /* PVR_COMPUTE_TRIANGLE_SPV_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_context.c b/src/gallium/drivers/pvr_native/pvr_context.c
 new file mode 100644
-index 00000000..d77fc078
+index 00000000..cab2b5a0
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_context.c
-@@ -0,0 +1,991 @@
+@@ -0,0 +1,984 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + */
@@ -2001,15 +2001,8 @@ index 00000000..d77fc078
 +    * attachment, each packed for that attachment's format, so mixed-format MRT clears too); then
 +    * there is nothing for the CPU to fill for it. */
 +   bool gpu_cleared = false;
-+   /* Mixed-format MRT falls back to per-attachment CPU clears (the GPU clear writes one packed
-+    * colour per attachment from a single background program, which is only verified while every
-+    * attachment shares a format). */
-+   bool mrt_same_fmt = true;
-+   for (unsigned i = 1; i < ctx->fb.nr_cbufs; i++)
-+      if (ctx->fb.cbufs[i].format != ctx->fb.cbufs[0].format)
-+         mrt_same_fmt = false;
 +   if ((buffers & PIPE_CLEAR_COLOR0) && (color_clear_mask & 0xf) == 0xf && scissor_state == NULL &&
-+       ctx->fb.nr_cbufs >= 1 && ctx->fb.nr_cbufs <= PVR_MAX_COLOR_ATTACHMENTS && mrt_same_fmt) {
++       ctx->fb.nr_cbufs >= 1 && ctx->fb.nr_cbufs <= PVR_MAX_COLOR_ATTACHMENTS) {
 +      gpu_cleared = pvr_draw_note_clear(ctx, color);
 +      /* MRT: one background colour covers every attachment (v1), so submit the clear render now -
 +       * deferred clears are single-resource only. */
@@ -5023,10 +5016,10 @@ index 00000000..e833ae6c
 +#endif /* PVR_CSB_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_draw.c b/src/gallium/drivers/pvr_native/pvr_draw.c
 new file mode 100644
-index 00000000..82fa3d33
+index 00000000..80aba820
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_draw.c
-@@ -0,0 +1,2010 @@
+@@ -0,0 +1,2008 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -6134,6 +6127,25 @@ index 00000000..82fa3d33
 +   }
 +}
 +
++/* The format the PBE's source data must be packed in: logical channel order, because the PBE applies
++ * the target format's channel swizzle itself. pco does the same for shader outputs (to_pbe_format
++ * maps B8G8R8A8 to R8G8B8A8 before packing), so the background clear colour must follow it too -
++ * packing it in the target's memory order swapped red and blue on a BGRA8 target. */
++static enum pipe_format
++draw_pbe_pack_format(enum pipe_format format)
++{
++   switch (format) {
++   case PIPE_FORMAT_B5G6R5_UNORM:
++      return PIPE_FORMAT_R8G8B8_UNORM;
++   case PIPE_FORMAT_A4R4G4B4_UNORM:
++   case PIPE_FORMAT_B5G5R5A1_UNORM:
++   case PIPE_FORMAT_B8G8R8A8_UNORM:
++      return PIPE_FORMAT_R8G8B8A8_UNORM;
++   default:
++      return format;
++   }
++}
++
 +/* Pack a clear colour for an 8-bit-per-channel target. */
 +static uint32_t
 +draw_pack_color(enum pipe_format format, const union pipe_color_union *c)
@@ -6417,12 +6429,6 @@ index 00000000..82fa3d33
 +   unsigned nr_formats = MIN2(ctx->fb.nr_cbufs, PVR_MAX_COLOR_ATTACHMENTS);
 +   for (unsigned i = 0; i < nr_formats; i++)
 +      rt_formats[i] = ctx->fb.cbufs[i].format;
-+   for (unsigned i = 1; i < nr_formats; i++) {
-+      if (rt_formats[i] != rt_formats[0]) {
-+         nr_formats = 1;
-+         break;
-+      }
-+   }
 +   nir_lower_blend_options blend;
 +   memset(&blend, 0, sizeof(blend));
 +   {
@@ -6893,26 +6899,11 @@ index 00000000..82fa3d33
 +         }
 +      }
 +   }
-+   /* Mixed formats are still single-attachment: the per-attachment write path is not validated
-+    * yet (and until it is, attachment 0 is the honest fallback rather than a wrong second target). */
-+   if (nr_attach > 1) {
-+      for (unsigned i = 1; i < nr_attach; i++) {
-+         if (eot_formats[i] != eot_formats[0]) {
-+            static bool warned;
-+            if (!warned) {
-+               warned = true;
-+               mesa_logw("pvr: mixed-format MRT is not supported yet; rendering to attachment 0");
-+            }
-+            nr_attach = 1;
-+            break;
-+         }
-+      }
-+   }
 +   const uint64_t eot = draw_eot_program(ctx, d, nr_attach, eot_addrs, eot_formats, zonly);
 +   uint32_t bg_colors[PVR_MAX_COLOR_ATTACHMENTS] = { 0 };
 +   for (unsigned i = 0; i < nr_attach; i++)
 +      if (d->clear_valid)
-+         bg_colors[i] = draw_pack_color(eot_formats[i], &d->clear_value);
++         bg_colors[i] = draw_pack_color(draw_pbe_pack_format(eot_formats[i]), &d->clear_value);
 +   const uint64_t bg = draw_bg_program(ctx, d, bg_colors, zonly ? 1 : nr_attach);
 +   uint64_t pbe_words[PVR_MAX_COLOR_ATTACHMENTS * 3] = { 0 };
 +   if (eot == 0 || bg == 0 || !pvr_csb_pbe_words(eot_formats[0], pvr_resource_level_stride(rt, d->rt_level),
