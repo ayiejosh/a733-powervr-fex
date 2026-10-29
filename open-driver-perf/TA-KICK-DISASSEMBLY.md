@@ -1069,3 +1069,22 @@ libgallium_dri exports no __driDriverGetExtensions_* at all), so real X11 suppor
 __DRI_DRIVER module for pvr (screen create from fd + configs), which is a separate Mesa integration task.
 Reverted; tree clean at the PR HEAD. Consequence: the glmark2-class vendor comparison stays unavailable and
 the surfaceless drawbench remains the fair harness (native ~1.11x vendor).
+
+## Round-57 (2026-10-29): patch 0326 - depth-only renders drop the colour target
+
+Open item 3 of the 10-29 handoff (shadow depth pass) was not a risk worth deferring: the depth-only
+framebuffer was rendered into a scratch RGBA target, so every shadow depth pass cleared and stored a
+full-size colour target nobody reads. Patch 0326 renders those passes as the reference's "z only render":
+PBE state words zero + empty-tile (events write no colour), PBE register words zero, ZLS `zonlyrender`,
+and the cheap clear background instead of a full-target load. Depth load/store unchanged.
+
+Measurement (same harness, alternating builds, perf governor, client cores 6-7):
+- full glmark2: old build 692/692 -> new 696/694 (+0.5%), no scene regresses beyond noise;
+- shadow scene: 330 -> 335 FPS under the bench harness (single-scene runs swing much more; the 10-29
+  handoff's "native 226" was a lower-clock measurement);
+- full gltri gate: all 49 mode runs pass against zink; 0 MMU faults; full glmark2 has only the known
+  DRI3 warning line.
+Exported as patch 0326 (series 326, tree-checked), pushed with the mesa commit. Benchmark caveat: the
+first official bench30 run of this session read native 674/683 (zink 685/688) while the alternating A/B
+immediately after read 692-696 for both builds, so that bench30 pair was a low-clock/temperature outlier,
+not a regression; re-run bench30 when the board is idle for the headline number.

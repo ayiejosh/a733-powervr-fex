@@ -84,38 +84,11 @@ Twiddled ZLS depth buffers: full Wayland suite 471 linear -> 542 twiddled colour
 Sampled depth textures twiddled: shadow 201 -> 290 FPS, desktop 80 -> 106; full Wayland suite 659
 (471 linear baseline, +40%). PR #12 head fc0f7a6 (patches 0316-0318). Board vendor + desktop, 0 faults,
 firmware original. Next: depth pixel verification, CPU readback staging, multi-render overhead.
-## 2026-10-28 17:xx: twiddled readback + GPU depth clears (patch 0319)
-CPU maps of twiddled/TFBC colour targets now go through a GPU-made linear staging copy (written back on
-unmap), so glReadPixels on FBOs and uploads into render-target textures work again; every full depth
-clear is a ZLS background depth (depth-only clears were dropped on twiddled depth). Test-only hooks
-PVR_TWIDDLED_RAW_READBACK / PVR_FORCE_LINEAR_RT and a per-draw getenv removed; pvr_probe build fixed
-(it failed since 0316). gltri gate (all modes incl. new GLTRI_SUBIMG) matches zink. Native glmark2
-off-screen through weston + Xwayland runs all scenes: 669 (schedutil, no isolation; 528 before
-0316-0318). Open: 61 uploads to mip levels > 0 fail (0315 keeps level 0 only - real mipmaps needed).
-## 2026-10-29: real mipmaps, big render targets, multi-render costs, client arrays (patches 0320-0324)
-- 0320: region header buffers sized for the whole tile grid. Renders of 32x32 tiles and more
-  (1024x1024 and up: refract's 1600x1200 target, the shadow map, terrain) lost every tile before;
-  gltri now renders correctly from 1000x1000 to 4096x4096.
-- 0321: PVR_NO_TWIDDLE / PVR_NO_FBC are now PVR_NATIVE_DEBUG=no_twiddle,no_fbc, read once.
-- 0322: real mipmaps: twiddled mip chains laid out as the Vulkan pvr_image, per-level descriptors
-  and sampling (mip filter LINEAR only, quirk 51025 LOD rounding), uploads/readback per level,
-  render to a level, GPU generate_mipmap, npot_textures. 0 "transfer_map ... mipmapped" errors
-  (61 before). New gltri modes GLTRI_MIP / GENMIP / MIPRT / MIPLL match zink checksums.
-- 0323: per-render costs: small colour-only renders share a power-of-two data set class, one mip
-  generation shader per format, 4 render slots (max 2 in flight per data set), clear-only renders
-  deferred into the next render of the target (gltri GLTRI_DEFER matches zink).
-- 0324: released buffer objects reused: build use-vbo=false 491 -> 950 FPS (vendor 862).
-Full native glmark2 off-screen (perf governor, cores 6-7): 748, 0 errors, 0 MMU faults; terrain
-11 -> 19, shadow 185 -> 224, desktop shadow 311 -> 419 vs the mipmap-only state. Note: fwtime.sh
-left fw_trace_mask at 0xffffffff, which costs ~10-20% on every scene; it now resets it to 0.
-## 2026-10-29: bench30 + patch 0325
-bench30 (glmark2-es2 off-screen, perf governor, cores 6-7, PR head 814181b = patches up to 0324):
-native 746/744, zink 676/671, vendor 884/879 (bench29: native 728/732, zink 680/677, vendor
-886/874). bench29 native terrain/shadow/refract (27/317/107) were measured with every tile of
-their >= 1024x1024 targets dropped (fixed in 0320); now 19/226/37 vs vendor 39/520/56, zink
-26/329/45. build use-vbo=false 952 (vendor 897), desktop shadow 420 (vendor 830), desktop blur
-116 (vendor 301), effect2d 719/328 (vendor 957/435).
-0325 (review fix of 0323): a deferred level-0 clear survived only if no render opened on another
-level of the same texture first; also flush_resource submits a deferred clear of a window buffer.
-Gate after 0325: full native glmark2 749, 0 errors, 0 MMU faults, gltri all modes match.
-Each of 0320-0325 builds on its own without warnings.
+
+## 2026-10-29 11:15: patch 0326 - depth-only colour-target traffic removed
+
+Depth-only framebuffers (shadow depth pass) now render as z-only: empty-tile PBE state, no colour
+store/clear, cheap clear background. A/B on the same harness: 692/692 -> 696/694 full glmark2; shadow
+330 -> 335; full gltri gate passes; 0 MMU faults. Series now 326 patches, pushed with mesa commit
+c97ee6bd. Open from the 10-29 handoff remain: desktop blur caching, effect2d profiling, refract mip-gen
+cost, mipmapped non-renderable textures, live-desktop deferred clears, PR title.
