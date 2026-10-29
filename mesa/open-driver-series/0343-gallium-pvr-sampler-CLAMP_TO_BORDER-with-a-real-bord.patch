@@ -1,0 +1,154 @@
+From d99908bc00672146415b68868c34451d97f66cd3 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 30 Oct 2026 05:23:02 +0800
+Subject: [PATCH] gallium/pvr: sampler CLAMP_TO_BORDER with a real border
+ colour table
+
+GL_EXT_texture_border_clamp / GL_OES_texture_border_clamp are advertised for ES2 by Mesa's extension
+table regardless (dummy_true), but this driver's samplers only mapped the wrap mode and left the
+border colour table at a 4 KB zeroed BO with bordercolor_index 0, so any app clamping to border sampled
+the built-in transparent black instead of its border colour.
+
+Implement it the reference way:
+- the sampler descriptor gains a bordercolor_index, emitted into TEXSTATE_SAMPLER_WORD0;
+- the table BO grows to 21 entries x 4096 B (the reference's layout: 128 16-byte values indexed by
+  ROGUE_TEXSTATE_FORMAT, then 128 compressed values which stay unused here);
+- indices 0..4 stay the hardware's built-in border colours, custom colours are cached from index 5 up
+  (16 entries), written once and packed per texture format with util_format_pack_rgba, exactly as
+  pvr_arch_border.c does - including the 4th argument width of 1, without which the pack writes
+  nothing and the table stays black;
+- flush already passes the table address to both the VDM and PDM TPU state words.
+
+Verified with a new probe (tools/verify/border_probe.c): an 8x8 red texture sampled with
+CLAMP_TO_BORDER and a green border now gives red at the centre and (0,255,0,255) outside, byte-for-byte
+the same as zink; before the change the outside sample was (0,0,0,0). Full gate green: gltri 49 modes
+(all native glGetError 0x0), mip gate 28, rttest PASS, MRT 2/4, instancing, sRGB, 0 faults.
+---
+ src/gallium/drivers/pvr_native/pvr_csb.c  |  2 +-
+ src/gallium/drivers/pvr_native/pvr_csb.h  |  4 ++
+ src/gallium/drivers/pvr_native/pvr_draw.c | 60 ++++++++++++++++++++++-
+ 3 files changed, 63 insertions(+), 3 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_csb.c b/src/gallium/drivers/pvr_native/pvr_csb.c
+index 5e177c70..192bf9a5 100644
+--- a/src/gallium/drivers/pvr_native/pvr_csb.c
++++ b/src/gallium/drivers/pvr_native/pvr_csb.c
+@@ -1458,7 +1458,7 @@ pvr_csb_emit_sampler_desc(struct pvr_csb *csb, const struct pvr_sampler_desc *de
+       /* Zero adjustment: DADJUST_ZERO_UINT is the encoding of 0.0, not an absent value. */
+       .dadjust = ROGUE_TEXSTATE_DADJUST_ZERO_UINT,
+       .anisoctl = ROGUE_TEXSTATE_ANISOCTL_DISABLED,
+-      .bordercolor_index = 0,
++      .bordercolor_index = desc->bordercolor_index,
+       .non_normalized_coords = false,
+       .lumakey = false,
+       .lumakey_alphamult = false,
+diff --git a/src/gallium/drivers/pvr_native/pvr_csb.h b/src/gallium/drivers/pvr_native/pvr_csb.h
+index 00f9914f..753f84e5 100644
+--- a/src/gallium/drivers/pvr_native/pvr_csb.h
++++ b/src/gallium/drivers/pvr_native/pvr_csb.h
+@@ -293,6 +293,10 @@ bool pvr_cmp_mode_from_pipe(enum pipe_compare_func func, enum ROGUE_TEXSTATE_CMP
+  * constant's value is 6 - the members of that enum ARE bit counts (INTEGER_BITS is 4), which is
+  * why they read like names. Fourth member of the units family. */
+ struct pvr_sampler_desc {
++   /* Border colour table index: 0 is the hardware's built-in transparent black; custom colours
++    * live from index 5 up (the hardware decodes 0..4 as the Vulkan built-in border colours, which
++    * is also what the reference relies on), so samplers that clamp to border point at their entry. */
++   uint32_t bordercolor_index;
+    enum pipe_tex_wrap wrap_s;
+    enum pipe_tex_wrap wrap_t;
+    enum pipe_tex_wrap wrap_r;
+diff --git a/src/gallium/drivers/pvr_native/pvr_draw.c b/src/gallium/drivers/pvr_native/pvr_draw.c
+index c600841f..ea688bb5 100644
+--- a/src/gallium/drivers/pvr_native/pvr_draw.c
++++ b/src/gallium/drivers/pvr_native/pvr_draw.c
+@@ -171,6 +171,15 @@ struct pvr_draw_state {
+    struct pvr_draw_bg bg[4];
+    struct pvr_draw_load load[8];
+    unsigned nr_load;
++   /* Custom border colours: a cache of (colour -> border colour table entry). The table has 64
++    * entries; 0..4 are the hardware's built-in colours, so custom entries live from 5 up and are
++    * written once (never rewritten, so queued renders cannot observe a table change). */
++#define PVR_DRAW_BCT_TABLE_ENTRIES 21 /* 5 built-in + 16 custom */
++   struct {
++      union pipe_color_union color;
++   } bct[PVR_DRAW_BCT_TABLE_ENTRIES - 5];
++   unsigned nr_bct;
++   bool bct_full_logged;
+    /* The colour target of a depth-only framebuffer, and the texture an unbound unit reads. */
+    struct pipe_resource *scratch_rt;
+    /* A blit render: the background loads this resource (level load_src_level) instead of the
+@@ -284,8 +293,8 @@ draw_init(struct pvr_context *ctx, struct pvr_draw_state *d)
+                         &d->gen.bo, &d->gen.addr, true) ||
+        !draw_general_bo(scr, CTRL_SIZE, DRM_PVR_BO_ALLOW_CPU_USERSPACE_ACCESS, &d->ctrl_bo,
+                         &d->ctrl_addr, true) ||
+-       !draw_general_bo(scr, 4096, DRM_PVR_BO_ALLOW_CPU_USERSPACE_ACCESS, &d->bct_bo,
+-                        &d->bct_addr, true))
++       !draw_general_bo(scr, (uint64_t)PVR_DRAW_BCT_TABLE_ENTRIES * 4096,
++                        DRM_PVR_BO_ALLOW_CPU_USERSPACE_ACCESS, &d->bct_bo, &d->bct_addr, true))
+       return false;
+    d->pds.addr = pvr_vm_heap_alloc(&scr->vm, DRM_PVR_HEAP_PDS_CODE_DATA, ARENA_PDS_SIZE, 4096,
+                                    &d->pds.bo);
+@@ -756,6 +765,52 @@ draw_level_desc(const struct pvr_resource *res, unsigned level,
+    };
+ }
+ 
++/* The border colour table entry for this sampler, or 0 (built-in transparent black). Reference
++ * layout (pvr_arch_border.c): one 4096-byte entry per index, the first 128 16-byte values indexed by
++ * the ROGUE_TEXSTATE_FORMAT the texture uses, then 128 compressed values (unused: no compressed
++ * formats here). The colour is packed in the layout the hardware will read for that format. */
++static uint32_t
++draw_bct_index(struct pvr_context *ctx, const struct pipe_sampler_state *smp)
++{
++   struct pvr_draw_state *d = ctx->draw;
++   if (d == NULL || (smp->wrap_s != PIPE_TEX_WRAP_CLAMP_TO_BORDER &&
++                     smp->wrap_t != PIPE_TEX_WRAP_CLAMP_TO_BORDER &&
++                     smp->wrap_r != PIPE_TEX_WRAP_CLAMP_TO_BORDER))
++      return 0;
++   for (unsigned i = 0; i < d->nr_bct; i++) {
++      if (!memcmp(&d->bct[i].color, &smp->border_color, sizeof(union pipe_color_union)))
++         return 5 + i;
++   }
++   if (d->nr_bct == ARRAY_SIZE(d->bct)) {
++      if (!d->bct_full_logged)
++         mesa_loge("pvr: more than %u distinct border colours; further ones fall back to black",
++                   (unsigned)ARRAY_SIZE(d->bct));
++      d->bct_full_logged = true;
++      return 0;
++   }
++   static const struct {
++      uint32_t fmt;
++      enum pipe_format pipe;
++   } slots[] = {
++      { ROGUE_TEXSTATE_FORMAT_U8U8U8U8, PIPE_FORMAT_R8G8B8A8_UNORM },
++      { ROGUE_TEXSTATE_FORMAT_U8, PIPE_FORMAT_R8_UNORM },
++      { ROGUE_TEXSTATE_FORMAT_U8U8, PIPE_FORMAT_R8G8_UNORM },
++      { ROGUE_TEXSTATE_FORMAT_U16, PIPE_FORMAT_R16_UNORM },
++      { ROGUE_TEXSTATE_FORMAT_F16F16F16F16, PIPE_FORMAT_R16G16B16A16_FLOAT },
++      { ROGUE_TEXSTATE_FORMAT_R5G6B5, PIPE_FORMAT_B5G6R5_UNORM },
++      { ROGUE_TEXSTATE_FORMAT_A2R10B10G10, PIPE_FORMAT_R10G10B10A2_UNORM },
++      { ROGUE_TEXSTATE_FORMAT_F32F32F32F32, PIPE_FORMAT_R32G32B32A32_FLOAT },
++   };
++   uint8_t *base = (uint8_t *)d->bct_bo.map + (uint64_t)(5 + d->nr_bct) * 4096;
++   memset(base, 0, 4096);
++   for (unsigned i = 0; i < ARRAY_SIZE(slots); i++)
++      util_format_pack_rgba(slots[i].pipe, base + (uint64_t)slots[i].fmt * 16,
++                            &smp->border_color, 1);
++   d->bct[d->nr_bct].color = smp->border_color;
++   d->nr_bct++;
++   return 5 + (d->nr_bct - 1);
++}
++
+ /* One combined image sampler for texture unit u of a stage: image words, image meta (zero: 2D,
+  * one layer, no packing), sampler words, sampler meta (compare op NEVER, 0). */
+ static bool
+@@ -825,6 +880,7 @@ draw_tex_binding(struct pvr_context *ctx, unsigned stage, unsigned u, uint32_t *
+    }
+    util_format_compose_swizzles(layout.swizzle, view_swz, tex.swizzle);
+    struct pvr_sampler_desc sd = {
++      .bordercolor_index = draw_bct_index(ctx, smp),
+       .wrap_s = smp->wrap_s,
+       .wrap_t = smp->wrap_t,
+       .wrap_r = smp->wrap_r,
+-- 
+2.47.3
+

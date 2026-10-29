@@ -2112,3 +2112,26 @@ marks them `dummy_true` for ES2 - so they remain advertised and are recorded as 
 limitation; implementing sampler border colour + `CLAMP_TO_BORDER` (TPU border table + wrap mode) is
 scoped as its own item. Gate green after the change (gltri 49, mip 28, rttest PASS, rt8test,
 instancing, extensions, half-float linear, 0 faults). Patch 0342, series head `574ba361`.
+
+## Round-102 (2026-10-30): border-clamp sampling implemented (last unbacked ES2 extension)
+
+`GL_EXT_texture_border_clamp`/`GL_OES_texture_border_clamp` are advertised for ES2 by Mesa's extension
+table unconditionally (`dummy_true`), but the driver only mapped the wrap mode: the border colour table
+was a 4 KB zeroed BO and every sampler used `bordercolor_index = 0`, i.e. the built-in transparent
+black. Any app clamping to border sampled black instead of its border colour.
+
+Patch 0343 implements it the reference way (`pvr_arch_border.c`):
+- `pvr_sampler_desc.bordercolor_index` emitted into TEXSTATE_SAMPLER_WORD0;
+- the table BO is 21 entries x 4096 B (the reference layout: 128 16-byte values indexed by
+  ROGUE_TEXSTATE_FORMAT, then 128 compressed values, unused here);
+- hardware built-ins 0..4 untouched, custom colours cached from index 5 up (16 entries), written once
+  and packed per format with `util_format_pack_rgba` (with width 1 - the missing argument that first
+  left the table black);
+- flush already passes the table address to both VDM and PDM TPU words.
+
+Verified with `tools/verify/border_probe.c`: 8x8 red texture, CLAMP_TO_BORDER, green border -> centre
+red, outside (0,255,0,255), identical to zink (was (0,0,0,0)). Full gate green (gltri 49, mip 28,
+rttest PASS, MRT 2/4, instancing, sRGB, 0 faults). Patch 0343, series head `d99908bc`.
+
+With this, every ES2-visible extension the list advertises is backed by working behaviour; the
+remaining work is hardware-blocked (occlusion/MSAA/timer/clip) or ES3 (twiddle/transfer jobs).
