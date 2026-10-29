@@ -1620,3 +1620,37 @@ Patch 0339, series head `28c30f2c`.
 Note for the next benchmark round: the attempted three-way glmark2 run was invalid because the reboot
 had cleared `/tmp` and the glmark2 data symlink `/tmp/glm2egl` was missing (shaders not found,
 glmark2 aborted); the symlink is restored and the benchmark is clean to re-run.
+
+## Round-82 (2026-10-29): three-way benchmark after the feature rounds - native now beats zink
+
+Same binary (glmark2 x11-glesv2, EGL/X11), performance governor, system.slice pinned to CPUs 0-5 and
+the benchmark to 6-7, two runs each, board switched and restored by `bench31.sh`:
+
+| stack | run 1 | run 2 | vs native |
+|---|---|---|---|
+| native (this driver) | **810** | **807** | 1.00 |
+| zink (open Vulkan) | 776 | 774 | 0.96 |
+| vendor IMG GLES | 1216 | 1199 | 1.50 |
+
+Native now beats zink on summed per-scene FPS by 1.10x (9 of 10 scenes) and has moved from 0.57x to
+0.71x of vendor since the MRT/instancing/sRGB/cube-map rounds. Per-scene native/vendor ratio and the
+obvious next targets:
+
+| scene | native | zink | vendor | n/v | n/z |
+|---|---|---|---|---|---|
+| build | 1279 | 1183 | 1553 | 0.82 | 1.08 |
+| bump | 935 | 870 | 1460 | 0.64 | 1.08 |
+| effect2d | 552 | 495 | 826 | 0.67 | 1.11 |
+| ideas | 1076 | 878 | 1754 | 0.61 | 1.22 |
+| jellyfish | 388 | 347 | 520 | 0.75 | 1.12 |
+| refract | 37 | 47 | 76 | 0.49 | 0.79 |
+| shading | 732 | 700 | 1267 | 0.58 | 1.05 |
+| shadow | 390 | 366 | 686 | 0.57 | 1.07 |
+| terrain | 20 | 27 | 39 | 0.51 | 0.74 |
+| texture | 1462 | 1331 | 1528 | 0.96 | 1.10 |
+
+The two scenes the native driver still loses to zink are **terrain** (mip/submit batching, the known
+round-64 lead) and **refract** (cube map + derivative-heavy shading; cube maps only landed in patch
+0339). Next perf steps: bisect the 0332-0339 batch to attribute the 680 -> 810 gain (likely the cube
+map/sRGB/format work removing state-tracker conversions or fallback paths), then terrain submit
+batching and a refract/shading codegen look. No driver patches this round - measurement only.

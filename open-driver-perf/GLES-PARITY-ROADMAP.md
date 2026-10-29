@@ -1,8 +1,12 @@
 # GLES parity roadmap: match and beat the vendor driver (2026-10-29)
 
 Target: feature and performance parity with IMG's shipping **GLES 3.2 build 24.2@6603887**, then beat it.
-Measured state the same day (single binary, EGL/X11 glmark2, perf governor, 2 runs):
-native **740/741**, zink **776/768**, vendor **1199/1181**.
+Measured state 2026-10-29 23:28-00:02 (single binary, EGL/X11 glmark2, perf governor, 2 runs):
+native **810/807**, zink **776/774**, vendor **1216/1199** - the native driver now beats zink
+(1.10x on summed per-scene FPS) and reaches 0.71x of vendor (was 0.57x before the MRT/instancing/
+sRGB/cube-map rounds). Per-scene gaps vs vendor are listed in round-82 notes: refract 0.49, terrain
+0.51, shadow 0.57, shading 0.58, ideas 0.61, bump 0.64, effect2d 0.67, jellyfish 0.75, build 0.82,
+texture 0.96.
 
 GL versions today (probe `open-perf/glinfo`):
 - vendor: **ES 3.2**, 120 extensions
@@ -80,7 +84,9 @@ GL versions today (probe `open-perf/glinfo`):
 5. **ES3.1/3.2 extras and vendor-only extensions**: as ranked above; skip geometry/tessellation emulation
    unless an app demands it.
 6. **Performance**: pco codegen parity (round-66), terrain mip-submit batching (round-64), per-scene
-   tuning; re-run the same-binary three-way after each phase.
+   tuning; re-run the same-binary three-way after each phase. Round-82 baseline: native 810/807 vs
+   zink 776/774 vs vendor 1216/1199; native wins 9/10 scenes against zink, worst against vendor:
+   refract, terrain, shadow, shading.
 
 ## Standing rules
 Board between tests: vendor + desktop + original firmware (`tools/verify/switch-safe.sh`). Never start GL
