@@ -2184,3 +2184,24 @@ scaling per depth format, (3) point `CR_ISP_DBIAS_BASE` at it and emit `TA_STATE
 `depthbias_index` in the control stream, (4) verify with a two-quad depth-offset probe and zink
 comparison. The probe drafted this round was inconclusive (both drivers rejected the quad, so its
 setup is wrong); leave a working probe to the implementation round.
+
+## Round-106 (2026-10-30): 3rd vendor restart Oops + first depth-bias attempt hung the GPU
+
+**Reboot cause (06:18:30):** the third instance of the vendor `pvrsrvkm` bring-up crash, again on the
+restore-to-vendor path: after `modprobe pvrsrvkm` a client opened the GPU while firmware/shader images
+were still loading (`PVR_K: psConnectionPriv is NULL` x3 -> NULL-deref Oops -> hard reset). The
+existing wait only covered "Initialized pvr" (drm registration), which happens seconds before the
+firmware lines. `switch-safe.sh` now waits for `Initialized pvr` **and** `RGX Firmware image` **and**
+`Shader binary image`, then settles 5 s before starting display-manager. Verified: the next
+open->vendor cycle restored with 0 faults and 0 PVR_K errors.
+
+**Depth-bias / glPolygonOffset first implementation (WIP, reverted):** the table/ISPCTL plumbing was
+wired (per-slot 12-byte entries, `CR_ISP_DBIAS_BASE` patched in the fragment stream,
+`TA_STATE_ISPDBSC.dbindex`, constant-factor UNORM pre-scaling, `dbias_is_int`) **but the native probe
+aborted on the first polygon-offset draw** - the GPU did not complete that render (board stayed alive,
+no kernel fault; process had to be timed out). So at least one of: table entry stride/format, dbindex
+semantics, ISP_CTL.dbias_is_int bit, or the base-address patch is wrong. Reverted to keep the tree
+clean; the patch is saved outside the repo (`/tmp/dbias-wip.patch`). Note the probe itself also needs a
+stronger offset to be meaningful: zink with glPolygonOffset(-2,-2) still rejects the equal-depth quad,
+so the expected-value setup must be re-derived before retesting. Next attempt should run the probe
+under a short timeout with dmesg watched, and try the table variants one at a time.
