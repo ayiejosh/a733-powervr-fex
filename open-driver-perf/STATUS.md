@@ -92,3 +92,12 @@ store/clear, cheap clear background. A/B on the same harness: 692/692 -> 696/694
 330 -> 335; full gltri gate passes; 0 MMU faults. Series now 326 patches, pushed with mesa commit
 c97ee6bd. Open from the 10-29 handoff remain: desktop blur caching, effect2d profiling, refract mip-gen
 cost, mipmapped non-renderable textures, live-desktop deferred clears, PR title.
+
+## 2026-10-29 12:05: patch 0327 - RGB565 decode fix + mip chains via conversion
+
+RGB565 textures sampled black in the native driver (TPU decode of packed 16-bit colour is wrong), so
+B5G6R5 is now refused for sampling and the state tracker converts to RGBX8/RGBA8; the converted texture
+gets the normal twiddled mip chain, closing the "mipmapped non-renderable format keeps level 0 only" gap
+for this case. zink-identical checksums for plain 565 sampling and a CPU-uploaded 565 mip chain; full
+gltri gate passes; full glmark2 675 (DRI3 warning only), 0 faults. Series 327, PR pushed. R8/RG8 decode
+remains a known limitation (WIP branch `wip/linear-mips` kept locally).

@@ -1088,3 +1088,23 @@ Exported as patch 0326 (series 326, tree-checked), pushed with the mesa commit. 
 first official bench30 run of this session read native 674/683 (zink 685/688) while the alternating A/B
 immediately after read 692-696 for both builds, so that bench30 pair was a low-clock/temperature outlier,
 not a regression; re-run bench30 when the board is idle for the headline number.
+
+## Round-58 (2026-10-29): patch 0327 - RGB565 sampling was black; convert instead; mip gap closed for it
+
+Handoff open item 5 ("mipmapped textures in non-renderable formats keep level 0 only") turned out to sit
+behind a sampler bug: a GL_RGB/UNSIGNED_SHORT_5_6_5 texture sampled **black** through the native driver
+(zink returned the expected texels). The TPU decode of 16-bit packed colour (and R8/RG8) is not correct
+on this hardware; the driver claimed support for B5G6R5, so the state tracker handed it over.
+
+Fix (0327): refuse B5G6R5 for sampler bindings on top of the existing "formats the draw path can use"
+rule, so RGB565 is converted to RGBX8/RGBA8 like RGB8 already was. The converted texture is a
+renderable 8888 format and therefore gets the normal twiddled mip chain with GPU-generated levels -
+which closes the mipmap-level-0-only gap for this case (a CPU-uploaded RGB565 mip chain now matches zink
+exactly). R8/RG8 stay accepted but their decode is still unverified: a known limitation recorded in
+`pvr_screen.c`.
+
+Verified: plain RGB565 sampling and a CPU-uploaded RGB565 mip chain (256x256, 9 levels, minified) give
+**identical sample checksums to zink**; full gltri gate 49/49 mode runs; full native glmark2 675 with only
+the known DRI3 warning; 0 MMU faults. Exported as patch 0327, series 327 tree-checked, PR pushed.
+WIP kept locally on branch `wip/linear-mips` (linear chains + pck-info meta) in case R8/RG8 get real
+decode support later; not pushed.

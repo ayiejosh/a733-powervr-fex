@@ -13450,10 +13450,10 @@ index 00000000..f53af579
 +#endif /* PVR_RESOURCE_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_screen.c b/src/gallium/drivers/pvr_native/pvr_screen.c
 new file mode 100644
-index 00000000..1a11ccd7
+index 00000000..42a03c49
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_screen.c
-@@ -0,0 +1,410 @@
+@@ -0,0 +1,416 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -13549,9 +13549,15 @@ index 00000000..1a11ccd7
 +      return false;
 +
 +   /* Only what the draw path can use, so the state tracker converts the rest (RGB8 textures to
-+    * RGBX8, integer vertex attributes to float) instead of handing over formats it then rejects. */
-+   if ((bindings & PIPE_BIND_SAMPLER_VIEW) && !util_format_is_depth_or_stencil(format) &&
-+       !pvr_draw_texture_format_supported(format))
++    * RGBX8, integer vertex attributes to float) instead of handing over formats it then rejects.
++    * B5G6R5 is refused explicitly on top of that: the TPU decode of 16-bit packed colour reads
++    * back black on this hardware, so the state tracker converts RGB565 textures to RGBX8/RGBA8
++    * instead (which also gives them working mip chains, since the converted target formats are
++    * twiddled with GPU-generated levels). R8/RG8 are left accepted but their TPU decode is
++    * unverified - a known limitation. */
++   if ((bindings & PIPE_BIND_SAMPLER_VIEW) &&
++       (format == PIPE_FORMAT_B5G6R5_UNORM ||
++        (!util_format_is_depth_or_stencil(format) && !pvr_draw_texture_format_supported(format))))
 +      return false;
 +   if ((bindings & (PIPE_BIND_RENDER_TARGET | PIPE_BIND_DISPLAY_TARGET | PIPE_BIND_SCANOUT |
 +                    PIPE_BIND_SHARED)) &&
