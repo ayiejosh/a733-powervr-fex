@@ -1832,3 +1832,24 @@ configuration no longer depends on one capture.
 
 Full gate green (gltri 49 modes, mip 28, rttest PASS, rt8test, MRT 2/4, instancing, sRGB, cube,
 extensions, 0 MMU faults). Patch 0341, series head `2768cfe0`.
+
+## Round-87 (2026-10-30): shader ISA comparison - terrain codegen is at parity, the gap is elsewhere
+
+Dumped both drivers' ISA for the terrain scene (`PCO_DEBUG_PRINT=vs,fs,binary`; the Vulkan driver
+compiles its SPIR-V with the same pco compiler, so the listings are comparable):
+
+| shader | native | zink (Vulkan driver) |
+|---|---|---|
+| terrain heavy fragment shader | 291 instructions (739 IR ops) | 286 instructions (694 IR ops) |
+| terrain vertex shader (heavy variant) | 50 (88 IR) | 200 (671 IR) |
+| simple vertex shader | 9-10 | 31 |
+| light/simple fragment shaders | 5-20 | 12-40 |
+
+So for the heavy terrain fragment shader the two code generators are **within ~2% of each other**; the
+Vulkan driver's vertex shaders are actually *larger*. Shader instruction count therefore does not
+explain the terrain GPU gap (~45 ms native vs ~32 ms zink of GPU time). Current best hypotheses, to be
+tested with a controlled fragment-bound microbenchmark (drawbench) rather than more scene profiling:
+(1) texture sampling configuration for mipmapped/filtered reads (LOD, filtering, twiddled cache
+behaviour), (2) the TA/IPF pipeline configuration for many small draws/passes (tile counts, phantoms),
+(3) zink's render-pass behaviour (load/store choices) differing from this driver's clear/load model.
+The ISA comparison tooling and logs are kept (`/tmp/isa-dump/`), no driver change this round.
