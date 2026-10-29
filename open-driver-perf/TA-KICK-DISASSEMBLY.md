@@ -1987,3 +1987,18 @@ re-run). Same binary, same setup as round-82 (perf governor, CPUs 0-5 system / 6
 Within run-to-run noise of round-82 (810/807, 776/774, 1216/1199): the EOT-cache fix (0340) and the
 ISP-config derivation (0341) are CPU/correctness changes and do not move the aggregate glmark2 score,
 as stated in their commit messages. Native is at 0.67x vendor and 1.04x zink on this aggregate.
+
+## Round-94 (2026-10-30): submission batching implemented and measured - neutral, hypothesis closed
+
+Implemented render-job batching (pending job sets from several flushes submitted in one
+`DRM_IOCTL_PVR_SUBMIT_JOBS` array, with early flushes whenever a completion sync is needed or an rt
+data slot would be reused) - the change the previous rounds pointed at. Correctness held (gltri red
+32768, MRT, sRGB), but perf was **unchanged**: fill 2306 fps vs 2181 baseline, 27 clear+draw passes
+150 vs 148 fps.
+
+So the fixed ~0.15 ms per render is **not** the CPU/kernel round trip: queuing the jobs together and
+submitting one ioctl does not remove it. It is GPU/firmware-side per-kick cost (two kicks per render:
+geometry+PR and fragment), which the reference pays too; zink's advantage in the many-small-pass
+pattern therefore comes from something else in its command-buffer/pass handling, not from submission
+plumbing. Change reverted (neutral complexity is debt). Together with the persistent-syncobj and
+PR-flag experiments, this closes the submission-plumbing line of investigation.
