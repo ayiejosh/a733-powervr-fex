@@ -1680,3 +1680,19 @@ format selection or a different draw path), to be pinned down next round by comp
 formats the driver receives (PVR_TEXDBG) on the sRGB and no-sRGB builds for the same scene.
 Per-scene gain 0331 -> HEAD: ideas 1.56x, build 1.25x, jellyfish 1.24x, texture 1.21x, bump 1.17x,
 shading 1.16x, shadow 1.10x, effect2d 1.09x, terrain 1.05x, refract 1.01x.
+
+### Round-83 addendum (2026-10-30): the EXT_sRGB gain is not the GL extension string
+
+A/B on one sRGB-enabled build with `MESA_EXTENSION_OVERRIDE` (three repeats each, `glmark2 -b build`):
+- `GL_EXT_sRGB` present: 1309 / 1312 / 1263
+- `GL_EXT_sRGB` removed from the extension string: 1320 / 1317
+
+No difference. So the 809-vs-676 effect is **not** anything the state tracker or glmark2 does with the
+GL extension. What the bisect edit actually changed is `pvr_is_format_supported(RENDER_TARGET)` for the
+three sRGB formats, which Mesa EGL also consumes when it enumerates configs; the remaining candidates
+are (a) the EGL config/visual glmark2 picks (same pipe framebuffer format and Z24X8 depth in both
+builds per the FBDUMP probe, so if it differs it is in another config attribute) or (b) a Mesa
+capability-driven path that the override cannot toggle. Next probe: enumerate the EGL configs both
+builds offer and pinning one with glmark2's `--visual-config id=...`, plus `--results fps:cpu` to see
+whether the CPU side or the GPU side gets cheaper. The +19% itself is real and reproducible and is
+shipped as part of patch 0336 either way.
