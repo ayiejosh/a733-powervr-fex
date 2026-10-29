@@ -2285,3 +2285,19 @@ Verified with `tools/verify/polygon_offset_probe.c` (depth 0.25 quad over 0.5 cl
 passes, units +40000 rejects it, units -40000 passes - byte-identical to zink; with clamp 0.1 the
 +40000 case passes again, also matching zink. Full gate green (gltri 49, mip 28, rttest PASS, rt8test,
 MRT 2/4, instancing, sRGB, 0 faults). Patch 0346, series head `483a4890`.
+
+## Round-111 (2026-10-30): one-command verify gate (`tools/verify/run-all.sh`)
+
+The gate had grown into a long hand-run list of scripts and probes; it is now one command that exits
+non-zero on failure and prints one line per group. It compiles the probes from source (so it is
+self-contained), runs under the open driver and covers: gltri 49 modes, mip 14 levels, rttest, rt8test,
+MRT 2 and 4 targets, instancing, sRGB, extended textures, half-float linear, cube faces, cube mips,
+border clamp, mirror clamp, anisotropy, and polygon offset. First full run: **ALL GROUPS PASS**, 0
+faults.
+
+Current state after the feature rounds: patch series **0346** (head `483a4890`), ES2 extensions **71**
+(zink 136, vendor 120 but ES3.2), every advertised ES2 extension backed by a matching zink probe,
+three-way glmark2 last measured at native **805/806**, zink 775/772, vendor 1218/1203 (0.67x vendor,
+1.04x zink). Known limitations recorded: polygon-offset slope term not applied; hardware depth-bias int
+mode parked (hangs the firmware); twiddle/depth-cube/compressed uploads parked (need the transfer-job
+port); ES3 core block not started.
