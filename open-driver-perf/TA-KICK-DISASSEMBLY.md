@@ -1783,3 +1783,31 @@ codegen/fragment work rather than driver submission. Next perf steps: pco codege
 fragment shader, then the submit-path batching idea (per-flush submit ioctl is ~60-90 us).
 Full gate green after the change (49 gltri modes, mip 28, rttest PASS, rt8test, MRT/sRGB/instancing/
 extensions/cube tests unchanged, 0 MMU faults). Patch 0340, series head `1e8c39aa`.
+
+## Round-85 (2026-10-30): CPU is no longer the native driver's problem - the remaining gap is GPU-side
+
+Per-scene CPU accounting with `--results fps:cpu`, same binary/session, default frame-end
+(so swap is included for both), native vs zink:
+
+| scene | native fps | user+sys ms | zink fps | user+sys ms | n/z | native CPU gap |
+|---|---|---|---|---|---|---|
+| build | 1282 | 0.28 | 1185 | 0.54 | 1.08 | -0.25 |
+| bump | 938 | 0.24 | 869 | 0.53 | 1.08 | -0.29 |
+| effect2d | 553 | 0.23 | 492 | 0.48 | 1.12 | -0.26 |
+| ideas | 1066 | 0.52 | 606 | 1.67 | 1.76 | -1.16 |
+| jellyfish | 388 | 0.30 | 351 | 0.76 | 1.11 | -0.46 |
+| refract | 37 | 1.16 | 46 | 1.92 | 0.80 | -0.76 |
+| shading | 734 | 0.22 | 705 | 0.46 | 1.04 | -0.24 |
+| shadow | 387 | 0.38 | 359 | 1.03 | 1.08 | -0.65 |
+| terrain | 20 | 4.55 | 27 | 4.84 | 0.74 | -0.29 |
+| texture | 1472 | 0.14 | 1344 | 0.43 | 1.10 | -0.29 |
+
+The native driver is now **cheaper on the CPU than zink in every scene** (the EOT cache fix of round-84
+removed the last big per-render compile). Estimating GPU time as frame - cpu: build 0.50 ms native vs
+0.30 ms zink, terrain 45.5 vs 32.2 ms, refract 25.8 vs 19.8 ms - so every remaining deficit is GPU
+execution, i.e. pco codegen / draw-pipeline work, not driver overhead.
+
+Next step is therefore a shader-codegen comparison: dump the native vertex/fragment ISA for a scene
+(`PCO_DEBUG_PRINT=vs,fs,binary`) and the Vulkan driver's ISA for the equivalent zink shader (same pco
+compiler, different front-ends), and diff instruction counts/sequences for the biggest GPU gaps
+(terrain and refract first). No driver change this round - measurement only.
