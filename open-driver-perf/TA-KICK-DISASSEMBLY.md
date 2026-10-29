@@ -1256,3 +1256,19 @@ per blit. Engine task, not a one-liner; EOT cache/bucket changes cannot help bec
 genuinely per-frame.
 Instrumentation reverted; tree at PR head; plan is to prototype "N blits, one submit" on the terrain
 path before touching the general draw path.
+
+## Round-65 (2026-10-29): patch 0329 - blit renders skip the background load (refract +23%)
+
+The terrain/refract cost from rounds 61-64 was partly self-inflicted: a blit renders a fullscreen quad
+covering its whole target, yet the flush built the load background program (a full-target read of the
+target's previous content plus its PDS load program) for pixels that are all overwritten. Blit
+renders now use the clear background, like the depth-only path already did.
+
+Measured with the same-binary EGL/X11 glmark2, perf governor, cores 6-7, two runs each:
+- **refract 36/36 -> 44/45 FPS (+23%), now level with zink (47)**
+- terrain 20/20 -> 20/21, shadow unchanged
+- full suite **729 -> 745 (+2.2%)**, per-scene worst 0.99 (noise)
+- full gltri gate 49/49, 0 MMU faults
+Exported as patch 0329, series 329 tree-checked, PR pushed. This is the first native-vs-zink gap closed
+by the corrected harness; the remaining terrain cost is the per-level mip-chain render submits
+(round-64), next candidate for batching.

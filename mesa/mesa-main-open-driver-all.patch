@@ -5005,10 +5005,10 @@ index 00000000..e833ae6c
 +#endif /* PVR_CSB_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_draw.c b/src/gallium/drivers/pvr_native/pvr_draw.c
 new file mode 100644
-index 00000000..0f6c974b
+index 00000000..25c5debd
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_draw.c
-@@ -0,0 +1,1887 @@
+@@ -0,0 +1,1888 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -6827,8 +6827,9 @@ index 00000000..0f6c974b
 +      goto done;
 +   uint64_t bgnd[3], pr_bgnd[3];
 +   /* Without a clear, the background reloads what the target held. A depth-only render drops the
-+    * colour writes anyway, so it uses the (cheap) clear background instead of a full-target load. */
-+   if (d->clear_valid || zonly || !draw_load_program(ctx, d, bgnd))
++    * colour writes anyway, and a blit's fullscreen quad covers the whole target, so both use the
++    * (cheap) clear background instead of a full-target load. */
++   if (d->clear_valid || zonly || d->load_src != NULL || !draw_load_program(ctx, d, bgnd))
 +      pvr_csb_pds_bgnd_words((uint32_t)bg, (uint32_t)bg, (uint32_t)bg, 0, 0, 0, bgnd);
 +   memcpy(pr_bgnd, bgnd, sizeof(bgnd));
 +   pvr_frag_static_stream_fill_bgnd(fstream, sizeof(fstream), d->bct_addr, bgnd, pr_bgnd);
