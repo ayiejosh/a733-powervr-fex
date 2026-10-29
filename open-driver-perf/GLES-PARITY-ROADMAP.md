@@ -25,7 +25,10 @@ GL versions today (probe `open-perf/glinfo`):
   `GL_EXT_draw_instanced` + `GL_EXT_instanced_arrays`; non-indexed and indexed instanced draws match
   zink for 2/3/4 instances. Open: gl_InstanceID (needs ES3 GLSL), max 16 instances for large VS output
 - Compressed formats (ES3 requires ETC2/EAC; vendor also ships ASTC): absent or CPU-fallback only
-- sRGB formats and sRGB render targets (`GL_EXT_sRGB`, `_sRGB_write_control`, `_sRGB_decode`)
+- ~~sRGB formats and sRGB render targets (`GL_EXT_sRGB`, `_sRGB_write_control`, `_sRGB_decode`)~~
+  **DONE for ES2 (patch 0336)**: sRGB sample decode (TEXSTATE gamma + alpha_msb) and sRGB targets
+  (PBE gamma, 16F source, multi-dword colour outputs) match zink; `GL_EXT_sRGB` advertised. ES3
+  `SRGB8_ALPHA8` renderability follows the same paths.
 - Integer vertex/fragment formats (ES3 core integer API; `_gpu_shader5` needs more)
 - Occlusion queries (`GL_EXT_occlusion_query_boolean`)
 - MSAA 4x (`GL_EXT_multisampled_render_to_texture*`, `_sample_variables`, `_sample_shading`)
@@ -65,9 +68,9 @@ GL versions today (probe `open-perf/glinfo`):
    zink; leftover MRT work is `GL_EXT_draw_buffers_indexed` and >32-bit attachment formats.
 3. ~~**Instancing**~~ **DONE (patch 0335)**: VDM index/instance state + PDS per-instance attribute
    fetch (divisor); test `open-perf/inst_test.c` matches zink (2/3/4 instances, indexed too).
-4. **ES3 texture/model core**: 2D-array + 3D textures, UBOs, integer formats, sRGB formats/RT, sampler
-   objects, occlusion queries, MSAA 4x, primitive restart, then raise `essl_feature_level` to 300 and run
-   GL-CTS/glmark2-es3 as the gate.
+4. **ES3 texture/model core**: 2D-array + 3D textures, UBOs, integer formats, sampler objects,
+   occlusion queries, MSAA 4x, primitive restart, then raise `essl_feature_level` to 300 and run
+   GL-CTS/glmark2-es3 as the gate. sRGB formats/RT done in patch 0336 (ES2 EXT_sRGB parity).
 5. **ES3.1/3.2 extras and vendor-only extensions**: as ranked above; skip geometry/tessellation emulation
    unless an app demands it.
 6. **Performance**: pco codegen parity (round-66), terrain mip-submit batching (round-64), per-scene
@@ -77,7 +80,7 @@ GL versions today (probe `open-perf/glinfo`):
 Board between tests: vendor + desktop + original firmware (`tools/verify/switch-safe.sh`). Never start GL
 harnesses while vendor is bound (caused a watchdog reset). Every feature needs its own gltri (or new test)
 mode comparing against zink checksums, plus the existing full gltri gate and 0 MMU faults before pushing.
-Patch series continues at the next number in `mesa/open-driver-series/` (currently 0335).
+Patch series continues at the next number in `mesa/open-driver-series/` (currently 0336).
 
 ### MRT design notes (recon 2026-10-29; implemented as patch 0332 - see round-73 notes for the
 `nir_lower_blend` colormask trap that ate attachment 1's store)

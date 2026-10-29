@@ -1519,3 +1519,33 @@ Full gate green: 49 gltri modes (all native glGetError 0x0), 28 mip modes, rttes
 (bad=0/262144), rt8test unchanged, 2/4-attachment and mixed-format MRT unchanged, 0 MMU faults.
 Patch 0335, series head `b9b44bb6`; PR #12 pushed. Known limits: no gl_InstanceID (ES3-only language
 feature), max 16 instances for this vertex-output size (VDM cam size).
+
+## Round-78 (2026-10-29): sRGB textures and render targets (ES2 EXT_sRGB), multi-dword colour outputs
+
+ES2's `GL_EXT_sRGB` is the small, honest next step that also lays the ES3 `SRGB8_ALPHA8` foundation.
+The TPU and PBE both have gamma modes; the two interesting parts were what to set and what happens on
+the way out:
+
+- **Sampling (`TEXSTATE_IMAGE_WORD0.gamma`)**: sRGB images get the gamma bit so the TPU decodes to
+  linear. The first attempt decoded green/blue but left **red** sRGB-encoded (128 instead of 55 on a
+  128 texel): the missing piece was `TEXSTATE_IMAGE_WORD1.alpha_msb`, which tells the TPU where the
+  alpha byte sits - without it the first memory channel is treated as alpha and skipped by the sRGB
+  decode. Setting it where the format's fourth channel is W (the reference's
+  `vk_format_is_alpha_on_msb` rule) fixed it.
+- **Rendering (`PBESTATE_REG_WORD0.gamma`)**: the PBE encodes linear source data on write. The PBE's
+  source format for an sRGB bitmap is 16-bit float per channel (the same F16 conversion pco applies to
+  shader outputs), so the background clear packs the clear colour as linear half floats, and an sRGB
+  attachment **occupies two pixel-output dwords**.
+- That last part needed the general **multi-dword colour output** plumbing (also what 16F/32F targets
+  need): the fragment variant's output ranges, the background clear's per-dword stores, the EOT's
+  PBE `source_pos` and the ISP pixel-output width are all built from a shared PBE-output-dwords count
+  instead of assuming one dword per attachment.
+- A deferred clear now keeps the **float** clear colour on the resource as well as the packed dword -
+  the packed value is only right for one format, and replaying it for an sRGB target (16F source)
+  gave a black clear until this was fixed.
+
+Verified against zink with `open-perf/srgb_test.c`: sRGB texel bytes (128,64,32) decode to (55,13,4)
+- identical; sRGB target cleared to linear 0.5 samples back 128, a 0.25 draw samples back 64 -
+identical. `GL_EXT_sRGB` is advertised on ES2 now. Full gate green: 49 gltri modes (all native
+glGetError 0x0), 28 mip modes, rttest PASS (bad=0/262144), rt8test unchanged, MRT 2/4/mixed unchanged,
+instancing unchanged, 0 MMU faults. Patch 0336, series head `0db1b4fd`; PR #12 pushed.
