@@ -2074,3 +2074,22 @@ Remaining ES2-era extensions that would need real hardware work (not just caps),
 (TA/PPP clip state, undocumented for this core), `EXT_texture_mirror_clamp_to_edge` (no TPU wrap mode),
 and depth-cube/compressed *unchanged* (twiddled upload, parked). So the ES2-visible surface is now
 either done, hardware-blocked, or Mesa-fallback-honest; the next real increment is the ES3 core block.
+
+## Round-100 (2026-10-30): the twiddle unlock path exists - transfer jobs write twiddled surfaces
+
+Follow-up to the parked twiddle RE: the reference does not CPU-twiddle because its **transfer-frag
+jobs** handle memory layouts on the GPU. `pvr_arch_job_transfer.c` resolves each surface through
+`pvr_mem_layout_spec()` and explicitly supports `PVR_MEMLAYOUT_TWIDDLED` / `PVR_MEMLAYOUT_3DTWIDDLED`
+destinations (and depth/stencil merges: `PVR_TRANSFER_PBE_PIXEL_SRC_DMRG_*`/`SMRG_*`), which is how
+`vkCmdCopyBufferToImage`/`vkCmdCopyImage` fill twiddled Vulkan images from linear sources. This
+driver's `pvr_probe tq_fill_check` already replays a captured transfer-frag fill stream against a
+target address, so the job type, sync path (`pvr_job_submit_transfer_sync`) and PDS/USC program
+installation are proven - what is missing is a *generic* transfer stream builder (source surface
+descriptor, destination PBE/tiling words, format conversion) instead of the captured single fill.
+
+So the route to the remaining features is porting a minimal transfer copy (linear buffer -> twiddled
+image, and twiddled depth -> twiddled depth for depth-cube uploads) rather than deriving twiddle math.
+Scoped next steps: (1) build a transfer stream for simple RGBA8 buffer->twiddled-image copy and verify
+against the existing GPU-blit upload path; (2) extend to depth formats via the DMRG/SMRG sources;
+(3) then compressed formats. This is the one architectural piece that unlocks depth-cube, compressed,
+3D/array and depth-texture work at once.
