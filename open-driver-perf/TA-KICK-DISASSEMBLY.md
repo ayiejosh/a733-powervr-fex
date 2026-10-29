@@ -2205,3 +2205,26 @@ clean; the patch is saved outside the repo (`/tmp/dbias-wip.patch`). Note the pr
 stronger offset to be meaningful: zink with glPolygonOffset(-2,-2) still rejects the equal-depth quad,
 so the expected-value setup must be re-derived before retesting. Next attempt should run the probe
 under a short timeout with dmesg watched, and try the table variants one at a time.
+
+## Round-107 (2026-10-30): depth-bias isolated - the dbias_is_int mode hangs the render
+
+Two things were learned about `glPolygonOffset` today, with the probe finally made meaningful:
+
+1. **The probe was wrong before**: a quad at NDC z=0.5 has window depth 0.75 (ES maps NDC [-1,1] to
+   depth [0,1]), so "quad at clear depth 0.5" never tested what it claimed. The working probe now
+   draws at NDC z=-0.5 (window depth 0.25) over a 0.5 clear and uses a large offset: zink shows
+   `C less off +40000 -> black, D less off -40000 -> green`, i.e. polygon offset demonstrably works
+   there, while the native driver ignores it (all green). That is the real gap, confirmed.
+2. **The implementation's table plumbing does not crash** (DBIAS base patched in the fragment stream +
+   entry written), but setting ISP_CTL bit 20 (`dbias_is_int`) makes the GPU stop completing the
+   render: with `PVR_DBIAS_NO_INT` the probe runs to completion (offset still not applied, expected
+   without int mode), and no kernel fault is logged either way - the job simply never finishes. So
+   table/base/index semantics are probably fine and the int bias equation is the piece that needs a
+   reference to match (perhaps it also needs the ZLS/TA controls in an int mode, or the firmware
+   enable is elsewhere).
+
+WIP saved as `/tmp/dbias-wip2.patch` with env switches (`PVR_DBIAS_NO_ENTRY`, `_NO_BASE`, `_NO_INT`,
+`PVR_DBIAS_INDEX`) for the next attempt; tree reverted clean. Next step: find what else the reference
+sets for integer depth bias (search `dbias_is_int` producers) or test with a F32 depth target where
+the float equation applies and the int bit is unnecessary - that path may work today and would already
+fix glPolygonOffset for apps using a depth32 texture.
