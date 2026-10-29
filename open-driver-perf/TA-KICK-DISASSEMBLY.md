@@ -1239,3 +1239,20 @@ but left mapped so already-returned offsets stay valid). Measured: terrain ioctl
 within noise. So this is a robustness/leak fix, not the missing terrain performance; the GPU-side
 cost of the per-level mip blits remains the next target. Gate: full gltri 49/49, 0 MMU faults.
 Exported as patch 0328, series 328 tree-checked, PR pushed.
+
+## Round-64 (2026-10-29): terrain EOT misses are its animated mip chains, regenerated every frame
+
+Logged the addresses behind the 85% EOT cache misses (round-62): the misses are exactly the
+**mip-level addresses of four texture chains** (two RGBA8 + two RGBX8 512x512 chains, levels 0..9,
+10 addresses each). So the app re-uploads its animated terrain textures every frame, the state tracker
+regenerates the whole mip chain through `resource_copy_region`, and each level is a different render
+target -> a different EOT program, one full render submit per level.
+
+That makes terrain ~10-20 render submits per frame, each with a firmware TA/3D turnaround; zink does the
+same levels as cheap Vulkan blits inside one submit. The fix is therefore submit-cost, not cache size:
+either batch the multi-level mip generation into fewer submits (e.g. one submit with several fragment
+jobs, or a dedicated mip-gen path that skips the per-level TA setup), or reduce the firmware turnaround
+per blit. Engine task, not a one-liner; EOT cache/bucket changes cannot help because the addresses are
+genuinely per-frame.
+Instrumentation reverted; tree at PR head; plan is to prototype "N blits, one submit" on the terrain
+path before touching the general draw path.
