@@ -1202,3 +1202,26 @@ Terrain is native's worst driver-specific gap on the corrected X11 harness (nati
 Next: instrument `pvr_vm_heap_alloc` callers directly (sizes <= 64) and remove the per-blit allocation -
 either cache the small heap chunks or avoid the flush/open dance per mip level. All instrumentation and the
 cache change were reverted; tree back at the PR head.
+
+## Round-62 (2026-10-29): terrain's per-frame mip cost is EOT/VM-heap churn in the blit path
+
+Follow-up to round-61, done through the safe path (switch-safe to open first; the earlier reboot was
+caused by starting weston/gltri while the vendor driver was bound, plus glmark2's data dir being under
+/tmp when the reboot wiped it - the durable copy is at open-perf/glm2x11 and /tmp/glm2egl is now a
+symlink to it, bench31.sh should create that symlink).
+
+Instrumentation (temporary, reverted):
+- heap allocations of the 8/40-byte BOs come from `pvr_vm_heap_alloc` inside `pvr_draw_flush` ->
+  `draw_eot_program` -> `draw_upload_usc`/`draw_upload_pds`, i.e. **each EOT (end-of-tile) program
+  upload allocates fresh VM-heap BOs and they are never freed**. Same path for PDS/load programs at
+  2 dwords + 40 dwords per miss.
+- EOT program cache hit rates: terrain **1720 calls / 1464 misses (85%)**, refract 781/15, shadow
+  1436/4. So terrain's per-frame `st_generate_mipmap` blits hit a different target address on almost
+  every render, rebuilding EOT USC+PDS programs and leaking a little VM heap each time; refract/shadow
+  hit the cache.
+
+That is the concrete terrain/refract cost zink does not pay (its mip blits are cheap Vulkan render
+passes). Fixing it needs either (a) arena/cache reuse for USC/PDS program uploads instead of a fresh
+VM-heap BO per miss, or (b) batching the mip-level blits so one render covers several levels. Both are
+allocator/render-path changes larger than one session's safe scope; recorded as the next engine task.
+No driver change in this round; tree back at PR head.
