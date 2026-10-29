@@ -2002,3 +2002,23 @@ geometry+PR and fragment), which the reference pays too; zink's advantage in the
 pattern therefore comes from something else in its command-buffer/pass handling, not from submission
 plumbing. Change reverted (neutral complexity is debt). Together with the persistent-syncobj and
 PR-flag experiments, this closes the submission-plumbing line of investigation.
+
+## Round-95 (2026-10-30): twiddle-layout reverse engineering started (blocked on a clean dump)
+
+Every remaining ES2-visible feature gap on this driver needs the same missing piece: a CPU-side
+twiddled-layout writer. `GL_OES_depth_texture_cube_map` and compressed textures (ETC1/ETC2) both are
+sampled/rendered from twiddled memory that the driver currently only fills through a GPU blit (colour
+uploads) or cannot fill at all (depth data). The reference never needs CPU twiddling because its images
+are linear, so there is no code to port: the layout has to be derived from hardware.
+
+Started that derivation: temporary `PVR_DUMP_TWIDDLE` hook dumps a 64x64 twiddled RGBA8 render
+target's raw BO after the upload blit (waits all slot renders first), and a probe uploads a
+permutation-invariant per-pixel pattern (each pixel's bytes carry its index). Result: sampling of the
+texture is correct, but the raw dump is **not a simple 32-bit-pixel permutation** - it is mostly zeros
+with 16-bit-interleaved-looking words and alternating garbage, so the dump is either not the complete
+surface, not coherent, or the layout splits each pixel into 16-bit halves across the image. The dump
+hook needs one more iteration (start from an 8x8 single-channel tile, decode with the driver's own
+readback path to cross-check, and check whether the mapping BO is CPU-coherent) before a layout formula
+can be fitted. Parked here rather than guessing: a wrong twiddle writer corrupts every upload and is
+must-have-correct code. Next session: finish the 8x8 derivation, then implement `pvr_twiddle_copy()`
+and use it for depth-cube and ETC1 uploads.
