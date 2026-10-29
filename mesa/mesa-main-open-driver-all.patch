@@ -13963,10 +13963,10 @@ index 00000000..5e2c2279
 +#endif /* PVR_RESOURCE_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_screen.c b/src/gallium/drivers/pvr_native/pvr_screen.c
 new file mode 100644
-index 00000000..b46d3b8e
+index 00000000..3106ae45
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_screen.c
-@@ -0,0 +1,443 @@
+@@ -0,0 +1,454 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -14279,6 +14279,17 @@ index 00000000..b46d3b8e
 +      caps->uma = true;             /* the GPU shares system RAM on this SoC */
 +      caps->vendor_id = 0x1010;     /* Imagination Technologies PCI vendor ID */
 +      caps->device_id = ident->device_id;
++
++      /* Two Mesa caps default to true in u_init_pipe_screen_caps() on the assumption that a driver
++       * which does not clear them supports the feature. This one does not: a fragment shader
++       * writing gl_FragDepthEXT would be silently ignored (the variant builder has no depth
++       * output), and comparison sampling has no compare mode in the sampler descriptor. Clearing
++       * the caps withdraws GL_EXT_frag_depth and GL_EXT_shadow_samplers, which is the honest
++       * answer. (Border clamp cannot be withdrawn this way: Mesa's extension table marks it
++       * dummy_true for ES2, so it stays advertised - documented limitation, scoped as a
++       * sampler-border work item.) */
++      caps->fragment_shader_depth = false;
++      caps->texture_shadow_map = false;
 +   }
 +
 +   /* Runtime info: free-list sizing and the shader limits, which pco needs before it

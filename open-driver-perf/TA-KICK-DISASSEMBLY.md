@@ -2093,3 +2093,22 @@ Scoped next steps: (1) build a transfer stream for simple RGBA8 buffer->twiddled
 against the existing GPU-blit upload path; (2) extend to depth formats via the DMRG/SMRG sources;
 (3) then compressed formats. This is the one architectural piece that unlocks depth-cube, compressed,
 3D/array and depth-texture work at once.
+
+## Round-101 (2026-10-30): honesty pass - two unimplemented extensions withdrawn
+
+Auditing the 70-entry native ES2 extension list against what the driver implements turned up two that
+Mesa advertised because its cap defaults are optimistic, not because the driver supports them:
+
+- `GL_EXT_frag_depth` came from `caps.fragment_shader_depth`, which
+  `u_init_pipe_screen_caps()` defaults to true. The fragment variant builder has no depth output, so
+  `gl_FragDepthEXT` would be silently ignored.
+- `GL_EXT_shadow_samplers` came from `caps.texture_shadow_map` (also default true). The sampler
+  descriptor has no compare mode, so `sampler2DShadow`/comparison sampling would silently return the
+  raw depth value.
+
+Both caps are now cleared (patch 0342): the extension list drops to 68 and matches what the driver can
+back. `GL_EXT_texture_border_clamp`/`GL_OES_texture_border_clamp` cannot be withdrawn this way - Mesa
+marks them `dummy_true` for ES2 - so they remain advertised and are recorded as a documented
+limitation; implementing sampler border colour + `CLAMP_TO_BORDER` (TPU border table + wrap mode) is
+scoped as its own item. Gate green after the change (gltri 49, mip 28, rttest PASS, rt8test,
+instancing, extensions, half-float linear, 0 faults). Patch 0342, series head `574ba361`.
