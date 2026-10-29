@@ -77,7 +77,15 @@ vendor)
    fi
    lsmod | grep -q '^powervr ' && { echo "ABORT: powervr still loaded"; exit 1; }
    sudo modprobe pvrsrvkm || { echo "ABORT: modprobe pvrsrvkm failed"; exit 1; }
-   sleep 2
+   # Let the vendor module finish init (firmware load, drm registration) before any client opens the
+   # GPU: a client opening during init has NULL-derefed in LinuxServicesConnectionFromFile and
+   # hard-reset this board twice (03:08 and 04:15 on 2026-10-30, both on the restore path).
+   i=0
+   while [ $i -lt 40 ]; do
+      sudo dmesg | tail -40 | grep -q "Initialized pvr" && break
+      sleep 0.5; i=$((i+1))
+   done
+   sleep 3
    [ "$(drv)" = pvrsrvkm ] || { echo "ABORT: not bound to pvrsrvkm ($(drv))"; exit 1; }
    sudo systemctl start display-manager
    ;;
