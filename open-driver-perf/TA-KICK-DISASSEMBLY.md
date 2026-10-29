@@ -1883,3 +1883,29 @@ about 27 passes per frame (mip levels/bloom), so they pay that overhead 27 times
 what the per-pass GPU overhead is (job dispatch/barriers vs our flush's stream/sync sequence) - measure
 passes=1 vs 27 on both drivers, then look at batching multiple renders into fewer submits / barriers
 (as the reference does within a command buffer) instead of one submit-per-pass with syncobj waits.
+
+### Round-88 addendum: the per-render cost is a fixed ~0.16 ms, independent of target size
+
+Follow-up measurements with drawbench2 (native, 27 passes/frame unless noted):
+
+| variant | fps | per-frame |
+|---|---|---|
+| 27 small passes, no clear (draws batch into one render) | 1379 | 0.73 ms |
+| 27 clear+draw passes (one render each) | 148 | 6.8 ms |
+| 27 passes to **two alternating targets**, no clear (forces one render each) | 150 | 6.7 ms |
+| clear-only (clears deferred, no draw) | 2296 | - |
+| clear+draw passes at 64 / 256 / 512 px | 149 / 157 / 130 | - |
+
+So the cost is a **fixed ~0.16 ms per render submission**, not tile/fill work (it does not scale with the
+target size) and not the clear itself (alternating targets without clears costs the same). zink does
+the same 27 passes at 754 fps, i.e. ~0.05 ms per pass, because the Vulkan driver can put all sub_cmds
+of a frame into one queue submission while this driver submits each render separately.
+
+Inspection of `pvr_job_submit_render`: every render is **one ioctl with three jobs** (geometry,
+partial-render fragment, fragment - the reference's scheme) plus **three `drmSyncobjCreate` calls**
+and a later wait/destroy, i.e. a full CPU-kernel-firmware round trip per render with the GPU going
+idle in between. That is consistent with the measured fixed cost. The next substantial performance
+item is submission batching: queue multiple renders' job sets and submit them in one ioctl (the kernel
+API already takes a job array), with dependencies expressed as syncobj waits the kernel can order, as
+the reference does inside a command buffer. Scoped as its own multi-step change (hazard tracking for
+deferred submissions), not a quick patch.
