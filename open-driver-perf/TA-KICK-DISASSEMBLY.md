@@ -2135,3 +2135,16 @@ rttest PASS, MRT 2/4, instancing, sRGB, 0 faults). Patch 0343, series head `d999
 
 With this, every ES2-visible extension the list advertises is backed by working behaviour; the
 remaining work is hardware-blocked (occlusion/MSAA/timer/clip) or ES3 (twiddle/transfer jobs).
+
+## Round-103 (2026-10-30): GL_EXT_texture_mirror_clamp_to_edge (TPU FLIP_ONCE_THEN_CLAMP)
+
+One more ES2 extension was sitting behind an unset cap: the TPU's address mode
+`FLIP_ONCE_THEN_CLAMP` is precisely GL_MIRROR_CLAMP_TO_EDGE semantics, and the sampler state already
+mapped `PIPE_TEX_WRAP_MIRROR_CLAMP_TO_EDGE` to it, but `caps.texture_mirror_clamp_to_edge` was never
+set so the state tracker converted to CLAMP_TO_EDGE. Setting the cap (patch 0344) grows the ES2
+extension list 68 -> 69.
+
+Verified with `tools/verify/mirror_probe.c`: 4x1 texture sampled at u = -0.4 returns
+(200,0,0,255) - mirrored back into the first half - exactly like zink (clamping would give
+(64,0,0,255)). Full gate green (gltri 49, mip 28, rttest PASS, MRT 2/4, instancing, sRGB,
+border-clamp probe, 0 faults). Patch 0344, series head `14087ce4`.

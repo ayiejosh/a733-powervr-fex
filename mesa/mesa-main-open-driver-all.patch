@@ -14023,10 +14023,10 @@ index 00000000..5e2c2279
 +#endif /* PVR_RESOURCE_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_screen.c b/src/gallium/drivers/pvr_native/pvr_screen.c
 new file mode 100644
-index 00000000..3106ae45
+index 00000000..0d009aee
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_screen.c
-@@ -0,0 +1,454 @@
+@@ -0,0 +1,457 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -14322,6 +14322,9 @@ index 00000000..3106ae45
 +      if (PVR_HAS_FEATURE(&screen->dev_info, pbe_filterable_f16))
 +         caps->texture_half_float_linear = true;
 +      caps->vertex_element_instance_divisor = true;
++      /* The TPU has FLIP_ONCE_THEN_CLAMP, which is exactly GL_MIRROR_CLAMP_TO_EDGE (mirror once past
++       * the edge, then clamp). Sampler state already maps PIPE_TEX_WRAP_MIRROR_CLAMP_TO_EDGE to it. */
++      caps->texture_mirror_clamp_to_edge = true;
 +      /* Multiple render targets: the PBE writes one emit per attachment (EOT program) and the
 +       * fragment variant maps data0..3. ES3 needs 4; v1 requires a shared format (see flush). */
 +      caps->max_render_targets = 4;
