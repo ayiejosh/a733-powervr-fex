@@ -1376,3 +1376,38 @@ clear colour (not black from the background, not blue from the shader), i.e. the
 seems not to write. WIP saved on the board's local branch `wip/mrt` (not pushed); PR tree clean at
 `b75dcca1`. Next: compare the two renders' submitted EOT/PDS data (the cached program is reused) and the
 tile-buffer pixel data on the second render.
+
+## Round-73 (2026-10-29): MRT complete - the missing attachment write was deleted by nir_lower_blend
+
+The round-72 bug (attachment 1 stale after a draw following a GPU clear) was not in the EOT program,
+the PBE state words or the stream. The decisive check was a byte comparison of the two drivers' EOT
+programs: a temporary dump in pco/native and in the Vulkan driver's `pvr_usc_eot()` showed a 2-emit
+EOT of 80 B in both, **byte-identical apart from the baked target addresses** (same instruction
+sequence, same 2x2 state-word immediates), and the state words decoded to the same design
+(`source_pos` = output dword, `mrt_index` = attachment). So the EOT side, including the second EMITPIX,
+was already correct - confirmed separately by the GPU clear, which writes both attachments through the
+same 2-emit program.
+
+The write was being lost before the shader reached pco. `PCO_DEBUG_PRINT=fs,nir,passes` showed both
+`store_deref`s in the incoming NIR, and a single `@store_output` to `FRAG_RESULT_DATA0` after
+`pco_lower_nir` - attachment 1's store was gone, while its (still vec4) var declaration remained.
+Root cause: `nir_lower_blend` deletes a colour store whose `colormask` is zero
+("don't bother copying the destination for disabled RTs", `nir_lower_blend.c`), and Mesa's state
+tracker only fills `pipe_blend_state::rt[]` entries the API configured - for ES2 + EXT_draw_buffers,
+rt[1] stays zeroed even though `glColorMask` applies to every draw buffer. The variant therefore
+lowered with `colormask = 0` for attachment 1 and `nir_lower_blend` removed its store.
+
+Fix (one line, patch 0332): every attachment uses render target 0's blend state and colour mask, which
+is what ES2 means - one blend state and one glColorMask for all draw buffers.
+
+Verification (open stack, `open-perf/mrt_test` with 2x RGBA8, compared against zink):
+- draw after clear: attachment0 255 0 0 255, attachment1 0 0 255 255 - zink same;
+- clear covers both (64 128 191 255 each); second draw overwrites both (green/yellow);
+- draw without clear writes both attachments (the round-72 stale-attachment-1 symptom is gone);
+- full gltri gate: 49 modes, all 32 native modes glGetError 0x0; rttest PASS (bad=0/262144);
+  rt8test unchanged (255 0 / 255 128); 0 MMU faults.
+- Extension surface: `GL_EXT_draw_buffers` and `GL_NV_draw_buffers` now advertised (were absent with
+  max_render_targets = 1).
+Known v1 limitations: all attachments must share attachment 0's format (mixed sets render to
+attachment 0 with a warning); per-render-target blend state is not tracked (ES2 has none); tile
+buffers are unused. WIP branch `wip/mrt` squashed into patch 0332 on `pr12-native-ta-fix`.
