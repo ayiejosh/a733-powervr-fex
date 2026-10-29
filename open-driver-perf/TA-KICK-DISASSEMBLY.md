@@ -1225,3 +1225,17 @@ passes). Fixing it needs either (a) arena/cache reuse for USC/PDS program upload
 VM-heap BO per miss, or (b) batching the mip-level blits so one render covers several levels. Both are
 allocator/render-path changes larger than one session's safe scope; recorded as the next engine task.
 No driver change in this round; tree back at PR head.
+
+## Round-63 (2026-10-29): patch 0328 - program uploads from bump-allocated chunks (leak fix, not a perf win)
+
+Follow-up to round-62's EOT finding. Every USC/PDS program upload (fragment, end-of-tile, load,
+vertex PDS) allocated a fresh VM-heap BO and never freed it; terrain re-uploads an EOT program on most
+mip blits, so a 2 s terrain run created ~3300 BOs and the VM heap grew without bound (the "heap is
+full" abort is what a long enough terrain session would eventually hit).
+
+0328 bump-allocates those bytes from one chunk per heap (256 KiB doubling, old chunk handle dropped
+but left mapped so already-returned offsets stay valid). Measured: terrain ioctl count 24022 -> 16896
+(-30%), terrain FPS 18 -> 19 (unchanged - the scene is GPU/firmware bound), refract/shadow unchanged
+within noise. So this is a robustness/leak fix, not the missing terrain performance; the GPU-side
+cost of the per-level mip blits remains the next target. Gate: full gltri 49/49, 0 MMU faults.
+Exported as patch 0328, series 328 tree-checked, PR pushed.
