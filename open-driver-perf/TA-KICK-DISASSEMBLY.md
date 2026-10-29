@@ -2038,3 +2038,23 @@ is **not yet a usable gate** in this offscreen setup. Two options next: (a) use 
 for the scenes zink passes but native fails, do a direct native-vs-zink image diff of the same
 offscreen render; (b) rely on the existing targeted gates (gltri/mip/rttest/MRT/cube/sRGB/...) and add
 per-feature image comparisons. The differential scene list is the candidate-bug list to start from.
+
+## Round-98 (2026-10-30): hardened switch-safe verified, bench harness fixed, numbers steady
+
+After the second vendor-module hard reset (04:15:10, same `psConnectionPriv NULL` race, this time on
+the restore-to-vendor path while display-manager started), `switch-safe.sh` now waits for the vendor
+module's "Initialized pvr" and a 3 s settle before starting display-manager. A full open -> vendor
+cycle plus the benchmark's own two swap cycles ran clean (0 faults, no PVR_K errors).
+
+`bench31.sh` now passes the glmark2 data path explicitly (the `/tmp` symlink had silently invalidated
+three runs), and the resulting three-way numbers are steady:
+
+| stack | run 1 | run 2 |
+|---|---|---|
+| native | 807 | 805 |
+| zink | 775 | 770 |
+| vendor | 1220 | 1190 |
+
+Native ~0.67x vendor, ~1.04x zink - in noise of rounds 82/93. The remaining work is feature parity
+(ES3 core; twiddle-layout RE parked) and the per-scene GPU gap, which the earlier rounds showed is not
+submission plumbing.
