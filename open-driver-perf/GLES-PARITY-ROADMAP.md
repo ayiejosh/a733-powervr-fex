@@ -70,3 +70,32 @@ Board between tests: vendor + desktop + original firmware (`tools/verify/switch-
 harnesses while vendor is bound (caused a watchdog reset). Every feature needs its own gltri (or new test)
 mode comparing against zink checksums, plus the existing full gltri gate and 0 MMU faults before pushing.
 Patch series continues at the next number in `mesa/open-driver-series/` (currently 0329).
+
+### MRT design notes (recon 2026-10-29, before implementation)
+The plumbing is closer than it looks; the reference reads as follows.
+
+- Fragment static stream: `pvr_frag_static_stream()` is already sized for `PVR_MAX_COLOR_ATTACHMENTS`,
+  takes `nr_attachments` and `pbe_words[]` (3 dwords per attachment: PBESTATE_REG_WORD0/1/2). The
+  current flush fills one attachment (`nr_attachments = 1`); S2 of the work is just looping
+  `pvr_csb_pbe_words()` over `ctx->fb.cbufs[]` with each attachment's resource/level/format/layout.
+- End-of-tile: one EOT **program per render**, not per attachment. The reference's
+  `pvr_usc_eot()` takes `emit_count` and a `state_words[]` array (2 dwords per attachment), emits one
+  pixel event per attachment with `nir_wop_pco()` between, and `freep` on the last. Our
+  `pvr_shader_eot_create()` currently takes a single pair; extend its signature to
+  `(ctx, eot, nr_attachments, state_words)` and mirror the loop. EOT program caching then keys on
+  all addresses + formats instead of one address.
+- Fragment variants: `pvr_shader_create_with()` sets `data.fs.output_formats[FRAG_RESULT_DATA0]` and
+  the blend options for rt[0] only. MRT needs `output_formats[DATA0..DATA{n-1}]`, `blend.rt[i]` for
+  each attachment (same blend state in ES2, but formats differ), and the variant cache key must
+  include the attachment format list.
+- Background/clear: the clear background program stores one packed colour into the tile buffer; the
+  EOT program's per-attachment state words then emit it to each attachment, so a same-colour
+  `glClear` works once (2) and (3) are in. Per-attachment `glClearBuffer` colours and MRT *load*
+  backgrounds (fetch each target's previous content per attachment) are v1 limitations to document -
+  load on MRT should fall back to a clear or the app's own writes.
+- Caps: `caps->max_render_targets = 4` (u_init_pipe_screen_caps defaults to 1; ES2
+  `EXT_draw_buffers`/`NV_draw_buffers` are already advertised by st for ES2, so the driver must not
+  lie: today those extensions are advertised while a second attachment would be silently ignored).
+- Test: new `gltri` mode with 2 RGBA8 attachments, `glDrawBuffersEXT`, fragment writes
+  `gl_FragData[0]=red`, `[1]=blue`, clear both, `glReadPixels` each in turn; compare against zink
+  (zink reports GLES 3.1 so it has MRT). Add `rt8test`-style pixel checks to the gate.
