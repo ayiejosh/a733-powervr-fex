@@ -1286,3 +1286,13 @@ the ~17% extra **GPU 3D execution** is the difference - a code-generation/instru
 pco's GLSL->NIR path versus zink's SPIR-V->NIR path, not a draw-path bookkeeping cost. Chasing it means
 compiler work on the fragment shader codegen for loop-heavy shaders; recorded, not attempted in this
 session. No driver change.
+
+## Round-67 (2026-10-29): native soak - four consecutive full runs, clean
+
+Stability soak on the 0329 build (X11/EGL harness): 4 consecutive full glmark2 runs back to back,
+737 / 724 / 723 / 709, **0 error lines and 0 MMU/kernel faults in every run**. The slow downward drift
+(~4%) is sustained-load thermal history (no dmesg throttling events, ~60 C idle after restore, and
+earlier sessions showed the same ambient dependence); no heap growth or crash pattern. The 0328 program
+arenas and the round-56..65 fixes survive repeated full runs.
+
+Board restored to vendor + desktop + original firmware after the soak.
