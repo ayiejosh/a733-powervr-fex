@@ -1953,3 +1953,21 @@ VDMCTRL_PDS_STATE0 (USC common size), the border colour table and the view index
 placement (and the missing PPP/TPU/PDS state) is what makes each kick cost more than the reference's is
 the next thing to check: compare the two drivers' streams command by command for the same 64x64 render
 and try moving the ISP state to the fragment stream / adding the missing geometry state.
+
+### Round-91 correction: the geometry stream is *not* mis-placed - it already matches the reference
+
+The previous addendum's "stream placement" lead was wrong: the `CR_ISP_SCISSOR_BASE / DBIAS /
+OCLQRY / ZLSCTL / ZLOAD / STENCIL_LOAD` constants belong to the **fragment** stream builder
+(`pvr_frag_static_stream`), while `pvr_geom_static_stream` already emits exactly the reference's
+sequence (`KMD_STREAM_HDR, CR_VDM_CTRL_STREAM_BASE, CR_TPU_BORDER_COLOUR_TABLE_VDM, CR_PPP_CTRL,
+CR_TE_PSG, VDMCTRL_PDS_STATE0, KMD_STREAM_VIEW_IDX`, plus the BRN49927 ext stream). It was ported
+from the reference in an earlier round and verified field by field. So stream content/placement is not
+the remaining difference.
+
+Combined with everything measured so far, the fixed ~0.16 ms per render is best explained by the
+**one-`SUBMIT_JOBS`-ioctl-per-render submission model**: each render is a kernel kick round trip, and
+the GPU goes idle between kicks; the Vulkan driver puts a whole frame's render jobs into one
+submission and does not pay the round trip per pass (27 passes at 754 fps vs 148 fps here). The fix is
+submission batching (queue several renders' job sets, submit together with the kernel's job array),
+which is a multi-step change to the deferred-submission/hazard-tracking path - scoped for its own
+round, not a drive-by patch.
