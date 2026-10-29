@@ -1928,3 +1928,28 @@ signal/wait them every kick; Vulkan also batches all of a frame's render jobs in
 `DRM_IOCTL_PVR_SUBMIT_JOBS` array while this driver does one ioctl per render. Both are candidates for
 the fixed ~0.16 ms per-render cost measured above; changing the syncobj scheme to one persistent
 geometry->PR syncobj (as the reference) is the smaller, safer first step, then submission batching.
+
+### Round-89 addendum: persistent geom->PR syncobj is neutral; the streams themselves are the next lead
+
+Implemented the reference's persistent geometry->PR syncobj scheme (one syncobj per context instead of
+three fresh `drmSyncobjCreate` per render). Measured with drawbench2, same build correctness first
+(gltri red count 32768 as expected, MRT attachments correct, 0 faults):
+
+| | old scheme (3 fresh syncobjs) | persistent geom->PR (1 fresh) |
+|---|---|---|
+| fill | 2181 fps | 2372 fps |
+| 27 clear+draw passes | 148 fps | 150 fps |
+
+The per-render fixed cost is unchanged, so syncobj object creation/signalling is not the penalty; the
+change was reverted rather than shipped as dead weight (it only mirrors the reference plumbing).
+
+Next lead, from reading the reference geometry stream construction: the reference's geometry stream is
+`KMD_STREAM_HDR, CR_VDM_CTRL_STREAM_BASE, CR_TPU_BORDER_COLOUR_TABLE_VDM, CR_PPP_CTRL, CR_TE_PSG,
+VDMCTRL_PDS_STATE0, KMD_STREAM_VIEW_IDX`, while this driver's captured geometry stream is
+`KMD_STREAM_HDR, CR_VDM_CTRL_STREAM_BASE, CR_TE_PSG, CR_ISP_SCISSOR_BASE, CR_ISP_DBIAS_BASE,
+CR_ISP_OCLQRY_BASE, CR_ISP_ZLSCTL, CR_ISP_ZLOAD_BASE, CR_ISP_STENCIL_LOAD_BASE` - i.e. several
+ISP-side commands sit in the geometry stream here where the reference has CR_PPP_CTRL,
+VDMCTRL_PDS_STATE0 (USC common size), the border colour table and the view index. Whether that
+placement (and the missing PPP/TPU/PDS state) is what makes each kick cost more than the reference's is
+the next thing to check: compare the two drivers' streams command by command for the same 64x64 render
+and try moving the ISP state to the fragment stream / adding the missing geometry state.
