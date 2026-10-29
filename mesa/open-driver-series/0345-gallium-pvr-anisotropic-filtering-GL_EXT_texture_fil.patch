@@ -1,0 +1,88 @@
+From 0bc92d43470eb1ee2d2d691c80f0b4c65b185d17 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 30 Oct 2026 05:46:44 +0800
+Subject: [PATCH] gallium/pvr: anisotropic filtering
+ (GL_EXT_texture_filter_anisotropic)
+
+The TPU sampler state has anisoctl x2/x4/x8/x16 but the driver hardcoded DISABLED and never
+advertised the extension. Enable it:
+
+- caps.anisotropic_filter = true, caps.max_texture_anisotropy = 16 (the TPU's maximum and the value
+  st reports as GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT);
+- pvr_sampler_desc.anisoctl is emitted into TEXSTATE_SAMPLER_WORD0 instead of the hardcoded
+  DISABLED, derived from the pipe sampler's max_anisotropy (x16/x8/x4/x2) and only when the
+  minification filter is LINEAR, as GL specifies.
+
+Verified with tools/verify/aniso_probe.c: a 256x256 checker with generated mips sampled through an
+8x:0.5x anisotropic footprint returns exactly the zink values at max anisotropy 1 and 16
+(128,128,128 / 127,127,127), and glGetFloatv reports max anisotropy 16. ES2 extension list 69 -> 70.
+Full gate green: gltri 49 modes, mip 28, rttest PASS, MRT 2/4, instancing, sRGB, border-clamp and
+mirror-clamp probes, 0 faults.
+---
+ src/gallium/drivers/pvr_native/pvr_csb.c    | 2 +-
+ src/gallium/drivers/pvr_native/pvr_csb.h    | 2 ++
+ src/gallium/drivers/pvr_native/pvr_draw.c   | 7 +++++++
+ src/gallium/drivers/pvr_native/pvr_screen.c | 3 +++
+ 4 files changed, 13 insertions(+), 1 deletion(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_csb.c b/src/gallium/drivers/pvr_native/pvr_csb.c
+index 192bf9a5..3c95b437 100644
+--- a/src/gallium/drivers/pvr_native/pvr_csb.c
++++ b/src/gallium/drivers/pvr_native/pvr_csb.c
+@@ -1457,7 +1457,7 @@ pvr_csb_emit_sampler_desc(struct pvr_csb *csb, const struct pvr_sampler_desc *de
+       .mipfilter = desc->mip_filter,
+       /* Zero adjustment: DADJUST_ZERO_UINT is the encoding of 0.0, not an absent value. */
+       .dadjust = ROGUE_TEXSTATE_DADJUST_ZERO_UINT,
+-      .anisoctl = ROGUE_TEXSTATE_ANISOCTL_DISABLED,
++      .anisoctl = desc->anisoctl,
+       .bordercolor_index = desc->bordercolor_index,
+       .non_normalized_coords = false,
+       .lumakey = false,
+diff --git a/src/gallium/drivers/pvr_native/pvr_csb.h b/src/gallium/drivers/pvr_native/pvr_csb.h
+index 753f84e5..47695cc7 100644
+--- a/src/gallium/drivers/pvr_native/pvr_csb.h
++++ b/src/gallium/drivers/pvr_native/pvr_csb.h
+@@ -297,6 +297,8 @@ struct pvr_sampler_desc {
+     * live from index 5 up (the hardware decodes 0..4 as the Vulkan built-in border colours, which
+     * is also what the reference relies on), so samplers that clamp to border point at their entry. */
+    uint32_t bordercolor_index;
++   /* ROGUE_TEXSTATE_ANISOCTL: 0 disabled, 1 x2, 2 x4, 3 x8, 4 x16. */
++   uint32_t anisoctl;
+    enum pipe_tex_wrap wrap_s;
+    enum pipe_tex_wrap wrap_t;
+    enum pipe_tex_wrap wrap_r;
+diff --git a/src/gallium/drivers/pvr_native/pvr_draw.c b/src/gallium/drivers/pvr_native/pvr_draw.c
+index ea688bb5..ddb947b2 100644
+--- a/src/gallium/drivers/pvr_native/pvr_draw.c
++++ b/src/gallium/drivers/pvr_native/pvr_draw.c
+@@ -889,6 +889,13 @@ draw_tex_binding(struct pvr_context *ctx, unsigned stage, unsigned u, uint32_t *
+       .mip_filter = chain && smp->min_mip_filter == PIPE_TEX_MIPFILTER_LINEAR,
+       .min_lod = smp->min_lod,
+       .max_lod = smp->max_lod,
++      /* GL applies anisotropic filtering to minification with a linear min filter; the TPU takes
++       * the ratio as an enum (x2..x16). */
++      .anisoctl = smp->min_img_filter == PIPE_TEX_FILTER_LINEAR && smp->max_anisotropy >= 16 ? 4
++                  : smp->min_img_filter == PIPE_TEX_FILTER_LINEAR && smp->max_anisotropy >= 8 ? 3
++                  : smp->min_img_filter == PIPE_TEX_FILTER_LINEAR && smp->max_anisotropy >= 4 ? 2
++                  : smp->min_img_filter == PIPE_TEX_FILTER_LINEAR && smp->max_anisotropy >= 2 ? 1
++                                                                                            : 0,
+    };
+    if (chain) {
+       /* As the Vulkan sampler: the hardware picks min or mag filter from the clamped LOD, so a
+diff --git a/src/gallium/drivers/pvr_native/pvr_screen.c b/src/gallium/drivers/pvr_native/pvr_screen.c
+index 0d009aee..1076d72b 100644
+--- a/src/gallium/drivers/pvr_native/pvr_screen.c
++++ b/src/gallium/drivers/pvr_native/pvr_screen.c
+@@ -296,6 +296,9 @@ pvr_screen_create(int fd, const struct pipe_screen_config *config,
+       /* The TPU has FLIP_ONCE_THEN_CLAMP, which is exactly GL_MIRROR_CLAMP_TO_EDGE (mirror once past
+        * the edge, then clamp). Sampler state already maps PIPE_TEX_WRAP_MIRROR_CLAMP_TO_EDGE to it. */
+       caps->texture_mirror_clamp_to_edge = true;
++      /* TPU anisoctl supports x2..x16; the sampler descriptor previously hardcoded DISABLED. */
++      caps->anisotropic_filter = true;
++      caps->max_texture_anisotropy = 16.0f;
+       /* Multiple render targets: the PBE writes one emit per attachment (EOT program) and the
+        * fragment variant maps data0..3. ES3 needs 4; v1 requires a shared format (see flush). */
+       caps->max_render_targets = 4;
+-- 
+2.47.3
+

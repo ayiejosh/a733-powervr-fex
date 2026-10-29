@@ -2148,3 +2148,18 @@ Verified with `tools/verify/mirror_probe.c`: 4x1 texture sampled at u = -0.4 ret
 (200,0,0,255) - mirrored back into the first half - exactly like zink (clamping would give
 (64,0,0,255)). Full gate green (gltri 49, mip 28, rttest PASS, MRT 2/4, instancing, sRGB,
 border-clamp probe, 0 faults). Patch 0344, series head `14087ce4`.
+
+## Round-104 (2026-10-30): anisotropic filtering (GL_EXT_texture_filter_anisotropic)
+
+The TPU sampler word carries anisoctl x2/x4/x8/x16 but the driver hardcoded DISABLED and never
+advertised the extension. Patch 0345 enables it: `caps.anisotropic_filter = true`,
+`caps.max_texture_anisotropy = 16` (TPU maximum; what st reports as
+GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT), and `pvr_sampler_desc.anisoctl` is emitted into
+TEXSTATE_SAMPLER_WORD0 from `pipe_sampler_state.max_anisotropy` (x16/x8/x4/x2), only when the
+minification filter is LINEAR as GL specifies.
+
+Verified with `tools/verify/aniso_probe.c`: a 256x256 checker with generated mips sampled through an
+8x:0.5x anisotropic footprint returns exactly the zink values at max anisotropy 1 and 16
+(128,128,128 / 127,127,127); GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT reports 16. ES2 extension list
+69 -> 70. Full gate green (gltri 49, mip 28, rttest PASS, MRT 2/4, instancing, sRGB, border/mirror
+clamp probes, 0 faults). Patch 0345, series head `0bc92d43`.
