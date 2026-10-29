@@ -1811,3 +1811,24 @@ Next step is therefore a shader-codegen comparison: dump the native vertex/fragm
 (`PCO_DEBUG_PRINT=vs,fs,binary`) and the Vulkan driver's ISA for the equivalent zink shader (same pco
 compiler, different front-ends), and diff instruction counts/sequences for the biggest GPU gaps
 (terrain and refract first). No driver change this round - measurement only.
+
+## Round-86 (2026-10-30): ISP tile configuration derived from features (matches the capture)
+
+Round-85 established that the remaining native gap is GPU execution, so the fragment stream's ISP
+configuration was audited. `USC_PIXEL_OUTPUT_CTRL` and `ISP_CTL` were hardcoded to the values of the
+verified 512x512 single-colour capture (`0x00007ff8` / `0x80035000`): correct for that one case, but
+the ISP pipe-enable count and partition mask stayed single-target values even for 4-attachment MRT.
+
+Ported the reference's `pvr_arch_setup_tiles_in_flight()` (patch 0341): partition size from pixel
+width and tile size, partitions available from the kernel's partition-space runtime info, phantom and
+paired-tile rules, then the pixel-output width/partition-mask and ISP pipe_enable fields; the other
+ISP_CTL bits are set the way the reference's fragment stream sets them (sample positioning, empty
+tiles via the background object, skip_init_hdrs where the multicore/simple-parameter combination
+allows). **The computed pair for the common one-RGBA8-target case is byte-identical to the old
+hardcoded values** (`0x00007ff8` / `0x80035000`), which validates the port; wider pixel outputs (sRGB
+2-dword targets, 4-attachment MRT) now get the matching smaller partition counts instead.
+No performance change is claimed - the values are identical for the benchmarked scenes - but the
+configuration no longer depends on one capture.
+
+Full gate green (gltri 49 modes, mip 28, rttest PASS, rt8test, MRT 2/4, instancing, sRGB, cube,
+extensions, 0 MMU faults). Patch 0341, series head `2768cfe0`.

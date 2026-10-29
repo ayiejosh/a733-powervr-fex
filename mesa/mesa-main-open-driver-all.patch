@@ -2499,10 +2499,10 @@ index 00000000..df847132
 +#endif /* PVR_CONTEXT_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_csb.c b/src/gallium/drivers/pvr_native/pvr_csb.c
 new file mode 100644
-index 00000000..937c76a7
+index 00000000..5e177c70
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_csb.c
-@@ -0,0 +1,1725 @@
+@@ -0,0 +1,1869 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + */
@@ -2745,6 +2745,150 @@ index 00000000..937c76a7
 + * chosen for this part are not derivable from the field names - the comments in the reference say
 + * "this is a proxy for 8XE". A re-derived rule would be a guess, and a wrong cam_size changes how
 + * much vertex data the hardware keeps, i.e. it fails silently. */
++/* Port of the reference's pvr_arch_setup_tiles_in_flight(): how many tiles the ISP may have in
++ * flight (ISP_CTL.pipe_enable) and the USC pixel-output control word's width/partition mask. The
++ * arithmetic is device-feature driven and not re-derivable from the field names, so it is copied
++ * rather than approximated - a wrong value here under- or over-subscribes the tile pipeline, which
++ * shows up only as GPU throughput, never as a wrong pixel. */
++void
++pvr_setup_tiles_in_flight(const struct pvr_device_info *dev_info,
++                          const struct pvr_device_runtime_info *runtime,
++                          uint32_t pixel_width, bool paired_tiles,
++                          uint32_t max_tiles_in_flight, uint32_t *isp_ctl,
++                          uint32_t *pixel_ctl)
++{
++   uint32_t total_tiles_in_flight = 0;
++   uint32_t usable_partition_size;
++   uint32_t partitions_available;
++   uint32_t usc_min_output_regs;
++   uint32_t max_partitions;
++   uint32_t partition_size;
++   uint32_t max_phantoms;
++   uint32_t tile_size_x, tile_size_y;
++   uint32_t isp_samples;
++
++   usc_min_output_regs = PVR_GET_FEATURE_VALUE(dev_info, usc_min_output_registers_per_pix, 0);
++   pixel_width = MAX2(pixel_width, usc_min_output_regs);
++   pixel_width = util_next_power_of_two(pixel_width);
++
++   partition_size = pixel_width;
++   isp_samples = PVR_GET_FEATURE_VALUE(dev_info, isp_samples_per_pixel, 1);
++   /* No MSAA is rendered by this driver, so the sample-size multipliers of the reference's MSAA
++    * path are all the AA_NONE case (1x). */
++
++   tile_size_x = PVR_GET_FEATURE_VALUE(dev_info, tile_size_x, 0);
++   tile_size_y = PVR_GET_FEATURE_VALUE(dev_info, tile_size_y, 0);
++   assert(tile_size_x == tile_size_y);
++
++   if (tile_size_x == 16U)
++      partition_size *= tile_size_x * tile_size_y;
++   else
++      partition_size *= (tile_size_x * tile_size_y / 4U);
++
++   max_partitions = PVR_GET_FEATURE_VALUE(dev_info, max_partitions, 0);
++   usable_partition_size = MIN2(runtime->total_reserved_partition_size,
++                                partition_size * max_partitions);
++
++   if (PVR_GET_FEATURE_VALUE(dev_info, common_store_size_in_dwords, 0) < (1024 * 4 * 4) &&
++       tile_size_x != 16)
++      usable_partition_size = MIN2((tile_size_x * tile_size_y / 4U) * 8U, usable_partition_size);
++
++   partitions_available = MIN2(max_partitions, usable_partition_size / partition_size);
++
++   if (PVR_HAS_FEATURE(dev_info, xt_top_infrastructure))
++      max_phantoms = runtime->num_phantoms;
++   else if (PVR_HAS_FEATURE(dev_info, roguexe))
++      max_phantoms = PVR_GET_FEATURE_VALUE(dev_info, num_raster_pipes, 0);
++   else
++      max_phantoms = 1;
++   if (max_phantoms == 0)
++      max_phantoms = 1;
++
++   for (uint32_t i = 0; i < max_phantoms; i++) {
++      uint32_t usc_tiles_in_flight = partitions_available;
++      uint32_t isp_tiles_in_flight;
++
++      if (tile_size_x != 16) {
++         uint32_t num_clusters = PVR_GET_FEATURE_VALUE(dev_info, num_clusters, 0);
++         usc_tiles_in_flight = (usc_tiles_in_flight * MIN2(4U, num_clusters - (4U * i))) / 4U;
++      }
++      if (usc_tiles_in_flight == 0)
++         usc_tiles_in_flight = 1;
++
++      isp_tiles_in_flight = PVR_GET_FEATURE_VALUE(dev_info, isp_max_tiles_in_flight, 0);
++      if (!PVR_HAS_FEATURE(dev_info, simple_internal_parameter_format) ||
++          PVR_GET_FEATURE_VALUE(dev_info, simple_parameter_format_version, 0) != 2)
++         isp_tiles_in_flight /= runtime->num_phantoms ? runtime->num_phantoms : 1;
++      isp_tiles_in_flight = MIN2(usc_tiles_in_flight, isp_tiles_in_flight);
++      if (isp_tiles_in_flight == 0)
++         isp_tiles_in_flight = 1;
++
++      if (max_tiles_in_flight > 0U) {
++         isp_tiles_in_flight = MIN2(usc_tiles_in_flight, max_tiles_in_flight);
++         if (PVR_HAS_FEATURE(dev_info, roguexe)) {
++            if (tile_size_x == 16)
++               partitions_available = isp_tiles_in_flight;
++            else
++               partitions_available = isp_tiles_in_flight * 4U;
++         }
++      }
++
++      if (total_tiles_in_flight > (isp_tiles_in_flight + 1U))
++         total_tiles_in_flight = isp_tiles_in_flight + 1U;
++      total_tiles_in_flight += isp_tiles_in_flight;
++   }
++
++   if (PVR_HAS_FEATURE(dev_info, simple_internal_parameter_format) &&
++       PVR_GET_FEATURE_VALUE(dev_info, simple_parameter_format_version, 0) == 2)
++      total_tiles_in_flight = MIN2(total_tiles_in_flight, partitions_available);
++
++   if (PVR_HAS_FEATURE(dev_info, paired_tiles) && paired_tiles)
++      total_tiles_in_flight = MIN2(total_tiles_in_flight, partitions_available / 2);
++
++   if (total_tiles_in_flight == 0)
++      total_tiles_in_flight = 1;
++
++   struct ROGUE_CR_USC_PIXEL_OUTPUT_CTRL pixel = { 0 };
++   if (pixel_width == 1 && usc_min_output_regs == 1)
++      pixel.width = ROGUE_CR_PIXEL_WIDTH_1REGISTER;
++   else if (pixel_width == 2)
++      pixel.width = ROGUE_CR_PIXEL_WIDTH_2REGISTERS;
++   else if (pixel_width == 4)
++      pixel.width = ROGUE_CR_PIXEL_WIDTH_4REGISTERS;
++   else if (pixel_width == 8 && PVR_HAS_FEATURE(dev_info, eight_output_registers))
++      pixel.width = ROGUE_CR_PIXEL_WIDTH_8REGISTERS;
++   else if (usc_min_output_regs == 1)
++      pixel.width = ROGUE_CR_PIXEL_WIDTH_1REGISTER;
++   else
++      pixel.width = ROGUE_CR_PIXEL_WIDTH_2REGISTERS;
++
++   if (PVR_HAS_FEATURE(dev_info, usc_pixel_partition_mask))
++      pixel.partition_mask = (1 << max_partitions) - 1;
++   else {
++      pixel.enable_4th_partition = true;
++      pixel.partition_mask = (1U << partitions_available) - 1U;
++   }
++   ROGUE_CR_USC_PIXEL_OUTPUT_CTRL_pack(pixel_ctl, &pixel);
++
++   struct ROGUE_CR_ISP_CTL ctl = { 0 };
++   if (PVR_HAS_FEATURE(dev_info, xt_top_infrastructure))
++      ctl.pipe_enable = (2 * total_tiles_in_flight) - 1;
++   else
++      ctl.pipe_enable = total_tiles_in_flight - 1;
++
++   /* The rest of ISP_CTL, as the reference's fragment stream sets it (pvr_arch_job_render.c):
++    * sample positioning on; empty tiles processed through the background object (this driver always
++    * has a background program: clears and reloads go through it); skip_init_hdrs where the
++    * multicore/simple-parameter combination allows it. The verified capture carries exactly these
++    * three bits. */
++   ctl.sample_pos = true;
++   ctl.process_empty_tiles = true;
++   if (PVR_HAS_FEATURE(dev_info, gpu_multicore_support) &&
++       PVR_HAS_FEATURE(dev_info, simple_internal_parameter_format))
++      ctl.skip_init_hdrs = true;
++   ROGUE_CR_ISP_CTL_pack(isp_ctl, &ctl);
++}
++
 +void
 +pvr_vdm_cam_size(const struct pvr_device_info *dev_info, uint32_t vs_output_size,
 +                 bool raster_enable, uint32_t *cam_size_out,
@@ -4230,10 +4374,10 @@ index 00000000..937c76a7
 +}
 diff --git a/src/gallium/drivers/pvr_native/pvr_csb.h b/src/gallium/drivers/pvr_native/pvr_csb.h
 new file mode 100644
-index 00000000..d6ea11c6
+index 00000000..00f9914f
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_csb.h
-@@ -0,0 +1,846 @@
+@@ -0,0 +1,855 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -4388,6 +4532,15 @@ index 00000000..d6ea11c6
 +bool pvr_csb_emit_vdm_state(struct pvr_csb *csb, bool cut_index_enable,
 +                            uint32_t cut_index, const struct pvr_vdm_vs *vs,
 +                            uint32_t *words_out);
++
++/* ISP/VDM tiles-in-flight setup: the ISP pipe enable count and the USC pixel-output control word
++ * (width and partition mask). A port of the reference's pvr_arch_setup_tiles_in_flight(); the
++ * constants come from the device features and the kernel's runtime info, exactly as there. */
++void pvr_setup_tiles_in_flight(const struct pvr_device_info *dev_info,
++                               const struct pvr_device_runtime_info *runtime,
++                               uint32_t pixel_width, bool paired_tiles,
++                               uint32_t max_tiles_in_flight, uint32_t *isp_ctl,
++                               uint32_t *pixel_ctl);
 +
 +/* cam_size and max_instances from the vertex output size. A port of the reference's
 + * pvr_arch_calculate_vertex_cam_size(); see the definition for why it is copied instead of
@@ -5082,10 +5235,10 @@ index 00000000..d6ea11c6
 +#endif /* PVR_CSB_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_draw.c b/src/gallium/drivers/pvr_native/pvr_draw.c
 new file mode 100644
-index 00000000..937de365
+index 00000000..c600841f
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_draw.c
-@@ -0,0 +1,2089 @@
+@@ -0,0 +1,2091 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -7102,14 +7255,16 @@ index 00000000..937de365
 +    * clamped to the core minimum of two registers (the reference derives it the same way from
 +    * hw_render->output_regs_count). The value sits in bits [0:1] of USC_PIXEL_OUTPUT_CTRL:
 +    * 2REGISTERS = 0, 4REGISTERS = 1, 8REGISTERS = 2. */
-+   const unsigned width_regs = MAX2(util_next_power_of_two(total_dwords), 2u);
-+   uint32_t usc_pixel_output_ctrl = 0x00007ff8u & ~0x3u;
-+   if (width_regs == 4)
-+      usc_pixel_output_ctrl |= 1u;   /* ROGUE_CR_PIXEL_WIDTH_4REGISTERS */
-+   else if (width_regs == 8)
-+      usc_pixel_output_ctrl |= 2u;   /* ROGUE_CR_PIXEL_WIDTH_8REGISTERS */
-+   /* shortcut: the remaining ISP scalars are from the verified 512x512 single-colour draw. */
-+   pvr_frag_static_stream_set_isp(fstream, sizeof(fstream), usc_pixel_output_ctrl, 0x80035000u,
++   /* The ISP/VDM tile pipeline configuration, from the device features and the kernel's runtime
++    * info (the reference's pvr_arch_setup_tiles_in_flight). The pixel-output width inside it is
++    * derived from the colour dwords this render writes. */
++   uint32_t usc_pixel_output_ctrl, isp_ctl;
++   pvr_setup_tiles_in_flight(&scr->dev_info, &scr->dev_runtime_info, total_dwords, false, 0,
++                             &isp_ctl, &usc_pixel_output_ctrl);
++   if (getenv("PVR_ISP_LOG") != NULL)
++      fprintf(stderr, "ISPCTL pixel=%08x isp=%08x total_dwords=%u\n", usc_pixel_output_ctrl,
++              isp_ctl, total_dwords);
++   pvr_frag_static_stream_set_isp(fstream, sizeof(fstream), usc_pixel_output_ctrl, isp_ctl,
 +                                  0x00000201u);
 +   uint32_t frag_flags = 0;
 +   if (d->zs != NULL) {
