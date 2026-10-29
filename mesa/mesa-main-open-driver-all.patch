@@ -1373,10 +1373,10 @@ index 00000000..0c679b3f
 +#endif /* PVR_COMPUTE_TRIANGLE_SPV_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_context.c b/src/gallium/drivers/pvr_native/pvr_context.c
 new file mode 100644
-index 00000000..74a29af5
+index 00000000..d77fc078
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_context.c
-@@ -0,0 +1,987 @@
+@@ -0,0 +1,991 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + */
@@ -1997,9 +1997,13 @@ index 00000000..74a29af5
 +         return;
 +   }
 +
-+   /* A full colour clear of buffer 0 becomes the render's background object; then there is
-+    * nothing for the CPU to fill for it. */
++   /* A full colour clear of buffer 0 becomes the render's background object (one store per
++    * attachment, each packed for that attachment's format, so mixed-format MRT clears too); then
++    * there is nothing for the CPU to fill for it. */
 +   bool gpu_cleared = false;
++   /* Mixed-format MRT falls back to per-attachment CPU clears (the GPU clear writes one packed
++    * colour per attachment from a single background program, which is only verified while every
++    * attachment shares a format). */
 +   bool mrt_same_fmt = true;
 +   for (unsigned i = 1; i < ctx->fb.nr_cbufs; i++)
 +      if (ctx->fb.cbufs[i].format != ctx->fb.cbufs[0].format)
@@ -5019,10 +5023,10 @@ index 00000000..e833ae6c
 +#endif /* PVR_CSB_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_draw.c b/src/gallium/drivers/pvr_native/pvr_draw.c
 new file mode 100644
-index 00000000..958e6fd9
+index 00000000..82fa3d33
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_draw.c
-@@ -0,0 +1,1983 @@
+@@ -0,0 +1,2010 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -5084,7 +5088,7 @@ index 00000000..958e6fd9
 +};
 +
 +struct pvr_draw_bg {
-+   uint32_t color;
++   uint32_t colors[PVR_MAX_COLOR_ATTACHMENTS];
 +   unsigned nr_outputs;
 +   uint64_t pds_offset;
 +};
@@ -5173,6 +5177,7 @@ index 00000000..958e6fd9
 +
 +   bool clear_valid;
 +   uint32_t clear_color;
++   union pipe_color_union clear_value;
 +   /* The render's depth buffer (NULL: none) and its recorded clear. */
 +   struct pipe_resource *zs;
 +   bool zclear_valid;
@@ -5915,17 +5920,20 @@ index 00000000..958e6fd9
 +                           data_off, data_dwords, temps);
 +}
 +
-+/* The background object for a clear colour: a constant-colour fragment program. */
++/* The background object for a clear colour: a constant-colour fragment program. Each attachment
++ * gets the clear colour packed for its own format, so a mixed-format MRT clear needs one program
++ * with one store per output dword. */
 +static uint64_t
-+draw_bg_program(struct pvr_context *ctx, struct pvr_draw_state *d, uint32_t color,
-+                unsigned nr_outputs)
++draw_bg_program(struct pvr_context *ctx, struct pvr_draw_state *d,
++                const uint32_t *colors, unsigned nr_outputs)
 +{
 +   struct pvr_screen *scr = draw_screen(ctx);
 +   nir_builder b;
 +   struct pvr_shader *bg;
 +
 +   for (unsigned i = 0; i < d->nr_bg; i++) {
-+      if (d->bg[i].color == color && d->bg[i].nr_outputs == nr_outputs)
++      if (d->bg[i].nr_outputs == nr_outputs &&
++          !memcmp(d->bg[i].colors, colors, nr_outputs * sizeof(colors[0])))
 +         return d->bg[i].pds_offset;
 +   }
 +   b = nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, pco_nir_options(), "pvr_bg");
@@ -5933,15 +5941,16 @@ index 00000000..958e6fd9
 +   /* One packed colour into each colour attachment's pixel output dword: the EOT emit for
 +    * attachment i reads dword i. */
 +   for (unsigned i = 0; i < nr_outputs; i++)
-+      nir_frag_store_pco(&b, nir_imm_int(&b, (int)color), .base = i);
++      nir_frag_store_pco(&b, nir_imm_int(&b, (int)colors[i]), .base = i);
 +   nir_jump(&b, nir_jump_return);
 +   bg = pvr_shader_create(b.shader, scr->pco_ctx);
 +   if (bg == NULL || !draw_upload_fs(scr, bg))
 +      return 0;
 +   /* shortcut: four cached colours, round robin; the evicted programs stay allocated. */
-+   const unsigned slot = d->nr_bg < ARRAY_SIZE(d->bg) ? d->nr_bg++ : (color & 3);
-+   d->bg[slot] = (struct pvr_draw_bg){ .color = color, .nr_outputs = nr_outputs,
++   const unsigned slot = d->nr_bg < ARRAY_SIZE(d->bg) ? d->nr_bg++ : (colors[0] & 3);
++   d->bg[slot] = (struct pvr_draw_bg){ .nr_outputs = nr_outputs,
 +                                       .pds_offset = bg->pds_offset };
++   memcpy(d->bg[slot].colors, colors, nr_outputs * sizeof(colors[0]));
 +   return bg->pds_offset;
 +}
 +
@@ -6678,6 +6687,7 @@ index 00000000..958e6fd9
 +                               ctx->fb.width, ctx->fb.height, ctx->fb.zsbuf.texture)))
 +      return false;
 +   d->clear_valid = true;
++   d->clear_value = *color;
 +   d->clear_color = draw_pack_color(ctx->fb.cbufs[0].format, color);
 +   return true;
 +}
@@ -6881,22 +6891,29 @@ index 00000000..958e6fd9
 +            eot_addrs[i] = pvr_resource_level_addr(ri, ctx->fb.cbufs[i].level);
 +            eot_formats[i] = ctx->fb.cbufs[i].format;
 +         }
-+         for (unsigned i = 1; i < nr_attach; i++) {
-+            if (eot_formats[i] != eot_formats[0]) {
-+               static bool warned;
-+               if (!warned) {
-+                  warned = true;
-+                  mesa_logw("pvr: mixed-format MRT is not supported yet; rendering to attachment 0");
-+               }
-+               nr_attach = 1;
-+               break;
++      }
++   }
++   /* Mixed formats are still single-attachment: the per-attachment write path is not validated
++    * yet (and until it is, attachment 0 is the honest fallback rather than a wrong second target). */
++   if (nr_attach > 1) {
++      for (unsigned i = 1; i < nr_attach; i++) {
++         if (eot_formats[i] != eot_formats[0]) {
++            static bool warned;
++            if (!warned) {
++               warned = true;
++               mesa_logw("pvr: mixed-format MRT is not supported yet; rendering to attachment 0");
 +            }
++            nr_attach = 1;
++            break;
 +         }
 +      }
 +   }
 +   const uint64_t eot = draw_eot_program(ctx, d, nr_attach, eot_addrs, eot_formats, zonly);
-+   const uint64_t bg = draw_bg_program(ctx, d, d->clear_valid ? d->clear_color : 0,
-+                                       zonly ? 1 : nr_attach);
++   uint32_t bg_colors[PVR_MAX_COLOR_ATTACHMENTS] = { 0 };
++   for (unsigned i = 0; i < nr_attach; i++)
++      if (d->clear_valid)
++         bg_colors[i] = draw_pack_color(eot_formats[i], &d->clear_value);
++   const uint64_t bg = draw_bg_program(ctx, d, bg_colors, zonly ? 1 : nr_attach);
 +   uint64_t pbe_words[PVR_MAX_COLOR_ATTACHMENTS * 3] = { 0 };
 +   if (eot == 0 || bg == 0 || !pvr_csb_pbe_words(eot_formats[0], pvr_resource_level_stride(rt, d->rt_level),
 +                                                 d->rt_w, d->rt_h,
@@ -6940,8 +6957,22 @@ index 00000000..958e6fd9
 +      pvr_csb_pds_bgnd_words((uint32_t)bg, (uint32_t)bg, (uint32_t)bg, 0, 0, 0, bgnd);
 +   memcpy(pr_bgnd, bgnd, sizeof(bgnd));
 +   pvr_frag_static_stream_fill_bgnd(fstream, sizeof(fstream), d->bct_addr, bgnd, pr_bgnd);
-+   /* shortcut: ISP scalars from the verified 512x512 single-colour draw (review item A14). */
-+   pvr_frag_static_stream_set_isp(fstream, sizeof(fstream), 0x00007ff8u, 0x80035000u, 0x00000201u);
++   /* USC pixel-output width: the total colour dwords per pixel, rounded up to a power of two and
++    * clamped to the core minimum of two registers (the reference derives it the same way from
++    * hw_render->output_regs_count). The value sits in bits [0:1] of USC_PIXEL_OUTPUT_CTRL:
++    * 2REGISTERS = 0, 4REGISTERS = 1, 8REGISTERS = 2. */
++   unsigned total_dwords = 0;
++   for (unsigned i = 0; i < nr_attach; i++)
++      total_dwords += DIV_ROUND_UP(util_format_get_blocksize(eot_formats[i]), 4u);
++   const unsigned width_regs = MAX2(util_next_power_of_two(total_dwords), 2u);
++   uint32_t usc_pixel_output_ctrl = 0x00007ff8u & ~0x3u;
++   if (width_regs == 4)
++      usc_pixel_output_ctrl |= 1u;   /* ROGUE_CR_PIXEL_WIDTH_4REGISTERS */
++   else if (width_regs == 8)
++      usc_pixel_output_ctrl |= 2u;   /* ROGUE_CR_PIXEL_WIDTH_8REGISTERS */
++   /* shortcut: the remaining ISP scalars are from the verified 512x512 single-colour draw. */
++   pvr_frag_static_stream_set_isp(fstream, sizeof(fstream), usc_pixel_output_ctrl, 0x80035000u,
++                                  0x00000201u);
 +   uint32_t frag_flags = 0;
 +   if (d->zs != NULL) {
 +      const struct pvr_resource *zr = pvr_resource(d->zs);

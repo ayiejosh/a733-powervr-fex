@@ -1411,3 +1411,33 @@ Verification (open stack, `open-perf/mrt_test` with 2x RGBA8, compared against z
 Known v1 limitations: all attachments must share attachment 0's format (mixed sets render to
 attachment 0 with a warning); per-render-target blend state is not tracked (ES2 has none); tile
 buffers are unused. WIP branch `wip/mrt` squashed into patch 0332 on `pr12-native-ta-fix`.
+
+## Round-74 (2026-10-29): four render targets - the pixel-output width was the gate
+
+ES3 needs four colour attachments, and the cap was already 4, but 3- and 4-attachment framebuffers
+rendered nothing (every attachment read back black, including after a clear). The cause was one
+hardcoded value: the fragment static stream set `USC_PIXEL_OUTPUT_CTRL` to `0x00007ff8`, i.e. the
+2REGISTERS width from the verified single-colour 512x512 capture, and the USC pixel-output path only
+carries as many dwords as that field says. The reference derives it from the render
+(`pvr_get_pixel_output_width`: total output registers, next power of two, clamped to the core minimum);
+patch 0333 does the same: total colour dwords per pixel from the attachment formats, round up to a
+power of two, encode 2/4/8REGISTERS in bits [0:1]. Two-attachment renders keep the same value as
+before (minimum 2), so nothing regressed.
+
+Verified with `open-perf/mrt_test` extended to N attachments (`MRT_ATT=4`): 4x RGBA8 with
+`glDrawBuffersEXT(4)` gives attachment0 red, 1 blue, 2 green, 3 yellow - exactly the
+`gl_FragData[]` values; clear covers all four; 2-target mode unchanged. Full gate green: 49 gltri
+modes (all native `glGetError 0x0`), 28 mip modes, rttest PASS, rt8test unchanged, 0 MMU faults.
+Patch 0333, series head `6b92b768`.
+
+Deferred with evidence, not by assumption:
+- **Mixed-format MRT** still falls back to attachment 0 (warning) - the GPU clear program now carries
+  one packed colour per attachment, but the per-attachment write path is not validated yet. While
+  testing it, a BGRA8 colour target cleared through the PBE and sampled back returned red/blue
+  swapped (single-attachment too, so pre-existing): the BGRA8 render-target byte order is wrong
+  somewhere between the PBE write and the TPU decode. That is the next format bug to fix; it also
+  blocks using BGRA8 as the second mixed attachment.
+- Random note for the next session: the board hard-reset at 20:54:47 with no Oops/BUG/panic in
+  `journalctl -b -1` and `reboot-tracker` recorded `SOURCE=power-loss`; the last GPU activity was a
+  pvrsrvkm probe + HDMI re-mode ~2.5 min earlier, the same hard-reset signature as the earlier
+  vendor-bound GL resets. Keep using `switch-safe.sh`/`gl-open.sh` and end sessions on vendor+desktop.
