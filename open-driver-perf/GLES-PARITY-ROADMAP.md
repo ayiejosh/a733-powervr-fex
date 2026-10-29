@@ -83,10 +83,12 @@ GL versions today (probe `open-perf/glinfo`):
    GL-CTS/glmark2-es3 as the gate. sRGB formats/RT done in patch 0336 (ES2 EXT_sRGB parity).
 5. **ES3.1/3.2 extras and vendor-only extensions**: as ranked above; skip geometry/tessellation emulation
    unless an app demands it.
-6. **Performance**: pco codegen parity (round-66), terrain mip-submit batching (round-64), per-scene
-   tuning; re-run the same-binary three-way after each phase. Round-82 baseline: native 810/807 vs
-   zink 776/774 vs vendor 1216/1199; native wins 9/10 scenes against zink, worst against vendor:
-   refract, terrain, shadow, shading.
+6. **Performance**: pco codegen parity (round-66), per-scene tuning; re-run the same-binary three-way
+   after each phase. Round-82 baseline: native 810/807 vs zink 776/774 vs vendor 1216/1199; native wins
+   9/10 scenes against zink, worst against vendor: refract, terrain, shadow, shading.
+   Round-84: terrain CPU overhead fixed (EOT cache misses recompiled end-of-tile programs per render:
+   user CPU 12.1 -> 1.9 ms/frame, patch 0340); terrain is now GPU-bound (native ~46 ms GPU vs zink
+   ~34 ms), so the next lever there is pco codegen, plus submit-path batching (~60-90 us per flush).
 
 ## Standing rules
 Board between tests: vendor + desktop + original firmware (`tools/verify/switch-safe.sh`). Never start GL

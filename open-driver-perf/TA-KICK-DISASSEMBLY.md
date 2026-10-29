@@ -1759,3 +1759,27 @@ formats). The practical lesson: keep the sRGB render-target formats accepted.
 
 Next work returns to feature gap closure: `GL_OES_depth_texture_cube_map` (cube maps landed in 0339 and
 depth formats are already texturable), then `GL_EXT_draw_buffers_indexed`, then the ES3 core block.
+
+## Round-84 (2026-10-30): terrain profiled - per-frame EOT recompiles were eating the CPU
+
+Terrain is the weakest scene against both zink (0.74x) and vendor (0.51x), so it got profiled with
+temporary counters/timers in `pvr_draw_flush` (`--results fps:cpu`, `-b terrain`):
+
+- native: 19 fps, frame **55.2 ms**, user CPU **12.1 ms**, system 5.6 ms
+- zink: 27 fps, frame 38.3 ms, user CPU 3.5 ms, system 1.8 ms
+
+Per-flush timing showed the flush costing ~266 us with **~198 us in `draw_eot_program`**, and the
+reason: terrain renders about 27 distinct target sets per frame (mip levels + bloom passes), the EOT
+program cache held 32 entries and missed **83%** of lookups, and each miss recompiles the end-of-tile
+USC program and uploads it (measured ~200 us).
+
+Fix: **512 EOT cache entries** (patch 0340). Terrain steady state: hits 1464/9415 -> 9802/9885,
+per-flush EOT ~200 us -> ~1 us, **user CPU 12.1 ms -> 1.9 ms per frame** (system 3.2 ms). Terrain
+itself only moves 18 -> 19-20 fps because it is now GPU-bound (frame 51.6 ms with ~2 ms CPU), and the
+full glmark2 score is unchanged (809) - this is a CPU-overhead fix for multi-target workloads.
+
+Remaining terrain gap is GPU-side: native ~46 ms of GPU time per frame vs zink ~34 ms, pointing at pco
+codegen/fragment work rather than driver submission. Next perf steps: pco codegen on the terrain
+fragment shader, then the submit-path batching idea (per-flush submit ioctl is ~60-90 us).
+Full gate green after the change (49 gltri modes, mip 28, rttest PASS, rt8test, MRT/sRGB/instancing/
+extensions/cube tests unchanged, 0 MMU faults). Patch 0340, series head `1e8c39aa`.

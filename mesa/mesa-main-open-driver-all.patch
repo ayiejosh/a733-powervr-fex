@@ -5082,10 +5082,10 @@ index 00000000..d6ea11c6
 +#endif /* PVR_CSB_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_draw.c b/src/gallium/drivers/pvr_native/pvr_draw.c
 new file mode 100644
-index 00000000..43555d28
+index 00000000..937de365
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_draw.c
-@@ -0,0 +1,2083 @@
+@@ -0,0 +1,2089 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -5248,7 +5248,13 @@ index 00000000..43555d28
 +   float zclear;
 +
 +   /* Caches. */
-+   struct pvr_draw_eot eot[32];
++   /* End-of-tile programs, per target set (addresses and formats). Each entry is a compiled USC
++    * program: a miss costs pco compilation plus a USC and a PDS upload, which was 200 us per render
++    * on the terrain scene. A mip-chain-heavy scene renders dozens of distinct level sizes per frame
++    * (terrain: ~27 target sets, 83% miss rate with 32 entries); 512 entries hold every set of such a
++    * scene for ~50 KB and turns the steady state into cache hits. Entries are never freed: the
++    * programs stay allocated on the PDS heap either way. */
++   struct pvr_draw_eot eot[512];
 +   unsigned nr_eot;
 +   struct pvr_draw_bg bg[4];
 +   struct pvr_draw_load load[8];
