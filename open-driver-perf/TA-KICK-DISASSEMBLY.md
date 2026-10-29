@@ -1569,3 +1569,21 @@ All three are advertised now. Full gate green: 49 gltri modes (all native glGetE
 modes, rttest PASS (bad=0/262144), rt8test unchanged, sRGB/MRT/instancing unchanged, 0 MMU faults.
 Patch 0337, series head `ba12e2e9`; PR #12 pushed. Next ES2 cheap items left: half-float linear
 filtering, depth-texture-cube-map, stencil8; then the ES3 core work.
+
+## Round-80 (2026-10-29): half-float linear filtering; and ES2 cube maps are a real, still-missing gap
+
+- **`GL_OES_texture_half_float_linear` DONE (patch 0338)**: half-float textures were sampled with
+  nearest only because the cap was never set. This core has `has_pbe_filterable_f16` (the feature the
+  reference checks), so `caps->texture_half_float_linear` now follows it and the extension is
+  advertised. Verified against zink with `open-perf/f16lin_test.c`: a 4x4 RGBA16F texture with
+  columns 0,0,1,1 sampled with `GL_LINEAR` gives (135,135,135,255) on **both** drivers; `GL_NEAREST`
+  gives 255 on both. 32-bit float filtering does not exist in this hardware, so
+  `GL_OES_texture_float_linear` stays unadvertised (honest).
+- **ES2 cube maps are not supported at all** - and that is a core-feature gap, not an extension one.
+  `resource_create` refuses `PIPE_TEXTURE_CUBE` and `max_texture_cube_levels = 0`; a probe
+  (`/tmp/cube_probe.c`) shows Mesa's `Bad t->Target in _mesa_test_texobj_completeness` +
+  `GL_INVALID_VALUE`, while zink returns the six face colours correctly. Fixing this needs: cube
+  resource layout (six twiddled faces, contiguous, mip chain per face), the texture descriptor's
+  `TEXSTATE_TEXTYPE_CUBE` with `word1.depth = 5` (array layers minus one, the reference's rule) and
+  the per-layer stride in the pco image meta (`PCO_IMAGE_META_LAYER_SIZE`), plus cube upload support.
+  This is the next hundred-percent-real gap to close; `GL_OES_depth_texture_cube_map` builds on it.

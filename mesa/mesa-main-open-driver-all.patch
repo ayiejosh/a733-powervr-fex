@@ -13696,10 +13696,10 @@ index 00000000..b31a921d
 +#endif /* PVR_RESOURCE_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_screen.c b/src/gallium/drivers/pvr_native/pvr_screen.c
 new file mode 100644
-index 00000000..3153b5f5
+index 00000000..cce7aa3b
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_screen.c
-@@ -0,0 +1,431 @@
+@@ -0,0 +1,436 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -13982,6 +13982,11 @@ index 00000000..3153b5f5
 +      /* pco lowers ddx/ddy for the fragment stage (nir_intrinsic_ddx/ddy in pco_trans_nir), so
 +       * GL_OES_standard_derivatives can be advertised. */
 +      caps->fragment_shader_derivatives = true;
++      /* Half-float textures are filterable on this core (has_pbe_filterable_f16), so
++       * GL_OES_texture_half_float_linear can be advertised. 32-bit float filtering is not
++       * available and is not claimed. */
++      if (PVR_HAS_FEATURE(&screen->dev_info, pbe_filterable_f16))
++         caps->texture_half_float_linear = true;
 +      caps->vertex_element_instance_divisor = true;
 +      /* Multiple render targets: the PBE writes one emit per attachment (EOT program) and the
 +       * fragment variant maps data0..3. ES3 needs 4; v1 requires a shared format (see flush). */
