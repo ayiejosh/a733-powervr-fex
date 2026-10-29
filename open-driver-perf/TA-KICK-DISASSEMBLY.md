@@ -2260,3 +2260,28 @@ paired with the int equation. Next probe: add a fragment-stream dump to the refe
 (same hook style used for the VDM control stream earlier) and byte-diff it against the native stream for
 an identical 64x64 depth-buffered clear+quad draw, with and without depth bias. WIP saved at
 `/tmp/dbias-wip-final.patch` (includes the env switches and the reference ISP_CTL print).
+
+## Round-110 (2026-10-30): glPolygonOffset works again - constant term emulated, clamp extension added
+
+glPolygonOffset (ES2 core) was silently ignored. The hardware path is still unusable: with the
+depth-bias table wired up, setting ISP_CTL bit 20 (`dbias_is_int`, which the reference packs
+unconditionally as part of its constant 0x80135000) makes the firmware never complete the render, and
+the hang reproduces even with the table/base untouched. So the feature is implemented where it can be
+exact instead:
+
+- the **constant term** `units * r` (r = smallest resolvable depth difference for the depth format) is
+  added to the TA viewport depth transform for the draw. The viewport z words are post-projection, so
+  this is an exact constant window-depth shift - the same depth the hardware bias would add.
+- `rs->offset_clamp` clamps that bias, so `caps.polygon_offset_clamp` and
+  **`GL_EXT_polygon_offset_clamp`** are honest; ES2 extension list 70 -> 71.
+- the TA `dbenable` bit is off, so the unresolved hardware path cannot add unknown bias.
+
+**Limitation (documented):** the slope-factor term (`factor * max depth slope`) is not applied.
+Constant-term offsets - the usual shadow-mapping usage - are exact; sloped geometry gets only the
+constant part. The hardware depth-bias path remains parked with the reference capture as evidence
+(round-109: reference ISP_CTL always 0x80135000, our identical word hangs).
+
+Verified with `tools/verify/polygon_offset_probe.c` (depth 0.25 quad over 0.5 clear): without offset it
+passes, units +40000 rejects it, units -40000 passes - byte-identical to zink; with clamp 0.1 the
++40000 case passes again, also matching zink. Full gate green (gltri 49, mip 28, rttest PASS, rt8test,
+MRT 2/4, instancing, sRGB, 0 faults). Patch 0346, series head `483a4890`.
