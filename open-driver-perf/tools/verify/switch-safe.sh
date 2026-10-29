@@ -80,12 +80,19 @@ vendor)
    # Let the vendor module finish init (firmware load, drm registration) before any client opens the
    # GPU: a client opening during init has NULL-derefed in LinuxServicesConnectionFromFile and
    # hard-reset this board twice (03:08 and 04:15 on 2026-10-30, both on the restore path).
+   # Wait for the whole vendor bring-up, not just drm registration: the firmware and shader binary
+   # load a few seconds later, and a client opening before they finish has NULL-derefed in
+   # LinuxServicesConnectionFromFile three times (03:08, 04:15, 06:18 on 2026-10-30), each resetting
+   # the board. Require both firmware lines, then settle.
    i=0
-   while [ $i -lt 40 ]; do
-      sudo dmesg | tail -40 | grep -q "Initialized pvr" && break
+   while [ $i -lt 60 ]; do
+      tail=$(sudo dmesg | tail -60)
+      echo "$tail" | grep -q "Initialized pvr" &&
+         echo "$tail" | grep -q "RGX Firmware image" &&
+         echo "$tail" | grep -q "Shader binary image" && break
       sleep 0.5; i=$((i+1))
    done
-   sleep 3
+   sleep 5
    [ "$(drv)" = pvrsrvkm ] || { echo "ABORT: not bound to pvrsrvkm ($(drv))"; exit 1; }
    sudo systemctl start display-manager
    ;;
