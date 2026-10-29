@@ -1180,3 +1180,25 @@ performance effect** (the earlier "+0.5%" and shadow "+55%" deltas came from the
 different harness/clock state, not the native driver). They stay in the series for the correctness they
 fix (depth-only colour traffic, RGB565 decode/mip chains); their commit messages predate the
 methodology discovery.
+
+## Round-61 (2026-10-29): native driver-specific deficits - terrain profiled, BO churn located
+
+Terrain is native's worst driver-specific gap on the corrected X11 harness (native 19 vs zink 27 FPS,
+0.70). Profiling with env-gated counters in `pvr_bo.c`/`pvr_resource.c` (temporary, reverted):
+
+- terrain run: **3364 BO creates, 114 MB, only 94 destroys**; the histogram is dominated by **1509 eight-byte
+  and 1507 forty-byte BOs**. refract (157) and ideas (135) are fine - this is terrain-specific churn.
+- backtraces: those tiny BOs come from `pvr_vm_heap_alloc` in the path
+  `st_generate_mipmap -> st_finalize_texture -> st_texture_image_copy -> pvr_resource_copy_region ->
+  pvr_draw_blit -> pvr_draw_flush`, i.e. the app updates the terrain texture's level 0 each frame and the
+  state tracker regenerates the mip chain through our GPU blit path, which allocates small VM-heap/data-set
+  objects per blit instead of reusing them. (~37 tiny BOs per frame; ~10 mip levels per frame.)
+- first hypothesis tested and rejected: `PVR_DRAW_HWRT_CACHE` 16 -> 64 did **not** help (terrain BO
+  creates rose to 4998, FPS unchanged 18), so it is not HWRT data-set eviction; the allocation is on the
+  `pvr_vm_heap_alloc` path itself.
+- correlation: the same per-frame mip regeneration is likely why refract (native 35-37 vs zink 44-47) and
+  terrain lag zink, both being the scenes with per-frame `st_generate_mipmap`.
+
+Next: instrument `pvr_vm_heap_alloc` callers directly (sizes <= 64) and remove the per-blit allocation -
+either cache the small heap chunks or avoid the flush/open dance per mip level. All instrumentation and the
+cache change were reverted; tree back at the PR head.
