@@ -1108,3 +1108,24 @@ Verified: plain RGB565 sampling and a CPU-uploaded RGB565 mip chain (256x256, 9 
 the known DRI3 warning; 0 MMU faults. Exported as patch 0327, series 327 tree-checked, PR pushed.
 WIP kept locally on branch `wip/linear-mips` (linear chains + pck-info meta) in case R8/RG8 get real
 decode support later; not pushed.
+
+## Round-59 (2026-10-29): native GL works under X11 through EGL; drawbench X11 parity with vendor
+
+Two harness findings from the open items:
+
+1. **Live-window deferred clears (handoff #6)**: windowed `glmark2-es2-wayland -b build --size 400x300`
+   on headless weston runs through the window-system-buffer + deferred-clear path: native 1666 FPS vs zink
+   1342, no errors, 0 faults. The off-screen-only caveat is removed for the Wayland window path (Xwayland
+   still needs the EGL/X11 client below).
+
+2. **Native GL under X11 works through EGL**: gltri gained `GLTRI_X11` (EGL_DEFAULT_DISPLAY + pbuffer) and
+   loads the native driver under Xwayland (`GL_RENDERER: PowerVR B-Series BXM-4-64`, correct triangle).
+   The earlier "native cannot run under X11" was a **GLX** limitation of the system glmark2 binary, not the
+   driver: any EGL/X11 client gets the native path.
+   - drawbench now has `DB_X11`; same binary/platform under X11: native **1252 / 1203 / 1451** FPS (median
+     1252, Xwayland on the open stack) vs vendor **1300 / 1184 / 1271** FPS (median 1271, bare Xorg on
+     pvrsrvkm) - **parity within noise** on the closest harness yet to glmark2's X11 conditions.
+   - Consequence for the handoff: a glmark2-class native X11 number needs a glmark2 build that uses
+     EGL/X11 (the distro binary is GLX), or the vendor run moved to an EGL/X11 harness as done here.
+
+No driver change in this round; tools updated (`tools/verify/{gltri.c,drawbench.c}`).
