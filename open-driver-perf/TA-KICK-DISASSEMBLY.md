@@ -2058,3 +2058,19 @@ three runs), and the resulting three-way numbers are steady:
 Native ~0.67x vendor, ~1.04x zink - in noise of rounds 82/93. The remaining work is feature parity
 (ES3 core; twiddle-layout RE parked) and the per-scene GPU gap, which the earlier rounds showed is not
 submission plumbing.
+
+## Round-99 (2026-10-30): extension list audited - compressed extensions are honest via Mesa fallback
+
+The native ES2 extension list (70) advertises `GL_OES_compressed_ETC1_RGB8_texture`, the S3TC/DXT
+family, ASTC LDR and the ANGLE DXT aliases even though this driver supports no compressed formats.
+Not dishonest advertising: Mesa's `st_extensions.c` gates those extensions on a format list with a
+fallback (e.g. ETC1's `{PIPE_FORMAT_ETC1_RGB8, PIPE_FORMAT_R8G8B8A8_UNORM}, GL_TRUE`, "at least one
+format must be supported"), so uploads arrive as RGBA8 and Mesa decompresses/converts on the CPU. The
+driver's `is_format_supported` rejects non-PLAIN layouts explicitly, so nothing compressed reaches it.
+
+Remaining ES2-era extensions that would need real hardware work (not just caps), for the record:
+`EXT_occlusion_query_boolean` (OCLQRY program + per-query buffers), `EXT_multisampled_render_to_texture`
+(MSAA tile paths), `EXT_disjoint_timer_query` (GPU timestamps), `EXT_clip_control`/`EXT_depth_clamp`
+(TA/PPP clip state, undocumented for this core), `EXT_texture_mirror_clamp_to_edge` (no TPU wrap mode),
+and depth-cube/compressed *unchanged* (twiddled upload, parked). So the ES2-visible surface is now
+either done, hardware-blocked, or Mesa-fallback-honest; the next real increment is the ES3 core block.
