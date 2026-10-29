@@ -1971,3 +1971,19 @@ submission and does not pay the round trip per pass (27 passes at 754 fps vs 148
 submission batching (queue several renders' job sets, submit together with the kernel's job array),
 which is a multi-step change to the deferred-submission/hazard-tracking path - scoped for its own
 round, not a drive-by patch.
+
+## Round-93 (2026-10-30): three-way benchmark refreshed after 0340/0341
+
+First valid run after the 03:08 reboot (the first attempt was invalid - `/tmp` was cleared, so the
+glmark2 data symlink `/tmp/glm2egl` was missing and every run failed to load shaders; recreated and
+re-run). Same binary, same setup as round-82 (perf governor, CPUs 0-5 system / 6-7 bench, two runs):
+
+| stack | run 1 | run 2 |
+|---|---|---|
+| native (this driver) | 805 | 806 |
+| zink (open Vulkan) | 775 | 772 |
+| vendor IMG GLES | 1218 | 1203 |
+
+Within run-to-run noise of round-82 (810/807, 776/774, 1216/1199): the EOT-cache fix (0340) and the
+ISP-config derivation (0341) are CPU/correctness changes and do not move the aggregate glmark2 score,
+as stated in their commit messages. Native is at 0.67x vendor and 1.04x zink on this aggregate.

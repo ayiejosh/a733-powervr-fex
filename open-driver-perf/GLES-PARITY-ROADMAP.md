@@ -1,8 +1,9 @@
 # GLES parity roadmap: match and beat the vendor driver (2026-10-29)
 
 Target: feature and performance parity with IMG's shipping **GLES 3.2 build 24.2@6603887**, then beat it.
-Measured state 2026-10-29 23:28-00:02 (single binary, EGL/X11 glmark2, perf governor, 2 runs):
-native **810/807**, zink **776/774**, vendor **1216/1199** - the native driver now beats zink
+Measured state 2026-10-30 03:26-04:01, re-run after the 03:08 reboot (identical harness): native
+**805/806**, zink **775/772**, vendor **1218/1203** - unchanged within noise from round-82. Earlier
+round-82 numbers (2026-10-29 23:28-00:02): native **810/807**, zink **776/774**, vendor **1216/1199** - the native driver now beats zink
 (1.10x on summed per-scene FPS) and reaches 0.71x of vendor (was 0.57x before the MRT/instancing/
 sRGB/cube-map rounds). Per-scene gaps vs vendor are listed in round-82 notes: refract 0.49, terrain
 0.51, shadow 0.57, shading 0.58, ideas 0.61, bump 0.64, effect2d 0.67, jellyfish 0.75, build 0.82,
