@@ -1741,3 +1741,21 @@ different (copying or differently synchronised) route. Next probe: `strace -c` t
 swap/ioctl (drmSyncobj/DRI3) traffic in both modes, and print the EGL surface type/config glmark2 ends
 up with. The +19% is shipped either way (patch 0336); this only matters for understanding which
 presentation path is the fast one.
+
+### Round-83 fourth addendum: WSI probe bounded - configs/visuals identical, mechanism parked
+
+Two more probes, both negative, so the EXT_sRGB investigation is parked:
+- **Syscall profile** (`strace -c -f` on `glmark2 -b build`, both modes): the ioctl mix per frame is
+  the same (~6 ioctls/frame both modes); only the total counts differ with the frame count. No extra
+  copying/readback syscall appears in the slow mode.
+- **EGL config + native visual IDs**: extending the config enumerator with `EGL_NATIVE_VISUAL_ID` and
+  the X visual depth shows the 60 configs and their visuals are **identical** in both modes too.
+
+So the slow mode is not a different config, visual, surface format, draw stream or syscall mix; the
+difference is inside Mesa's own presentation logic keyed off driver format capability (the frame-end
+A/B proved it is in `eglSwapBuffers`). Parked as a Mesa-internals question rather than something to
+keep spending rounds on; the +19% is shipped either way (patch 0336 includes accepting the sRGB
+formats). The practical lesson: keep the sRGB render-target formats accepted.
+
+Next work returns to feature gap closure: `GL_OES_depth_texture_cube_map` (cube maps landed in 0339 and
+depth formats are already texturable), then `GL_EXT_draw_buffers_indexed`, then the ES3 core block.
