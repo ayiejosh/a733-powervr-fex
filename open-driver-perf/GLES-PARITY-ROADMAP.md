@@ -41,7 +41,9 @@ GL versions today (probe `open-perf/glinfo`):
   makes st call paths the driver does not have)
 
 **ES2-level extensions that are cheap and honest** (raise ES2 parity immediately)
-- `GL_EXT_texture_rg`: R8/RG8 sampler decode is currently unverified/black - implement TPU decode
+- `GL_EXT_texture_rg`: **verified (2026-10-30)**: R8 samples (128,0,0,255) and RG8 (128,64,0,255)
+  identically on native and zink (`tools/verify/rg_probe.c`), so the old "unverified/black" note was
+  stale and the advertised extension is honest. Original note (kept for context): implement TPU decode
   (WIP branch `wip/linear-mips` has the pck-info work), or convert; either way stop advertising formats
   that read back wrong
 - `GL_OES_standard_derivatives` **DONE (patch 0337)**: pco lowers ddx/ddy; cap set, matches zink.
