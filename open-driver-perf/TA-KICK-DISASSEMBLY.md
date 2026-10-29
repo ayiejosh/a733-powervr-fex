@@ -1909,3 +1909,22 @@ item is submission batching: queue multiple renders' job sets and submit them in
 API already takes a job array), with dependencies expressed as syncobj waits the kernel can order, as
 the reference does inside a command buffer. Scoped as its own multi-step change (hazard tracking for
 deferred submissions), not a quick patch.
+
+### Round-88 second addendum: what the three jobs do, and a dead end worth recording
+
+Tried removing the partial-render (PR) job from `pvr_job_submit_render` (the 3-job scheme is
+geometry + PR-fragment + fragment). Result: 6.7x apparent speedup but **all rendering disappears**
+(gltri reads back black, MRT black) - dropping the PR job skips the actual tile processing, so that
+number was measured on skipped work, not a speedup. Putting an empty command stream in the PR job
+gives the same black frames. So in this driver's scheme the PR job is the tile-render phase and the
+final fragment job does the pixel merge; both are needed.
+
+Reference cross-check (`pvr_arch_cmd_buffer.c`, `pvr_arch_queue.c`, `pvr_drm_job_render.c`): Vulkan
+also submits all three jobs per render, with the same PR/fragment split, and its PR job is a copy of
+the fragment stream with PR PBE/EOT words patched in. The difference is in the *submission plumbing*:
+Vulkan uses a **persistent `geom_to_pr_syncobj`** per context for the geometry->PR dependency, while
+this driver creates **three fresh syncobjs per render** (`drmSyncobjCreate` x3) and the kernel has to
+signal/wait them every kick; Vulkan also batches all of a frame's render jobs into one
+`DRM_IOCTL_PVR_SUBMIT_JOBS` array while this driver does one ioctl per render. Both are candidates for
+the fixed ~0.16 ms per-render cost measured above; changing the syncobj scheme to one persistent
+geometry->PR syncobj (as the reference) is the smaller, safer first step, then submission batching.
