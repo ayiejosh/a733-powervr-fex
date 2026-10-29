@@ -1331,3 +1331,19 @@ Verified against zink: GL_EXT_texture_rg now advertised; R8 and RG8 sampling **i
 Known limitation kept: glReadPixels from an R8/RG8 FBO with a *different* read format needs Mesa's
 format-converting blit, which this driver still refuses (read in the native format; blit conversion is a
 separate roadmap item). Exported as patch 0331, series 331 tree-checked.
+
+## Round-70 (2026-10-29): second vendor-bound reset; ES2 shader_texture_lod is a Mesa-core gap
+
+Two findings, no driver change:
+1. **Board reset cause**: the previous boot ended in a hard reset (watchdog, no Oops/panic in
+   `journalctl -b -1`) because a GLES harness was started while the **vendor driver was bound** - the
+   same unsafe pattern as 13:30, this time because a cycle left the board on vendor and the next test
+   command did not switch. New guard: `tools/verify/gl-open.sh <cmd>` always runs `switch-safe open`
+   first; use it for every EGL/GLES test from now on. Board recovered vendor+desktop, firmware intact.
+2. **GL_EXT_shader_texture_lod cannot be enabled from the driver**: Mesa 26.3's extension table has only
+   the desktop `ARB_shader_texture_lod` entry gated by `caps->fragment_shader_texture_lod`; there is no
+   ES2 `EXT_shader_texture_lod` entry at all, so setting the cap changes nothing for GLES (the
+   `texture2DLodEXT` test shader is rejected as an unsupported extension). Matching the vendor's ES2
+   explicit-LOD extension therefore needs Mesa-core work, not pvr_native work - dropped from the cheap
+   Phase-1 list (ponytail: no point shipping a cap that enables nothing).
+Verification after revert: plain gltri + rttest PASS, full `tri.sh` gate 49/49, 0 MMU faults.
