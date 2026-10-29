@@ -1654,3 +1654,29 @@ round-64 lead) and **refract** (cube map + derivative-heavy shading; cube maps o
 0339). Next perf steps: bisect the 0332-0339 batch to attribute the 680 -> 810 gain (likely the cube
 map/sRGB/format work removing state-tracker conversions or fallback paths), then terrain submit
 batching and a refract/shading codegen look. No driver patches this round - measurement only.
+
+## Round-83 (2026-10-30): bisecting the 680 -> 810 gain - it is patch 0336, and specifically EXT_sRGB
+
+The round-82 jump was reproducible under the same lightweight harness (switch-safe open, weston
+headless + Xwayland, glmark2-es2 --off-screen, two runs), so it was bisected commit by commit:
+
+| build | score |
+|---|---|
+| 0331 (pre-features) | 677 / 673 |
+| 0335 (instancing) | 673 |
+| 0336 with sRGB formats removed from `is_format_supported` | 670 / 675 / 676 |
+| 0336 (sRGB + multi-dword outputs) | 809 |
+| 0337 (derivatives/1010102/float) | 808 |
+| 0339 (HEAD, cube maps) | 810 / 810 |
+
+So the whole gain comes from patch 0336, and within it from **advertising the sRGB formats** (removing
+just those three lines from the render-target format list drops 809 -> 676 while the rest of 0336
+stays in). The full bench31 run at HEAD: native 810/807, zink 776/774, vendor 1216/1199.
+
+Mechanism is not yet understood: the default framebuffer format is `R8G8B8A8_UNORM` in **both**
+builds (temporary PVR_FBDUMP probe), so it is not a different surface format. The likely remaining
+explanation is a state-tracker choice that changes when `GL_EXT_sRGB` is advertised (texture internal
+format selection or a different draw path), to be pinned down next round by comparing the pipe texture
+formats the driver receives (PVR_TEXDBG) on the sRGB and no-sRGB builds for the same scene.
+Per-scene gain 0331 -> HEAD: ideas 1.56x, build 1.25x, jellyfish 1.24x, texture 1.21x, bump 1.17x,
+shading 1.16x, shadow 1.10x, effect2d 1.09x, terrain 1.05x, refract 1.01x.
