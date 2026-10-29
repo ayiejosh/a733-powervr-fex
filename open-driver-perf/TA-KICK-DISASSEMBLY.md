@@ -1720,3 +1720,24 @@ rather than from any extension or EGL attribute. The mechanism is still not iden
 default-framebuffer draw) and the depth/stencil formats, (2) `MESA_DEBUG=1`/state trace to see whether
 the fragment shader variant or the number of GPU passes changes, (3) count submitted frag/geom jobs per
 frame in both modes (PVR_FRAG_LOG-style counters). The +19% itself is shipped regardless (patch 0336).
+
+### Round-83 third addendum: the EXT_sRGB gain lives in the swap/presentation path, not rendering
+
+The per-flush trace showed identical work in both modes (same target `R8G8B8A8_UNORM`, same
+`Z24X8` depth, one draw and one clear per frame, 800x600; only the number of frames differed). So the
+frame-end mode was varied in the same A/B/A/B setup:
+
+| frame-end | sRGB accepted | sRGB refused |
+|---|---|---|
+| default (swap) | 1308 | 1078 |
+| `--frame-end=finish` (no swap) | 1113 | 1122 |
+| `--frame-end=none` | 1323 | 1319 |
+
+The 20% gap appears **only when eglSwapBuffers is part of the frame**; without the swap the two modes
+are identical. Combined with the earlier facts (same GPU draw work, same pipe formats, same EGL config
+list, GL extension string irrelevant), this says the *presentation/WSI* path Mesa picks differs when
+the driver refuses sRGB render-target formats - most plausibly Mesa's X11/EGL surface path taking a
+different (copying or differently synchronised) route. Next probe: `strace -c` the
+swap/ioctl (drmSyncobj/DRI3) traffic in both modes, and print the EGL surface type/config glmark2 ends
+up with. The +19% is shipped either way (patch 0336); this only matters for understanding which
+presentation path is the fast one.
