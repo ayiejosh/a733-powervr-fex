@@ -2242,3 +2242,21 @@ Further `glPolygonOffset` probing:
 - Next approach for a working feature: capture a vendor Vulkan draw that actually uses depth bias
   (VkPipelineRasterizationState.depthBias* != 0) and diff its fragment/geometry stream against ours to
   find the missing enable/bits, instead of guessing. WIP saved at `/tmp/dbias-wip3.patch`.
+
+## Round-109 (2026-10-30): reference sets ISP_CTL.dbias_is_int always; our bit alone still hangs
+
+Captured the **reference** (open Vulkan driver, which zink uses and where polygon offset works) ISP_CTL
+words during the same probe: every draw - with or without polygon offset - packs **0x80135000**, i.e.
+bit 20 (`dbias_is_int`) is set unconditionally (`dbias_is_int=1 zls_int=1 has_ern=1`) and the value is
+constant. The native driver's computed value for the same one-RGBA8-target render is 0x80035000, so
+adding bit 20 makes the word identical to the reference.
+
+Nevertheless, with the WIP applied the native probe still hangs on the offset draw in three
+configurations: bit + table + base, bit + base, and **bit alone with neither table nor entry written**
+(and with the TA-side dbenable forced off). No kernel fault; the render simply never completes. That
+contradicts "bit 20 is the trigger", so the remaining difference must be elsewhere in the stream: the
+native fragment stream's tail layout for a render with a depth buffer, or the TA/ISP depth-compare state
+paired with the int equation. Next probe: add a fragment-stream dump to the reference Vulkan driver
+(same hook style used for the VDM control stream earlier) and byte-diff it against the native stream for
+an identical 64x64 depth-buffered clear+quad draw, with and without depth bias. WIP saved at
+`/tmp/dbias-wip-final.patch` (includes the env switches and the reference ISP_CTL print).
