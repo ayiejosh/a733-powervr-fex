@@ -2726,3 +2726,27 @@ syncs, and writes nothing. The remaining gap is the kickusc task-control binding
 = `0x7340/8`): either the kernel is entered with the wrong task/sample-rate control or the DMA space
 descriptor still needs the source surface words. Patch 0351, series head `189d18a7` (probe only; default
 probe unchanged, fill replay still passes).
+
+## Round-133 (2026-10-30): replay iterations after the 4th reset - still no destination write
+
+Post-reset continuation (the reset itself was round-132: a probe run against the vendor driver). Health
+after reboot: clean, vendor+desktop, 0 faults.
+
+Replay progress this round:
+- re-captured the reference's DMA space for the **fill** branch (`dev 0x800004b100`, 20 dwords); the
+  write hook sits in the fill path, so the **copy** job's space (0x800004b080) still comes from the
+  round-121 capture, where its content differs from the fill variant exactly in word 2
+  (`0xdc0007ff` fill vs `0xec0007ff` copy) and word 9 (`0x00002400` fill vs `0x00022400` copy) - the
+  copy values are now used by the replay;
+- retried the copy replay with both captured USC kernels (16-byte at 0x5d40 for the pixel-event
+  program, 64-byte at 0x7340 for the kickusc program), the exact texstate block
+  (`0x800004b080` split + `0x90000014`), and the copy-variant DMA content: the job still submits and
+  syncs and writes nothing;
+- found a second issue while iterating: with the copy replay path active the probe's later self-checks
+  hit a host-heap corruption (`malloc(): unaligned tcache chunk detected`), so the replay helper needs
+  its mappings/sizes audited before it can be trusted in the same process. The experimental edits were
+  reverted to keep the series at patch 0351.
+
+Remaining for the copy replay: bind the kickusc task correctly (the captured task-control words
+`0x7340/8` may need the USС shared/temps fields regenerated) and make the replay process-safe. The
+aligned bundle and all captures remain checked in.
