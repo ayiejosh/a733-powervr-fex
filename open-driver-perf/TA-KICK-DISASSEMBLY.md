@@ -2594,3 +2594,24 @@ bits of the address (the +0x800000 pad preserves the low 23 bits). The next expe
 whose size changes the low address bits of the buffers (e.g. 0x20000 or a set of allocations that
 leave a gap), then diff the same hooks: that will expose the unwind/alignment words that do carry the
 address. The capture set for this round is small; the hooks were temporary and are reverted.
+
+## Round-127 (2026-10-30): transfer command addresses confirmed; still not found in any dumped structure
+
+Printed the transfer commands' actual addresses per job: base run `dst=0x80000bb000 src0=0x80000b7000`,
+8 MiB-pad run `dst=0x80008bb000 src0=0x80008b7000` - so the addresses really do shift as measured.
+Dumped the **second** DMA-space branch (the one actually used for source image state, `DMA2` at
+`0x800004b100`, 20 dwords): it contains the same kind of TEXSTATE words
+(`c0002d84 00011ffc dc0007ff 10200002 ... 00002400`) and again **no raw source address**; the only
+change across the address shift is `N[3]` (`0x10200002 -> 0x10200022`, again a low-bit alignment field).
+
+So the copy addresses are consumed by the driver but not written verbatim into the job stream, DMA/texstate
+data, pixel-event data, IPF control stream or PDS uploads - they must be encoded in a form not yet decoded
+(two remaining candidates: the TQ shader's **USC constant/uniform store** - written through the PDS
+"doutu"/DMA mechanisms - or descriptor words whose address is expressed as a **base+delta pair** where the
+base comes from a register we have not varied yet). The next step is to vary the *base* register
+(e.g. `isp_mtile_base`/texturedata bases) or to dump the USC common store after a kick, and to diff with a
+low-bit-changing offset - the straightforward captures all came back clean.
+
+Everything from this investigation is checked in: `captures/tq-ref/` (streams, PDS/USC/heap/texstate/DMA
+dumps, address-shift pair, decoder, `vktq_copy.c` with PAD/PADSIZE/DSTOFF). The TQ-fill replay in
+`pvr-probe` remains the working proof that the submission path itself is sound.
