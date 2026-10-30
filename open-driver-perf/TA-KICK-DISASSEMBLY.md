@@ -2313,3 +2313,25 @@ with and without depth test): **native 434 / 481 fps vs zink 208 / 236** - the n
 about twice zink's, so blending is not part of the remaining GPU gap either. Together with the earlier
 per-feature results (fill, texture, mip, cube, vertex all faster than zink) the only pattern where
 zink wins remains many separate render passes, which round-94 attributed to GPU/firmware per-kick cost.
+
+## Round-113 (2026-10-30): reference transfer-frag streams captured from the open Vulkan driver
+
+The twiddle unlock needs the transfer-job port, so the first step taken: a temporary dump hook in the
+open Vulkan winsys transfer submit (`PVR_DUMP_TQ`) captured the transfer-frag streams the reference
+driver issues for the same texture-upload workload (zink probe creating four textures plus an FBO).
+Five streams captured, all **176 bytes** (`captures/tq-ref/tq-*.bin`, length-prefixed):
+
+- word 0 = `0x000000b0` (stream length), followed by the kernel/transfer header and the image/format
+  words; the last words carry the pixel-event/TPU/PBE configuration.
+- the five streams differ in exactly **three dwords** - word 5, word 39 and word 40 - increasing by
+  `0x240` per capture. Those look like the per-job PDS/USC program page addresses, i.e. the reference
+  uploads the transfer program alongside each job (which is also what the earlier TQ-fill replay probe
+  had to install by hand at captured offsets).
+
+So the next step for a real buffer->twiddled-image copy is: capture the **program buffers** those
+streams reference (PDS pixel-event data/code and the USC kernel at the addresses in words 5/39/40,
+either by dumping the reference's PDS/USC heaps around the submit or by replaying with our own
+program pages), then replay one captured stream natively through `pvr_job_submit_transfer_sync` with
+patched source/destination addresses - the same methodology the TQ-fill probe already proved works.
+Stream captures are checked in under `tools/verify/captures/tq-ref/`; the dump hook itself was
+temporary and is reverted.
