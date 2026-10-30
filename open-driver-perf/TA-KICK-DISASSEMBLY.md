@@ -2786,3 +2786,20 @@ of the reference copy job - both are follow-up work, not quick experiments.
 The transfer-job port stays parked with the full capture bundle and harness checked in
 (`tools/verify/captures/tq-ref/`, probe patches 0348-0353); the shipped ES2 driver state is unaffected
 (patch 0353 changes pvr-probe only, default probe behaviour unchanged).
+
+## Round-138 (2026-10-30): float render-target extensions need the R16/R16G16 formats first
+
+Checked what ES2-era extensions zink has that the native driver lacks (zink 136 vs native 71): almost all
+of the difference is ES3-only, and the only ES2-valid candidates left were float colour-buffer/float-blend
+(`EXT_color_buffer_half_float`, `EXT_float_blend`) and MSAA-related ones (blocked). Allowed
+`R16G16B16A16_FLOAT` and `R32G32B32A32_FLOAT` as render targets and rebuilt: the extensions still did not
+appear, because Mesa's state tracker requires **all** of `R16_FLOAT`, `R16G16_FLOAT` and
+`R16G16B16A16_FLOAT` to be renderable+sampleable before it advertises
+`EXT_color_buffer_half_float` - and the driver has no descriptor/layout mapping for the single- and
+dual-channel half-float formats yet. The change was reverted (no behaviour shipped).
+
+Next step for these extensions: add `PIPE_FORMAT_R16_FLOAT` / `PIPE_FORMAT_R16G16_FLOAT` to
+`pvr_format_layout_from_pipe`, the TPU format table, PBE source-format/pack-mode mapping and the
+texture-format support list, then re-check the cap exposure and gate a render/blend/readback probe.
+`EXT_float_blend` similarly needs the 32F render target path exercised end-to-end before it can be
+advertised honestly.
