@@ -2301,3 +2301,15 @@ three-way glmark2 last measured at native **805/806**, zink 775/772, vendor 1218
 1.04x zink). Known limitations recorded: polygon-offset slope term not applied; hardware depth-bias int
 mode parked (hangs the firmware); twiddle/depth-cube/compressed uploads parked (need the transfer-job
 port); ES3 core block not started.
+
+## Round-112 (2026-10-30): post-feature benchmark + blend microbenchmark
+
+Three-way glmark2 after the feature rounds (0342-0346: honesty caps, border clamp, mirror clamp,
+anisotropy, polygon-offset emulation): native **806/805**, zink **778/771**, vendor **1211/1196** - in
+noise of the earlier measurements, as expected for feature/extensions work (0.67x vendor, 1.04x zink).
+
+Added blended-overdraw modes to `drawbench2.c` (27 overlapping quads, SRC_ALPHA/ONE_MINUS_SRC_ALPHA,
+with and without depth test): **native 434 / 481 fps vs zink 208 / 236** - the native blending path is
+about twice zink's, so blending is not part of the remaining GPU gap either. Together with the earlier
+per-feature results (fill, texture, mip, cube, vertex all faster than zink) the only pattern where
+zink wins remains many separate render passes, which round-94 attributed to GPU/firmware per-kick cost.

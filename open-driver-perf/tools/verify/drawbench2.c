@@ -46,10 +46,15 @@ int main(void){
    glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,rdtex,0);
    glViewport(0,0,W,H);
    const int npasses = getenv("NPASSES") ? atoi(getenv("NPASSES")) : 27;
-   GLuint small_tex = 0, small_fbo = 0;
-   if (!strcmp(mode,"passes") || !strcmp(mode,"manydraws")) {
+   const int psize = getenv("PSIZE") ? atoi(getenv("PSIZE")) : 64;
+   GLuint small_tex = 0, small_fbo = 0, alt_tex = 0;
+   if (!strcmp(mode,"passes") || !strcmp(mode,"manydraws") || !strcmp(mode,"clearonly") || !strcmp(mode,"alt") || !strcmp(mode,"blend") || !strcmp(mode,"blenddepth")) {
       glGenTextures(1,&small_tex); glBindTexture(GL_TEXTURE_2D,small_tex);
-      glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA,64,64,0,GL_RGBA,GL_UNSIGNED_BYTE,NULL);
+      glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA,psize,psize,0,GL_RGBA,GL_UNSIGNED_BYTE,NULL);
+      if (!strcmp(mode,"alt")) {
+         glGenTextures(1,&alt_tex); glBindTexture(GL_TEXTURE_2D,alt_tex);
+         glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA,psize,psize,0,GL_RGBA,GL_UNSIGNED_BYTE,NULL);
+      }
       glGenFramebuffers(1,&small_fbo);
    }
    GLuint p; int verts = 0;
@@ -65,7 +70,7 @@ int main(void){
       glTexParameteri(GL_TEXTURE_CUBE_MAP,GL_TEXTURE_MAG_FILTER,GL_NEAREST);
       p = prog(VS_FULL, fs_cube);
    } else if (!strcmp(mode,"vert")) { p = prog(VS_GRID, fs_fill); verts = nverts; }
-   else if (!strcmp(mode,"passes") || !strcmp(mode,"manydraws")) p = prog(VS_FULL, fs_fill);
+   else if (!strcmp(mode,"passes") || !strcmp(mode,"manydraws") || !strcmp(mode,"clearonly") || !strcmp(mode,"alt") || !strcmp(mode,"blend") || !strcmp(mode,"blenddepth")) p = prog(VS_FULL, fs_fill);
    else p = prog(VS_FULL, fs_tex);
    glUseProgram(p);
    GLuint bo=0;
@@ -89,17 +94,29 @@ int main(void){
    glClearColor(0,0,0,1);
    double t0=now();
    for(int f=0; f<frames; f++){
-      if (!strcmp(mode,"passes")) {
+      if (!strcmp(mode,"passes") || !strcmp(mode,"clearonly") || !strcmp(mode,"alt")) {
          for (int k = 0; k < npasses; k++) {
             glBindFramebuffer(GL_FRAMEBUFFER, small_fbo);
-            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, small_tex, 0);
-            glViewport(0, 0, 64, 64);
-            glClear(GL_COLOR_BUFFER_BIT);
-            glDrawArrays(GL_TRIANGLES, 0, 3);
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, (strcmp(mode,"alt")?small_tex:(k&1)?alt_tex:small_tex), 0);
+            glViewport(0, 0, psize, psize);
+            if (!getenv("NOCLEAR"))
+               glClear(GL_COLOR_BUFFER_BIT);
+            if (strcmp(mode,"clearonly")) glDrawArrays(GL_TRIANGLES, 0, 3);
          }
          glBindFramebuffer(GL_FRAMEBUFFER, fbo);
          glViewport(0, 0, W, H);
          glDrawArrays(GL_TRIANGLES, 0, 3);
+      } else if (!strcmp(mode,"blend") || !strcmp(mode,"blenddepth")) {
+         glEnable(GL_BLEND);
+         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+         if (!strcmp(mode,"blenddepth")) glEnable(GL_DEPTH_TEST);
+         glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+         glViewport(0, 0, W, H);
+         glClear(GL_COLOR_BUFFER_BIT);
+         for (int k = 0; k < npasses; k++)
+            glDrawArrays(GL_TRIANGLES, 0, 3);
+         glDisable(GL_BLEND);
+         glDisable(GL_DEPTH_TEST);
       } else if (!strcmp(mode,"manydraws")) {
          for (int k = 0; k < npasses; k++)
             glDrawArrays(GL_TRIANGLES, 0, 3);
@@ -107,8 +124,9 @@ int main(void){
          glClear(GL_COLOR_BUFFER_BIT);
          glDrawArrays(GL_TRIANGLES, 0, verts ? verts : 3);
       }
-      glFinish();
+      if (!getenv("NOFINISH")) glFinish();
    }
+   glFinish();
    double dt=now()-t0;
    struct rusage ru; getrusage(RUSAGE_SELF,&ru);
    double cpu=(ru.ru_utime.tv_sec+ru.ru_utime.tv_usec/1e6)+(ru.ru_stime.tv_sec+ru.ru_stime.tv_usec/1e6);
