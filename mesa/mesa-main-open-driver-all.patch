@@ -7623,10 +7623,10 @@ index 00000000..7c2fb328
 +#endif /* PVR_HWRT_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
 new file mode 100644
-index 00000000..61f96506
+index 00000000..1f0c01a2
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_probe.c
-@@ -0,0 +1,6210 @@
+@@ -0,0 +1,6213 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -13690,8 +13690,11 @@ index 00000000..61f96506
 +      goto out_bo;
 +   }
 +   {
++      /* Copy job's DMA space content (captured from the reference's copy branch). M[3] low bits
++       * hold source>>18, M[9] tracks the destination address; both match the addresses mapped
++       * below (src 0x80000b7000, dst 0x80000bb000). */
 +      static const uint32_t dma_state[20] = {
-+         0xc0002d84, 0x00011ffc, 0xdc0007ff, 0x10200002, 0, 0, 0, 0, 0, 0x00002400,
++         0xc0002d84, 0x00011ffc, 0xec0007ff, 0x10200002, 0, 0, 0, 0, 0, 0x00022400,
 +         0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 +      };
 +

@@ -3035,3 +3035,19 @@ Next step: capture those pieces exactly from one reference copy run - hook
 `pvr_pds_generate_pixel_shader_sa_texture_state_data` (the texturedata/varying program content and its
 PDS offset) plus `pvr_pds_unitex` sizes in the same run as the stream, and install them byte-for-byte in
 the replay. That is the last missing input; the fill control proves the rest of the replay path.
+
+## Round-154 (2026-10-30): copy DMA-state restored + its address encoding verified
+
+Found that the replay had been installing the **fill** job's DMA space words (0xdc0007ff / 0x2400) since
+an earlier revert; the copy job's captured content is 0xec0007ff / 0x22400. The captured address
+encodings check out numerically:
+
+- word 3 low 22 bits = **source address >> 18** (base run: 0x80000b7000 -> 0x200002; +0x800000 shifted
+  run: 0x80008b7000 -> 0x200022, both matching the captured words); bit 28 is a flag.
+- word 9 moves by **destination delta << 3** (copy vs fill differ by 0x20000 for a 0x4000 address
+  difference).
+
+The replay now uses the copy variant matching its mapped source (0x80000b7000) and destination
+(0x80000bb000). The job still submits and syncs without writing, so the remaining piece is still the
+background-tag execution context (rounds 152/153) - this round just removed a wrong input from the
+experiment. Patch 0357, probe-only.
