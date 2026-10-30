@@ -2499,10 +2499,10 @@ index 00000000..df847132
 +#endif /* PVR_CONTEXT_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_csb.c b/src/gallium/drivers/pvr_native/pvr_csb.c
 new file mode 100644
-index 00000000..7cba250a
+index 00000000..09a2ddbd
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_csb.c
-@@ -0,0 +1,1871 @@
+@@ -0,0 +1,1880 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + */
@@ -3122,6 +3122,12 @@ index 00000000..7cba250a
 +   case PIPE_FORMAT_R16_UNORM:
 +      layout_out->components = ROGUE_TEXSTATE_FORMAT_U16;
 +      break;
++   case PIPE_FORMAT_R16_FLOAT:
++      layout_out->components = ROGUE_TEXSTATE_FORMAT_F16;
++      break;
++   case PIPE_FORMAT_R16G16_FLOAT:
++      layout_out->components = ROGUE_TEXSTATE_FORMAT_F16F16;
++      break;
 +   case PIPE_FORMAT_R16G16B16A16_FLOAT:
 +      layout_out->components = ROGUE_TEXSTATE_FORMAT_F16F16F16F16;
 +      break;
@@ -3525,9 +3531,12 @@ index 00000000..7cba250a
 +   };
 +
 +   /* Pack mode from the output format's first channel. */
++   const uint32_t nr_chan = util_format_get_nr_components(format);
 +   if (desc->channel[chan].type == UTIL_FORMAT_TYPE_FLOAT) {
 +      sw1.packmode = desc->channel[chan].size == 16
-+                        ? ROGUE_PBESTATE_PACKMODE_F16F16F16F16
++                        ? (nr_chan <= 1 ? ROGUE_PBESTATE_PACKMODE_F16
++                           : nr_chan == 2 ? ROGUE_PBESTATE_PACKMODE_F16F16
++                                          : ROGUE_PBESTATE_PACKMODE_F16F16F16F16)
 +                        : ROGUE_PBESTATE_PACKMODE_F32F32F32F32;
 +   } else if (desc->channel[chan].size == 8) {
 +      sw1.packmode = desc->channel[chan].type == UTIL_FORMAT_TYPE_SIGNED
@@ -5243,7 +5252,7 @@ index 00000000..47695cc7
 +#endif /* PVR_CSB_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_draw.c b/src/gallium/drivers/pvr_native/pvr_draw.c
 new file mode 100644
-index 00000000..3868a829
+index 00000000..deb4984d
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_draw.c
 @@ -0,0 +1,2173 @@
@@ -6505,7 +6514,7 @@ index 00000000..3868a829
 +          f == PIPE_FORMAT_R8G8B8X8_UNORM || f == PIPE_FORMAT_B8G8R8X8_UNORM ||
 +          f == PIPE_FORMAT_R8_UNORM || f == PIPE_FORMAT_R8G8_UNORM ||
 +          f == PIPE_FORMAT_R8G8B8A8_SRGB || f == PIPE_FORMAT_B8G8R8A8_SRGB ||
-+          f == PIPE_FORMAT_A8B8G8R8_SRGB;
++          f == PIPE_FORMAT_A8B8G8R8_SRGB || f == PIPE_FORMAT_R16G16B16A16_FLOAT;
 +}
 +
 +/* The vertex attribute fetch program and its data segment for the bound vertex elements. */
@@ -14291,10 +14300,10 @@ index 00000000..5e2c2279
 +#endif /* PVR_RESOURCE_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_screen.c b/src/gallium/drivers/pvr_native/pvr_screen.c
 new file mode 100644
-index 00000000..e7e0e80b
+index 00000000..f7959679
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_screen.c
-@@ -0,0 +1,462 @@
+@@ -0,0 +1,464 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -14413,7 +14422,9 @@ index 00000000..e7e0e80b
 +       format != PIPE_FORMAT_R8G8B8X8_UNORM && format != PIPE_FORMAT_B8G8R8X8_UNORM &&
 +       format != PIPE_FORMAT_R8_UNORM && format != PIPE_FORMAT_R8G8_UNORM &&
 +       format != PIPE_FORMAT_R8G8B8A8_SRGB && format != PIPE_FORMAT_B8G8R8A8_SRGB &&
-+       format != PIPE_FORMAT_A8B8G8R8_SRGB)
++       format != PIPE_FORMAT_A8B8G8R8_SRGB &&
++       format != PIPE_FORMAT_R16_FLOAT && format != PIPE_FORMAT_R16G16_FLOAT &&
++       format != PIPE_FORMAT_R16G16B16A16_FLOAT)
 +      return false;
 +   if ((bindings & PIPE_BIND_DEPTH_STENCIL) &&
 +       format != PIPE_FORMAT_Z16_UNORM && format != PIPE_FORMAT_Z24X8_UNORM &&

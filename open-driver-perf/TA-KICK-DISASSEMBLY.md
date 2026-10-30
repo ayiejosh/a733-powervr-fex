@@ -2842,3 +2842,21 @@ not even create. The plumbing attempt is reverted again (tree clean at patch 035
 later: (1) make the draw path emit into a 16F target (PBE source format/packmode and EOT/pixel program for
 float outputs), (2) give R16F/RG16F a real texture/upload path (compute fallback currently only handles
 RGBA8), then re-run the render/blend/sample probe before advertising.
+
+## Round-141 (2026-10-30): EXT_color_buffer_half_float landed - RGBA16F/RGB16F render, blend and sample
+
+The earlier two failures had separate causes: the draw path's `draw_format_ok()` refused 16F targets
+(so the PBE/draw was never submitted), and the probe itself used the wrong ES2 API usage. Fixing both:
+
+- added `R16_FLOAT` / `R16G16_FLOAT` to `pvr_format_layout_from_pipe` (TEXSTATE `F16` / `F16F16`),
+  accepted the three half-float formats as render targets, made the PBE pack mode channel-count aware
+  (`F16` / `F16F16` / `F16F16F16F16` - it was hard-coded to four channels), and allowed RGBA16F in
+  `draw_format_ok()`;
+- the probe now uses the correct ES2 path: **unsized** `GL_RGBA`/`GL_RGB` + `GL_HALF_FLOAT_OES`
+  (effective RGBA16F / RGB16F; the sized R16F/RG16F internal formats are GLES3-only in Mesa's ES
+  validation, which matches the reference stack).
+
+Verification (`tools/verify/f16rt_probe.c`): RGBA16F and RGB16F FBOs are complete, clear, blend a quad
+and sample back through an RGBA8 pass - sampled values match the expected 159/64/96 for every case
+(delta 0, no GL errors). Full verify gate (16 groups) still passes. `GL_EXT_color_buffer_half_float`
+is now advertised: **ES2 extensions 72**. Patch 0354, series head = this commit.
