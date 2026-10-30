@@ -2666,3 +2666,25 @@ copy, or dump the full PDS heap after the copy) and install it at PDS+0x41000, t
 
 All artifacts checked in: `captures/tq-ref/{copy-stream.bin, copystream2.bin, copypds.dump, heap.dump}`,
 probe patch 0348 (series head `1cbcd3b`), and the fill replay still passes.
+
+## Round-130 (2026-10-30): kickusc programs captured; copy replay still does not write
+
+Corrected the stream decode first: `KMD_STREAM_HDR` is **2 dwords**, not 1 (the earlier decoder was off
+by one word). With the correct header the copy stream reads: `pds_bgnd0 = {shader_addr 0x41000,
+texunicode_addr 0x1e40}`, `pds_bgnd1 = {varying 0, texturedata_addr 0x2640}`, pbe words
+`96800000 02000ffc`, `isp_ngobjvals 0x300`, `usc_pixel_output_ctrl 0x7ff8`, `mttile_size 0x800001`,
+`event_pixel_pds_info 0x202`, `event pixel code 0x26a0`, `data 0x2680`.
+
+Captured the missing program: the TQ shader's **kickusc PDS program**, created through
+`pvr_bo_alloc(pds_heap)` rather than `pvr_gpu_upload_pds`, so earlier hooks missed it. A new hook shows
+it at **PDS+0x41000** and **PDS+0x42000** (data `[0x7340, 8, 0...]`, code `f4000002`). The replay
+(`tq_copy_check`, patch 0349) now installs those, writes a reconstructed texture-state DMA block at
+PDS+0x2640 (`[0xcf000, 0x80, 0x90000020, 0]`) and maps a 4 KiB general-heap DMA space at
+`0x80000cf000` with the captured TEXSTATE words.
+
+Result: the job still submits and syncs but writes nothing. The remaining unknown is the **exact
+texture-state DMA block** (its address/size encoding and the source descriptor it DMAs) - the captured
+copy run recorded neither its content nor the source surface descriptor, so it needs another capture
+with a hook on `pvr_write_usc_constants`/`pvr_pds_unitex` in the copy branch (or a full general-heap dump
+around the copy) to get it byte-exact. Patch 0349, series head `7b9f664` (probe-only changes; default
+probe results unchanged, fill replay still passes).

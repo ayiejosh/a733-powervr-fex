@@ -7614,10 +7614,10 @@ index 00000000..7c2fb328
 +#endif /* PVR_HWRT_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
 new file mode 100644
-index 00000000..d5d32e4a
+index 00000000..8d74e85d
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_probe.c
-@@ -0,0 +1,6051 @@
+@@ -0,0 +1,6092 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -13485,6 +13485,7 @@ index 00000000..d5d32e4a
 +      .vm_context_handle = vm->context_handle,
 +   };
 +   struct pvr_bo srcbo = { 0 }, dstbo = { 0 }, pdsbo = { 0 }, uscbo = { 0 };
++   struct pvr_bo pdsbo2 = { 0 }, dmabo = { 0 };
 +   uint8_t *stream = NULL;
 +   uint32_t stream_len = 0;
 +   int tfd = -1;
@@ -13549,6 +13550,44 @@ index 00000000..d5d32e4a
 +   memcpy((uint8_t *)pdsbo.map + (0x2680 - 0x1000), ev_data, sizeof(ev_data));
 +   memcpy((uint8_t *)pdsbo.map + (0x26a0 - 0x1000), ev_code, sizeof(ev_code));
 +
++   /* The copy stream also names a background shader task at PDS+0x41000 (the TQ shader's
++    * kickusc program; captured) and texture-state DMAs at PDS+0x2640. */
++   if (!pvr_bo_create(fd, 0x4000, 4096, &pdsbo2) ||
++       !pvr_vm_map(vm, pds->base + 0x40000, pdsbo2.handle, pdsbo2.size) ||
++       !pvr_bo_map(fd, &pdsbo2)) {
++      printf("tqcopy:        FAIL: cannot map PDS kickusc page\n");
++      goto out_bo;
++   }
++   {
++      static const uint32_t kick_data[8] = { 0x00007340, 0x00000008, 0, 0, 0, 0, 0, 0 };
++      static const uint32_t kick_code[1] = { 0xf4000002 };
++      static const uint32_t kick_data2[8] = { 0x000073c0, 0x00000008, 0, 0, 0, 0, 0, 0 };
++      static const uint32_t texdata_dma[4] = { 0x000cf000, 0x00000080, 0x90000020, 0 };
++      uint8_t *base = pdsbo2.map;
++
++      memcpy(base + (0x41000 - 0x40000), kick_data, sizeof(kick_data));
++      memcpy(base + (0x41020 - 0x40000), kick_code, sizeof(kick_code));
++      memcpy(base + (0x42000 - 0x40000), kick_data2, sizeof(kick_data2));
++      memcpy(base + (0x42020 - 0x40000), kick_code, sizeof(kick_code));
++      memcpy((uint8_t *)pdsbo.map + (0x2640 - 0x1000), texdata_dma, sizeof(texdata_dma));
++   }
++
++   /* Texture-state DMA space (general heap) the kick program DMAs from. */
++   if (!pvr_bo_create(fd, 0x1000, 4096, &dmabo) ||
++       !pvr_vm_map(vm, 0x80000cf000ULL, dmabo.handle, dmabo.size) ||
++       !pvr_bo_map(fd, &dmabo)) {
++      printf("tqcopy:        FAIL: cannot map DMA space\n");
++      goto out_bo;
++   }
++   {
++      static const uint32_t dma_state[20] = {
++         0xc0002d84, 0x00011ffc, 0xdc0007ff, 0x10200002, 0, 0, 0, 0, 0, 0x00002400,
++         0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
++      };
++
++      memcpy(dmabo.map, dma_state, sizeof(dma_state));
++   }
++
 +   if (!pvr_bo_create(fd, 0x2000, 4096, &uscbo) ||
 +       !pvr_vm_map(vm, usc->base + 0x5000, uscbo.handle, uscbo.size) ||
 +       !pvr_bo_map(fd, &uscbo)) {
@@ -13595,6 +13634,8 @@ index 00000000..d5d32e4a
 +      drmIoctl(fd, DRM_IOCTL_PVR_DESTROY_CONTEXT, &dargs);
 +   }
 +   pvr_bo_destroy(fd, &uscbo);
++   pvr_bo_destroy(fd, &dmabo);
++   pvr_bo_destroy(fd, &pdsbo2);
 +   pvr_bo_destroy(fd, &pdsbo);
 +out_bo:
 +   pvr_bo_destroy(fd, &dstbo);
