@@ -128,3 +128,41 @@ The plumbing is closer than it looks; the reference reads as follows.
 - Test: new `gltri` mode with 2 RGBA8 attachments, `glDrawBuffersEXT`, fragment writes
   `gl_FragData[0]=red`, `[1]=blue`, clear both, `glReadPixels` each in turn; compare against zink
   (zink reports GLES 3.1 so it has MRT). Add `rt8test`-style pixel checks to the gate.
+
+## Session summary 2026-10-30 (patch series 0346, head 483a4890)
+
+State: native driver is **ES 2.0**, 71 extensions (all advertised ES2 extensions backed by a
+zink-matching probe), glmark2 three-way **native 806/805 vs zink 778/771 vs vendor 1211/1196**
+(~0.67x vendor, ~1.04x zink). One-command gate `tools/verify/run-all.sh` runs 16 groups and passes.
+
+Done this session (patches 0332-0346): MRT 2/4 + mixed formats, instancing + EXT_draw_instanced/
+EXT_instanced_arrays, sRGB textures/targets + multi-dword colour outputs, derivatives/1010102/RGBA32F,
+half-float linear, cube maps (six twiddled faces + per-face mip chains), 512-entry EOT cache (terrain CPU
+12.1->1.9 ms/frame), ISP tile config derived from device features, withdrawn unimplemented EXT_frag_depth
+and EXT_shadow_samplers, border-clamp sampling with a real border colour table, EXT_texture_mirror_clamp_to_edge,
+anisotropic filtering, and an emulated glPolygonOffset (constant term exact via viewport depth shift,
+slope term documented as not applied) + EXT_polygon_offset_clamp.
+
+Performance profile conclusion: native beats zink on every per-primitive GPU path measured (fill, texture
+nearest/linear, mip, cube, vertex, blending ~2x) and on CPU in every glmark2 scene; the only remaining GPU
+gap is many-small-render-passes, attributed to GPU/firmware per-kick cost (submission batching measured
+neutral, round-94).
+
+Open items, in order of value:
+1. **Transfer-job port** (unblocks depth-cube, compressed/ETC2, 3D/array, depth uploads). All RE is
+   done: stream format decoded, field semantics confirmed from the reference source, PDS/USC programs
+   and the per-command DMA space captured, and the address model solved (32-bit fields are
+   heap-relative offsets; every heap base has low 32 bits zero). Remaining work is driver integration:
+   transfer context + install captured pixel-event/kickusc/unitex programs + generate the DMA
+   space/stream + submit/verify. Artifacts: `tools/verify/captures/tq-ref/` (streams, pds.dump,
+   usc.dump, heap.dump, dma.dump, decode_transfer_stream.py, vktq_copy.c).
+2. **ES3 core block** (2D-array/3D, UBOs, integer formats, MSAA, primitive restart, occlusion queries,
+   sampler objects, ES3 GLSL) - most of it also needs the transfer-job/upload work above.
+3. Polygon-offset slope term and the hardware depth-bias integer mode (parked: the int-mode bit hangs
+   this firmware even though the reference packs it always).
+4. Per-scene GPU work for refract/terrain/shadow (all CPU/feature paths are done; the gap is the
+   per-kick cost above).
+
+Safety: never run GL harnesses with pvrsrvkm bound; `switch-safe.sh` now waits for DRM clients to close
+before rmmod and for vendor firmware/shader images before starting display-manager (both races caused
+hard resets on 2026-10-30).
