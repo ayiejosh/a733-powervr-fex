@@ -1,0 +1,64 @@
+From d79cf1fc028690b15c24cbb16e33b624fb770aa9 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 30 Oct 2026 13:31:19 +0800
+Subject: [PATCH] gallium/pvr: probe copy replay gets copy-only mode and
+ task-offset knobs
+
+The copy replay can now run isolated (PVR_PROBE_TQ_COPY_ONLY) so it cannot disturb the probe's other
+self-checks, and both USC task offsets (pixel-event and kickusc) are runtime-overridable for
+experiments. All four task-offset combinations submit and sync without writing the destination, so the
+task binding is not the remaining blocker - the captured job must also depend on firmware state the
+replay does not reproduce yet.
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c | 20 ++++++++++++++++----
+ 1 file changed, 16 insertions(+), 4 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index 564c2568..78c3b47d 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -5855,8 +5855,14 @@ tq_copy_check(int fd, struct pipe_screen *pscreen)
+                                 : 0x80000bb000ULL;
+    const uint32_t buf_size = 0x4000u;
+    /* Pixel-event data of the copy job (captured): USC task offset, reserved, destination>>2,
+-    * high address/flags template, terminator. */
+-   uint32_t ev_data[5] = { 0x00005d40, 0x00000000, 0x00000000, 0x00081a20, 0x90000002 };
++    * high address/flags template, terminator. Both task offsets can be overridden for experiments. */
++   const uint32_t ev_task = getenv("PVR_PROBE_TQ_COPY_EVTASK")
++                               ? (uint32_t)strtoul(getenv("PVR_PROBE_TQ_COPY_EVTASK"), NULL, 0)
++                               : 0x00005d40u;
++   const uint32_t kick_task = getenv("PVR_PROBE_TQ_COPY_KICKTASK")
++                                 ? (uint32_t)strtoul(getenv("PVR_PROBE_TQ_COPY_KICKTASK"), NULL, 0)
++                                 : 0x00007340u;
++   uint32_t ev_data[5] = { ev_task, 0x00000000, 0x00000000, 0x00081a20, 0x90000002 };
+    static const uint32_t ev_code[2] = { 0xf0040101, 0xf4000002 };
+    /* 64-byte TQ copy kernel captured at USC+0x7340 in the same reference run as the stream. */
+    static const uint32_t usc_copy[16] = {
+@@ -5943,9 +5949,9 @@ tq_copy_check(int fd, struct pipe_screen *pscreen)
+       goto out_bo;
+    }
+    {
+-      static const uint32_t kick_data[8] = { 0x00007340, 0x00000008, 0, 0, 0, 0, 0, 0 };
++      uint32_t kick_data[8] = { kick_task, 0x00000008, 0, 0, 0, 0, 0, 0 };
+       static const uint32_t kick_code[1] = { 0xf4000002 };
+-      static const uint32_t kick_data2[8] = { 0x000073c0, 0x00000008, 0, 0, 0, 0, 0, 0 };
++      uint32_t kick_data2[8] = { kick_task, 0x00000008, 0, 0, 0, 0, 0, 0 };
+       static const uint32_t texdata_dma[4] = { 0x0004b080, 0x00000080, 0x90000014, 0 };
+       uint8_t *base = pdsbo2.map;
+ 
+@@ -6056,6 +6062,12 @@ main(int argc, char **argv)
+       return 1;
+    }
+ 
++   if (getenv("PVR_PROBE_TQ_COPY_ONLY")) {
++      const bool made = getenv("PVR_PROBE_TQ_COPY") ? tq_copy_check(fd, screen) : false;
++
++      screen->destroy(screen);
++      return made ? 0 : 1;
++   }
+    printf("name:          %s\n", screen->get_name(screen));
+    printf("vendor:        %s\n", screen->get_vendor(screen));
+    printf("device vendor: %s\n", screen->get_device_vendor(screen));
+-- 
+2.47.3
+

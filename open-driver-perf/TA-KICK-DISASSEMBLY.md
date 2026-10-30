@@ -2750,3 +2750,20 @@ Replay progress this round:
 Remaining for the copy replay: bind the kickusc task correctly (the captured task-control words
 `0x7340/8` may need the USС shared/temps fields regenerated) and make the replay process-safe. The
 aligned bundle and all captures remain checked in.
+
+## Round-134 (2026-10-30): task binding ruled out for the copy replay
+
+Added copy-only mode (`PVR_PROBE_TQ_COPY_ONLY`) so the replay can run without disturbing the probe's other
+self-checks (this also avoids the host-heap corruption seen when it ran inside the full probe), and made
+both USC task offsets runtime-overridable. Tested all four combinations of pixel-event and kickusc task
+offsets (0x5d40 / 0x7340):
+
+- every combination **submits and syncs**, and none writes the destination.
+
+So the task binding is not the remaining blocker. Since the stream's PBE/pixel-event state, both USC
+kernels, the kickusc programs, the exact texstate block and the copy-variant DMA state are all installed
+and correct, the captured copy job must depend on further firmware-visible state the replay does not
+reproduce (e.g. the kickusc program expects the TQ shader store's USC shared/register initialisation, or
+the DMA space descriptor's surface words need to be regenerated against our buffers rather than copied
+from the reference run). This needs the reference's own value for those words or a firmware trace; the
+aligned capture bundle is the basis for both.
