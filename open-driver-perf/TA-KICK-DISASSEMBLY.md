@@ -2967,3 +2967,20 @@ now checks `pgrep -x kwin_x11` after starting the display manager and restarts i
 missing; the copy in `tools/verify/bench31.sh` is kept in sync. This is the only way the harness has
 failed to leave the board in a usable state since the switch-safety work, so it is recorded and fixed
 rather than left as a manual step.
+
+## Round-150 (2026-10-30): copy stream does not write even when made fill-like
+
+Experiment: take the captured copy stream in the replay and zero its background-program fields (bgnd0,
+bgnd1, bgnd3, mtile base, isp_bgobjvals) while writing a fill pattern into the USC clear register - i.e.
+turn the copy job into a fill-like job - then check whether the destination gets written. Result: **still
+no write** in every mask variant. So the blocker is not the background-program state either; the copy
+stream itself does not reach the "write destination" behaviour the working fill stream does.
+
+The next comparison should be a byte-level diff of everything the two replays set up for a job that
+writes (the fill stream) versus the copy stream: which of the remaining u32 fields differ (`isp_render`
+2 vs 3, `isp_aa` 0 vs 0x2500, render origin/mtile size, the pbe words), which program offsets are
+installed for each, and whether the copy stream expects additional context state that the reference sets
+up at first transfer-context use. The working fill replay is the control: it proves the context,
+mapping and screenshot path are fine, so the difference is inside the job description.
+
+Experiment reverted (probe-only code unchanged; tree clean at patch 0354).
