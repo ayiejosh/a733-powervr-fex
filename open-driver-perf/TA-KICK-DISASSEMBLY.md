@@ -2385,3 +2385,26 @@ destination address the streams use (candidates: `pds_bgnd0_base` = 0x4100000000
 or the nine `pbe_wordx_mrty` words) by capturing the same copy with a known buffer address, then write
 the native replay probe: install the captured PDS/USC programs at their captured offsets, map a target
 buffer, patch the destination, submit via `pvr_job_submit_transfer_sync`, verify the bytes.
+
+## Round-116 (2026-10-30): known-size buffer copy captured; TQ addresses not in the stream
+
+Wrote `captures/tq-ref/vktq_copy.c`: a minimal Vulkan test that fills a source buffer with 0xdeadbeef,
+`vkCmdCopyBuffer`s it to a second buffer, waits and verifies every dword (PASS on the open driver).
+Captured its two transfer streams (`copystream2.bin`: fill then copy) plus the PDS programs.
+
+Decoded the **copy** stream (176 bytes) against the fill stream:
+- `pds_bgnd0_base = 0x410000000000` (same constant as the zink copies), `pds_bgnd1_base = 0x1e40`
+  (same two-instruction PDS code), `isp_mtile_base = 0x01000000`, `pbe_wordx_mrty` **identical to the
+  fill** (so PBE words carry no addresses), `usc_pixel_output_ctrl = 0x300` (fill: 0x0),
+  `isp_rgn = 2` (fill: 3), event program offsets 0x2680/0x26a0.
+- the kickusc PDS program for the copy (`data_off=0x2680`, 5 data dwords) is
+  `[0x5d40, 0, 0x2ec00, 0x81a20, 0x90000002]`: first word is the USC TQ-kernel offset (as in round-115),
+  the others look like USC constant/unified-store descriptors.
+- `vkGetBufferDeviceAddressKHR` returns 0 on this driver, so the buffers' device addresses could not be
+  read out to correlate directly.
+
+Conclusion: the source/destination addresses for a TQ copy are **not in the job stream** - they are
+supplied through the TQ shader's constant data (the kickusc program's 0x2ec00/0x81a20 words point into
+the USC constant store). The next probe should write known 64-bit values into those constant slots (or
+capture two copies with different buffer allocations and diff the kickusc data), then replay natively.
+Captures checked in under `tools/verify/captures/tq-ref/`; the temporary dump hooks were reverted.
