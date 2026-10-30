@@ -2578,3 +2578,19 @@ dumps `pvr_gpu_upload_pds`, while the per-command pixel-event program is generat
 `pvr_pds_generate_pixel_event_data_segment` and uploaded through a different path), and the **TQ
 shader's USC constant data**. Next step: hook the pixel-event data generation in the transfer path and
 diff base vs padded again.
+
+## Round-126 (2026-10-30): pixel-event data does not carry the copy addresses either
+
+Hooked the per-command pixel-event program generation (`pvr_pds_generate_pixel_event_data_segment`
+inside `pvr_pbe_setup_emit`) and diffed base vs padded runs again. The two programs generated per copy
+(the filler and the copy) differ only in the DMA-space address words already seen in the PDS dumps
+(`0x2dc00`/`0x2ec00` shifting with the DMA-space BO), no source/destination buffer words appear.
+
+Together with round-125 this rules out the job stream, DMA space, IPF control stream, PDS pixel-event
+data and pixel-event constants as carriers of the copy's buffer addresses. Reading the builder code
+explains why an address shift of +0x800000 (a multiple of 2^23) would *not* show up anyway: the only
+address-derived state the builder writes is the **texel-unwind alignment**, which depends on the low
+bits of the address (the +0x800000 pad preserves the low 23 bits). The next experiment must use a pad
+whose size changes the low address bits of the buffers (e.g. 0x20000 or a set of allocations that
+leave a gap), then diff the same hooks: that will expose the unwind/alignment words that do carry the
+address. The capture set for this round is small; the hooks were temporary and are reverted.
