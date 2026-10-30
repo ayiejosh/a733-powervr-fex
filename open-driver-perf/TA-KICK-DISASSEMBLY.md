@@ -2860,3 +2860,24 @@ Verification (`tools/verify/f16rt_probe.c`): RGBA16F and RGB16F FBOs are complet
 and sample back through an RGBA8 pass - sampled values match the expected 159/64/96 for every case
 (delta 0, no GL errors). Full verify gate (16 groups) still passes. `GL_EXT_color_buffer_half_float`
 is now advertised: **ES2 extensions 72**. Patch 0354, series head = this commit.
+
+## Round-142 (2026-10-30): ES2 extension surface complete except hardware-blocked items
+
+With `EXT_color_buffer_half_float` landed (ES2 extensions 72), listed every ES2-valid extension that zink
+has and the native driver lacks (19): `AMD_performance_monitor`, `EXT_clip_control`,
+`EXT_demote_to_helper_invocation`, `EXT_depth_clamp`, `EXT_frag_depth`, `EXT_memory_object(_fd)`,
+`EXT_multisampled_render_to_texture(2)`, `EXT_robustness`, `EXT_semaphore(_fd)`, `EXT_shadow_samplers`,
+`KHR_robust_buffer_access_behavior`, `KHR_robustness`, `NV_conditional_render`, `NV_texture_barrier`,
+`OES_depth_texture_cube_map`, `OES_texture_3D`.
+
+Every one is blocked by a known hardware/feature gap rather than missing GL plumbing: MSAA
+(multisampled_render_to_texture), twiddled 3D/array + depth-cube uploads (OES_texture_3D,
+OES_depth_texture_cube_map - both need the transfer-job port), occlusion queries
+(NV_conditional_render), external memory/semaphores, robustness (not wired through the UAPI), fragment
+depth and shadow samplers (withdrawn earlier: no honest backend), clip control/depth clamp and demote
+(no backend path). So ES2 extension work is effectively finished: **72 extensions, all backed by
+verification probes**; the next capability gains require the transfer-job/twiddle work or the ES3 core
+block, not more ES2 extensions.
+
+The RGBA32F render-target experiment (for `EXT_float_blend`) was reverted: that extension is **ES3-only**
+in Mesa's table, so there is nothing to expose for it in an ES2 context.
