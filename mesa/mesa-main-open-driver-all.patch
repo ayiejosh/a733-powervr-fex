@@ -7614,10 +7614,10 @@ index 00000000..7c2fb328
 +#endif /* PVR_HWRT_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
 new file mode 100644
-index 00000000..21eb25cb
+index 00000000..564c2568
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_probe.c
-@@ -0,0 +1,6096 @@
+@@ -0,0 +1,6101 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -13391,8 +13391,8 @@ index 00000000..21eb25cb
 +      static const uint32_t usc_fill[4] = { 0xc280a048, 0x01804080, 0xff000088, 0xfffffff2 };
 +      const struct pvr_heap *usc = &vm->heaps[DRM_PVR_HEAP_USC_CODE];
 +
-+      if (!pvr_bo_create(fd, 0x2000, 4096, &uscbo) ||
-+          !pvr_vm_map(vm, usc->base + 0x7000, uscbo.handle, uscbo.size) ||
++      if (!pvr_bo_create(fd, 0x4000, 4096, &uscbo) ||
++          !pvr_vm_map(vm, usc->base + 0x5000, uscbo.handle, uscbo.size) ||
 +          !pvr_bo_map(fd, &uscbo)) {
 +         printf("tq:            FAIL: cannot map USC program page\n");
 +         goto out_bo;
@@ -13592,13 +13592,18 @@ index 00000000..21eb25cb
 +      memcpy((uint8_t *)dmabo.map + 0x80, dma_state, sizeof(dma_state));
 +   }
 +
-+   if (!pvr_bo_create(fd, 0x2000, 4096, &uscbo) ||
-+       !pvr_vm_map(vm, usc->base + 0x7000, uscbo.handle, uscbo.size) ||
++   if (!pvr_bo_create(fd, 0x4000, 4096, &uscbo) ||
++       !pvr_vm_map(vm, usc->base + 0x5000, uscbo.handle, uscbo.size) ||
 +       !pvr_bo_map(fd, &uscbo)) {
 +      printf("tqcopy:        FAIL: cannot map USC program page\n");
 +      goto out_bo;
 +   }
-+   memcpy((uint8_t *)uscbo.map + (0x7340 - 0x7000), usc_copy, sizeof(usc_copy));
++   memcpy((uint8_t *)uscbo.map + (0x7340 - 0x5000), usc_copy, sizeof(usc_copy));
++   {
++      static const uint32_t usc_fillkernel[4] = { 0xc280a048, 0x01804080, 0xff000088, 0xfffffff2 };
++
++      memcpy((uint8_t *)uscbo.map + (0x5d40 - 0x5000), usc_fillkernel, sizeof(usc_fillkernel));
++   }
 +
 +   completed = pvr_job_submit_transfer_sync(vm, cargs.handle, stream, stream_len, 2000);
 +   printf("tqcopy:        copy replay %s (stream %u B, src 0x%llx dst 0x%llx)\n",

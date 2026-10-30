@@ -2704,3 +2704,25 @@ The job still submits and syncs without writing the destination. The remaining g
 kickusc/pixel-event **task binding**: the kickusc program's data word 0 (0x7340 in the earlier capture)
 names the USC task offset, and the aligned bundle now provides the matching kernel bytes and the exact
 pixel-event data for the same run - wiring those three together is the next step.
+
+## Round-132 (2026-10-30): 4th vendor reset (probe run on the vendor driver) + copy replay updated
+
+**Reboot cause:** the probe experiment from the previous step ran while the board was already restored to
+the vendor driver (the standing rule is that no harness may run against `pvrsrvkm`). Opening the vendor
+stack from a normal client reproduced the known vendor bug - `PVR_K: psConnectionPriv is NULL` x3, then
+`Unable to handle kernel NULL pointer dereference` and a hard reset at 13:15:35. This is the fourth
+occurrence; the hardening added earlier covers the driver *swap* races, but nothing prevents a stray
+harness from being started on the vendor driver - the rule to check `readlink
+/sys/bus/platform/devices/1800000.gpu/driver` before any probe run is now explicit in the safety list.
+
+Post-reboot state: clean boot, vendor+desktop, 0 faults. The interrupted build left a corrupt
+`libpowervr_uscgen.a` (archive without index); `ninja -t clean` + relink fixed it and `pvr-probe` builds
+again.
+
+**Copy replay:** the aligned bundle shows the copy job's pixel-event data names USC task 0x5d40 while its
+kickusc program names 0x7340, so the replay now maps a 16 KiB USC page at USC+0x5000 with **both
+captured kernels** (16-byte fill-style at 0x5d40, 64-byte copy kernel at 0x7340). The job still submits,
+syncs, and writes nothing. The remaining gap is the kickusc task-control binding (captured data word 0/1
+= `0x7340/8`): either the kernel is entered with the wrong task/sample-rate control or the DMA space
+descriptor still needs the source surface words. Patch 0351, series head `f4a4f3f1` (probe only; default
+probe unchanged, fill replay still passes).
