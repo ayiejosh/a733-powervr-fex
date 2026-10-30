@@ -3083,3 +3083,22 @@ buffer was allocated through the mixed list, and the exact pass structure still 
 rather than a list walk. Next clean approach: hook `pvr_arch_cmd_buffer_alloc_mem()` to record
 (heap, offset, size) of every transfer-path allocation, then dump each recorded buffer at submit time by
 address (no reliance on the mixed list).
+
+## Round-158 (2026-10-30): every copy-job buffer captured in one run - and the replay already matches
+
+Added a small registry to `pvr_arch_cmd_buffer_alloc_mem()` (records heap address, size, CPU map for each
+transfer-path allocation) and dumped it at submit time. One `vktq_copy` run then yields **all** the
+copy job's buffers with their content (checked in as `captures/tq-ref/bundle3/`):
+
+- copy DMA space `0x800004b080` (20 dwords) = the copy-variant TEXSTATE (`ec0007ff`, `0x22400`);
+- copy texturedata at PDS `0xda00002640` = `[0x0004b080, 0x00000080, 0x90000014, 0]`;
+- transfer-frag IPF control stream at `0xe400000000` (80 dwords);
+- a second PDS block at `0xda000026c0` (`03040000 80000000 0 0 f4000004 ...`);
+- the fill job's DMA space `0x800004b100` and texturedata for comparison.
+
+Comparing these with what the probe replay installs: **the DMA space content, texturedata block, stream
+and program bytes are already byte-identical**. Since the job still submits+syncs without writing, the
+remaining difference is not in any buffer or stream the reference writes - it must be firmware-visible
+state that is not in these buffers (the TQ shader-store/USC cache binding of the kickusc kernel, or the
+background-tag depth/tag context). That narrows the search to the only remaining category; all buffer
+hooks are reverted and the dumps are checked in.
