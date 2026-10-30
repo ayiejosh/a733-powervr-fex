@@ -2931,3 +2931,11 @@ literal `# F16SOP` / `# TODO` placeholder where those encodings should be. Repro
 ALU-heavy scenes therefore needs the F16SOP instruction encodings added to the ISA model and the
 corresponding low-precision lowering, which is compiler work beyond this session; recorded as the precise
 blocker for the performance goal. The experiment was reverted (tree clean at patch 0354).
+
+## Round-146 (2026-10-30): depth-only rendering is not a gap either (native 2.4x zink)
+
+Added a `depthonly` mode to `drawbench2` (27 depth-tested draws with the colour mask off - the pass
+shape shadow mapping uses) and measured on the same board state: **native 455 fps vs zink 186 fps**
+(2.4x). So the shadow scene's vendor advantage is not a depth-only-path inefficiency either; like the
+other shading scenes it lands on the FP16-vs-FP32 fragment ALU difference (round-145). The microbench
+mode is kept in `tools/verify/drawbench2.c` with the other modes.
