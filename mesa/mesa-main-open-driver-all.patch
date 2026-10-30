@@ -7614,10 +7614,10 @@ index 00000000..7c2fb328
 +#endif /* PVR_HWRT_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
 new file mode 100644
-index 00000000..a22ad19f
+index 00000000..d5d32e4a
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_probe.c
-@@ -0,0 +1,5896 @@
+@@ -0,0 +1,6051 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -13452,6 +13452,160 @@ index 00000000..a22ad19f
 +   return ok;
 +}
 +
++/* Replay the reference's vkCmdCopyBuffer transfer job. The captured copy stream (bundle
++ * tools/verify/captures/tq-ref, stream index 1) names its programs as: pixel-event data at
++ * PDS+0x2680 with word 2 = destination >> 2 (address encoding found in round-128), pixel-event code
++ * at PDS+0x26a0, and the TQ copy kernel at USC+0x5d40. The reference's buffer addresses for that run
++ * were source 0x80000b7000 and destination 0x80000bb000, so the replay maps its buffers there and
++ * patches the pixel-event word 2 to the destination it maps (same patch a working fill replay does).
++ */
++static bool
++tq_copy_check(int fd, struct pipe_screen *pscreen)
++{
++   struct pvr_screen *scr = pvr_screen(pscreen);
++   struct pvr_vm *vm = &scr->vm;
++   const struct pvr_heap *pds = &vm->heaps[DRM_PVR_HEAP_PDS_CODE_DATA];
++   const struct pvr_heap *usc = &vm->heaps[DRM_PVR_HEAP_USC_CODE];
++   const char *path = getenv("PVR_PROBE_TQ_COPY");
++   const uint64_t src_addr = getenv("PVR_PROBE_TQ_COPY_SRC")
++                                ? strtoull(getenv("PVR_PROBE_TQ_COPY_SRC"), NULL, 0)
++                                : 0x80000b7000ULL;
++   const uint64_t dst_addr = getenv("PVR_PROBE_TQ_COPY_DST")
++                                ? strtoull(getenv("PVR_PROBE_TQ_COPY_DST"), NULL, 0)
++                                : 0x80000bb000ULL;
++   const uint32_t buf_size = 0x4000u;
++   /* Pixel-event data of the copy job (captured): USC task offset, reserved, destination>>2,
++    * high address/flags template, terminator. */
++   uint32_t ev_data[5] = { 0x00005d40, 0x00000000, 0x00000000, 0x00081a20, 0x90000002 };
++   static const uint32_t ev_code[2] = { 0xf0040101, 0xf4000002 };
++   static const uint32_t usc_copy[4] = { 0xc280a048, 0x01804080, 0xff000088, 0xfffffff2 };
++   static const uint32_t texdata_code[2] = { 0xf4020000, 0xd3000000 };
++   struct drm_pvr_ioctl_create_context_args cargs = {
++      .type = DRM_PVR_CTX_TYPE_TRANSFER_FRAG,
++      .vm_context_handle = vm->context_handle,
++   };
++   struct pvr_bo srcbo = { 0 }, dstbo = { 0 }, pdsbo = { 0 }, uscbo = { 0 };
++   uint8_t *stream = NULL;
++   uint32_t stream_len = 0;
++   int tfd = -1;
++   bool ok = false, completed;
++
++   if (!path) {
++      printf("tqcopy:        FAIL: PVR_PROBE_TQ_COPY not set\n");
++      return false;
++   }
++
++   tfd = open(path, O_RDONLY);
++   if (tfd < 0) {
++      printf("tqcopy:        FAIL: cannot open %s\n", path);
++      return false;
++   }
++   if (read(tfd, &stream_len, sizeof(stream_len)) != sizeof(stream_len) ||
++       stream_len == 0 || stream_len > 4096) {
++      printf("tqcopy:        FAIL: bad stream header\n");
++      close(tfd);
++      return false;
++   }
++   stream = malloc(stream_len);
++   if (!stream || read(tfd, stream, stream_len) != (ssize_t)stream_len) {
++      printf("tqcopy:        FAIL: cannot read stream %s\n", path);
++      close(tfd);
++      free(stream);
++      return false;
++   }
++   close(tfd);
++
++   /* Patch the pixel-event data: word 2 = destination >> 2, word 3 bits 0..5 = destination >> 34. */
++   ev_data[2] = (uint32_t)((dst_addr >> 2) & 0xffffffffu);
++   ev_data[3] = (ev_data[3] & ~0x3fu) | (uint32_t)((dst_addr >> 34) & 0x3fu);
++
++   if (drmIoctl(fd, DRM_IOCTL_PVR_CREATE_CONTEXT, &cargs) != 0) {
++      printf("tqcopy:        FAIL: transfer context: %s\n", strerror(errno));
++      goto out;
++   }
++
++   if (!pvr_bo_create(fd, buf_size, 4096, &srcbo) ||
++       !pvr_vm_map(vm, src_addr, srcbo.handle, srcbo.size) ||
++       !pvr_bo_map(fd, &srcbo) ||
++       !pvr_bo_create(fd, buf_size, 4096, &dstbo) ||
++       !pvr_vm_map(vm, dst_addr, dstbo.handle, dstbo.size) ||
++       !pvr_bo_map(fd, &dstbo)) {
++      printf("tqcopy:        FAIL: cannot map source/destination at 0x%llx/0x%llx\n",
++             (unsigned long long)src_addr, (unsigned long long)dst_addr);
++      goto out_ctx;
++   }
++   for (uint32_t i = 0; i < buf_size / 4; i++)
++      ((uint32_t *)srcbo.map)[i] = TQ_FILL_PATTERN;
++   memset(dstbo.map, 0, buf_size);
++
++   /* PDS page covering 0x1e40 (texturedata code), 0x2680 (pixel-event data) and 0x26a0 (its code). */
++   if (!pvr_bo_create(fd, 0x4000, 4096, &pdsbo) ||
++       !pvr_vm_map(vm, pds->base + 0x1000, pdsbo.handle, pdsbo.size) ||
++       !pvr_bo_map(fd, &pdsbo)) {
++      printf("tqcopy:        FAIL: cannot map PDS program page\n");
++      goto out_bo;
++   }
++   memcpy((uint8_t *)pdsbo.map + (0x1e40 - 0x1000), texdata_code, sizeof(texdata_code));
++   memcpy((uint8_t *)pdsbo.map + (0x2680 - 0x1000), ev_data, sizeof(ev_data));
++   memcpy((uint8_t *)pdsbo.map + (0x26a0 - 0x1000), ev_code, sizeof(ev_code));
++
++   if (!pvr_bo_create(fd, 0x2000, 4096, &uscbo) ||
++       !pvr_vm_map(vm, usc->base + 0x5000, uscbo.handle, uscbo.size) ||
++       !pvr_bo_map(fd, &uscbo)) {
++      printf("tqcopy:        FAIL: cannot map USC program page\n");
++      goto out_bo;
++   }
++   memcpy((uint8_t *)uscbo.map + (0x5d40 - 0x5000), usc_copy, sizeof(usc_copy));
++
++   completed = pvr_job_submit_transfer_sync(vm, cargs.handle, stream, stream_len, 2000);
++   printf("tqcopy:        copy replay %s (stream %u B, src 0x%llx dst 0x%llx)\n",
++          completed ? "COMPLETED (sync signalled)" : "sync did not signal in 2 s", stream_len,
++          (unsigned long long)src_addr, (unsigned long long)dst_addr);
++
++   {
++      const uint32_t *px = dstbo.map;
++      uint32_t changed = 0, mismatched = 0;
++      unsigned waited_us = 0;
++
++      while (waited_us < 3000000) {
++         uint32_t bad = 0, nz = 0;
++
++         for (uint32_t i = 0; i < buf_size / 4; i++) {
++            if (px[i] != 0)
++               nz++;
++            if (px[i] != TQ_FILL_PATTERN)
++               bad++;
++         }
++         changed = nz;
++         mismatched = bad;
++         if (nz == buf_size / 4 && bad == 0)
++            break;
++         usleep(1000);
++         waited_us += 1000;
++      }
++      printf("tqcopy:        readback changed=%u/%u mismatched=%u first=0x%08x (waited %u us)\n",
++             changed, buf_size / 4, mismatched, px[0], waited_us);
++      ok = changed == buf_size / 4 && mismatched == 0;
++   }
++   printf("tqcopy:        %s (native TQ copy job copies the source to the destination)\n",
++          ok ? "PASS" : "FAIL");
++   {
++      struct drm_pvr_ioctl_destroy_context_args dargs = { .handle = cargs.handle };
++
++      drmIoctl(fd, DRM_IOCTL_PVR_DESTROY_CONTEXT, &dargs);
++   }
++   pvr_bo_destroy(fd, &uscbo);
++   pvr_bo_destroy(fd, &pdsbo);
++out_bo:
++   pvr_bo_destroy(fd, &dstbo);
++   pvr_bo_destroy(fd, &srcbo);
++out_ctx:
++out:
++   free(stream);
++   return ok;
++}
++
++
 +int
 +main(int argc, char **argv)
 +{
@@ -13488,6 +13642,7 @@ index 00000000..a22ad19f
 +      getenv("PVR_PROBE_COMPUTE_BENCH") ? compute_bench_check(screen) : true;
 +   const bool cdm_pass = getenv("PVR_PROBE_CDM_DIR") ? cdm_draw_check(fd, screen) : true;
 +   const bool tq_pass = getenv("PVR_PROBE_TQ_STREAM") ? tq_fill_check(fd, screen) : true;
++   const bool tqcopy_pass = getenv("PVR_PROBE_TQ_COPY") ? tq_copy_check(fd, screen) : true;
 +
 +   const bool enum_pass = strstr(screen->get_name(screen), expect) != NULL;
 +   printf("enumeration:   %s (expected substring %s)\n",
@@ -13509,7 +13664,7 @@ index 00000000..a22ad19f
 +
 +   const bool all = enum_pass && bo_pass && vm_pass && res_pass && ctx_pass &&
 +                    shader_pass && state_pass && fb_pass && pipe_pass && csb_pass &&
-+                    clear_pass && tq_pass && cdm_pass && compute_draw_pass &&
++                    clear_pass && tq_pass && tqcopy_pass && cdm_pass && compute_draw_pass &&
 +                    compute_bench_pass;
 +   printf("--- %s\n", all ? "ALL PASS" : "FAILURES ABOVE");
 +   return all ? 0 : 1;

@@ -2646,3 +2646,23 @@ Replay recipe (all pieces now known and checked in):
 
 This is the last missing piece of the transfer-job reverse engineering; the next round implements the
 copy replay in `pvr-probe`.
+
+## Round-129 (2026-10-30): first native TQ copy replay runs - job submits, destination not written yet
+
+Implemented the copy replay in `pvr-probe` (`tq_copy_check`, env `PVR_PROBE_TQ_COPY=<stream>`, patch 0348):
+it maps source `0x80000b7000` / destination `0x80000bb000` in the general heap, installs the captured
+pixel-event data/code at PDS+0x2680/0x26a0 (destination patched as `addr >> 2` in data word 2, exactly
+as the working fill replay does), the captured texturedata block at 0x1e40 and the TQ copy kernel at
+USC+0x5d40, then submits the captured 176-byte copy stream on a native transfer context.
+
+Result: the job **submits and its sync signals** (`copy replay COMPLETED`), so stream, programs and
+submission are accepted - but the destination stays zero (`readback changed=0/4096`). The copy kernel
+therefore also needs the per-command **unitex / texture-state program** that the copy stream names
+through `pds_bgnd0.texunicode_addr = 0x41000` (a PDS heap offset in the reference run, not captured in
+our dump whose offsets end at 0x26a0 - the reference's PDS suballocator had clearly placed that program
+higher up). The next step is to capture it (hook the command-buffer PDS upload path during the reference
+copy, or dump the full PDS heap after the copy) and install it at PDS+0x41000, then re-run
+`PVR_PROBE_TQ_COPY=.../copy-stream.bin`.
+
+All artifacts checked in: `captures/tq-ref/{copy-stream.bin, copystream2.bin, copypds.dump, heap.dump}`,
+probe patch 0348 (series head `1cbcd3b`), and the fill replay still passes.
