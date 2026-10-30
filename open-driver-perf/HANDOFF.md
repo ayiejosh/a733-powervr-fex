@@ -929,3 +929,21 @@ the destination yet. Exact state:
 Safety reminder: never run any probe/harness while `pvrsrvkm` is bound - check
 `readlink /sys/bus/platform/devices/1800000.gpu/driver` first. Four vendor NULL-deref resets have happened,
 the last one from exactly this mistake.
+
+## Performance status (end of 2026-10-30 session)
+
+Three-way glmark2: native **806/805**, zink **778/771**, vendor **1211/1196** (~0.67x vendor, ~1.04x
+zink). The driver **beats zink in most scenes** (cel, phong, shadow, bump, ideas, effect2d) and is within
+5-10% on texture/build scenes; where the vendor wins by 1.7-2.2x is exactly the ALU-heavy fragment
+scenes (shading, refract, terrain, bump, shadow).
+
+The explanation is precision, not submission or state: PVR's `mediump` fragment arithmetic can run on the
+FP16 pipe (~2x FP32), which the vendor GLES compiler exploits. `pco` has essentially no 16-bit
+arithmetic - the ISA has an `f16` op mod (OM_F16) but it is only used by a few ops (DITR/iterators, some
+texture ops; there is a literal "TODO NEXT: gate usage of OM_F16!") and the NIR layer lowers 16-bit
+I/O to 32 bits. So native runs FP32 like the Vulkan driver, which is why zink and native are level.
+
+**Top performance item:** implement FP16 ALU support in pco (NIR mediump/f16 lowering, f16 op variants for
+add/mul/fma with packed registers, conversions at boundaries, scheduling constraints), then use it for
+GLES `mediump` fragment shaders. That is the only lever that would roughly double the shading/terrain/
+refract scenes and is what "beat the vendor GLES stack" needs. Recorded in TA-KICK-DISASSEMBLY round-143.
