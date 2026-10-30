@@ -7623,10 +7623,10 @@ index 00000000..7c2fb328
 +#endif /* PVR_HWRT_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
 new file mode 100644
-index 00000000..1f0c01a2
+index 00000000..e6ff795e
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_probe.c
-@@ -0,0 +1,6213 @@
+@@ -0,0 +1,6239 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -13591,7 +13591,8 @@ index 00000000..1f0c01a2
 +      if (mask & 16U) w[28] = 0;
 +      if (mask & 32U) w[41] = 3;
 +      if (mask & 64U) w[37] = 0x2500;
-+      w[30] = 0xdeadbeefu;
++      if (getenv("PVR_PROBE_TQ_COPY_KEEPCLR") == NULL)
++         w[30] = 0xdeadbeefu;   /* fill pattern; KEEPCLR leaves the copy stream's clear value */
 +   }
 +
 +   /* Patch the pixel-event data: word 2 = destination >> 2, word 3 bits 0..5 = destination >> 34. */
@@ -13748,6 +13749,12 @@ index 00000000..1f0c01a2
 +      }
 +      printf("tqcopy:        readback changed=%u/%u mismatched=%u first=0x%08x (waited %u us)\n",
 +             changed, buf_size / 4, mismatched, px[0], waited_us);
++      if (getenv("PVR_PROBE_TQ_COPY_DUMP16") != NULL) {
++         printf("tqcopy:        dst16:");
++         for (int k = 0; k < 16; k++)
++            printf(" %08x", px[k]);
++         printf("\n");
++      }
 +      ok = changed == buf_size / 4 && mismatched == 0;
 +   }
 +   printf("tqcopy:        %s (native TQ copy job copies the source to the destination)\n",
@@ -13783,6 +13790,25 @@ index 00000000..1f0c01a2
 +   if (fd < 0) {
 +      fprintf(stderr, "pvr-probe: cannot open %s\n", path);
 +      return 1;
++   }
++
++   /* Never touch the vendor driver: opening pvrsrvkm from a normal client NULL-derefs the kernel
++    * (four hard resets on 2026-10-30, one from this probe). Fail loudly instead. */
++   {
++      drmVersionPtr ver = drmGetVersion(fd);
++      const bool ok = ver != NULL && ver->name != NULL &&
++                      strcmp(ver->name, "powervr") == 0;
++
++      if (!ok) {
++         fprintf(stderr, "pvr-probe: refusing to run on '%s' - bind the open 'powervr' driver first"
++                         " (the vendor 'pvrsrvkm' crashes on client open)\n",
++                 ver != NULL && ver->name != NULL ? ver->name : "unknown");
++         if (ver)
++            drmFreeVersion(ver);
++         close(fd);
++         return 1;
++      }
++      drmFreeVersion(ver);
 +   }
 +
 +   struct pipe_screen *screen = pvr_screen_create(fd, NULL, NULL);
@@ -14379,10 +14405,10 @@ index 00000000..5e2c2279
 +#endif /* PVR_RESOURCE_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_screen.c b/src/gallium/drivers/pvr_native/pvr_screen.c
 new file mode 100644
-index 00000000..f7959679
+index 00000000..592d5959
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_screen.c
-@@ -0,0 +1,464 @@
+@@ -0,0 +1,483 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -14592,6 +14618,25 @@ index 00000000..f7959679
 +pvr_screen_create(int fd, const struct pipe_screen_config *config,
 +                  struct renderonly *ro)
 +{
++   /* Refuse to bind to the vendor driver: pvrsrvkm NULL-dereferences when a normal client opens
++    * it (four hard resets on 2026-10-30 came from exactly that). The native driver only speaks the
++    * open powervr kernel UAPI. */
++   {
++      drmVersionPtr ver = drmGetVersion(fd);
++      const bool ok = ver != NULL && ver->name != NULL &&
++                      strcmp(ver->name, "powervr") == 0;
++
++      if (!ok) {
++         mesa_loge("pvr: refusing to initialise on '%s' - the native driver needs the open 'powervr'"
++                   " kernel driver, not the vendor 'pvrsrvkm' (which crashes on client open)",
++                   ver != NULL && ver->name != NULL ? ver->name : "unknown");
++         if (ver)
++            drmFreeVersion(ver);
++         return NULL;
++      }
++      drmFreeVersion(ver);
++   }
++
 +   struct pvr_screen *screen = rzalloc(NULL, struct pvr_screen);
 +   if (!screen)
 +      return NULL;

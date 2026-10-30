@@ -21,14 +21,34 @@ echo "## open stack $(date +%T)"; sh $SW open > $R/sw-open.log 2>&1; sleep 3; ec
 rm -rf /tmp/wroot; mkdir -p /tmp/wroot; chmod 700 /tmp/wroot; export XDG_RUNTIME_DIR=/tmp/wroot
 printf "[core]\nrequire-input=false\n" > /tmp/wsmoke.ini
 weston --config=/tmp/wsmoke.ini --backend=headless-backend.so --renderer=gl --xwayland --socket=wayland-open --idle-time=0 --log=$R/weston.log >/dev/null 2>&1 & WP=$!; sleep 4
-for i in 1 2; do DISPLAY=:0 MESA_LOADER_DRIVER_OVERRIDE=pvr taskset -c 6-7 timeout 900 $GLM --off-screen --data-path $DATA > $R/native-$i.txt 2>&1; echo "  native $i: $(score $R/native-$i.txt) $(date +%T)"; done
+for i in 1 2; do
+   DISPLAY=:0 MESA_LOADER_DRIVER_OVERRIDE=pvr taskset -c 6-7 timeout 900 $GLM --off-screen --data-path $DATA > $R/native-$i.txt 2>&1
+   grep -q "Mesa" $R/native-$i.txt || { echo "STACK ERROR: native run $i did not load a Mesa driver" >&2; exit 1; }
+   echo "  native $i: $(score $R/native-$i.txt) $(date +%T)"
+done
 for i in 1 2; do DISPLAY=:0 MESA_LOADER_DRIVER_OVERRIDE=zink MESA_SHADER_CACHE_DISABLE=1 VK_ICD_FILENAMES=$ICD taskset -c 6-7 timeout 900 $GLM --off-screen --data-path $DATA > $R/zink-$i.txt 2>&1; echo "  zink $i: $(score $R/zink-$i.txt) $(date +%T)"; done
 kill $WP 2>/dev/null; sleep 2
 echo "## vendor, bare X $(date +%T)"; sh $SW vendor > $R/sw-vendor.log 2>&1; sleep 5; echo "  bound=$(drv)"
 sudo systemctl stop display-manager; sleep 3
 for p in kwin_x11 plasmashell startplasma-x11 Xorg; do for q in $(pgrep -x $p); do sudo kill $q 2>/dev/null; done; done; sleep 3
 sudo Xorg :1 -ac -nolisten tcp vt8 > $R/xorg1.log 2>&1 & sleep 6
-for i in 1 2; do sudo env -u LD_LIBRARY_PATH DISPLAY=:1 MESA_LOADER_DRIVER_OVERRIDE=pvr LIBGL_DRIVERS_PATH=/usr/local/lib/dri taskset -c 6-7 timeout 900 $GLM --off-screen --data-path $DATA > $R/vendor-$i.txt 2>&1; echo "  vendor $i: $(score $R/vendor-$i.txt) $(date +%T)"; done
+# The vendor arm must use the IMG EGL/GLES stack (found through ldconfig /usr/local/lib), never a
+# Mesa DRI driver: MESA_LOADER_DRIVER_OVERRIDE/LIBGL_DRIVERS_PATH here would load the Mesa pvr_dri
+# while pvrsrvkm is bound, which NULL-derefs the vendor kernel (the 2026-10-30 resets).
+if strings /usr/local/lib/dri/pvr_dri.so 2>/dev/null | grep -qi "Mesa"; then
+   echo "STACK ERROR: /usr/local/lib/dri/pvr_dri.so is a Mesa driver; refusing to run the vendor arm" >&2
+   exit 1
+fi
+for i in 1 2; do
+   sudo env -u LD_LIBRARY_PATH -u LIBGL_DRIVERS_PATH -u MESA_LOADER_DRIVER_OVERRIDE \
+      DISPLAY=:1 taskset -c 6-7 timeout 900 $GLM --off-screen --data-path $DATA > $R/vendor-$i.txt 2>&1
+   # The vendor GL_VERSION never mentions Mesa; a Mesa string means the wrong stack loaded.
+   if grep -q "Mesa" $R/vendor-$i.txt; then
+      echo "STACK ERROR: vendor run $i loaded a Mesa driver (check EGL/DRI resolution)" >&2
+      exit 1
+   fi
+   echo "  vendor $i: $(score $R/vendor-$i.txt) $(date +%T)"
+done
 for q in $(pgrep -x Xorg); do sudo kill $q 2>/dev/null; done; sleep 3
 sudo systemctl set-property --runtime system.slice AllowedCPUs=; gov schedutil
 sudo systemctl start display-manager; sleep 8

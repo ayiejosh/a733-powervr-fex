@@ -3102,3 +3102,40 @@ remaining difference is not in any buffer or stream the reference writes - it mu
 state that is not in these buffers (the TQ shader-store/USC cache binding of the kickusc kernel, or the
 background-tag depth/tag context). That narrows the search to the only remaining category; all buffer
 hooks are reverted and the dumps are checked in.
+
+## Round-159 (2026-10-30): crash guards, the bg-tag answer, and fragment temp counts
+
+### 1. Crash guard (all four resets were the same vendor NULL-deref)
+`pvr_screen_create()` and `pvr-probe` now call `drmGetVersion()` and **refuse to run unless the DRM
+driver name is `powervr`**; a vendor-bound board gets a clear error instead of crashing the kernel
+(verified: probe on pvrsrvkm prints the refusal, 0 faults). `bench31.sh` vendor arm fixed as well: it no
+longer passes the Mesa-only `MESA_LOADER_DRIVER_OVERRIDE=pvr` / `LIBGL_DRIVERS_PATH` variables (they could
+load the Mesa pvr_dri while pvrsrvkm was bound - the same crash), the script aborts if
+`/usr/local/lib/dri/pvr_dri.so` is a Mesa driver, and both arms verify the stack from
+`GL_VERSION` (`Mesa` required for native/zink, forbidden for vendor).
+
+### 2. What does the tag-off copy write - src or constant?  CONSTANT ZEROS
+Copy replay with the background tag disabled (`isp_bgobjvals = 0`, clear register left at the stream's
+0x0) writes **0x00000000** to every destination dword (first 16: all zero). With the clear register
+patched to 0xdeadbeef the same configuration writes 0xdeadbeef - i.e. the write is the pixel-event/fill
+path clearing with the clear value, **not the TQ shader copying the source**. Per the decision tree: the
+TQ shader never produces output, so the next thing to examine is the **kickusc program (PDS+0x41000) ->
+USC task 0x7340 binding**, not the bg-tag depth context.
+
+### 3. Fragment shader temp counts (`PCO_DEBUG_PRINT=fs,stats`, cache disabled, same board state)
+glmark2 off-screen, temps per fragment IR (max over the scene's shaders):
+
+| scene | FPS | FS temps |
+|---|---|---|
+| shading | 948 | 0, 5, 0 (max 5) |
+| terrain | 20 | 47, 34, 19, 16, 16, 14, 14, 11, 11, 9, 8, 8, 8, 4, 4, 0 |
+| refract | 38 | 23, 19, 5, 0 (max 23) |
+| shadow | 389 | 11, 6, 5, 0 (max 11) |
+
+terrain and refract are exactly the scenes with large FS temp counts and the largest vendor gap (0.51x /
+0.50x), which matches the "temp count is the lever" finding; logs checked in under
+`captures/pco-temps/`. Next measurement after any temp-reduction work: same four scenes.
+
+### 4. Baselines
+Per discussion: `bench30-results/` on disk is from the Oct 29 10:10/11:10 reruns (zink) and is not a
+native baseline; **bench31 is the baseline** (native 806/806 vs zink 775/777 vs vendor 1226/1196).
