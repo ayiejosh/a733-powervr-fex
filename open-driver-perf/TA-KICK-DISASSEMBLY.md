@@ -2431,3 +2431,28 @@ So a native replay needs: a transfer context, the captured PDS/USC programs inst
 offsets, and the transfer-frag heap laid out the way the captured PDS data expects (the 0x21000-class
 offsets plus the TQ kernel at USC 0x5d40). That is the next concrete step; the capture bundle and
 decoder are already checked in.
+
+## Round-118 (2026-10-30): transfer stream address fields decoded to raw offsets
+
+Resolved the address encoding in the transfer stream: `__pvr_address(addr, 4, 4, 31)` packs
+`(addr >> 4) << 4` masked to bits 4..31, i.e. the field holds the address with its low 4 bits dropped.
+The captured fresh-process copy stream (44 dwords) therefore decodes to:
+`pds_bgnd0_base = { shader_addr = 0, texunicode_addr = 0x41000 }`,
+`pds_bgnd1_base = { texturedata_addr = 0x1e40 }`,
+`pds_bgnd3_sizeinfo = { 0x2640, 0x10001 }` (size fields in their units),
+`isp_mtile_base = 0x01000000`, one PBE word pair non-zero (`0x96800000`, `0x02000ffc`, `0x1`, `0x7ff`),
+`usc_pixel_output_ctrl = 0x300`, render origin `0x800001`, `isp_aa = 0x2500`,
+pixel-event code/data `0x202`/`0x26a0`, `isp_render = 0x2680`, `isp_rgn = 2`, trailer `0x0107ff`.
+
+Together with the captured PDS entries this pins where a replay would patch:
+- **destination** address in the pixel-event data segment (this is exactly what the working TQ-fill
+  replay probe patches: words 2/3 = `addr >> 2` low and `addr >> 34` high - the capture's
+  `[0x5d40, 0, 0x2ec00, 0x81a20, ...]` has the same shape),
+- **source** descriptor in the texture-state/unitex data the job names
+  (`texunicode_addr = 0x41000`, `texturedata_addr = 0x1e40`; those offsets were not inside the ranges
+  dumped this run, so the next capture should dump the full PDS and USC heaps or add hooks where the
+  unitex/texture-state data is uploaded).
+
+Next replay attempt: start from the already-working TQ-fill replay path, then add the copy state
+(texture-state data + unitex code) with destination patched as above and source patched at the
+texture-descriptor words.
