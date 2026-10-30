@@ -12,7 +12,7 @@ ok() { printf 'PASS %s\n' "$*"; }
 bad() { printf 'FAIL %s\n' "$*"; fail=1; }
 
 # Compile the probes from source so the gate is self-contained.
-for p in cube_probe cube_mip border_probe mirror_probe aniso_probe polygon_offset_probe rg_probe; do
+for p in cube_probe cube_mip border_probe mirror_probe aniso_probe polygon_offset_probe rg_probe f16rt_probe; do
    [ -f "$V/$p.c" ] || continue
    gcc -O2 "$V/$p.c" -o "$OUT/$p" -lEGL -lGLESv2 || bad "compile $p"
 done
@@ -43,6 +43,9 @@ echo "$r" | grep -q '^PASS' && ok "rttest" || bad "rttest: $(echo "$r" | tr '\n'
 [ "$(timeout 120 $OUT/aniso_probe 2>&1 | grep -c 'maxaniso=16')" -ge 1 ] && ok "anisotropy" || bad "anisotropy"
 po=$(timeout 120 $OUT/polygon_offset_probe 2>&1)
 echo "$po" | grep -q 'C less off +40000   : 0 0 0 255' && ok "polygon offset" || bad "polygon offset"
+
+fr=$(timeout 120 $OUT/f16rt_probe 2>&1)
+echo "$fr" | grep -q 'RESULT: PASS' && ok "half-float colour targets" || bad "half-float colour targets"
 
 if [ $fail = 0 ]; then echo "ALL GROUPS PASS"; else echo "SOME GROUPS FAILED"; fi
 exit $fail

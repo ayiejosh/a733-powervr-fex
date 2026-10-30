@@ -2939,3 +2939,11 @@ shape shadow mapping uses) and measured on the same board state: **native 455 fp
 (2.4x). So the shadow scene's vendor advantage is not a depth-only-path inefficiency either; like the
 other shading scenes it lands on the FP16-vs-FP32 fragment ALU difference (round-145). The microbench
 mode is kept in `tools/verify/drawbench2.c` with the other modes.
+
+## Round-147 (2026-10-30): verify gate covers half-float colour targets (17 groups)
+
+Extended `tools/verify/run-all.sh` with the `f16rt_probe` (RGBA16F/RGB16F render+blend+sample check) so
+the newly advertised `EXT_color_buffer_half_float` stays covered by the one-command gate. Full run on the
+current driver: **ALL GROUPS PASS** (17 groups: gltri 49, mip 14, rttest, rt8test, MRT 2/4, instancing,
+sRGB, extended textures, half-float linear, cube faces, cube mips, border clamp, mirror clamp,
+anisotropy, polygon offset, half-float colour targets), 0 faults.
