@@ -2615,3 +2615,34 @@ low-bit-changing offset - the straightforward captures all came back clean.
 Everything from this investigation is checked in: `captures/tq-ref/` (streams, PDS/USC/heap/texstate/DMA
 dumps, address-shift pair, decoder, `vktq_copy.c` with PAD/PADSIZE/DSTOFF). The TQ-fill replay in
 `pvr-probe` remains the working proof that the submission path itself is sound.
+
+## Round-128 (2026-10-30): FOUND IT - the copy addresses are (addr>>2) in the pixel-event/PDS program data
+
+Re-ran the address-shift experiment and matched every dumped dword against candidate encodings of the
+known transfer addresses (`source 0x80000b7000`, `destination 0x80000bb000`, and the +0x800000 shifted
+pair). The two words that changed in the pixel-event data and PDS dumps are exactly:
+
+    word = (addr >> 2) & 0xffffffff
+
+base:        src 0x80000b7000 -> 0x0002dc00,  dst 0x80000bb000 -> 0x0002ec00
+8 MiB pad:   src 0x80008b7000 -> 0x0022dc00,  dst 0x80008bb000 -> 0x0022ec00
+
+So those "DMA-space address" words from rounds 121-127 are in fact the **transfer source and
+destination addresses**, encoded as `addr >> 2` (a dword index/36-bit address form), with the high bits
+carried in the neighbouring word (constant `0x81a20` for this kernel; the general heap range
+0x8000000000-0xa000000000 keeps `addr >> 34 == 2`, so it does not change). The captured fill-replay
+probe already patches its destination the same way (`addr >> 2` low 32 bits + bits 0..5 = `addr >> 34`),
+which closes the loop.
+
+Replay recipe (all pieces now known and checked in):
+1. load the captured transfer stream (fill stream 0 and copy stream 1 from `cd -- cs.dump`);
+2. install the captured PDS/USC programs at their captured heap offsets (bundles in
+   `captures/tq-ref/`: `heap.dump` has every program's bytes and offsets);
+3. map the source and destination buffers in the general heap, write the copy stream's
+   pixel-event data word 2 with `dst >> 2` and the kickusc PDS data word 2 with `src >> 2` (high-bit words
+   keep their captured templates; the general heap keeps their value valid);
+4. submit on a transfer context and verify the destination bytes - the probe's TQ-fill self-test already
+   proves that submission path works.
+
+This is the last missing piece of the transfer-job reverse engineering; the next round implements the
+copy replay in `pvr-probe`.
