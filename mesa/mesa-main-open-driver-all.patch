@@ -7623,10 +7623,10 @@ index 00000000..7c2fb328
 +#endif /* PVR_HWRT_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
 new file mode 100644
-index 00000000..2c22783b
+index 00000000..61f96506
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_probe.c
-@@ -0,0 +1,6177 @@
+@@ -0,0 +1,6210 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -13560,6 +13560,22 @@ index 00000000..2c22783b
 +   }
 +   close(tfd);
 +
++   if (getenv("PVR_PROBE_TQ_COPY_MORPH") != NULL) {
++      /* Bisection: replay the fill stream but move selected fields to the copy job's values.
++       * bits: 1 = pixel-event offsets, 2 = bgnd0, 4 = bgnd1, 8 = bgnd3, 16 = isp_bgobjvals,
++       *       32 = isp_render, 64 = isp_aa. */
++      uint32_t *w = (uint32_t *)stream;
++      uint32_t m = (uint32_t)strtoul(getenv("PVR_PROBE_TQ_COPY_MORPH"), NULL, 0);
++
++      if (m & 1U) { w[39] = 0x26a0; w[40] = 0x2680; }   /* ev_code / ev_data */
++      if (m & 2U) { w[2] = 0x41000; w[3] = 0x1e40; }    /* bgnd0 */
++      if (m & 4U) { w[4] = 0; w[5] = 0x2640; }          /* bgnd1 */
++      if (m & 8U) { w[6] = 0x10001; w[7] = 0x01000000; }/* bgnd3 */
++      if (m & 16U) w[28] = 0x300;                       /* isp_bgobjvals */
++      if (m & 32U) w[41] = 2;                           /* isp_render */
++      if (m & 64U) w[37] = 0;                           /* isp_aa */
++   }
++
 +   if (getenv("PVR_PROBE_TQ_COPY_HYBRID") != NULL) {
 +      /* Experiment: make the copy job write like the fill job (background words zeroed, clear
 +       * pattern set) and optionally copy fill's isp_render/isp_aa values, to find what blocks the
@@ -13607,6 +13623,17 @@ index 00000000..2c22783b
 +       !pvr_bo_map(fd, &pdsbo)) {
 +      printf("tqcopy:        FAIL: cannot map PDS program page\n");
 +      goto out_bo;
++   }
++   /* Fill job's pixel-event program (stream 0, used for the control run): data at PDS+0x2600,
++    * code at 0x2620, USC fill kernel at 0x5c00 (all from the same capture). */
++   {
++      uint32_t fill_data[5] = { 0x00005c00, 0x00000000,
++                                (uint32_t)((dst_addr >> 2) & 0xffffffffu), 0x00081a20, 0x90000002 };
++      static const uint32_t fill_code[2] = { 0xf0040101, 0xf4000002 };
++      static const uint32_t fill_kernel[4] = { 0xc280a048, 0x01804080, 0xff000088, 0xfffffff2 };
++
++      memcpy((uint8_t *)pdsbo.map + (0x2600 - 0x1000), fill_data, sizeof(fill_data));
++      memcpy((uint8_t *)pdsbo.map + (0x2620 - 0x1000), fill_code, sizeof(fill_code));
 +   }
 +   memcpy((uint8_t *)pdsbo.map + (0x1e40 - 0x1000), texdata_code, sizeof(texdata_code));
 +   memcpy((uint8_t *)pdsbo.map + (0x2680 - 0x1000), ev_data, sizeof(ev_data));
@@ -13678,6 +13705,12 @@ index 00000000..2c22783b
 +      goto out_bo;
 +   }
 +   memcpy((uint8_t *)uscbo.map + (0x7340 - 0x5000), usc_copy, sizeof(usc_copy));
++   {
++      /* Fill job's USC kernel (stream 0 control runs) at USC+0x5c00. */
++      static const uint32_t fill_kernel[4] = { 0xc280a048, 0x01804080, 0xff000088, 0xfffffff2 };
++
++      memcpy((uint8_t *)uscbo.map + (0x5c00 - 0x5000), fill_kernel, sizeof(fill_kernel));
++   }
 +   {
 +      static const uint32_t usc_fillkernel[4] = { 0xc280a048, 0x01804080, 0xff000088, 0xfffffff2 };
 +

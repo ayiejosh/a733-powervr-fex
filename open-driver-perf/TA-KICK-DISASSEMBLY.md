@@ -2993,3 +2993,25 @@ against `captures/tq-ref/bundle/cs.bin` (stream 1 = the copy job, still no desti
 the next bisection practical: replay stream 0 (the fill job, known to write) through the same code path
 and then move fields/offsets one at a time toward the copy job to see exactly which description kills the
 write. Probe-only patch 0355, default behaviour unchanged.
+
+## Round-152 (2026-10-30): background-tag path identified as the copy-replay blocker
+
+Built the bisection harness the previous round set up (probe patch 0356): stream selection, the fill
+job's programs installed alongside the copy job's, a "morph" switch that moves fill-stream fields toward
+the copy job's values, and the reverse "hybrid" switch on the copy stream. Results:
+
+- **Control:** replaying the captured **fill** stream through the copy-replay path writes the destination
+  (4096/4096 pattern) - the context, mapping, program install and submission are all good.
+- **Morph:** starting from the fill stream and applying the copy job's pixel-event offsets, bgnd0, bgnd1,
+  bgnd3 and isp_bgobjvals keeps the write working. Applying **isp_render = 2** (the copy job's value)
+  stops it.
+- **Hybrid on the copy stream:** zeroing bgnd0/1/3 + mtile, setting isp_render = 3, writing a pattern to
+  the clear register and **zeroing isp_bgobjvals** makes the copy stream write (hybrid masks 55/63
+  pass); every mask that leaves **isp_bgobjvals = 0x300** fails, even with all background words zeroed.
+
+So the copy job's write path is gated by the **background-tag object** (`enablebgtag` in
+isp_bgobjvals): with the tag enabled the hardware needs a correctly initialised background shader
+context, and the replay's captured kickusc/texturedata/sizes are not sufficient. That is the piece to
+reproduce next - compare with the native driver's own working background-object setup
+(`pvr_csb_pds_bgnd_words` + the draw path's ISP_CTL/AA, shared-register and USC-temps state) and mirror
+the missing state in the replay.
