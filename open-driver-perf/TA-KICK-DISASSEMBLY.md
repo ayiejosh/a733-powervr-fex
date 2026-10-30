@@ -3015,3 +3015,23 @@ context, and the replay's captured kickusc/texturedata/sizes are not sufficient.
 reproduce next - compare with the native driver's own working background-object setup
 (`pvr_csb_pds_bgnd_words` + the draw path's ISP_CTL/AA, shared-register and USC-temps state) and mirror
 the missing state in the replay.
+
+## Round-153 (2026-10-30): bg-tag path needs the background data programs byte-exact
+
+Follow-up analysis of the round-152 finding (copy write gated by `isp_bgobjvals` enablebgtag+mask):
+
+- The native driver's own working background-object setup writes `isp_bgobjdepth = 1.0f`,
+  `isp_bgobjvals = 0x3ff` (enablebgtag=1, mask=1, stencil=0xff) and the PDS BGRND words from
+  `pvr_csb_pds_bgnd_words()`. The transfer stream instead carries `isp_bgobjvals = 0x300` (enablebgtag +
+  mask, **no** stencil) and - as far as the kernel's transfer stream definition goes - **no bgobjdepth
+  field at all**.
+- Combinatorial re-tests: setting only `isp_bgobjvals` to 0/0x100/0x200/0x300/0x3ff on the copy stream
+  never makes it write; the configurations that write are exactly the ones that **also** zero bgnd1 and
+  bgnd3 (round-152 masks 55/63). So it is not one bit: with the tag enabled the hardware needs the
+  background **data programs** (bgnd1 texturedata at PDS+0x2640 and the bgnd3 size/UNIFORM state) to be
+  valid and consistent with the kickusc program at 0x41000; our reconstructed values are not.
+
+Next step: capture those pieces exactly from one reference copy run - hook
+`pvr_pds_generate_pixel_shader_sa_texture_state_data` (the texturedata/varying program content and its
+PDS offset) plus `pvr_pds_unitex` sizes in the same run as the stream, and install them byte-for-byte in
+the replay. That is the last missing input; the fill control proves the rest of the replay path.
