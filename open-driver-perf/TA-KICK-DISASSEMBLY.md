@@ -2881,3 +2881,37 @@ block, not more ES2 extensions.
 
 The RGBA32F render-target experiment (for `EXT_float_blend`) was reverted: that extension is **ES3-only**
 in Mesa's table, so there is nothing to expose for it in an ES2 context.
+
+## Round-143 (2026-10-30): where the remaining 1.5x vendor gap really is - FP16 ALU
+
+Broke the latest glmark2 run down per scene (native/vendor ratio, from `bench31-results`):
+
+| scene | native | zink | vendor | n/v |
+|---|---|---|---|---|
+| shading cel | 530 | 546 | 1171 | 0.45 |
+| refract | 38 | 47 | 76 | 0.50 |
+| terrain | 20 | 27 | 39 | 0.51 |
+| shading phong | 653 | 624 | 1184 | 0.55 |
+| shadow | 390 | 365 | 690 | 0.57 |
+| bump height | 1011 | 967 | 1715 | 0.59 |
+| shading blinn-phong-inf | 797 | 740 | 1340 | 0.59 |
+| bump high-poly | 407 | 367 | 668 | 0.61 |
+| texture nearest/linear/mipmap | 1452/1433/1480 | 1299/1302/1398 | 1597/1559/1554 | 0.91-0.95 |
+| build use-vbo | 1213/1313 | 1157/1212 | 1327/1731 | 0.76-0.91 |
+
+Two facts matter: (1) the native driver **beats zink in most scenes** (cel, phong, shadow, bump, ideas,
+effect2d), so submission/CPU/state work is not the gap; (2) the scenes where vendor wins by ~1.7-2.2x are
+exactly the **ALU-heavy fragment-shader** scenes (shading, refract, terrain, bump, shadow), while
+texture/build scenes are within 5-10%.
+
+The likely cause is precision: on PVR, `mediump` fragment arithmetic can run on the FP16 pipe (roughly 2x
+FP32 throughput), and the vendor GLES compiler exploits it. `pco` has **no 16-bit arithmetic at all**
+(the ISA layer has no FP16 op encodings; the only 16-bit support is I/O widening and PBE/F16 packing), so
+native falls back to FP32 ALU exactly like the Vulkan path - which is why zink (IMG Vulkan compiler) and
+native are neck and neck. Confirmed by grep: no f16 encodings in `pco_isa.h.py`/`pco_common.h.py`.
+
+So beating the vendor GLES stack on these scenes requires **FP16 ALU support in pco** (ISA encodings,
+NIR fp16 lowering of mediump arithmetic, precision selection), a compiler feature far beyond a GL patch;
+with it the shading/terrain/refract scenes are the ones that would roughly double. Without it the current
+ratio (~0.67x aggregate, native ahead of zink everywhere CPU-bound and on texture/build scenes) is the
+FP32 ceiling. Recorded as the top performance item for a future session; no driver change this round.
