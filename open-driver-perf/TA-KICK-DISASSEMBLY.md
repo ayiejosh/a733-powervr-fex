@@ -2335,3 +2335,28 @@ program pages), then replay one captured stream natively through `pvr_job_submit
 patched source/destination addresses - the same methodology the TQ-fill probe already proved works.
 Stream captures are checked in under `tools/verify/captures/tq-ref/`; the dump hook itself was
 temporary and is reverted.
+
+## Round-114 (2026-10-30): transfer streams decoded with the kernel's field layout
+
+The kernel source tree (`~/kernel-src/powervr`, `pvr_stream_defs.c`) has the authoritative field order
+of the TQ_3D transfer stream, and `pvr_arch_srv_job_transfer.c` in the open Vulkan driver contains the
+matching decoder, so the captured streams can be decoded exactly
+(`tools/verify/decode_transfer_stream.py`). Layout: KMD stream header (length), then
+`pds_bgnd0_base`, `pds_bgnd1_base`, `pds_bgnd3_sizeinfo`, `isp_mtile_base` (each 64-bit), nine 64-bit
+`pbe_wordx_mrty` words, then 32-bit `isp_bgobjvals`, `usc_pixel_output_ctrl`,
+`usc_clear_register0..3`, `isp_mtile_size`, `isp_render_origin`, `isp_ctl`, `isp_aa`,
+`event_pixel_pds_info/code/data`, `isp_render`, `isp_rgn`, `frag_screen`.
+
+Decoded comparisons:
+- the reference's image->buffer copy stream (512x512) has `isp_render_origin = 0x20,0x20`,
+  `pbe_wordx_mrty[1] = 0x000001ff020003fc`, `pds_bgnd3_sizeinfo` low = the event-program offset;
+- the TQ fill stream has origin `0x800001`, every pbe word except `[0]=0x9680000000000000` zero, and
+  the fill value in `usc_clear_register1`;
+- the new zink texture-upload captures are copy-like (non-zero `pds_bgnd0/1`, `isp_mtile_base`,
+  `usc_pixel_output_ctrl = 0x200`, origin `0x1,0x1`), differing from each other only in the three
+  event-program offsets - i.e. same program, different heap slots.
+
+Field meanings beyond the structure are still inferred (origin appears to be in tiles for the 512
+copy; `pds_bgnd3_sizeinfo` packs two 32-bit regs), but the structure is now known, which is what a
+port of the reference's transfer-stream builder needs. Next: reproduce the image->buffer copy stream
+natively (patched addresses) as a first replay, then the buffer->image direction needed for uploads.
