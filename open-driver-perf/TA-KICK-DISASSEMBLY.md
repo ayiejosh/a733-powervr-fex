@@ -2686,5 +2686,5 @@ Result: the job still submits and syncs but writes nothing. The remaining unknow
 texture-state DMA block** (its address/size encoding and the source descriptor it DMAs) - the captured
 copy run recorded neither its content nor the source surface descriptor, so it needs another capture
 with a hook on `pvr_write_usc_constants`/`pvr_pds_unitex` in the copy branch (or a full general-heap dump
-around the copy) to get it byte-exact. Patch 0349, series head `7b9f664` (probe-only changes; default
+around the copy) to get it byte-exact. Patch 0349, series head `ebfe662e` (probe-only changes; default
 probe results unchanged, fill replay still passes).
