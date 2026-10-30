@@ -7614,10 +7614,10 @@ index 00000000..7c2fb328
 +#endif /* PVR_HWRT_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
 new file mode 100644
-index 00000000..8d74e85d
+index 00000000..21eb25cb
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_probe.c
-@@ -0,0 +1,6092 @@
+@@ -0,0 +1,6096 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -13392,7 +13392,7 @@ index 00000000..8d74e85d
 +      const struct pvr_heap *usc = &vm->heaps[DRM_PVR_HEAP_USC_CODE];
 +
 +      if (!pvr_bo_create(fd, 0x2000, 4096, &uscbo) ||
-+          !pvr_vm_map(vm, usc->base + 0x5000, uscbo.handle, uscbo.size) ||
++          !pvr_vm_map(vm, usc->base + 0x7000, uscbo.handle, uscbo.size) ||
 +          !pvr_bo_map(fd, &uscbo)) {
 +         printf("tq:            FAIL: cannot map USC program page\n");
 +         goto out_bo;
@@ -13478,7 +13478,11 @@ index 00000000..8d74e85d
 +    * high address/flags template, terminator. */
 +   uint32_t ev_data[5] = { 0x00005d40, 0x00000000, 0x00000000, 0x00081a20, 0x90000002 };
 +   static const uint32_t ev_code[2] = { 0xf0040101, 0xf4000002 };
-+   static const uint32_t usc_copy[4] = { 0xc280a048, 0x01804080, 0xff000088, 0xfffffff2 };
++   /* 64-byte TQ copy kernel captured at USC+0x7340 in the same reference run as the stream. */
++   static const uint32_t usc_copy[16] = {
++      0xd3009256, 0x83c1803f, 0x40300010, 0xd3009256, 0x83c4803f, 0x41300010, 0xe400a067, 0x60800854,
++      0x80880880, 0x800200a0, 0x8a37ff6a, 0x00408700, 0xfff32000, 0xffffffff, 0x87808a34, 0x21000041,
++   };
 +   static const uint32_t texdata_code[2] = { 0xf4020000, 0xd3000000 };
 +   struct drm_pvr_ioctl_create_context_args cargs = {
 +      .type = DRM_PVR_CTX_TYPE_TRANSFER_FRAG,
@@ -13562,7 +13566,7 @@ index 00000000..8d74e85d
 +      static const uint32_t kick_data[8] = { 0x00007340, 0x00000008, 0, 0, 0, 0, 0, 0 };
 +      static const uint32_t kick_code[1] = { 0xf4000002 };
 +      static const uint32_t kick_data2[8] = { 0x000073c0, 0x00000008, 0, 0, 0, 0, 0, 0 };
-+      static const uint32_t texdata_dma[4] = { 0x000cf000, 0x00000080, 0x90000020, 0 };
++      static const uint32_t texdata_dma[4] = { 0x0004b080, 0x00000080, 0x90000014, 0 };
 +      uint8_t *base = pdsbo2.map;
 +
 +      memcpy(base + (0x41000 - 0x40000), kick_data, sizeof(kick_data));
@@ -13574,7 +13578,7 @@ index 00000000..8d74e85d
 +
 +   /* Texture-state DMA space (general heap) the kick program DMAs from. */
 +   if (!pvr_bo_create(fd, 0x1000, 4096, &dmabo) ||
-+       !pvr_vm_map(vm, 0x80000cf000ULL, dmabo.handle, dmabo.size) ||
++       !pvr_vm_map(vm, 0x800004b000ULL, dmabo.handle, dmabo.size) ||
 +       !pvr_bo_map(fd, &dmabo)) {
 +      printf("tqcopy:        FAIL: cannot map DMA space\n");
 +      goto out_bo;
@@ -13585,16 +13589,16 @@ index 00000000..8d74e85d
 +         0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 +      };
 +
-+      memcpy(dmabo.map, dma_state, sizeof(dma_state));
++      memcpy((uint8_t *)dmabo.map + 0x80, dma_state, sizeof(dma_state));
 +   }
 +
 +   if (!pvr_bo_create(fd, 0x2000, 4096, &uscbo) ||
-+       !pvr_vm_map(vm, usc->base + 0x5000, uscbo.handle, uscbo.size) ||
++       !pvr_vm_map(vm, usc->base + 0x7000, uscbo.handle, uscbo.size) ||
 +       !pvr_bo_map(fd, &uscbo)) {
 +      printf("tqcopy:        FAIL: cannot map USC program page\n");
 +      goto out_bo;
 +   }
-+   memcpy((uint8_t *)uscbo.map + (0x5d40 - 0x5000), usc_copy, sizeof(usc_copy));
++   memcpy((uint8_t *)uscbo.map + (0x7340 - 0x7000), usc_copy, sizeof(usc_copy));
 +
 +   completed = pvr_job_submit_transfer_sync(vm, cargs.handle, stream, stream_len, 2000);
 +   printf("tqcopy:        copy replay %s (stream %u B, src 0x%llx dst 0x%llx)\n",

@@ -2688,3 +2688,19 @@ copy run recorded neither its content nor the source surface descriptor, so it n
 with a hook on `pvr_write_usc_constants`/`pvr_pds_unitex` in the copy branch (or a full general-heap dump
 around the copy) to get it byte-exact. Patch 0349, series head `ebfe662e` (probe-only changes; default
 probe results unchanged, fill replay still passes).
+
+## Round-131 (2026-10-30): byte-exact copy job inputs captured in one run
+
+Captured a **single aligned bundle** of everything the copy job uses in one `vktq_copy` run (checked in as
+`captures/tq-ref/bundle/`): the two transfer streams (`cs.bin`), all PDS uploads (`pds.dump`), all USC
+programs (`usc.dump`, including the 64-byte TQ copy kernel at **USC+0x7340** and its neighbours
+0x7180/0x73c0), and the texture-state DMA blocks (`tx.dump`: offset **0x2640** for the copy job =
+`[0x0004b080, 0x00000080, 0x90000014, 0]`, i.e. the general-heap DMA space address 0x800004b080 split
+into words 0/1, plus 0x2700 for the fill job).
+
+The probe replay (patch 0350) now uses those exact values: DMA space mapped at 0x800004b000 with the
+captured TEXSTATE at +0x80, the 64-byte copy kernel at USC+0x7340, and the texstate block at PDS+0x2640.
+The job still submits and syncs without writing the destination. The remaining gap is the
+kickusc/pixel-event **task binding**: the kickusc program's data word 0 (0x7340 in the earlier capture)
+names the USC task offset, and the aligned bundle now provides the matching kernel bytes and the exact
+pixel-event data for the same run - wiring those three together is the next step.
