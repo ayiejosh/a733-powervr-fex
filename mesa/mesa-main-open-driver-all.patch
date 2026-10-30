@@ -7623,10 +7623,10 @@ index 00000000..7c2fb328
 +#endif /* PVR_HWRT_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
 new file mode 100644
-index 00000000..625cb92c
+index 00000000..2c22783b
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_probe.c
-@@ -0,0 +1,6134 @@
+@@ -0,0 +1,6177 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -13520,20 +13520,63 @@ index 00000000..625cb92c
 +      printf("tqcopy:        FAIL: cannot open %s\n", path);
 +      return false;
 +   }
-+   if (read(tfd, &stream_len, sizeof(stream_len)) != sizeof(stream_len) ||
-+       stream_len == 0 || stream_len > 4096) {
-+      printf("tqcopy:        FAIL: bad stream header\n");
-+      close(tfd);
-+      return false;
-+   }
-+   stream = malloc(stream_len);
-+   if (!stream || read(tfd, stream, stream_len) != (ssize_t)stream_len) {
-+      printf("tqcopy:        FAIL: cannot read stream %s\n", path);
-+      close(tfd);
-+      free(stream);
-+      return false;
++   {
++      /* Capture files hold streams back to back as [u32 len][bytes]; PVR_PROBE_TQ_COPY_STREAM picks
++       * one (0-based, default 1 = the copy job in the bundle). */
++      const unsigned want = getenv("PVR_PROBE_TQ_COPY_STREAM")
++                               ? (unsigned)strtoul(getenv("PVR_PROBE_TQ_COPY_STREAM"), NULL, 0)
++                               : 1U;
++      uint8_t filebuf[65536];
++      ssize_t got = read(tfd, filebuf, sizeof(filebuf));
++      unsigned idx = 0;
++      size_t pos = 0;
++      bool found = false;
++
++      while (got > 0 && pos + 4 <= (size_t)got) {
++         uint32_t len;
++
++         memcpy(&len, filebuf + pos, sizeof(len));
++         pos += 4;
++         if (len == 0 || len > 4096 || pos + len > (size_t)got)
++            break;
++         if (idx == want) {
++            stream_len = len;
++            stream = malloc(len);
++            if (stream)
++               memcpy(stream, filebuf + pos, len);
++            found = stream != NULL;
++            break;
++         }
++         pos += len;
++         idx++;
++      }
++      if (!found) {
++         printf("tqcopy:        FAIL: stream index %u not present in %s\n", want, path);
++         close(tfd);
++         free(stream);
++         stream = NULL;
++         return false;
++      }
 +   }
 +   close(tfd);
++
++   if (getenv("PVR_PROBE_TQ_COPY_HYBRID") != NULL) {
++      /* Experiment: make the copy job write like the fill job (background words zeroed, clear
++       * pattern set) and optionally copy fill's isp_render/isp_aa values, to find what blocks the
++       * copy write. Stream dword layout: header 2 dw, bgnd0 2-3, bgnd1 4-5, bgnd3 6-7, mtile 8-9,
++       * u32 fields from 28 (bgobjvals 28, clear0 30, aa 37, ev_code 39, ev_data 40, isp_render 41). */
++      uint32_t *w = (uint32_t *)stream;
++      uint32_t mask = (uint32_t)strtoul(getenv("PVR_PROBE_TQ_COPY_HYBRID"), NULL, 0);
++
++      if (mask & 1U) { w[2] = 0; w[3] = 0; }
++      if (mask & 2U) { w[4] = 0; w[5] = 0; }
++      if (mask & 4U) { w[6] = 0; w[7] = 0; }
++      if (mask & 8U) { w[8] = 0; w[9] = 0; }
++      if (mask & 16U) w[28] = 0;
++      if (mask & 32U) w[41] = 3;
++      if (mask & 64U) w[37] = 0x2500;
++      w[30] = 0xdeadbeefu;
++   }
 +
 +   /* Patch the pixel-event data: word 2 = destination >> 2, word 3 bits 0..5 = destination >> 34. */
 +   ev_data[2] = (uint32_t)((dst_addr >> 2) & 0xffffffffu);

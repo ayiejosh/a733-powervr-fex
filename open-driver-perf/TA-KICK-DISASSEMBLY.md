@@ -2984,3 +2984,12 @@ up at first transfer-context use. The working fill replay is the control: it pro
 mapping and screenshot path are fine, so the difference is inside the job description.
 
 Experiment reverted (probe-only code unchanged; tree clean at patch 0354).
+
+## Round-151 (2026-10-30): stream-selection for bisecting the copy replay
+
+The replay can now select one stream out of a multi-stream capture (`PVR_PROBE_TQ_COPY_STREAM`, 0-based,
+default 1 = the copy job in the bundle) and keeps the fill-like hybrid switch. Verified index selection
+against `captures/tq-ref/bundle/cs.bin` (stream 1 = the copy job, still no destination write). This makes
+the next bisection practical: replay stream 0 (the fill job, known to write) through the same code path
+and then move fields/offsets one at a time toward the copy job to see exactly which description kills the
+write. Probe-only patch 0355, default behaviour unchanged.
