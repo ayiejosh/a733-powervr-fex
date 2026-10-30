@@ -2915,3 +2915,19 @@ NIR fp16 lowering of mediump arithmetic, precision selection), a compiler featur
 with it the shading/terrain/refract scenes are the ones that would roughly double. Without it the current
 ratio (~0.67x aggregate, native ahead of zink everywhere CPU-bound and on texture/build scenes) is the
 FP32 ceiling. Recorded as the top performance item for a future session; no driver change this round.
+
+## Round-145 (2026-10-30): FP16 ALU feasibility - lp_fmad alone is worth only ~2%
+
+Tested the cheapest form of the FP16 idea: pco already models the fmad **low-precision bit**
+(`OM_LP` -> `lp` in I_FMAD_EXT), so an env-gated experiment forced `PCO_OP_MOD_LP` on every `nir_op_ffma`
+and ran the shading benchmark through the same weston/Xwayland harness:
+
+    shading default: 946 FPS (LP off) -> 966 FPS (LP forced)   (+2%)
+
+So the lp fmad bit alone is not the vendor's win. The shading scenes are dominated by the **single-op
+transcendentals** (frcp/frsq/flog/fexp/fsinc/...), and the hardware capability that matters is
+`has_usc_f16sop_u8` (FP16 single-op mode). pco has **no F16SOP support at all** - `pco_isa.py` has a
+literal `# F16SOP` / `# TODO` placeholder where those encodings should be. Reproducing the vendor's 2x on
+ALU-heavy scenes therefore needs the F16SOP instruction encodings added to the ISA model and the
+corresponding low-precision lowering, which is compiler work beyond this session; recorded as the precise
+blocker for the performance goal. The experiment was reverted (tree clean at patch 0354).
