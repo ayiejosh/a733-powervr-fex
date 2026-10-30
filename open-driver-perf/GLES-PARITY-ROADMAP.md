@@ -129,6 +129,24 @@ The plumbing is closer than it looks; the reference reads as follows.
   `gl_FragData[0]=red`, `[1]=blue`, clear both, `glReadPixels` each in turn; compare against zink
   (zink reports GLES 3.1 so it has MRT). Add `rt8test`-style pixel checks to the gate.
 
+
+### End-of-session status 2026-10-30 (patch series 0357, head 2a77f280)
+
+Completed on the ES2 axis: 72 extensions, all backed by verification probes; one-command gate
+`tools/verify/run-all.sh` (17 groups) all pass; cube maps, EOT cache, ISP tile config, honesty
+withdrawals, border/mirror clamp, anisotropy, emulated polygon offset, half-float colour targets
+(`EXT_color_buffer_half_float`). glmark2: native 806/806 vs zink 775/777 vs vendor 1226/1196.
+
+Open blocks, each with its precise next step:
+1. **Transfer-job copy replay (probe 0348-0357)**: the job submits and syncs, and the captured inputs
+   are byte-identical to the replay installs; the blocker is the background-tag execution context
+   (`isp_bgobjvals` enablebgtag; native driver comparison: bgobjdepth=1.0 + bgobjvals=0x3ff, transfer
+   stream 0x300 with no bgobjdepth packet). Next: instrument every general-heap BO written during
+   transfer submit (the copy job's DMA space branch was not the one hooked) and mirror the tag context.
+2. **Performance**: remaining gap is FP16 ALU; pco has an lp-fmad bit but it gives only ~2%, and the
+   vendor's ~2x on shading/terrain/refract needs F16SOP single-op FP16 encodings that pco lacks entirely.
+3. **ES3 core**: needs the transfer/twiddle work (1) for 3D/array/compressed/depth uploads.
+
 ## Session summary 2026-10-30 (patch series 0346, head 483a4890)
 
 State: native driver is **ES 2.0**, 71 extensions (all advertised ES2 extensions backed by a
