@@ -2552,3 +2552,29 @@ Next for the copy replay: hook `pvr_bo_alloc` in the reference Vulkan driver to 
 addresses/sizes for the same copy run (so the two 16 KiB staging buffers' device addresses are known),
 correlate them against the captured DMA space words to find the source/destination fields, then replay
 the copy in the probe with those fields patched.
+
+## Round-125 (2026-10-30): address-shift experiment narrows where the copy addresses live
+
+Allocator/rename of the reference driver's buffers can be controlled from the Vulkan test: with
+`PAD=<bytes>` the copy tool allocates a large host-visible buffer before the source/destination, which
+moves both by a known delta. Instrumented the reference driver with hooks for all winsys heap
+allocations, the per-command DMA space, the IPF control stream and the PDS uploads, then diffed base vs
+padded runs (dumps in `captures/tq-ref/addr-shift/`):
+
+- heap allocations confirm the shift: source/destination went from `0x80000b7000 / 0x80000bb000` to
+  `0x80008b7000 / 0x80008bb000` (+0x800000) with an 8 MiB pad.
+- the **transfer job streams are byte-identical** between the two runs - the copy's addresses are not in
+  the job stream.
+- the **per-command DMA space** changes in one word only (`0x10200002` -> `0x10200022`) and the **IPF
+  control stream** does not change at all.
+- the **PDS upload data** changes in exactly two words (`0x0002dc00 -> 0x0022dc00`,
+  `0x0002ec00 -> 0x0022ec00`), which match the DMA space BO address shifting by 0x200000 - i.e. those are
+  the DMA-space address words, not the copy source/destination.
+
+So the copy's source/destination addresses live somewhere the hooks above do not reach yet. Next
+candidates, in order: the **pixel-event PDS data segment** (the working TQ-fill replay patches its
+destination there, so the copy almost certainly carries its addresses there too - the current hook only
+dumps `pvr_gpu_upload_pds`, while the per-command pixel-event program is generated in
+`pvr_pds_generate_pixel_event_data_segment` and uploaded through a different path), and the **TQ
+shader's USC constant data**. Next step: hook the pixel-event data generation in the transfer path and
+diff base vs padded again.
