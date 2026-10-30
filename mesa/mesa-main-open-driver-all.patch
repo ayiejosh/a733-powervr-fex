@@ -7623,10 +7623,10 @@ index 00000000..7c2fb328
 +#endif /* PVR_HWRT_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
 new file mode 100644
-index 00000000..e6ff795e
+index 00000000..fe50b678
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_probe.c
-@@ -0,0 +1,6239 @@
+@@ -0,0 +1,6269 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -13483,6 +13483,10 @@ index 00000000..e6ff795e
 +                                ? strtoull(getenv("PVR_PROBE_TQ_COPY_DST"), NULL, 0)
 +                                : 0x80000bb000ULL;
 +   const uint32_t buf_size = 0x4000u;
++   /* Distinct values so every case is unambiguous: source = 0xdeadbeef (TQ_FILL_PATTERN),
++    * clear register = 0x0badf00d, destination prefilled with 0x55555555 (poison). */
++   const uint32_t poison = 0x55555555u;
++   const uint32_t clearval = 0x0badf00du;
 +   /* Pixel-event data of the copy job (captured): USC task offset, reserved, destination>>2,
 +    * high address/flags template, terminator. Both task offsets can be overridden for experiments. */
 +   const uint32_t ev_task = getenv("PVR_PROBE_TQ_COPY_EVTASK")
@@ -13591,9 +13595,12 @@ index 00000000..e6ff795e
 +      if (mask & 16U) w[28] = 0;
 +      if (mask & 32U) w[41] = 3;
 +      if (mask & 64U) w[37] = 0x2500;
-+      if (getenv("PVR_PROBE_TQ_COPY_KEEPCLR") == NULL)
-+         w[30] = 0xdeadbeefu;   /* fill pattern; KEEPCLR leaves the copy stream's clear value */
 +   }
++
++   /* The clear register (stream dword 30) is patched in both tag-on and tag-off cases so a PBE
++    * clear-store is distinguishable from a copy (PVR_PROBE_TQ_COPY_RAWCLR keeps the stream value). */
++   if (getenv("PVR_PROBE_TQ_COPY_RAWCLR") == NULL)
++      ((uint32_t *)stream)[30] = clearval;
 +
 +   /* Patch the pixel-event data: word 2 = destination >> 2, word 3 bits 0..5 = destination >> 34. */
 +   ev_data[2] = (uint32_t)((dst_addr >> 2) & 0xffffffffu);
@@ -13614,9 +13621,10 @@ index 00000000..e6ff795e
 +             (unsigned long long)src_addr, (unsigned long long)dst_addr);
 +      goto out_ctx;
 +   }
-+   for (uint32_t i = 0; i < buf_size / 4; i++)
++   for (uint32_t i = 0; i < buf_size / 4; i++) {
 +      ((uint32_t *)srcbo.map)[i] = TQ_FILL_PATTERN;
-+   memset(dstbo.map, 0, buf_size);
++      ((uint32_t *)dstbo.map)[i] = poison;
++   }
 +
 +   /* PDS page covering 0x1e40 (texturedata code), 0x2680 (pixel-event data) and 0x26a0 (its code). */
 +   if (!pvr_bo_create(fd, 0x4000, 4096, &pdsbo) ||
@@ -13717,8 +13725,17 @@ index 00000000..e6ff795e
 +   }
 +   {
 +      static const uint32_t usc_fillkernel[4] = { 0xc280a048, 0x01804080, 0xff000088, 0xfffffff2 };
++      const char *kmode = getenv("PVR_PROBE_TQ_COPY_KERNEL");
 +
 +      memcpy((uint8_t *)uscbo.map + (0x5d40 - 0x5000), usc_fillkernel, sizeof(usc_fillkernel));
++      if (kmode != NULL && strcmp(kmode, "fill") == 0) {
++         /* Put the fill kernel at the copy kernel's address too: whichever USC address the job
++          * actually launches, it fills (diagnoses the launch path vs the copy inputs). */
++         memcpy((uint8_t *)uscbo.map + (0x7340 - 0x5000), usc_fillkernel, sizeof(usc_fillkernel));
++      } else if (kmode != NULL && strcmp(kmode, "copyboth") == 0) {
++         /* Put the copy kernel at the pixel-event program's address too. */
++         memcpy((uint8_t *)uscbo.map + (0x5d40 - 0x5000), usc_copy, sizeof(usc_copy));
++      }
 +   }
 +
 +   completed = pvr_job_submit_transfer_sync(vm, cargs.handle, stream, stream_len, 2000);
@@ -13731,14 +13748,25 @@ index 00000000..e6ff795e
 +      uint32_t changed = 0, mismatched = 0;
 +      unsigned waited_us = 0;
 +
++      uint32_t n_src = 0, n_clear = 0, n_poison = 0, n_other = 0;
++
 +      while (waited_us < 3000000) {
 +         uint32_t bad = 0, nz = 0;
 +
++         n_src = n_clear = n_poison = n_other = 0;
 +         for (uint32_t i = 0; i < buf_size / 4; i++) {
-+            if (px[i] != 0)
++            if (px[i] != poison)
 +               nz++;
 +            if (px[i] != TQ_FILL_PATTERN)
 +               bad++;
++            if (px[i] == TQ_FILL_PATTERN)
++               n_src++;
++            else if (px[i] == clearval)
++               n_clear++;
++            else if (px[i] == poison)
++               n_poison++;
++            else
++               n_other++;
 +         }
 +         changed = nz;
 +         mismatched = bad;
@@ -13749,6 +13777,8 @@ index 00000000..e6ff795e
 +      }
 +      printf("tqcopy:        readback changed=%u/%u mismatched=%u first=0x%08x (waited %u us)\n",
 +             changed, buf_size / 4, mismatched, px[0], waited_us);
++      printf("tqcopy:        values src=%u clear=%u poison=%u other=%u\n",
++             n_src, n_clear, n_poison, n_other);
 +      if (getenv("PVR_PROBE_TQ_COPY_DUMP16") != NULL) {
 +         printf("tqcopy:        dst16:");
 +         for (int k = 0; k < 16; k++)

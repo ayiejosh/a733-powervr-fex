@@ -3139,3 +3139,54 @@ terrain and refract are exactly the scenes with large FS temp counts and the lar
 ### 4. Baselines
 Per discussion: `bench30-results/` on disk is from the Oct 29 10:10/11:10 reruns (zink) and is not a
 native baseline; **bench31 is the baseline** (native 806/806 vs zink 775/777 vs vendor 1226/1196).
+
+## Round-160 (2026-10-31): bench31 vendor arm fixed, unambiguous TQ diagnosis, desktop temps
+
+### 1. bench31.sh vendor arm (fixed)
+`/usr/local/lib/dri/pvr_dri.so` is **IMG's own DRI driver (Mesa 24.0.1 fork)**, so the "is a Mesa
+driver" pre-check was wrong and always fired - and because it fired after display-manager stop/Xorg
+start it skipped the restore. Fixes:
+- removed the strings pre-check and its (incorrect) reset-attribution comment;
+- restored the original line-31 env for the vendor arm (`MESA_LOADER_DRIVER_OVERRIDE=pvr`,
+  `LIBGL_DRIVERS_PATH=/usr/local/lib/dri`) - that is what selects the IMG DRI driver;
+- **restore moved into a trap on EXIT** (kill Xorg :1, `$SW vendor`, AllowedCPUs reset, gov schedutil,
+  start display-manager, kwin check/restart) so any exit - including stack errors - restores the board;
+- stack checks by identity, not by "Mesa" presence: native `GL_RENDERER` must contain
+  `(36.56.104.183)`, zink `GL_RENDERER` must contain `zink`, vendor `GL_VERSION` must contain
+  `build 24.2`; the vendor no-Mesa check stays.
+
+Vendor smoke (one scene, `build:use-vbo=false`, same env as the vendor arm): score **1298**
+(baseline runs: vendor-1 **1464**, vendor-2 **1282** - within noise), `GL_RENDERER: PowerVR B-Series
+BXM-4-64`, `GL_VERSION: OpenGL ES 3.2 build 24.2@6603887`, 0 "Mesa" hits, 0 faults. Restore verified
+(dm active, kwin alive). So the vendor arm is usable again.
+
+### 2. TQ diagnosis with distinguishable values
+Probe now uses source `0xdeadbeef`, clear register `0x0badf00d`, destination prefilled `0x55555555`,
+and counts each value; the kernel on the USC launch address can be swapped (`PVR_PROBE_TQ_COPY_KERNEL`).
+Four cases (tag ON = raw stream `isp_bgobjvals=0x300`; tag OFF = zeroed backgrounds + tag,
+`isp_render=3`), faults checked after each:
+
+| case | dst content | meaning |
+|---|---|---|
+| tag ON + fill kernel | all `0x55555555` | no store |
+| tag ON + copy kernel | all `0x55555555` | no store |
+| tag OFF + fill kernel | all `0x0badf00d` | store works; fill kernel launched |
+| tag OFF + copy kernel | all `0x55555555` | copy kernel never stores |
+
+Per the decision tree: **the tag-on launch (or bg-object state) is broken** - the destination
+address and the PBE store work (tag-off fill proves it), but nothing runs under the tag. The
+**kickusc program (PDS+0x41000) -> USC task 0x7340 binding is a real lead**; CPU-twiddle fallback
+decision stays on hold until that is investigated.
+
+### 3. Desktop blur/shadow temps (the two biggest gaps)
+Same env/options as the default glmark2 runs (`windows=4`, cache disabled, off-screen):
+
+| scene | native fps | vendor fps | FS temps |
+|---|---|---|---|
+| desktop blur (radius=5, 1 pass, separable, 4 windows) | 120 | 328 | 4, 16, 6, 6, 15, 15, 16, ... (max 16) |
+| desktop shadow (4 windows) | 456 | 1102 | 4, 16, 16 (max 16) |
+
+CPU is ~10% (user 0.51 s + sys 0.50 s over 10.2 s wall) - **GPU-bound**, and the fragment temp counts
+are low. So temps do **not** explain the two largest gaps; the perf plan needs another lead. The
+pattern (4 windows x multi-pass desktop effects) points at per-small-render-pass GPU cost again
+(load/store passes, framebuffer/target switches), not ALU.
