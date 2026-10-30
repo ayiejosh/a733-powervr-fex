@@ -2494,3 +2494,24 @@ Bundle checked in: `captures/tq-ref/heap.dump`, `cs-heap.bin` (fill+copy streams
 the reference job references is available byte-for-byte; the remaining work for a native copy replay is
 the address-layout decision above plus installing the captured programs at their offsets in a transfer
 context (the TQ-fill replay already proves that submission path works).
+
+## Round-121 (2026-10-30): the TQ DMA space captured - where the copy's descriptors live
+
+Hooked the reference transfer builder right after `pvr_write_usc_constants(sh_reg_layout, dma_space)` and
+dumped that general-heap BO: **20 dwords** with device address `0x800004b080`. Two things fell out:
+
+- the per-command texture-state data captured earlier (`TX`) starts with `[0x0004b080, 0x00000080]` - that
+  is exactly **the low/high 32 bits of the DMA space's device address** `0x800004b080`, so the texstate
+  segment's first words are the DMA burst source address, confirming the address split and explaining
+  why the stream's `texunicode_addr` (0x41000) looked like a truncated address: the values in the stream
+  are device-address low bits, not heap offsets.
+- the DMA space contents are the TQ shader's descriptor constants:
+  `c0002d84 00011ffc ec0007ff 10200002 0 0 0 0 0 00022400 ...` - i.e. packed TEXSTATE/PBE descriptor
+  words for the source surface (format, tile/extent fields, and the region to copy), which is where the
+  copy's source descriptor lives.
+
+So the full data path is now identified: job stream (fixed constants) + pixel-event/kickusc PDS programs
+(captured) + unitex code (pds heap, offset in stream) + this DMA space BO (general heap, address split
+into the texstate segment). For a native replay the DMA space can be regenerated/patched directly: its
+address must go into the texstate segment words 0/1 and the descriptors can be rewritten for the chosen
+source/destination. Captures (`dma.dump`, `cs.dump`) checked in; hook reverted.
