@@ -2515,3 +2515,25 @@ So the full data path is now identified: job stream (fixed constants) + pixel-ev
 into the texstate segment). For a native replay the DMA space can be regenerated/patched directly: its
 address must go into the texstate segment words 0/1 and the descriptors can be rewritten for the chosen
 source/destination. Captures (`dma.dump`, `cs.dump`) checked in; hook reverted.
+
+## Round-122 (2026-10-30): replay address model solved - fields carry heap-relative offsets
+
+Printed the native VM's heap bases: every heap base ends in **32 zero bits**
+(`general 0x8000000000`, `pds? 0xda00000000`, `0xe000000000`, `0xe400000000`, `f200000000`), and the same
+is true for the reference VM's heaps (the captured DMA space address is `0x800004b080`, whose low 32
+bits are exactly the `0x4b080` value written into the texstate segment). That resolves the apparent
+contradiction of 32-bit address fields: the packet fields hold **heap-relative offsets** (the heap base's
+low 32 bits are zero, so truncating a device address to its low 32 bits yields the offset), and the
+firmware resolves them against the context's heap bases.
+
+Consequences for the replay design (all now unblocked):
+- the captured PDS/USC program bytes can be installed at their captured **offsets** in the replay
+  context's own heaps - the base address difference does not matter, because the stream carries offsets;
+- the TQ DMA space (general heap BO, address split into the texstate segment's first two words) can be
+  allocated by the replay itself, with its 64-bit address written where the capture shows;
+- the source descriptor inside the DMA space is TEXSTATE/PBE words the replay can regenerate for its
+  chosen source buffer (twiddled address fields are heap addresses offset by the same rule).
+
+So the remaining work for the transfer-job port is ordinary driver integration rather than reverse
+engineering: build a transfer context, install the captured pixel-event/kickusc/unitex programs, create
+the per-command DMA space and stream (with the constants decoded in rounds 114-118), submit and verify.
