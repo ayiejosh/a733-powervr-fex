@@ -2947,3 +2947,14 @@ the newly advertised `EXT_color_buffer_half_float` stays covered by the one-comm
 current driver: **ALL GROUPS PASS** (17 groups: gltri 49, mip 14, rttest, rt8test, MRT 2/4, instancing,
 sRGB, extended textures, half-float linear, cube faces, cube mips, border clamp, mirror clamp,
 anisotropy, polygon offset, half-float colour targets), 0 faults.
+
+## Round-148 (2026-10-30): final three-way benchmark at patch 0354
+
+Full glmark2 run on the current driver (same x11-glesv2 binary, governor performance, off-screen):
+**native 806 / 806**, **zink 775 / 777**, **vendor 1226 / 1196**.
+
+So with the session's work (patches 0332-0354: cube maps, EOT cache, ISP tile config, honesty withdrawals,
+border/mirror clamp, anisotropy, emulated polygon offset, half-float colour targets, extension surface
+72) the driver still holds **~0.66x vendor / ~1.04x zink**, i.e. the ES2 feature work did not move the
+glmark2 aggregate (as expected - those scenes are dominated by the FP16-vs-FP32 fragment ALU difference,
+round-143/145) while adding the capability surface. Logs archived under `bench/round-148`.
