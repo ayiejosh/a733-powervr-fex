@@ -2724,5 +2724,5 @@ kickusc program names 0x7340, so the replay now maps a 16 KiB USC page at USC+0x
 captured kernels** (16-byte fill-style at 0x5d40, 64-byte copy kernel at 0x7340). The job still submits,
 syncs, and writes nothing. The remaining gap is the kickusc task-control binding (captured data word 0/1
 = `0x7340/8`): either the kernel is entered with the wrong task/sample-rate control or the DMA space
-descriptor still needs the source surface words. Patch 0351, series head `f4a4f3f1` (probe only; default
+descriptor still needs the source surface words. Patch 0351, series head `189d18a7` (probe only; default
 probe unchanged, fill replay still passes).
