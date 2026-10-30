@@ -7614,7 +7614,7 @@ index 00000000..7c2fb328
 +#endif /* PVR_HWRT_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
 new file mode 100644
-index 00000000..b366deaa
+index 00000000..a22ad19f
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_probe.c
 @@ -0,0 +1,5896 @@
@@ -9443,7 +9443,7 @@ index 00000000..b366deaa
 +   uint32_t staging[64] = { 0 };
 +   uint32_t usc_offset;
 +
-+   pvr_csb_pbe_state_words(rtaddr, PIPE_FORMAT_R8G8B8A8_UNORM, 0, 0, state_words);
++   pvr_csb_pbe_state_words(rtaddr, PIPE_FORMAT_R8G8B8A8_UNORM, 0, 0, false, state_words);
 +
 +   if (!pvr_shader_eot_create(scr->pco_ctx, &eot, 1, state_words)) {
 +      printf("hwrt:          could not compile the end-of-tile program\n");

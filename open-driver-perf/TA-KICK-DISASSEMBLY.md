@@ -2537,3 +2537,18 @@ Consequences for the replay design (all now unblocked):
 So the remaining work for the transfer-job port is ordinary driver integration rather than reverse
 engineering: build a transfer context, install the captured pixel-event/kickusc/unitex programs, create
 the per-command DMA space and stream (with the constants decoded in rounds 114-118), submit and verify.
+
+## Round-124 (2026-10-30): probe builds again; TQ-fill replay re-validated on hardware
+
+`pvr-probe` had not compiled since `pvr_csb_pbe_state_words()` grew its `emptytile` argument; the
+end-of-tile check was never updated. Fixed (pass false - a render target), so the probe builds again as
+a usable in-repo driver self-test. Running it with the captured fill stream on the current driver:
+`tq: fill replay COMPLETED (sync signalled)`, `readback changed=4096/4096 mismatched=0 first=0xdeadbeef`,
+`PASS (native TQ fill job writes the target)` - the transfer-job submission path is re-validated today,
+which is what the transfer port builds on. Patch 0347, series head `e1f0d2c` (probe fix only, no
+driver behaviour change).
+
+Next for the copy replay: hook `pvr_bo_alloc` in the reference Vulkan driver to log general-heap BO
+addresses/sizes for the same copy run (so the two 16 KiB staging buffers' device addresses are known),
+correlate them against the captured DMA space words to find the source/destination fields, then replay
+the copy in the probe with those fields patched.
