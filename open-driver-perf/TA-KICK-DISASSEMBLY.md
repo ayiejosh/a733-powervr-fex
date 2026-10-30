@@ -2456,3 +2456,22 @@ Together with the captured PDS entries this pins where a replay would patch:
 Next replay attempt: start from the already-working TQ-fill replay path, then add the copy state
 (texture-state data + unitex code) with destination patched as above and source patched at the
 texture-descriptor words.
+
+## Round-119 (2026-10-30): texture-state data captured; addresses come from relocated/cached programs
+
+Dumped the per-command texture-state data segment (`PVR_DUMP_TEXSTATE` hook in
+`pvr_pds_unitex` after `pvr_pds_generate_pixel_shader_sa_texture_state_data`) for the same buffer copy
+at two sizes. The whole segment is **4 dwords**: `[0x0004b080, 0x00000080, 0x90000014, 0]` for the
+16 KiB run and `[0x0004b100, 0x00000080, 0x90000014, 0]` for the 64 KiB run - i.e. a tiny PDS DMA
+program whose first words are USC task/constant addresses allocated per run, not the source image
+descriptor. The actual texture descriptor (and therefore the source address) lives in the **cached TQ
+shader data / unitex code** that the reference uploads once per shader variant (pvr_transfer_frag_store)
+and references by offset; those offsets (texunicode 0x41000, texturedata 0x1e40) were outside the
+ranges the PDS/texstate hooks observed in these runs, and the address inside the descriptor is patched
+through the winsys's relocation machinery rather than written by the job builder.
+
+So a native replay needs the cached TQ shader state as well - specifically the unitex/texture-state
+programs at the offsets the job names. The capture plan that will get them: dump the whole PDS and USC
+heap BO contents (or hook `pvr_bo_suballoc` allocations in pds_heap/usc_heap and dump every allocation
+with its offset), for one known copy, and then replay with those bytes installed at their offsets.
+Captures from this round are checked in (`tx-*.dump`, `cs-*.bin`).
