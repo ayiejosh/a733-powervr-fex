@@ -2360,3 +2360,28 @@ Field meanings beyond the structure are still inferred (origin appears to be in 
 copy; `pds_bgnd3_sizeinfo` packs two 32-bit regs), but the structure is now known, which is what a
 port of the reference's transfer-stream builder needs. Next: reproduce the image->buffer copy stream
 natively (patched addresses) as a first replay, then the buffer->image direction needed for uploads.
+
+## Round-115 (2026-10-30): TQ copy bundle captured - streams + PDS programs + USC kernels
+
+Captured everything a native replay needs, with two temporary hooks in the open Vulkan driver
+(`PVR_DUMP_PDS` in `pvr_gpu_upload_pds`, `PVR_DUMP_USC` in `pvr_gpu_upload_usc`), running the same
+texture-upload workload: five transfer streams (`tq-*.bin`, captured round-113), **74 PDS program
+entries** (`pds.dump`) and **32 USC programs** (`usc.dump`). Correlated:
+
+- the transfer streams' program fields point at kickusc PDS programs, e.g. stream `tq-0000` carries
+  `isp_render = 0x2a00` / `event_pixel_pds_data = 0x2a20`, which is the PDS entry
+  `data_off=0x2a00, data=[0x5d40, 0, 0x79000, 0x81a20, 0x90000002], code_off=0x2a20,
+  code=[f0040101, f4000002]` - and its first data word **0x5d40 is the USC offset of the TQ kernel**
+  (a 16-byte USC program captured at 0x5d40). The old 512x512 copy stream points at the same kind of
+  program at `0x2c40/0x2c60` (USC offset 0x5d40 again), and other variants (0x2e80, 0x30c0, 0x3300)
+  reference other TQ kernels (USC 0x5e40, 0x6000, ...) for other format classes.
+- so the (name-mismatched) stream fields map as: `isp_render` = kickusc **data** offset,
+  `event_pixel_pds_data` = kickusc **code** offset, `pds_bgnd3_sizeinfo` low = pixel-event program
+  data offset, `pds_bgnd1_base` = a small PDS code offset (0x1e40, two instructions), matching what the
+  TQ-fill replay probe had to install by hand.
+
+Bundle checked in: `tools/verify/captures/tq-ref/{tq-*.bin, pds.dump, usc.dump}`. Next: locate the
+destination address the streams use (candidates: `pds_bgnd0_base` = 0x410000000000, `isp_mtile_base`,
+or the nine `pbe_wordx_mrty` words) by capturing the same copy with a known buffer address, then write
+the native replay probe: install the captured PDS/USC programs at their captured offsets, map a target
+buffer, patch the destination, submit via `pvr_job_submit_transfer_sync`, verify the bytes.
