@@ -2823,3 +2823,22 @@ is_format_supported: e.g. the resource's bind flags from the texture-creation pa
 `PIPE_CAP_*` or the single/dual-channel clear/readback path). Debug with `MESA_DEBUG=1` on the probe and
 read `st_validate_attachment`, then re-test render + blend + sample before exposing the extension.
 `EXT_float_blend` needs the same treatment for `R32G32B32A32_FLOAT` afterwards.
+
+## Round-140 (2026-10-30): half-float targets - clear works, draws do not; R16F/RG16F rejected
+
+Follow-up debug of the reverted half-float colour-target work, using the correct ES2 API usage
+(unsized `GL_RGBA` + `GL_HALF_FLOAT_OES` becomes RGBA16F under OES_texture_half_float):
+
+- **RGBA16F:** the texture creates, the FBO is **complete**, and a clear works - but a drawn/blended quad
+  leaves only the clear colour in the target (sampled back it reads exactly the clear colour, no error
+  raised). So the 3D draw path does not actually emit fragments for a 16F target even though the PBE
+  state accepts the format; the clear path is separate.
+- **R16F / RG16F:** `glTexImage2D` fails outright with `GL_INVALID_VALUE`, and the driver log shows the
+  compute-fallback path rejecting the non-RGBA8 target ("target must be a non-empty RGBA8 2D texture"),
+  i.e. the driver has no texture path for single/dual-channel half-float in ES2 yet.
+
+So `EXT_color_buffer_half_float` cannot be advertised honestly: one format renders only clears, two do
+not even create. The plumbing attempt is reverted again (tree clean at patch 0353). To land the extension
+later: (1) make the draw path emit into a 16F target (PBE source format/packmode and EOT/pixel program for
+float outputs), (2) give R16F/RG16F a real texture/upload path (compute fallback currently only handles
+RGBA8), then re-run the render/blend/sample probe before advertising.
