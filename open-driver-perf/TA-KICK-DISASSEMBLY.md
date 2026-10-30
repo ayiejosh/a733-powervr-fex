@@ -3051,3 +3051,19 @@ The replay now uses the copy variant matching its mapped source (0x80000b7000) a
 (0x80000bb000). The job still submits and syncs without writing, so the remaining piece is still the
 background-tag execution context (rounds 152/153) - this round just removed a wrong input from the
 experiment. Patch 0357, probe-only.
+
+## Round-155 (2026-10-30): same-run capture of the copy job's supporting data
+
+Captured stream + texture-state data + DMA spaces + kickusc programs in **one** `vktq_copy` run
+(`captures/tq-ref/bundle2/`): the copy job's texturedata block at PDS+0x2640 is exactly
+`[0x0004b080, 0x00000080, 0x90000014, 0]` (DMA space address 0x800004b080 split into words 0/1), the
+kickusc programs are at PDS+0x41000/0x42000 with data `[0x7340, 8, ...]`/`[0x73c0, 8, ...]` and code
+`f4000002`, and the second DMA space (0x800004b100) carries the fill-variant TEXSTATE. Those are
+byte-identical to what the replay installs (rounds 152-154), so no new input difference was found.
+
+A useful clue for the next attempt: the copy job's DMA space (0x800004b080) is written by the branch
+that our `PVR_DUMP_DMA1` hook in `pvr_3d_copy_blit_core` did **not** reach, while the fill-side branch
+(0x800004b100) is the one that runs - i.e. the transfer path's pass structure differs from what the hook
+placement assumed. Instrumenting both passes explicitly (or dumping every general-heap BO written in the
+transfer submit) will show whether the copy job's TEXSTATE is regenerated per pass; that plus the
+background-tag context is the remaining work. All capture hooks reverted; tree clean at patch 0357.
