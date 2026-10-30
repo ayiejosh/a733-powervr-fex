@@ -2408,3 +2408,26 @@ supplied through the TQ shader's constant data (the kickusc program's 0x2ec00/0x
 the USC constant store). The next probe should write known 64-bit values into those constant slots (or
 capture two copies with different buffer allocations and diff the kickusc data), then replay natively.
 Captures checked in under `tools/verify/captures/tq-ref/`; the temporary dump hooks were reverted.
+
+## Round-117 (2026-10-30): transfer stream field semantics confirmed from the reference source
+
+Read `pvr_setup_hwbg_object()` in the open Vulkan driver's transfer job builder, which confirms the
+decoded stream fields:
+- `CR_PDS_BGRND0_BASE` = **shader_addr** (PDS shader task offset) + **texunicode_addr** (low/high 32-bit
+  halves), so the copy stream's `pds_bgnd0_base = 0x00041000_00000000` means shader_addr 0 and
+  texunicode_addr 0x41000;
+- `CR_PDS_BGRND1_BASE` = **texturedata_addr** (the copy's 0x1e40, the two-instruction PDS code);
+- `CR_PDS_BGRND3_SIZEINFO` = the four PDS **size fields** (usc_sharedsize / pds_uniformsize /
+  pds_texturestatesize / pds_tempsize), which is why its low half tracked the pixel-event program offset
+  in earlier decodes (16-bit fields).
+- `event_pixel_pds_data`/`event_pixel_pds_code` are the pixel-event PDS data and code offsets,
+  `isp_render`/`isp_rgn` the render extent and region settings, and the src/dst addressing is carried in
+  the **PDS texture-state data** the job references (the captured PDS entries with DMA-like descriptors
+  such as `[0xda, 0x21000, 0x2, 0, 0xda, 0x21030, 0x40002, 0, 0x5e40, 0x18]` - the 0x21000/0x21030
+  values look like **offsets into the transfer-frag heap**, which the UAPI exposes as
+  `DRM_PVR_HEAP_TRANSFER_FRAG`), not in the job stream itself.
+
+So a native replay needs: a transfer context, the captured PDS/USC programs installed at their captured
+offsets, and the transfer-frag heap laid out the way the captured PDS data expects (the 0x21000-class
+offsets plus the TQ kernel at USC 0x5d40). That is the next concrete step; the capture bundle and
+decoder are already checked in.
