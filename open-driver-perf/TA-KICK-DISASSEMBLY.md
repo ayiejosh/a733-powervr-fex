@@ -2803,3 +2803,23 @@ Next step for these extensions: add `PIPE_FORMAT_R16_FLOAT` / `PIPE_FORMAT_R16G1
 texture-format support list, then re-check the cap exposure and gate a render/blend/readback probe.
 `EXT_float_blend` similarly needs the 32F render target path exercised end-to-end before it can be
 advertised honestly.
+
+## Round-139 (2026-10-30): half-float render targets expose the extension but fail FBO validation
+
+Implemented the format plumbing for half-float colour targets: added `PIPE_FORMAT_R16_FLOAT` /
+`PIPE_FORMAT_R16G16_FLOAT` to `pvr_format_layout_from_pipe` (TEXSTATE `F16` / `F16F16`), accepted
+`R16_FLOAT` / `R16G16_FLOAT` / `R16G16B16A16_FLOAT` as render targets in `pvr_is_format_supported`, and
+made the PBE pack mode channel-count aware (`F16` / `F16F16` / `F16F16F16F16`). With that,
+**`GL_EXT_color_buffer_half_float` did appear** (ES2 extensions 71 -> 72).
+
+But the honesty gate failed: rendering into all three formats reports
+`GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT (0x8cd6)` in a probe that creates the float texture, attaches it,
+clears + blends a quad and samples it back to RGBA8. So the extension was **reverted** rather than
+advertised; the tree is clean at patch 0353.
+
+Next step for the feature: find what Mesa's attachment validation still rejects (the driver now claims
+`PIPE_BIND_RENDER_TARGET` for the formats, so it is likely a validation/cap condition rather than
+is_format_supported: e.g. the resource's bind flags from the texture-creation path, a missing
+`PIPE_CAP_*` or the single/dual-channel clear/readback path). Debug with `MESA_DEBUG=1` on the probe and
+read `st_validate_attachment`, then re-test render + blend + sample before exposing the extension.
+`EXT_float_blend` needs the same treatment for `R32G32B32A32_FLOAT` afterwards.
