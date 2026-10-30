@@ -7614,10 +7614,10 @@ index 00000000..7c2fb328
 +#endif /* PVR_HWRT_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
 new file mode 100644
-index 00000000..78c3b47d
+index 00000000..625cb92c
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_probe.c
-@@ -0,0 +1,6113 @@
+@@ -0,0 +1,6134 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -13572,13 +13572,34 @@ index 00000000..78c3b47d
 +      uint32_t kick_data[8] = { kick_task, 0x00000008, 0, 0, 0, 0, 0, 0 };
 +      static const uint32_t kick_code[1] = { 0xf4000002 };
 +      uint32_t kick_data2[8] = { kick_task, 0x00000008, 0, 0, 0, 0, 0, 0 };
++      struct pvr_pds_kickusc_program gen_kick = { 0 };
++      const bool genkick = getenv("PVR_PROBE_TQ_COPY_GENKICK") != NULL;
 +      static const uint32_t texdata_dma[4] = { 0x0004b080, 0x00000080, 0x90000014, 0 };
 +      uint8_t *base = pdsbo2.map;
 +
-+      memcpy(base + (0x41000 - 0x40000), kick_data, sizeof(kick_data));
-+      memcpy(base + (0x41020 - 0x40000), kick_code, sizeof(kick_code));
-+      memcpy(base + (0x42000 - 0x40000), kick_data2, sizeof(kick_data2));
-+      memcpy(base + (0x42020 - 0x40000), kick_code, sizeof(kick_code));
++      if (genkick) {
++         /* Regenerate the kickusc program with pvr_pds_kick_usc instead of the captured bytes. */
++         const uint32_t temps = getenv("PVR_PROBE_TQ_COPY_TEMPS")
++                                   ? (uint32_t)strtoul(getenv("PVR_PROBE_TQ_COPY_TEMPS"), NULL, 0)
++                                   : 8U;
++
++         pvr_pds_setup_doutu(&gen_kick.usc_task_control, kick_task, temps,
++                             ROGUE_PDSINST_DOUTU_SAMPLE_RATE_INSTANCE, false);
++         pvr_pds_kick_usc(&gen_kick, NULL, 0, false, PDS_GENERATE_SIZES);
++         memcpy(base + (0x41000 - 0x40000), kick_data, sizeof(kick_data));
++         memcpy(base + (0x41020 - 0x40000), kick_code, sizeof(kick_code));
++         memcpy(base + (0x42000 - 0x40000), kick_data2, sizeof(kick_data2));
++         memcpy(base + (0x42020 - 0x40000), kick_code, sizeof(kick_code));
++         pvr_pds_kick_usc(&gen_kick, (uint32_t *)(base + (0x41000 - 0x40000)), 0, false,
++                          PDS_GENERATE_CODEDATA_SEGMENTS);
++         pvr_pds_kick_usc(&gen_kick, (uint32_t *)(base + (0x42000 - 0x40000)), 0, false,
++                          PDS_GENERATE_CODEDATA_SEGMENTS);
++      } else {
++         memcpy(base + (0x41000 - 0x40000), kick_data, sizeof(kick_data));
++         memcpy(base + (0x41020 - 0x40000), kick_code, sizeof(kick_code));
++         memcpy(base + (0x42000 - 0x40000), kick_data2, sizeof(kick_data2));
++         memcpy(base + (0x42020 - 0x40000), kick_code, sizeof(kick_code));
++      }
 +      memcpy((uint8_t *)pdsbo.map + (0x2640 - 0x1000), texdata_dma, sizeof(texdata_dma));
 +   }
 +

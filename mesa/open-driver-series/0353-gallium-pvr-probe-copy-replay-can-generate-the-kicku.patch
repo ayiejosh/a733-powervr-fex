@@ -1,0 +1,61 @@
+From 41dba441eab2edc5b976270808a38bf0be2f9ba2 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 30 Oct 2026 14:16:43 +0800
+Subject: [PATCH] gallium/pvr: probe copy replay can generate the kickusc
+ program (negative result)
+
+Adds PVR_PROBE_TQ_COPY_GENKICK: instead of the captured kickusc bytes the replay regenerates the program
+with pvr_pds_kick_usc()/pvr_pds_setup_doutu() for a selectable USC temps count. Generated programs (temps
+8 and 4) still submit and sync without writing the destination, so the kickusc initialisation is not the
+missing piece either - the remaining dependency is the DMA-space source-surface state the reference
+produces (or firmware-visible state not reproduced by any captured structure).
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c | 29 +++++++++++++++++++---
+ 1 file changed, 25 insertions(+), 4 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index 78c3b47d..625cb92c 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -5952,13 +5952,34 @@ tq_copy_check(int fd, struct pipe_screen *pscreen)
+       uint32_t kick_data[8] = { kick_task, 0x00000008, 0, 0, 0, 0, 0, 0 };
+       static const uint32_t kick_code[1] = { 0xf4000002 };
+       uint32_t kick_data2[8] = { kick_task, 0x00000008, 0, 0, 0, 0, 0, 0 };
++      struct pvr_pds_kickusc_program gen_kick = { 0 };
++      const bool genkick = getenv("PVR_PROBE_TQ_COPY_GENKICK") != NULL;
+       static const uint32_t texdata_dma[4] = { 0x0004b080, 0x00000080, 0x90000014, 0 };
+       uint8_t *base = pdsbo2.map;
+ 
+-      memcpy(base + (0x41000 - 0x40000), kick_data, sizeof(kick_data));
+-      memcpy(base + (0x41020 - 0x40000), kick_code, sizeof(kick_code));
+-      memcpy(base + (0x42000 - 0x40000), kick_data2, sizeof(kick_data2));
+-      memcpy(base + (0x42020 - 0x40000), kick_code, sizeof(kick_code));
++      if (genkick) {
++         /* Regenerate the kickusc program with pvr_pds_kick_usc instead of the captured bytes. */
++         const uint32_t temps = getenv("PVR_PROBE_TQ_COPY_TEMPS")
++                                   ? (uint32_t)strtoul(getenv("PVR_PROBE_TQ_COPY_TEMPS"), NULL, 0)
++                                   : 8U;
++
++         pvr_pds_setup_doutu(&gen_kick.usc_task_control, kick_task, temps,
++                             ROGUE_PDSINST_DOUTU_SAMPLE_RATE_INSTANCE, false);
++         pvr_pds_kick_usc(&gen_kick, NULL, 0, false, PDS_GENERATE_SIZES);
++         memcpy(base + (0x41000 - 0x40000), kick_data, sizeof(kick_data));
++         memcpy(base + (0x41020 - 0x40000), kick_code, sizeof(kick_code));
++         memcpy(base + (0x42000 - 0x40000), kick_data2, sizeof(kick_data2));
++         memcpy(base + (0x42020 - 0x40000), kick_code, sizeof(kick_code));
++         pvr_pds_kick_usc(&gen_kick, (uint32_t *)(base + (0x41000 - 0x40000)), 0, false,
++                          PDS_GENERATE_CODEDATA_SEGMENTS);
++         pvr_pds_kick_usc(&gen_kick, (uint32_t *)(base + (0x42000 - 0x40000)), 0, false,
++                          PDS_GENERATE_CODEDATA_SEGMENTS);
++      } else {
++         memcpy(base + (0x41000 - 0x40000), kick_data, sizeof(kick_data));
++         memcpy(base + (0x41020 - 0x40000), kick_code, sizeof(kick_code));
++         memcpy(base + (0x42000 - 0x40000), kick_data2, sizeof(kick_data2));
++         memcpy(base + (0x42020 - 0x40000), kick_code, sizeof(kick_code));
++      }
+       memcpy((uint8_t *)pdsbo.map + (0x2640 - 0x1000), texdata_dma, sizeof(texdata_dma));
+    }
+ 
+-- 
+2.47.3
+

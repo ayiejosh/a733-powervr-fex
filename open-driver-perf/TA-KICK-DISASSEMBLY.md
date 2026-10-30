@@ -2767,3 +2767,22 @@ reproduce (e.g. the kickusc program expects the TQ shader store's USC shared/reg
 the DMA space descriptor's surface words need to be regenerated against our buffers rather than copied
 from the reference run). This needs the reference's own value for those words or a firmware trace; the
 aligned capture bundle is the basis for both.
+
+## Round-137 (2026-10-30): regenerated kickusc programs also do not write - copy replay parked
+
+Added a generator mode to the probe replay (`PVR_PROBE_TQ_COPY_GENKICK`): the kickusc background program is
+rebuilt with `pvr_pds_kick_usc()` / `pvr_pds_setup_doutu()` for a selectable USC temps count instead of
+using the captured bytes. Generated programs (temps 8 and 4, task offset 0x7340) still submit, still sync
+and still write nothing.
+
+Positive/negative matrix for the copy replay is now: captured stream + pixel-event data/code + both USC
+kernels + kickusc programs (captured and regenerated) + exact texstate block + copy-variant DMA state +
+all task-offset combinations -> always submits+syncs, never writes. The remaining dependency is therefore
+the **DMA-space source-surface state** the reference produces (or some other firmware-visible state not
+captured by any hook used). Decoding that requires either the reference's exact values for those words
+(hook `pvr_write_usc_constants` in `pvr_3d_copy_blit_core` specifically for this job) or a firmware trace
+of the reference copy job - both are follow-up work, not quick experiments.
+
+The transfer-job port stays parked with the full capture bundle and harness checked in
+(`tools/verify/captures/tq-ref/`, probe patches 0348-0353); the shipped ES2 driver state is unaffected
+(patch 0353 changes pvr-probe only, default probe behaviour unchanged).
