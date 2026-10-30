@@ -901,3 +901,31 @@ firmware-VA debugfs patch (`tools/kernel/`), the verify/measurement scripts (`to
 firmware watch + IMG bundle scripts (`tools/firmware/`). The two temporary kernel-module builds
 (`/home/radxa/powervr.fwva.ko` - firmware-VA reads; `/home/radxa/powervr.trace.ko` - enlarged trace ring) are
 left in place for reuse; both are built from the patched source and never installed permanently.
+
+## Transfer-job port status (end of 2026-10-30 session)
+
+Everything for a native TQ copy replay is captured and the harness exists, but the replay does not write
+the destination yet. Exact state:
+
+- **Harness:** `pvr-probe` has an env-gated copy replay (`PVR_PROBE_TQ_COPY=<stream>`, `PVR_PROBE_TQ_COPY_ONLY`
+  to run it isolated; task offsets overridable via `PVR_PROBE_TQ_COPY_EVTASK/KICKTASK`). Patch 0352.
+- **Captures:** `tools/verify/captures/tq-ref/` - aligned single-run bundle (`bundle/cs.bin`, `pds.dump`,
+  `usc.dump`, `tx.dump`), decoder (`decode_transfer_stream.py`), `vktq_copy.c` (PAD/PADSIZE/DSTOFF options),
+  address-shift pair under `addr-shift/`.
+- **Decode:** transfer stream header is **2 dwords** (`KMD_STREAM_HDR`); copy stream fields and the program
+  offsets, the kickusc programs at PDS+0x41000/0x42000, the texstate block at PDS+0x2640, and the copy
+  addresses encoded as `addr >> 2` in the pixel-event data are all known.
+- **Blocker:** the job submits and syncs in every tested configuration (all pixel-event/kickusc task-offset
+  combinations, both USC kernels mapped, exact texstate block, copy-variant DMA state) but the destination
+  is never written. The missing piece is firmware-visible state the capture does not reproduce - most
+  likely the TQ shader-store USC shared/register initialisation (kickusc data word 1 = 8 may need the
+  real temps/shared values) or DMA-space surface words that must be regenerated against our buffers.
+- **Next steps:** (1) capture the reference's DMA space for the *copy* branch together with the source
+  surface descriptor words (hook `pvr_write_usc_constants` in `pvr_3d_copy_blit_core`), or (2) generate the
+  TQ kickusc program from `pvr_pds_kick_usc()` inside the probe with explicit temps instead of using the
+  captured bytes, and (3) only after a write works, port the copy job into the driver and use it for
+  depth/compressed/3D-array uploads.
+
+Safety reminder: never run any probe/harness while `pvrsrvkm` is bound - check
+`readlink /sys/bus/platform/devices/1800000.gpu/driver` first. Four vendor NULL-deref resets have happened,
+the last one from exactly this mistake.
