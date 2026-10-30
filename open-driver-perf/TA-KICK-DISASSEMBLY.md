@@ -2475,3 +2475,22 @@ programs at the offsets the job names. The capture plan that will get them: dump
 heap BO contents (or hook `pvr_bo_suballoc` allocations in pds_heap/usc_heap and dump every allocation
 with its offset), for one known copy, and then replay with those bytes installed at their offsets.
 Captures from this round are checked in (`tx-*.dump`, `cs-*.bin`).
+
+## Round-120 (2026-10-30): complete PDS/USC/transfer heap dump captured for one copy
+
+Wrapped `pvr_bo_suballoc` with an env-gated dump (`PVR_DUMP_HEAP`) that records every allocation in the
+pds, usc and transfer-frag heaps with its heap offset, size and bytes. Running the known buffer copy
+once produced **69 allocation records (106 KB)**: every PDS program (offsets 0x1000..0x73c0) and USC
+program (0x1000..0x7000-class) the job uses, including the ones the stream names
+(`texturedata 0x1e40`, pixel-event data 0x2640/0x2680).
+
+The one value that is *not* a heap offset is the stream's `texunicode_addr` (0x41000): the stream field
+packs `(addr >> 4) << 4` into bits 4..31, i.e. **the low 32 bits of a device address** (high bits are
+dropped by the packet encoding) - so that field (and `shader_addr`) is a truncated device address, not a
+heap offset. That matters for a replay: structures the TQ job addresses through those fields must live
+below 2^32 in the replay VM, or the pump needs to keep the reference's address layout.
+
+Bundle checked in: `captures/tq-ref/heap.dump`, `cs-heap.bin` (fill+copy streams). With this, everything
+the reference job references is available byte-for-byte; the remaining work for a native copy replay is
+the address-layout decision above plus installing the captured programs at their offsets in a transfer
+context (the TQ-fill replay already proves that submission path works).
