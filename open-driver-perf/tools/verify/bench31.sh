@@ -32,6 +32,10 @@ for i in 1 2; do sudo env -u LD_LIBRARY_PATH DISPLAY=:1 MESA_LOADER_DRIVER_OVERR
 for q in $(pgrep -x Xorg); do sudo kill $q 2>/dev/null; done; sleep 3
 sudo systemctl set-property --runtime system.slice AllowedCPUs=; gov schedutil
 sudo systemctl start display-manager; sleep 8
+# The first start after the benchmark's Plasma kill occasionally leaves no session (kwin missing);
+# one restart brings it up reliably.
+sleep 4
+pgrep -x kwin_x11 >/dev/null || { sudo systemctl restart display-manager; sleep 12; }
 echo "## restored bound=$(drv) dm=$(systemctl is-active display-manager) gov=$(cat /sys/devices/system/cpu/cpu6/cpufreq/scaling_governor) faults=$(sudo dmesg | grep -ciE 'mmu fault|page fault')"
 echo "$(date) bench31 done" >> $OP/session.log
 echo BENCH31 DONE

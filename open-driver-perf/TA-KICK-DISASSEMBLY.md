@@ -2958,3 +2958,12 @@ border/mirror clamp, anisotropy, emulated polygon offset, half-float colour targ
 72) the driver still holds **~0.66x vendor / ~1.04x zink**, i.e. the ES2 feature work did not move the
 glmark2 aggregate (as expected - those scenes are dominated by the FP16-vs-FP32 fragment ALU difference,
 round-143/145) while adding the capability surface. Logs archived under `bench/round-148`.
+
+## Round-149 (2026-10-30): bench31 restore hardened (desktop session check)
+
+After the last benchmark's vendor restore the Plasma session did not come up on the first
+`display-manager` start (kwin/Xorg missing), even though the driver had restored correctly. `bench31.sh`
+now checks `pgrep -x kwin_x11` after starting the display manager and restarts it once if the session is
+missing; the copy in `tools/verify/bench31.sh` is kept in sync. This is the only way the harness has
+failed to leave the board in a usable state since the switch-safety work, so it is recorded and fixed
+rather than left as a manual step.
