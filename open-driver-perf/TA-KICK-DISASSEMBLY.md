@@ -3067,3 +3067,19 @@ that our `PVR_DUMP_DMA1` hook in `pvr_3d_copy_blit_core` did **not** reach, whil
 placement assumed. Instrumenting both passes explicitly (or dumping every general-heap BO written in the
 transfer submit) will show whether the copy job's TEXSTATE is regenerated per pass; that plus the
 background-tag context is the remaining work. All capture hooks reverted; tree clean at patch 0357.
+
+## Round-157 (2026-10-30): the command-buffer BO list mixes two struct types (replay instrumentation note)
+
+Tried to instrument every general/PDS BO written during transfer submit. The hook produced no entries
+because `pvr_cmd_buffer::bo_list` is **not homogeneous**: some sites link a `struct pvr_suballoc_bo`
+(`pds_upload_out->pvr_bo->link`, clear/descriptor BOs) and others link a plain `struct pvr_bo`
+(`pvr_bo->link`). Both have `link` at offset 0, so a single `list_for_each_entry` cannot safely classify
+entries, and the earlier "no BOs found" result was a type-cast artefact, not an empty list. The dump was
+reverted.
+
+This explains why the copy job's DMA space (0x800004b080) is written by neither of the two
+`pvr_write_usc_constants` sites the hooks were placed at: the observed writes come from code paths whose
+buffer was allocated through the mixed list, and the exact pass structure still needs a per-site hook
+rather than a list walk. Next clean approach: hook `pvr_arch_cmd_buffer_alloc_mem()` to record
+(heap, offset, size) of every transfer-path allocation, then dump each recorded buffer at submit time by
+address (no reliance on the mixed list).
