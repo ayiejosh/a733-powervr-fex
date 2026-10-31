@@ -3794,3 +3794,41 @@ job descriptors for several renders and submit them in one `DRM_IOCTL_PVR_SUBMIT
 inter-render dependencies expressed as GPU-side sync-op waits (the kernel already supports this for
 geom->PR) instead of blocking slot/HWRT waits. Target: the `passes` microbenchmark from 145 towards
 zink's 820 fps, then re-measure terrain/refract.
+
+## Round 177 - batched render submission lands (patch 0367); the cost is per GPU kick, not per ioctl
+
+Implemented the round-176 plan: renders are recorded in a pending queue and up to eight are
+submitted per `DRM_IOCTL_PVR_SUBMIT_JOBS` (eight slots, two HWRT data sets per size so the CPU can
+run ahead).  Two bugs surfaced while getting it to work, both worth recording:
+
+1. The kernel copies each job's command stream through a **user pointer** (`memdup_user` in
+   `pvr_fw_cmd_init`), not a GPU address.  The old driver built the streams on `pvr_draw_flush`'s
+   stack and submitted immediately, which is fine; a deferred batch submitted the dead stack bytes:
+   the ioctl returned EINVAL for one render, and with two or more renders the kernel oopsed in
+   `pvr_submit_jobs` (NULL deref in the job setup).  A pending render now copies its stream bytes
+   into the pending entry.
+2. `kernel.panic_on_oops=1` and `kernel.panic=10` on this image turn every such oops into a board
+   reboot 10 s later, and journald loses the tail of the log, so five mid-turn reboots looked like
+   power failures (`reboot-tracker` reports ABNORMAL/power-loss).  Capturing `/dev/kmsg` with an
+   fsync per record in userspace gave the full oops and the faulting call trace.  Keep this in mind
+   for any future driver-hang debugging on this board.
+
+Result on `passes` (27 x 64x64 FBO passes per frame, glFinish/frame, same GPU driver underneath):
+
+| run | fps | wall/frame | cpu/frame |
+|---|---|---|---|
+| native, one ioctl per render | 145 | 6.9 ms | ~2.0 ms |
+| native, batched (0367) | 135 | 7.4 ms | ~2.2 ms |
+| zink (Vulkan driver) | 795 | 1.25 ms | - |
+
+Per-pass scaling pins the cost down: native frame time is 0.76 ms + **0.256 ms/pass**, zink is
+1.03 ms + **0.0065 ms/pass**; `NOFINISH` changes nothing.  A two-job variant (drop the no-op
+partial-render job, the fragment job waiting on the geometry fence directly) is unchanged at
+135 fps.  So the cost is not the ioctl round trip and not the extra job: it is one GPU kick per
+render pass - the firmware processes each geometry/PR/fragment job set with a fixed per-kick
+overhead, and the Vulkan driver pays it once per command buffer, not once per pass.
+
+**Next lever**: encode more than one render pass per kick, i.e. append each pass's control stream to
+one stream and submit one geometry + PR + fragment job set per batch of passes, as the Vulkan
+command buffer does.  The batching/stream-ownership change above is the infrastructure for that.
+17-group gate on 0367: ALL GROUPS PASS.

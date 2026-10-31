@@ -5252,10 +5252,10 @@ index 00000000..47695cc7
 +#endif /* PVR_CSB_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_draw.c b/src/gallium/drivers/pvr_native/pvr_draw.c
 new file mode 100644
-index 00000000..4b093332
+index 00000000..0cb97d8f
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_draw.c
-@@ -0,0 +1,2173 @@
+@@ -0,0 +1,2292 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -5343,7 +5343,7 @@ index 00000000..4b093332
 +/* Mip generation renders every level size of a chain (refract: about a dozen per frame), and a
 + * data set created on an eviction costs a wait and a firmware round trip. */
 +#define PVR_DRAW_HWRT_CACHE 16
-+#define PVR_DRAW_SLOTS 4
++#define PVR_DRAW_SLOTS 8
 +
 +struct pvr_draw_state {
 +   bool ready, failed;
@@ -5390,9 +5390,25 @@ index 00000000..4b093332
 +      struct pvr_bo ctrl_bo;
 +      uint64_t ctrl_addr;
 +      uint32_t sync, seq;
++      /* The render is built but not yet submitted: it lives in the pending batch below. */
++      bool pending;
 +      struct pipe_resource **refs;
 +      unsigned nrefs, cap;
 +   } slots[PVR_DRAW_SLOTS];
++
++   /* Renders are submitted in batches (PVR_RENDER_BATCH per DRM_IOCTL_PVR_SUBMIT_JOBS) so the
++    * per-pass kernel/driver round trip is amortised. A pending render's slot cannot be reused until
++    * it has been submitted. */
++   struct {
++      unsigned slot;
++      /* The streams are copied here: the kernel reads them through a user pointer at submit
++       * time, and pvr_draw_flush's stack buffers are gone by then. Sized as those buffers. */
++      _Alignas(8) uint8_t g[256];
++      _Alignas(8) uint8_t f[1024];
++      uint32_t glen, flen;
++      uint32_t hwrt, hwrt_idx, frag_flags;
++   } pend[PVR_RENDER_BATCH];
++   unsigned npend;
 +   unsigned cur_slot;
 +   struct pvr_csb ctrl;
 +   struct pvr_bo bct_bo;
@@ -5482,10 +5498,17 @@ index 00000000..4b093332
 +   return (uint8_t *)a->bo.map + at;
 +}
 +
++static bool draw_submit_pending(struct pvr_context *ctx, bool all);
++
 +/* Waits for a slot's render and drops what it held. */
 +static void
-+draw_slot_idle(struct pvr_screen *scr, struct pvr_draw_slot *s)
++draw_slot_idle(struct pvr_context *ctx, struct pvr_draw_slot *s)
 +{
++   struct pvr_screen *scr = draw_screen(ctx);
++
++   /* Its render may still sit in the pending batch: submit it (and the rest) before waiting. */
++   if (s->pending)
++      draw_submit_pending(ctx, true);
 +   if (s->sync != 0) {
 +      if (drmSyncobjWait(scr->fd, &s->sync, 1, INT64_MAX, 0, NULL) != 0)
 +         mesa_loge("pvr: draw: waiting for a render failed");
@@ -5501,7 +5524,7 @@ index 00000000..4b093332
 +draw_idle(struct pvr_context *ctx, struct pvr_draw_state *d)
 +{
 +   for (unsigned i = 0; i < PVR_DRAW_SLOTS; i++)
-+      draw_slot_idle(draw_screen(ctx), &d->slots[i]);
++      draw_slot_idle(ctx, &d->slots[i]);
 +}
 +
 +/* The open render uses this resource: it keeps it alive and a CPU access waits for it. */
@@ -5607,6 +5630,22 @@ index 00000000..4b093332
 +   memset(e, 0, sizeof(*e));
 +}
 +
++/* Is the render with this sequence number still in flight (its slot not yet waited)? */
++static bool
++draw_render_pending(struct pvr_draw_state *d, uint32_t seq)
++{
++   for (unsigned i = 0; seq != 0 && i < PVR_DRAW_SLOTS; i++) {
++      if (d->slots[i].sync != 0 && d->slots[i].seq == seq)
++         return true;
++   }
++   return false;
++}
++
++/* Maximum HWRT data sets kept for one target size. Each data set is double buffered internally (the
++ * two RTA data indices), so two data sets give a four-render pipeline; keeping at least two per size
++ * is what lets the CPU run ahead instead of waiting for the previous render's data set. */
++#define PVR_DRAW_HWRT_SETS_PER_SIZE 2
++
 +/* The HWRT data set for a target size, sized from pvr_hwrt_sizes(). Renders are waited for before
 + * the next one is built, so an evicted data set is idle. */
 +static bool
@@ -5621,9 +5660,21 @@ index 00000000..4b093332
 +   const uint32_t local_pages =
 +      (uint32_t)(ALIGN_POT(scr->dev_runtime_info.min_free_list_size, 65536) / 4096);
 +
-+   for (unsigned i = 0; i < PVR_DRAW_HWRT_CACHE; i++) {
-+      if (d->hwrt[i].dset != 0 && d->hwrt[i].w == w && d->hwrt[i].h == h)
-+         e = &d->hwrt[i];
++   {
++      unsigned n_same = 0;
++
++      for (unsigned i = 0; i < PVR_DRAW_HWRT_CACHE; i++) {
++         if (d->hwrt[i].dset != 0 && d->hwrt[i].w == w && d->hwrt[i].h == h) {
++            n_same++;
++            if (e == NULL || d->hwrt[i].last_use < e->last_use)
++               e = &d->hwrt[i];
++         }
++      }
++      /* The least recently used data set of this size is still being read by an in-flight render:
++       * create another one (up to the per-size limit) instead of blocking the CPU on it. */
++      if (e != NULL && n_same < PVR_DRAW_HWRT_SETS_PER_SIZE &&
++          (draw_render_pending(d, e->data_seq[0]) || draw_render_pending(d, e->data_seq[1])))
++         e = NULL;
 +   }
 +   if (e == NULL) {
 +      e = &d->hwrt[0];
@@ -6626,14 +6677,14 @@ index 00000000..4b093332
 +      const uint32_t prev = e->data_seq[e->rt_data_idx];
 +      for (unsigned i = 0; prev != 0 && i < PVR_DRAW_SLOTS; i++) {
 +         if (d->slots[i].sync != 0 && d->slots[i].seq == prev)
-+            draw_slot_idle(draw_screen(ctx), &d->slots[i]);
++            draw_slot_idle(ctx, &d->slots[i]);
 +      }
 +   }
 +   /* The next slot: its previous render must be done before its memory is rewritten. */
 +   {
 +      const unsigned next = (d->cur_slot + 1) % PVR_DRAW_SLOTS;
 +      struct pvr_draw_slot *sl = &d->slots[next];
-+      draw_slot_idle(draw_screen(ctx), sl);
++      draw_slot_idle(ctx, sl);
 +      d->cur_slot = next;
 +      d->gen = sl->gen;
 +      d->pds = sl->pds;
@@ -7171,9 +7222,11 @@ index 00000000..4b093332
 +      return;
 +   if (d->open && res->render_seq == d->seq)
 +      pvr_draw_flush(ctx);
++   if (d->npend != 0)
++      draw_submit_pending(ctx, true);
 +   for (unsigned i = 0; i < PVR_DRAW_SLOTS; i++) {
 +      if (d->slots[i].sync != 0 && d->slots[i].seq == res->render_seq)
-+         draw_slot_idle(draw_screen(ctx), &d->slots[i]);
++         draw_slot_idle(ctx, &d->slots[i]);
 +   }
 +}
 +
@@ -7182,6 +7235,9 @@ index 00000000..4b093332
 +{
 +   struct pvr_draw_state *d = ctx->draw;
 +   uint32_t best = 0, seq = 0;
++
++   if (d != NULL && d->npend != 0)
++      draw_submit_pending(ctx, true);
 +   for (unsigned i = 0; d != NULL && i < PVR_DRAW_SLOTS; i++) {
 +      if (d->slots[i].sync != 0 && d->slots[i].seq >= seq) {
 +         best = d->slots[i].sync;
@@ -7189,6 +7245,53 @@ index 00000000..4b093332
 +      }
 +   }
 +   return best;
++}
++
++/* Submit the pending render batch (all of it, or nothing). */
++static bool
++draw_submit_pending(struct pvr_context *ctx, bool all)
++{
++   struct pvr_draw_state *d = ctx->draw;
++   struct pvr_screen *scr = draw_screen(ctx);
++   struct pvr_render_batch_entry entries[PVR_RENDER_BATCH];
++   uint32_t done[PVR_RENDER_BATCH];
++   unsigned n, submitted = 0;
++
++   if (d == NULL || d->npend == 0)
++      return true;
++   n = all ? d->npend : MIN2(d->npend, (unsigned)PVR_RENDER_BATCH);
++
++   for (unsigned i = 0; i < n; i++) {
++      entries[i] = (struct pvr_render_batch_entry){
++         .geom_stream = d->pend[i].g,
++         .geom_len = d->pend[i].glen,
++         .frag_stream = d->pend[i].f,
++         .frag_len = d->pend[i].flen,
++         .hwrt_set_handle = d->pend[i].hwrt,
++         .hwrt_data_index = d->pend[i].hwrt_idx,
++         .frag_flags = d->pend[i].frag_flags,
++      };
++   }
++
++   if (!pvr_job_submit_render_batch(&scr->vm, d->gctx.handle, entries, n, done)) {
++      /* The submission failed: drop the batch (the pixels are lost) but keep the slots usable. */
++      for (unsigned i = 0; i < n; i++) {
++         d->slots[d->pend[i].slot].pending = false;
++         d->slots[d->pend[i].slot].sync = 0;
++      }
++      memmove(&d->pend[0], &d->pend[n], (d->npend - n) * sizeof(d->pend[0]));
++      d->npend -= n;
++      return false;
++   }
++
++   for (unsigned i = 0; i < n; i++) {
++      d->slots[d->pend[i].slot].sync = done[i];
++      d->slots[d->pend[i].slot].pending = false;
++      submitted++;
++   }
++   memmove(&d->pend[0], &d->pend[n], (d->npend - n) * sizeof(d->pend[0]));
++   d->npend -= n;
++   return submitted == n;
 +}
 +
 +void
@@ -7389,12 +7492,27 @@ index 00000000..4b093332
 +   ((uint32_t *)fstream)[2] = (uint32_t)sc_addr; /* isp_scissor_base after the 2-dword header */
 +   ((uint32_t *)fstream)[3] = (uint32_t)(sc_addr >> 32);
 +
-+   const bool submit_ok =
-+      pvr_job_submit_render(&scr->vm, d->gctx.handle, gstream, glen, fstream, flen, d->cur_hwrt->dset, d->cur_hwrt->rt_data_idx, frag_flags,
-+                              &d->slots[d->cur_slot].sync);
-+   if (!submit_ok)
-+      mesa_loge("pvr: draw: the render was not submitted (%u draws)", d->ndraws);
++   /* Record the render in the pending batch; it is submitted together with the next ones. A full
++    * batch is submitted here, the rest when something has to wait for it. */
++   if (d->npend == ARRAY_SIZE(d->pend) && !draw_submit_pending(ctx, true))
++      mesa_loge("pvr: draw: the render batch was not submitted (%u draws)", d->ndraws);
++   {
++      const unsigned pi = d->npend++;
++
++      memcpy(d->pend[pi].g, gstream, glen);
++      memcpy(d->pend[pi].f, fstream, flen);
++      d->pend[pi].slot = d->cur_slot;
++      d->pend[pi].glen = glen;
++      d->pend[pi].flen = flen;
++      d->pend[pi].hwrt = d->cur_hwrt->dset;
++      d->pend[pi].hwrt_idx = d->cur_hwrt->rt_data_idx;
++      d->pend[pi].frag_flags = frag_flags;
++   }
 +   d->slots[d->cur_slot].seq = d->seq;
++   d->slots[d->cur_slot].pending = true;
++   /* A render a reader has to wait for is submitted now instead of with the next batch. */
++   if (d->no_defer && !draw_submit_pending(ctx, true))
++      mesa_loge("pvr: draw: the render batch was not submitted (%u draws)", d->ndraws);
 +   d->cur_hwrt->data_seq[d->cur_hwrt->rt_data_idx] = d->seq;
 +   d->cur_hwrt->rt_data_idx ^= 1;
 +
@@ -7414,6 +7532,7 @@ index 00000000..4b093332
 +   if (ctx->draw == NULL)
 +      return;
 +   pvr_draw_flush(ctx);
++   draw_submit_pending(ctx, true);
 +   draw_idle(ctx, ctx->draw);
 +   for (unsigned i = 0; i < PVR_DRAW_HWRT_CACHE; i++) {
 +      if (ctx->draw->hwrt[i].dset != 0)
@@ -17208,10 +17327,10 @@ index 00000000..8317cd94
 +#endif /* PVR_STATIC_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_vm.c b/src/gallium/drivers/pvr_native/pvr_vm.c
 new file mode 100644
-index 00000000..d3dfdb4b
+index 00000000..a13f5c72
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_vm.c
-@@ -0,0 +1,1113 @@
+@@ -0,0 +1,1228 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -17900,6 +18019,121 @@ index 00000000..d3dfdb4b
 +   return pvr_compute_sync_wait(vm, done_sync, timeout_ms);
 +}
 +
++/* Submit up to PVR_RENDER_BATCH renders in one ioctl. Each render keeps the reference's three-job
++ * shape (geometry, partial-render fragment waiting on the geometry fence, then the fragment job) and
++ * gets its own completion syncobj, so the caller waits only when it actually has to. */
++bool
++pvr_job_submit_render_batch(struct pvr_vm *vm, uint32_t context_handle,
++                            const struct pvr_render_batch_entry *entries, uint32_t count,
++                            uint32_t *done_out)
++{
++   struct drm_pvr_job jobs[PVR_RENDER_BATCH * 3];
++   struct drm_pvr_sync_op geom_ops[PVR_RENDER_BATCH], pr_ops[PVR_RENDER_BATCH * 2];
++   struct drm_pvr_sync_op frag_ops[PVR_RENDER_BATCH];
++   uint32_t geom_sync[PVR_RENDER_BATCH] = { 0 }, pr_sync[PVR_RENDER_BATCH] = { 0 };
++   uint32_t done_sync[PVR_RENDER_BATCH] = { 0 };
++   struct drm_pvr_ioctl_submit_jobs_args args = {
++      .jobs = { .stride = sizeof(jobs[0]), .count = count * 3,
++                .array = (__u64)(uintptr_t)jobs },
++   };
++   bool submitted;
++
++   if (count == 0 || count > PVR_RENDER_BATCH)
++      return false;
++
++   for (uint32_t i = 0; i < count; i++) {
++      if (drmSyncobjCreate(vm->fd, 0, &geom_sync[i]) != 0)
++         goto err_syncs;
++      if (drmSyncobjCreate(vm->fd, 0, &pr_sync[i]) != 0) {
++         drmSyncobjDestroy(vm->fd, geom_sync[i]);
++         goto err_syncs;
++      }
++      if (drmSyncobjCreate(vm->fd, 0, &done_sync[i]) != 0) {
++         drmSyncobjDestroy(vm->fd, pr_sync[i]);
++         drmSyncobjDestroy(vm->fd, geom_sync[i]);
++         goto err_syncs;
++      }
++   }
++
++   for (uint32_t i = 0; i < count; i++) {
++      const struct pvr_render_batch_entry *e = &entries[i];
++
++      geom_ops[i] = (struct drm_pvr_sync_op){
++         .handle = geom_sync[i],
++         .flags = DRM_PVR_SYNC_OP_FLAG_SIGNAL | DRM_PVR_SYNC_OP_FLAG_HANDLE_TYPE_SYNCOBJ,
++      };
++      pr_ops[2 * i] = (struct drm_pvr_sync_op){
++         .handle = geom_sync[i],
++         .flags = DRM_PVR_SYNC_OP_FLAG_WAIT | DRM_PVR_SYNC_OP_FLAG_HANDLE_TYPE_SYNCOBJ,
++      };
++      pr_ops[2 * i + 1] = (struct drm_pvr_sync_op){
++         .handle = pr_sync[i],
++         .flags = DRM_PVR_SYNC_OP_FLAG_SIGNAL | DRM_PVR_SYNC_OP_FLAG_HANDLE_TYPE_SYNCOBJ,
++      };
++      frag_ops[i] = (struct drm_pvr_sync_op){
++         .handle = done_sync[i],
++         .flags = DRM_PVR_SYNC_OP_FLAG_SIGNAL | DRM_PVR_SYNC_OP_FLAG_HANDLE_TYPE_SYNCOBJ,
++      };
++
++      jobs[3 * i + 0] = (struct drm_pvr_job){
++         .type = DRM_PVR_JOB_TYPE_GEOMETRY,
++         .context_handle = context_handle,
++         .cmd_stream = (uint64_t)(uintptr_t)e->geom_stream,
++         .cmd_stream_len = e->geom_len,
++         .flags = DRM_PVR_SUBMIT_JOB_GEOM_CMD_FIRST | DRM_PVR_SUBMIT_JOB_GEOM_CMD_LAST,
++         .sync_ops = { .stride = sizeof(geom_ops[0]), .count = 1,
++                       .array = (__u64)(uintptr_t)&geom_ops[i] },
++         .hwrt = { .set_handle = e->hwrt_set_handle, .data_index = e->hwrt_data_index },
++      };
++      jobs[3 * i + 1] = (struct drm_pvr_job){
++         .type = DRM_PVR_JOB_TYPE_FRAGMENT,
++         .context_handle = context_handle,
++         .cmd_stream = (uint64_t)(uintptr_t)e->frag_stream,
++         .cmd_stream_len = e->frag_len,
++         .flags = DRM_PVR_SUBMIT_JOB_FRAG_CMD_PARTIAL_RENDER |
++                  DRM_PVR_SUBMIT_JOB_FRAG_CMD_DISABLE_PIXELMERGE | e->frag_flags,
++         .sync_ops = { .stride = sizeof(pr_ops[0]), .count = 2,
++                       .array = (__u64)(uintptr_t)&pr_ops[2 * i] },
++         .hwrt = { .set_handle = e->hwrt_set_handle, .data_index = e->hwrt_data_index },
++      };
++      jobs[3 * i + 2] = (struct drm_pvr_job){
++         .type = DRM_PVR_JOB_TYPE_FRAGMENT,
++         .context_handle = context_handle,
++         .cmd_stream = (uint64_t)(uintptr_t)e->frag_stream,
++         .cmd_stream_len = e->frag_len,
++         .flags = DRM_PVR_SUBMIT_JOB_FRAG_CMD_DISABLE_PIXELMERGE | e->frag_flags,
++         .sync_ops = { .stride = sizeof(frag_ops[0]), .count = 1,
++                       .array = (__u64)(uintptr_t)&frag_ops[i] },
++         .hwrt = { .set_handle = e->hwrt_set_handle, .data_index = e->hwrt_data_index },
++      };
++   }
++
++   submitted = drmIoctl(vm->fd, DRM_IOCTL_PVR_SUBMIT_JOBS, &args) == 0;
++   if (!submitted)
++      mesa_loge("pvr: batched SUBMIT_JOBS (%u renders) failed: %s", count, strerror(errno));
++
++   for (uint32_t i = 0; i < count; i++) {
++      drmSyncobjDestroy(vm->fd, pr_sync[i]);
++      drmSyncobjDestroy(vm->fd, geom_sync[i]);
++      if (submitted)
++         done_out[i] = done_sync[i];
++      else
++         drmSyncobjDestroy(vm->fd, done_sync[i]);
++   }
++   return submitted;
++
++err_syncs:
++   for (uint32_t j = 0; j < count; j++) {
++      if (geom_sync[j])
++         drmSyncobjDestroy(vm->fd, geom_sync[j]);
++      if (pr_sync[j])
++         drmSyncobjDestroy(vm->fd, pr_sync[j]);
++      if (done_sync[j])
++         drmSyncobjDestroy(vm->fd, done_sync[j]);
++   }
++   return false;
++}
++
 +bool
 +pvr_job_submit_render(struct pvr_vm *vm, uint32_t context_handle,
 +                      const void *geom_stream, uint32_t geom_len,
@@ -18327,10 +18561,10 @@ index 00000000..d3dfdb4b
 +}
 diff --git a/src/gallium/drivers/pvr_native/pvr_vm.h b/src/gallium/drivers/pvr_native/pvr_vm.h
 new file mode 100644
-index 00000000..31270d93
+index 00000000..534c8427
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_vm.h
-@@ -0,0 +1,201 @@
+@@ -0,0 +1,221 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -18504,6 +18738,26 @@ index 00000000..31270d93
 +                              const void *frag_stream, uint32_t frag_len,
 +                              uint32_t hwrt_set_handle, uint32_t hwrt_data_index,
 +                              uint32_t timeout_ms);
++
++/* One render in a batched submission: its geometry and fragment streams plus the HWRT it renders
++ * through. Up to PVR_RENDER_BATCH renders are submitted in one DRM_IOCTL_PVR_SUBMIT_JOBS call so the
++ * per-pass kernel/driver round trip is amortised (the cost that makes small render passes ~6x slower
++ * than the same workload through the Vulkan driver). */
++#define PVR_RENDER_BATCH 8
++
++struct pvr_render_batch_entry {
++   const void *geom_stream;
++   uint32_t geom_len;
++   const void *frag_stream;
++   uint32_t frag_len;
++   uint32_t hwrt_set_handle;
++   uint32_t hwrt_data_index;
++   uint32_t frag_flags;
++};
++
++bool pvr_job_submit_render_batch(struct pvr_vm *vm, uint32_t context_handle,
++                                 const struct pvr_render_batch_entry *entries, uint32_t count,
++                                 uint32_t *done_out);
 +
 +bool pvr_job_submit_render(struct pvr_vm *vm, uint32_t context_handle,
 +                            const void *geom_stream, uint32_t geom_len,

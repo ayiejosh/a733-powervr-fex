@@ -202,3 +202,8 @@ Open items, in order of value:
 Safety: never run GL harnesses with pvrsrvkm bound; `switch-safe.sh` now waits for DRM clients to close
 before rmmod and for vendor firmware/shader images before starting display-manager (both races caused
 hard resets on 2026-10-30).
+
+5. Per-pass GPU kick cost (measured 2026-10-31, round 177): 0.256 ms/pass native vs 0.0065 ms/pass
+   zink, one kick per render pass.  Batching the ioctls (patch 0367) is neutral; the next change is
+   to merge several render passes into one geometry/PR/fragment job set (Vulkan command-buffer
+   style), which is what the reference driver does.
