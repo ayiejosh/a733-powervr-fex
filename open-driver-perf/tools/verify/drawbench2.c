@@ -70,6 +70,8 @@ int main(void){
    /* Same draw repeated with a changing uniform: the per-draw state block differs every draw, so a
     * driver cannot reuse it (unlike "manydraws"). */
    const char *fs_fillu = "precision mediump float; uniform float u; void main(){ gl_FragColor = vec4(u, 0.25, 0.75, 1.0); }";
+   /* A realistic lighting/math fragment shader: normalize, dot, pow, exp2, log2, sqrt, rsqrt. */
+   const char *fs_math = "precision highp float; varying vec2 v; void main(){ vec3 n = normalize(vec3(v, 1.0)); vec3 l = normalize(vec3(0.3, 0.5, 0.8)); float d = max(dot(n, l), 0.0); float s = pow(d, 16.0); float e = exp2(v.x) * log2(1.0 + abs(v.y)); float q = sqrt(abs(v.x)) + inversesqrt(1.0 + abs(v.y)); gl_FragColor = vec4(s, e, q, 1.0); }";
    GLuint cube=0;
    if (!strcmp(mode,"fill")||!strcmp(mode,"overdraw")||depthmode) p = prog(VS_FULL, fs_fill);
    else if (!strcmp(mode,"cube")) {
@@ -80,6 +82,7 @@ int main(void){
       p = prog(VS_FULL, fs_cube);
    } else if (!strcmp(mode,"alu")) { p = prog(VS_FULL, fs_alu); }
    else if (!strcmp(mode,"manydrawsflex")) p = prog(VS_FULL, fs_fillu);
+   else if (!strcmp(mode,"math")) p = prog(VS_FULL, fs_math);
    else if (!strcmp(mode,"vert")) { p = prog(VS_GRID, fs_fill); verts = nverts; }
    else if (!strcmp(mode,"passes") || !strcmp(mode,"manydraws") || !strcmp(mode,"clearonly") || !strcmp(mode,"alt") || !strcmp(mode,"blend") || !strcmp(mode,"blenddepth")) p = prog(VS_FULL, fs_fill);
    else p = prog(VS_FULL, fs_tex);
