@@ -3469,3 +3469,58 @@ generated csbgen headers for this GPU contain **no blend-function registers at a
 symbol in any rogue packet header) - on this hardware blending is a shader operation, which is what the
 driver already does. That lever does not exist; the remaining perf levers are the known FP16 ALU gap
 (F16SOP encodings missing in pco) and per-job fixed cost for many-small-draw scenes (to be measured).
+
+## Round-167 (2026-10-31): per-scene three-way table; terrain/refract are the only scenes where zink beats native
+
+### 1. Per-scene comparison (bench31-results, patches 0361-0365, native-1 / zink-1 / vendor-1)
+FPS per glmark2 scene, and the native ratios:
+
+| scene | native | zink | vendor | native/zink | native/vendor |
+|---|---|---|---|---|---|
+| build use-vbo=false | 1151 | 1030 | 1464 | 1.12 | 0.79 |
+| build use-vbo=true | 1260 | 1192 | 1746 | 1.06 | 0.72 |
+| texture nearest | 1412 | 1252 | 1557 | 1.13 | 0.91 |
+| texture linear | 1367 | 1198 | 1534 | 1.14 | 0.89 |
+| texture mipmap | 1414 | 1371 | 1523 | 1.03 | 0.93 |
+| shading gouraud | 938 | 875 | 1417 | 1.07 | 0.66 |
+| shading blinn-phong-inf | 770 | 717 | 1326 | 1.07 | 0.58 |
+| shading phong | 652 | 624 | 1189 | 1.04 | 0.55 |
+| shading cel | 529 | 533 | 1177 | 0.99 | 0.45 |
+| bump high-poly | 409 | 367 | 661 | 1.11 | 0.62 |
+| bump normals | 1368 | 1283 | 2024 | 1.07 | 0.68 |
+| bump height | 1005 | 950 | 1736 | 1.06 | 0.58 |
+| effect2d kernel laplacian | 761 | 652 | 1210 | 1.17 | 0.63 |
+| effect2d kernel box | 339 | 317 | 490 | 1.07 | 0.69 |
+| ideas speed=duration | 1073 | 810 | 1808 | 1.32 | 0.59 |
+| jellyfish | 388 | 354 | 522 | 1.10 | 0.74 |
+| terrain | 21 | 27 | 40 | **0.78** | 0.53 |
+| shadow | 385 | 365 | 692 | 1.05 | 0.56 |
+| refract | 38 | 47 | 75 | **0.81** | 0.51 |
+
+So the native driver beats zink nearly everywhere (1.03-1.32x) - the exceptions are **terrain and
+refract**, both on the *same* GPU driver underneath zink. That makes them the most promising perf
+targets: a win there is a native-driver win, not a stack artefact.
+
+### 2. Desktop scene scaling and shader cost
+`desktop:windows=1` = 289 fps, `windows=4` = 121 fps on native (zink at windows=4: 137 fps): the
+per-window cost is ~1.6 ms and the frame-fixed cost ~1.9 ms, so the default 4-window scene is
+dominated by the per-window multi-pass work, not by one-off frame setup.
+
+Fragment shader temp counts (`PCO_DEBUG_PRINT=fs,stats`, cache disabled):
+
+| scene | native FS temps (max) | zink FS temps (max) |
+|---|---|---|
+| terrain | 47 | 40 |
+| refract | 23 | 23 |
+
+Refract has identical temps in both stacks yet native is 24% slower, so its gap is not fragment
+register pressure (look at the native RTT/pass structure: load/store of the render target, FBO format
+handling). Terrain's native shader carries 7 more temps than zink's for the same GLSL, which fits its
+0.78x: find the extra ops in the native fragment lowering (blend/format path) and cut them.
+
+### 3. FP16 ALU: where the vendor gap actually is
+The shading/effect2d/cel/bump scenes (~0.45-0.69x vendor) are fragment-ALU-bound and show the FP16
+gap. `pco_isa.py` already has the instruction group (`main_op` sngl, `sngl_op` = f16sop = 0b0100) but
+the F16SOP operand bit-struct is a `# TODO`; encoding it needs a vendor-compiled USC sample, which is
+the one artefact not captured yet (a vendor-stack LD_PRELOAD shim on the IMG DRI driver that dumps USC
+uploads is the plausible next step).
