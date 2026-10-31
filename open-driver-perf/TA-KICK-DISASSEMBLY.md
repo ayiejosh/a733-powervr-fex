@@ -4472,3 +4472,18 @@ list of candidate improvements for the measured ~13-20% realistic-shader gap:
 5/6. clamp->sat folding, pow(const int)->squaring (small).
 Rejected with reasons: RA bank-bias for p1 (temps are bank TEMP=1 so p1 limits never reject them),
 dual-issue window tuning (measured neutral/harmful), min/max re-encode (already single-group), F16SOP.
+
+### Round 211 - candidate #4 (schedule after RA) measured: 25% regression, reverted
+
+Applied the pco_ir.c:52 TODO literally - moved `pco_schedule` after `pco_ra` (so the WDF/IDF scheduler
+runs on final physical registers) - and measured with the standard candidate harness:
+
+| shader | before | schedule-after-RA |
+|---|---|---|
+| math | ~979-1030 | **731-767** |
+| alu | ~130 | 126-130 |
+
+The move is a clear ~25% regression on the math shader: the pre-RA scheduler's placement interacts
+with RA in a way the post-RA order does not reproduce.  Reverted (tree clean at 6e9baf84).  The
+remaining ranked candidates are #2 (let the dual-issue scan cross single-instruction bitwise groups)
+and #1 (enable the pco literal pool for native Gallium graphics).
