@@ -4337,3 +4337,21 @@ Next: dump the `ilp` shader IR (PCO_DEBUG_PRINT=fs,stats) and inspect the unroll
 the suspicion is the pre-RA scheduler serialises independent ops (or reduces ILP via register reuse),
 and that the post-RA issue grouping does not reorder for ILP.  This is a concrete, high-value pco
 target now.
+
+### Round 204 addendum - CORRECTION: the 4.8x ILP gap was a shader artefact
+
+The original `ilp` shader multiplied by a *different literal constant every unrolled iteration*
+(1.0001, 0.9999, ...).  pco unrolls the loop and materialises each constant with its own
+`bbyp0bm_imm32` instruction group - the dumped IR shows 148 groups for ~130 ALU ops, with the
+immediate-bypass instructions as a large fraction.  The vendor driver's compiler evidently handles
+that shape differently.  With the multipliers changed to varying factors (`a0 = a0*v.x`, ... - no
+per-iteration immediates) the comparison is fair:
+
+| ilp shader | native | vendor | ratio |
+|---|---|---|---|
+| literals per iteration (original) | 210-218 | 1013-1030 | 0.21 (artefact) |
+| varying multipliers (refined) | 380.6-382.9 | 434.0-439.2 | **0.87** |
+
+So the real ILP gap is ~13%, in line with the ~20% realistic-math shader gap, not 4.8x.  The refined
+shader is the one kept in drawbench2.  (Note: the literal-heavy shape is still a real pco weakness for
+unrolled loops with distinct constants - just not representative of glmark2 shaders.)
