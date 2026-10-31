@@ -3361,3 +3361,37 @@ if identical, the difference is in how the kernel's transfer queue object is set
 and the next step is a per-context initialisation job in the same style as the 3D static context state.
 
 Evidence: `captures/tq-fault/single-run-{streams.bin,blocks.txt}`; Mesa probe 0363.
+
+## Round-164 (2026-10-31): the firmware static programs were only placed by the draw path - fixed; TQ fault unchanged
+
+### 1. Real bug found while chasing the TQ fault
+The driver reads the VDM sync launcher, the pixel-event (EOT) program and the YUV CSC table from
+PDS/USC/general heap **carveouts**. `pvr_static_memory_init()` was only called from `draw_init()`, so
+any job that never creates a draw context - e.g. the probe's transfer replay, and any future
+transfer-only upload path - ran with those areas **empty**. The probe's own VM check had already
+documented the failure mode: the firmware then faults with the fault address exactly at the PDS heap
+base, and the isolation tests in round-163 (zeroing a background-object pointer produced
+`fault=0xda00000000`) match that signature.
+
+Fixed (patch 0364): `pvr_screen_create()` places the static programs once and keeps them for the life
+of the screen; `draw_init()` and the probe's VM check reuse that placement instead of allocating a
+second carveout. The 17-group gate passes (`ALL GROUPS PASS`) - draws are unchanged (same programs, same
+addresses).
+
+Reference static-area contents were also captured for comparison (temporary hook in
+`pvr_winsys_helper_fill_static_memory`): PDS EOT program = a single `f4000002` instruction at the
+kernel's `eot` offset, PDS VDM-sync launcher = `f4000002` in its code slot with the task/temps data in
+front, USC VDM sync = `0580a044 ff000000`, YUV CSC table = `1ffc0000 ...`. The native driver generates
+the same shape for all four, so the static programs are not where the remaining TQ difference is.
+
+### 2. TQ copy replay: unchanged by the fix
+With the static programs now present the replay still ends in
+`CTXRESET reason=1 (GUILTY_LOCKUP) dm=3 flags=0x1 fault=0xe00004b100` - the ISP data master faults on
+the first word of the PDS `0x2700` texture-state DMA program resolved against the USC heap base, with
+all job inputs (stream, control stream, shaders, DMA spaces) verified byte-identical in round-163. So
+the remaining difference is firmware-visible per-context state or the hardware's DMA address-base
+selection for the transfer path, not the static programs.
+
+Next (unchanged from round-163, now with the static areas ruled out): dump the kernel's
+`rogue_fwif_fwtransfercontext` for both paths and diff; if identical, compare the two processes'
+first-kick timing (the reference submits its clear pass first on the same context).
