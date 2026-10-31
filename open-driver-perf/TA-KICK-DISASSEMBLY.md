@@ -3683,3 +3683,34 @@ for the same zink frame at the same draw count; also re-check the non-POT twiddl
 (`draw_level_desc` passes the *logical* width/height for level 0 while the PBE words use the physical
 ones - if the TPU needs the physical extents for twiddled addressing, non-POT twiddled sampling is both
 wrong and slow, which is exactly the terrain/refract shape).
+
+## Round-173 (2026-10-31): the native path renders terrain without a depth buffer - zink uses one
+
+### 1. Kernel-level fragment-command comparison (temporary `pr_err` dump in `pvr_job.c`, reverted)
+Dumping the firmware-visible configuration of the first 40 fragment jobs of the terrain scene
+(`rogue_fwif_frag_regs`: flags, zlsctl/zload store bases, PBE words, ISP ctl, bgnd) shows:
+
+* **zink** alternates two configurations: `flags=0x8000`, `zlsctl=0`, no depth load, and
+  **`flags=0x8080`** (DEPTHBUFFER) with `depth=0xffffff`/`0xffff`, `zlsctl=0x1fa8a21fc`,
+  `isp_zload_store_base=0x80013f6000`, `zstride=4194304` - i.e. terrain renders **with depth testing**
+  (two different depth formats appear: 24-bit and 16-bit, likely scene depth plus a shadow pass).
+* **native**: all 40 dumped fragment jobs are `flags=0x8000`, `zlsctl=0`, `load=0`, `zstride=0` -
+  **no depth buffer at all**. Every other ISP field that is comparable (outctl 0x7ff8, bgobjvals 0x3ff,
+  isp_ctl 0x80035000, aa 0, event-pixel info) is identical between the two paths.
+
+So the native driver is drawing the terrain scene (and likely refract) **without depth testing**: it
+shades every fragment, while zink's depth-tested render lets the ISP reject hidden fragments early.
+That fits the two scenes where zink beats native (terrain 20 vs 27, refract 38 vs 47) - and it is a
+correctness gap too, since those scenes are depth-tested by design.
+
+### 2. Not the compute fallback
+A temporary counter in `pvr_draw_vbo` shows **zero** compute-fallback draws in terrain, refract or
+texture: every draw takes the TA/3D path. So the depth-less fragment jobs are the 3D path itself,
+not a fallback.
+
+### 3. Next step
+Find why `ctx->fb.zsbuf` is NULL for the off-screen/default framebuffer in the native DRI path: the
+EGL surface config reports `depth=32` (bench31 logs), and FBO-rendered depth works in the gate, so the
+missing piece is the **surface/drawable depth buffer being exposed to the state tracker** (the
+DRI/EGL winsys integration). Fix that, then re-measure terrain and refract; a depth-tested terrain
+should both render correctly and recover the early-Z win.
