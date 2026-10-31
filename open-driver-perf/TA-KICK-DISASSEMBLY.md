@@ -3767,3 +3767,30 @@ Next: (a) count submissions/frame for zink for the same scene (Vulkan submission
 counter or by instrumenting the Vulkan driver), and (b) make a synthetic microbenchmark of N small
 render passes (e.g. a mip-gen chain) to measure our per-job cost against zink/vendor - if our per-job
 fixed cost is the problem, batch the mip-generation levels into fewer jobs.
+
+## Round-176 (2026-10-31): per-render-pass fixed cost is 5.6x zink's - batching is the fix
+
+`drawbench2` extended with a `mipgen` mode (regenerate a 512x512 mip chain every frame) and run with
+the existing `passes` mode (27 small 64x64 FBO render passes per frame, `glFinish` per frame), native
+(open pvr) versus zink on the same GPU:
+
+| microbenchmark | native | zink | ratio |
+|---|---|---|---|
+| `passes` 27 x 64x64 FBO passes | **145 fps** (6.9 ms/frame, ~0.26 ms/pass) | **820 fps** (1.2 ms/frame, ~0.045 ms/pass) | **5.6x** |
+| `mipgen` 512x512 chain + draw | 292 fps (3.4 ms/frame) | 526 fps (1.9 ms/frame) | 1.8x |
+
+This is the terrain/refract gap: terrain issues ~52 render jobs per frame (~29 of them small mip-gen
+passes), so at ~0.26 ms of fixed cost per pass the driver spends ~13 ms/frame on job overhead alone.
+
+Why: the native Gallium path flushes **one render at a time** - `pvr_draw_flush` submits a geometry +
+partial-render + fragment job triple for each pass, and the slot/HWRT reuse rules block the CPU on the
+previous renders' syncobjs between passes. Zink passes the same workload to the Vulkan driver as a
+single command buffer, so the driver submits once per frame and the GPU runs the passes back-to-back.
+CPU time is similar in both (117 ms native vs 125 ms zink for the passes run), so the cost is the
+CPU-GPU round trip / GPU idle bubble per pass, not CPU work.
+
+Next (the optimisation this session should implement): **batch render submissions** - accumulate the
+job descriptors for several renders and submit them in one `DRM_IOCTL_PVR_SUBMIT_JOBS` call, with the
+inter-render dependencies expressed as GPU-side sync-op waits (the kernel already supports this for
+geom->PR) instead of blocking slot/HWRT waits. Target: the `passes` microbenchmark from 145 towards
+zink's 820 fps, then re-measure terrain/refract.

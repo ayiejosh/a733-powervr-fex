@@ -117,6 +117,15 @@ int main(void){
             glDrawArrays(GL_TRIANGLES, 0, 3);
          glDisable(GL_BLEND);
          glDisable(GL_DEPTH_TEST);
+      } else if (!strcmp(mode,"mipgen")) {
+         /* Mip-generation cost: regenerate the 512x512 chain every frame, then draw it. */
+         glActiveTexture(GL_TEXTURE0);
+         glBindTexture(GL_TEXTURE_2D, ctex);
+         glGenerateMipmap(GL_TEXTURE_2D);
+         glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+         glViewport(0, 0, W, H);
+         glClear(GL_COLOR_BUFFER_BIT);
+         glDrawArrays(GL_TRIANGLES, 0, 3);
       } else if (!strcmp(mode,"manydraws")) {
          for (int k = 0; k < npasses; k++)
             glDrawArrays(GL_TRIANGLES, 0, 3);
