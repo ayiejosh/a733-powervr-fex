@@ -217,3 +217,25 @@ hard resets on 2026-10-30).
    geometry+PR+fragment job set (`pvr_arch_hw_pass.c`, `pvr_arch_render_job_submit`).  The next
    implementation step is to re-emit per-hw-pass state into a single control stream in
    `pvr_draw_flush()` instead of one static geometry/fragment stream per render.
+
+### Implementation plan for the hw-pass merge (round 179, no code yet)
+
+Goal: one geometry+PR+fragment job set per batch of up to 8 renders instead of one per render,
+removing the 0.189 ms serial GPU completion per render.
+
+1. Keep the per-render state that is currently baked into the static streams (`pvr_draw_flush`, lines
+   ~2040-2245): `term`/`sc` blocks in the per-slot `d->gen` arena, `pbe_words[]`, EOT program offset
+   (`draw_eot_program()`), ZLS/bgnd pieces of `fstream`, and the control-stream commands
+   (`pvr_csb_emit_ppp_state` + `pvr_csb_emit_stream_terminate`).
+2. Build one batch control stream in a batch BO: for each render append (a) the per-hw-pass register
+   state the reference emits in `pvr_setup_emit_state()` / `pvr_setup_pbe_state()`
+   (`pvr_arch_cmd_buffer.c:1622+`), (b) its PPP state block pointer, (c) one stream terminate at the
+   end of the batch only.
+3. Build one geometry static stream (`pvr_geom_static_stream`, once) referencing the batch control
+   stream, and one fragment static stream with the batch-invariant ISP/EOT defaults.
+4. `struct pvr_render_batch_entry` then carries only the batch stream address/length; submit one job
+   set for the whole batch.
+5. Keep the `NO_DEFER` and CPU-reader submission points; only the job granularity changes.
+6. Open question to answer first: the exact per-hw-pass command encoding the reference uses for the
+   PBE/ZLS/scissor/EOT register writes inside the control stream (trace `pvr_setup_pbe_state()`'s
+   `pbe_cs_words`/`pbe_reg_words` to their emit site and to the CSCB command definitions).
