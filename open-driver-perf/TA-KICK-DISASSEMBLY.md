@@ -3877,3 +3877,14 @@ geometry+PR+fragment job sets per frame for all 27 FBO passes plus the final dra
 28 job sets per frame.)  So the reference genuinely packs many render passes into one render job -
 the merge plan in the roadmap is the right target, and our 0.189 ms/render serial completion is what
 it removes.  Counter reverted, Vulkan .so rebuilt from the clean tree.
+
+### Round 180 - the reference's pass count does not reach the submit path at all
+
+Decisive control experiment (temporary submit counter in the Vulkan render submit path): zink
+`passes`, 5 frames, **NPASSES=1 and NPASSES=27 both issue exactly 10 DRM submits, each jobs=3**.
+zink fps 363.9 (1 pass) vs 346.4 (27 passes) - the 26 extra FBO passes cost ~0.14 ms total.  So the
+Vulkan driver packs every render pass of the frame into the same two render-job submissions; the
+pass count never scales the job count.  This is the hw-pass machinery (`pvr_arch_hw_pass.c` +
+per-hw-pass state re-emitted into the sub-command's control stream) seen from the KMD side, and it
+is exactly what `pvr_draw_flush()` must adopt: per-pass state must live in the control stream, not
+in a new fragment static stream per pass.
