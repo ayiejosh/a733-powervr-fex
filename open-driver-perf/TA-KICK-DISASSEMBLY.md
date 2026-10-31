@@ -3851,3 +3851,20 @@ has to go down.
 Next: find how the reference encodes the per-pass render-target state in that single job set (the
 fragment static stream carries PBE/EOT per target in our driver, so the reference must carry it in the
 command stream or re-program PBE between passes) and mirror it for our flush path.
+
+### Round 178 - where the reference's multi-pass job lives (read, no code yet)
+
+The reference's render job granularity is a `pvr_sub_cmd`: `pvr_arch_render_job_submit()` takes one
+`pvr_render_job` (embedded in `sub_cmd->gfx.job`) with its own `sub_cmd->gfx.control_stream` and
+issues exactly one geometry+PR+fragment job set for it (`pvr_arch_render_job_submit()` ->
+`device->ws->ops->render_submit()`).  A command buffer is a list of sub-commands, and a sub-command
+can hold several hardware passes (`pvr_arch_hw_pass.c`, `pvr_hw_pass.h`): the render passes of one
+frame are recorded as hw passes inside one sub-command's control stream, then submitted as one job.
+The zink measurement (3 jobs per submit, one submit per frame for 27 FBO passes) is consistent with
+exactly that.
+
+Next reading points: `pvr_arch_cmd_buffer.c` around the sub-command/hw-pass setup (lines ~1423,
+1872, 2659) and `pvr_arch_hw_pass.c` - specifically how a second hw pass re-emits the per-render
+target state (PBE/EOT/RT address) into the control stream instead of building a new geometry/fragment
+static stream.  That is the piece our `pvr_draw_flush()` has to learn: build the static streams once
+per batch, append one hw pass per render, submit one job set.

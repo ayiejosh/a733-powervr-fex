@@ -212,3 +212,8 @@ hard resets on 2026-10-30).
    ONE geometry+PR+fragment job set (3 jobs per submit, 2 submits/frame).  Native pays one job set per
    render pass; its serial cost is GPU/firmware completion (0.189 ms/render) not the ioctl (0.015 ms).
    The next change must put several passes into one job set.
+
+7. The reference batches render passes as hardware passes inside one sub-command, submitted as one
+   geometry+PR+fragment job set (`pvr_arch_hw_pass.c`, `pvr_arch_render_job_submit`).  The next
+   implementation step is to re-emit per-hw-pass state into a single control stream in
+   `pvr_draw_flush()` instead of one static geometry/fragment stream per render.
