@@ -4303,3 +4303,15 @@ without final register assignments), instruction-selection gaps in pco_nir_alu/p
 recorded `pco_scissor`/bank-conflict heuristics in pco_group_instrs.c.  A useful first milestone is a
 microbenchmark that isolates bank conflicts (e.g. many independent FMULs with different register
 pairs) to see if pco schedules them into conflicts.
+
+### Round 203 - pco scheduling-pass skips are noise-controlled negatives
+
+Tried pco's PCO_SKIP_PASSES knob on the math shader (names are the pass function names):
+`pco_dual_issue_sched`, `pco_schedule`, `pco_shrink_vecs`, `pco_bool`, and combinations.  Single runs
+looked like some skips helped (e.g. skip pco_schedule 1032 vs default 893), but an interleaved
+5-repeat comparison of default vs skip-pco_schedule gives default 1020.9-1032.7 and skip
+1013.5-1031.2 - **identical within noise**.  The earlier differences were run-order/load noise.
+
+So none of pco's pre-RA scheduling passes is hurting or helping the realistic-math shader measurably;
+the remaining 0.80x vs the vendor compiler is in the code itself (instruction selection / bank
+assignment / issue grouping), not in these toggles.
