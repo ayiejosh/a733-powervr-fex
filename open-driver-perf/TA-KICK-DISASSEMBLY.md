@@ -4315,3 +4315,25 @@ looked like some skips helped (e.g. skip pco_schedule 1032 vs default 893), but 
 So none of pco's pre-RA scheduling passes is hurting or helping the realistic-math shader measurably;
 the remaining 0.80x vs the vendor compiler is in the code itself (instruction selection / bank
 assignment / issue grouping), not in these toggles.
+
+### Round 204 - BIG FINDING: pco's ILP code is ~4.8x slower than the vendor compiler
+
+Added two more drawbench2 modes: `ilp` (64 independent FMULs in 4 accumulators, summed) and `trans`
+(special-function chains: sqrt/rsqrt/exp2/log2 only). fps, 2 repeats:
+
+| mode | native | vendor | ratio |
+|---|---|---|---|
+| ilp (independent ALU chains) | 210-218 | **1013-1030** | **0.21** |
+| trans (sqrt/rsqrt/exp2/log2 only) | 641-687 | 638-663 | 1.03 |
+| alu (serial FMA chain, earlier) | ~130 | ~133 | 0.98 |
+
+So transcendentals are at parity and a *latency-bound serial* chain is at parity, but **independent
+ALU work (ILP) is 4.8x slower in our driver than in the vendor's**.  That means pco emits code that
+does not expose/exploit instruction-level parallelism - the opposite of the earlier "issue efficiency
+is only 20% off" reading of the math shader.  Real glmark2 shaders have lots of independent ALU
+(lights, interpolants) so this is very likely the main remaining glmark2 gap.
+
+Next: dump the `ilp` shader IR (PCO_DEBUG_PRINT=fs,stats) and inspect the unrolled/scheduled code -
+the suspicion is the pre-RA scheduler serialises independent ops (or reduces ILP via register reuse),
+and that the post-RA issue grouping does not reorder for ILP.  This is a concrete, high-value pco
+target now.

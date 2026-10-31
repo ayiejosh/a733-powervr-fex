@@ -73,6 +73,10 @@ int main(void){
    /* A realistic lighting/math fragment shader: normalize, dot, pow, exp2, log2, sqrt, rsqrt. */
    const char *fs_math = "precision highp float; varying vec2 v; void main(){ vec3 n = normalize(vec3(v, 1.0)); vec3 l = normalize(vec3(0.3, 0.5, 0.8)); float d = max(dot(n, l), 0.0); float s = pow(d, 16.0); float e = exp2(v.x) * log2(1.0 + abs(v.y)); float q = sqrt(abs(v.x)) + inversesqrt(1.0 + abs(v.y)); gl_FragColor = vec4(s, e, q, 1.0); }";
    const char *fs_mathm = "precision mediump float; varying vec2 v; void main(){ vec3 n = normalize(vec3(v, 1.0)); vec3 l = normalize(vec3(0.3, 0.5, 0.8)); float d = max(dot(n, l), 0.0); float s = pow(d, 16.0); float e = exp2(v.x) * log2(1.0 + abs(v.y)); float q = sqrt(abs(v.x)) + inversesqrt(1.0 + abs(v.y)); gl_FragColor = vec4(s, e, q, 1.0); }";
+   /* ILP/issue-bound: 64 independent FMULs, summed at the end. */
+   const char *fs_ilp = "precision highp float; varying vec2 v; void main(){ float a0=v.x,a1=v.y,a2=1.0-v.x,a3=1.0-v.y; float s=0.0; for(int i=0;i<16;i++){ a0*=1.0001; a1*=0.9999; a2*=1.0002; a3*=0.9998; s+=a0+a1+a2+a3; } gl_FragColor=vec4(s,a0,a1,a2); }";
+   /* Special-function throughput: only frsq/frcp/fexp/flog chains. */
+   const char *fs_trans = "precision highp float; varying vec2 v; void main(){ float x=v.x+1.5, y=v.y+1.5; for(int i=0;i<8;i++){ x=sqrt(x); y=inversesqrt(y); x=exp2(x); y=log2(y); } gl_FragColor=vec4(x,y,x*y,1.0); }";
    GLuint cube=0;
    if (!strcmp(mode,"fill")||!strcmp(mode,"overdraw")||depthmode) p = prog(VS_FULL, fs_fill);
    else if (!strcmp(mode,"cube")) {
@@ -85,6 +89,8 @@ int main(void){
    else if (!strcmp(mode,"manydrawsflex")) p = prog(VS_FULL, fs_fillu);
    else if (!strcmp(mode,"math")) p = prog(VS_FULL, fs_math);
    else if (!strcmp(mode,"mathm")) p = prog(VS_FULL, fs_mathm);
+   else if (!strcmp(mode,"ilp")) p = prog(VS_FULL, fs_ilp);
+   else if (!strcmp(mode,"trans")) p = prog(VS_FULL, fs_trans);
    else if (!strcmp(mode,"vert")) { p = prog(VS_GRID, fs_fill); verts = nverts; }
    else if (!strcmp(mode,"passes") || !strcmp(mode,"manydraws") || !strcmp(mode,"clearonly") || !strcmp(mode,"alt") || !strcmp(mode,"blend") || !strcmp(mode,"blenddepth")) p = prog(VS_FULL, fs_fill);
    else p = prog(VS_FULL, fs_tex);
