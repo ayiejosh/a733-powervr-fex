@@ -63,6 +63,9 @@ int main(void){
    const char *fs_cube = "precision mediump float; varying vec2 v; uniform samplerCube t; void main(){ gl_FragColor = textureCube(t, vec3(v*2.0-1.0, 1.0)); }";
    /* Fragment ALU throughput: a dependent 128-step FMA chain per pixel (highp, so no FP16 path). */
    const char *fs_alu = "precision highp float; varying vec2 v; void main(){ float x = v.x + v.y*0.5; for (int i=0;i<128;i++) { x = x*0.9999 + v.y*0.5; x = x - floor(x); } gl_FragColor = vec4(x, x*0.5, x*0.25, 1.0); }";
+   /* Same draw repeated with a changing uniform: the per-draw state block differs every draw, so a
+    * driver cannot reuse it (unlike "manydraws"). */
+   const char *fs_fillu = "precision mediump float; uniform float u; void main(){ gl_FragColor = vec4(u, 0.25, 0.75, 1.0); }";
    GLuint cube=0;
    if (!strcmp(mode,"fill")||!strcmp(mode,"overdraw")) p = prog(VS_FULL, fs_fill);
    else if (!strcmp(mode,"cube")) {
@@ -72,6 +75,7 @@ int main(void){
       glTexParameteri(GL_TEXTURE_CUBE_MAP,GL_TEXTURE_MAG_FILTER,GL_NEAREST);
       p = prog(VS_FULL, fs_cube);
    } else if (!strcmp(mode,"alu")) { p = prog(VS_FULL, fs_alu); }
+   else if (!strcmp(mode,"manydrawsflex")) p = prog(VS_FULL, fs_fillu);
    else if (!strcmp(mode,"vert")) { p = prog(VS_GRID, fs_fill); verts = nverts; }
    else if (!strcmp(mode,"passes") || !strcmp(mode,"manydraws") || !strcmp(mode,"clearonly") || !strcmp(mode,"alt") || !strcmp(mode,"blend") || !strcmp(mode,"blenddepth")) p = prog(VS_FULL, fs_fill);
    else p = prog(VS_FULL, fs_tex);
@@ -92,6 +96,7 @@ int main(void){
       glBindAttribLocation(p,0,"p");
    }
    glUseProgram(p);
+   GLint flex_u = glGetUniformLocation(p, "u");
    if (cube) { glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_CUBE_MAP,cube); glUniform1i(glGetUniformLocation(p,"t"),0); }
    else if (!verts && strcmp(mode,"fill") && strcmp(mode,"overdraw")) { glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D,ctex); glUniform1i(glGetUniformLocation(p,"t"),0); }
    glClearColor(0,0,0,1);
@@ -132,6 +137,11 @@ int main(void){
       } else if (!strcmp(mode,"manydraws")) {
          for (int k = 0; k < npasses; k++)
             glDrawArrays(GL_TRIANGLES, 0, 3);
+      } else if (!strcmp(mode,"manydrawsflex")) {
+         for (int k = 0; k < npasses; k++) {
+            glUniform1f(flex_u, (float)k * 0.001f);
+            glDrawArrays(GL_TRIANGLES, 0, 3);
+         }
       } else {
          glClear(GL_COLOR_BUFFER_BIT);
          glDrawArrays(GL_TRIANGLES, 0, verts ? verts : 3);
