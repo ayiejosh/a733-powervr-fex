@@ -44,6 +44,9 @@ int main(void){
    glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA,W,H,0,GL_RGBA,GL_UNSIGNED_BYTE,NULL);
    glGenFramebuffers(1,&fbo); glBindFramebuffer(GL_FRAMEBUFFER,fbo);
    glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,rdtex,0);
+   { GLuint drb; glGenRenderbuffers(1,&drb); glBindRenderbuffer(GL_RENDERBUFFER,drb);
+     glRenderbufferStorage(GL_RENDERBUFFER,GL_DEPTH_COMPONENT16,W,H);
+     glFramebufferRenderbuffer(GL_FRAMEBUFFER,GL_DEPTH_ATTACHMENT,GL_RENDERBUFFER,drb); }
    glViewport(0,0,W,H);
    const int npasses = getenv("NPASSES") ? atoi(getenv("NPASSES")) : 27;
    const int psize = getenv("PSIZE") ? atoi(getenv("PSIZE")) : 64;
@@ -58,6 +61,7 @@ int main(void){
       glGenFramebuffers(1,&small_fbo);
    }
    GLuint p; int verts = 0;
+   const int depthmode = !strcmp(mode,"depthfill") ? 1 : !strcmp(mode,"depthover") ? 2 : 0;
    const char *fs_fill = "precision mediump float; void main(){ gl_FragColor = vec4(0.5,0.25,0.75,1.0); }";
    const char *fs_tex  = "precision mediump float; varying vec2 v; uniform sampler2D t; void main(){ gl_FragColor = texture2D(t, v); }";
    const char *fs_cube = "precision mediump float; varying vec2 v; uniform samplerCube t; void main(){ gl_FragColor = textureCube(t, vec3(v*2.0-1.0, 1.0)); }";
@@ -67,7 +71,7 @@ int main(void){
     * driver cannot reuse it (unlike "manydraws"). */
    const char *fs_fillu = "precision mediump float; uniform float u; void main(){ gl_FragColor = vec4(u, 0.25, 0.75, 1.0); }";
    GLuint cube=0;
-   if (!strcmp(mode,"fill")||!strcmp(mode,"overdraw")) p = prog(VS_FULL, fs_fill);
+   if (!strcmp(mode,"fill")||!strcmp(mode,"overdraw")||depthmode) p = prog(VS_FULL, fs_fill);
    else if (!strcmp(mode,"cube")) {
       glGenTextures(1,&cube); glBindTexture(GL_TEXTURE_CUBE_MAP,cube);
       for(int f=0;f<6;f++) glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X+f,0,GL_RGBA,64,64,0,GL_RGBA,GL_UNSIGNED_BYTE,px);
@@ -99,6 +103,7 @@ int main(void){
    GLint flex_u = glGetUniformLocation(p, "u");
    if (cube) { glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_CUBE_MAP,cube); glUniform1i(glGetUniformLocation(p,"t"),0); }
    else if (!verts && strcmp(mode,"fill") && strcmp(mode,"overdraw")) { glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D,ctex); glUniform1i(glGetUniformLocation(p,"t"),0); }
+   if (depthmode) { glEnable(GL_DEPTH_TEST); glDepthFunc(GL_LESS); glClearDepthf(1.0f); }
    glClearColor(0,0,0,1);
    double t0=now();
    for(int f=0; f<frames; f++){
@@ -143,8 +148,14 @@ int main(void){
             glDrawArrays(GL_TRIANGLES, 0, 3);
          }
       } else {
-         glClear(GL_COLOR_BUFFER_BIT);
-         glDrawArrays(GL_TRIANGLES, 0, verts ? verts : 3);
+         glClear(GL_COLOR_BUFFER_BIT | (depthmode ? GL_DEPTH_BUFFER_BIT : 0));
+         if (depthmode == 2) {
+            /* Same quad, same depth, 27 times: early-Z must reject all but the first. */
+            for (int k = 0; k < npasses; k++)
+               glDrawArrays(GL_TRIANGLES, 0, 3);
+         } else {
+            glDrawArrays(GL_TRIANGLES, 0, verts ? verts : 3);
+         }
       }
       if (!getenv("NOFINISH")) glFinish();
    }

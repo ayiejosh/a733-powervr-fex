@@ -4097,3 +4097,22 @@ and zink are within ~10% of each other on every scene and the ALU/vertex/texture
 are at or above vendor parity, the next thing to isolate is per-draw cost with *changing* state
 (a "manydrawsflex" microbenchmark: 27 draws/frame with a uniform update per draw) - if that is at
 vendor parity too, the remaining gap is in the sampling/fragment-state path these scenes share.
+
+### Round 191 - per-draw cost with changing state is at vendor parity too
+
+Added a `manydrawsflex` mode (27 draws/frame, one uniform change per draw, so the TA state block
+differs every draw and cannot be deduplicated) and measured all three stacks:
+
+| mode | vendor | native | zink |
+|---|---|---|---|
+| manydraws (same state) | 989.3 | 863.5 | 795.0 |
+| manydrawsflex (changing state) | 468.7 | **516.8** | 442.4 |
+| fill | 2426.7 | 2385.9 | 1841.0 |
+
+Native is *faster* than the vendor driver with per-draw state changes, so per-draw cost is not the
+glmark2 gap either. Microbenchmarks now at/above vendor parity: ALU, fill, texture, vertex,
+overdraw, blend, manydraws, manydrawsflex, mipgen. The remaining full-run gaps (shading 0.45-0.68,
+shadow 0.55, ideas/refract 0.59, bump 0.61, effect2d 0.64) must come from something those scenes use
+that the microbenchmarks do not: depth testing/early-Z, mipmapped texture sampling in shaders,
+program switches, or the off-screen FBO path. Next: add a depth-tested fill/draw microbenchmark (FBO
+with a depth attachment) and split a shading-scene run into CPU vs wall with /usr/bin/time.
