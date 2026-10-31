@@ -3888,3 +3888,22 @@ pass count never scales the job count.  This is the hw-pass machinery (`pvr_arch
 per-hw-pass state re-emitted into the sub-command's control stream) seen from the KMD side, and it
 is exactly what `pvr_draw_flush()` must adopt: per-pass state must live in the control stream, not
 in a new fragment static stream per pass.
+
+### Round 181 - correction: the `passes` microbench is not a job-granularity proxy
+
+Counting the reference's render-pass entry points with a temporary print: for zink `passes` with
+NPASSES=1 and with NPASSES=27, the frame issues only **2 `vkCmdBeginRendering` calls** (dynamic
+rendering path counted; the traditional `CmdBeginRenderPass2` path was not instrumented in that run).
+So the 27 GL passes do not reach Vulkan as 27 render passes - zink collapses them at the GL level
+(each iteration only changes the texture attached to the same FBO and fully overwrites it, so
+consecutive clear+draw sequences can be merged).
+
+Therefore round-180's conclusion needs qualifying: the reference's low submit count on `passes`
+reflects GL-level pass collapsing plus the driver's own granularity, not a pure proof that the
+Vulkan driver packs 27 hardware render passes into one job.  The `passes` microbench cannot be used
+to size the per-render-pass gap; use workloads that force real render passes on both stacks
+(glmark2 terrain/refract: native 20/38 fps vs zink 27/47).
+
+Next measurement: count BOTH render-pass entries (`CmdBeginRenderPass2` and `CmdBeginRendering`) plus
+render submits for zink on the terrain scene (and the same for native), so the terrain gap can be
+attributed to pass count vs per-pass cost before changing the driver.
