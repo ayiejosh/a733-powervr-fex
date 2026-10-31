@@ -4263,3 +4263,22 @@ Widening to 16 loses ~25% on the math shader (more pairing opportunities but wor
 pressure/scheduling quality), narrowing to 4 is within noise on real scenes (+0.4-1%).  Reverted to
 the default 8: the dual-issue scheduler's default window is fine, and its remaining 0.80x vs vendor
 is not tunable by this knob.
+
+### Round 201 - shading does 1 draw/render per frame; mediump vs highp is not the difference
+
+Per-frame counters (temporary PVR_COUNT instrumentation: draws in pvr_draw_3d, renders in
+pvr_draw_flush, printed per frame): glmark2 `shading` = **1 draw / 1 render per frame** (9288 frames,
+929 fps); `shadow` = **3 draws / 3 renders per frame** (368 fps).  So the shading deficit is a single
+fragment-heavy pass, not extra passes - it is fragment-shader execution, consistent with the math
+shader's 0.80x.
+
+Mediump vs highp on the same math shader (2 repeats):
+
+| | highp | mediump |
+|---|---|---|
+| native | 1030-1032 | 1033-1037 |
+| vendor | 1219-1236 | 1293-1354 |
+
+Mediump is neutral for us and ~6% faster for the vendor, so precision/FP16 lowering is not the
+remaining 20-25%: it is fragment-shader issue efficiency (scheduling/dual-issue density/bank
+conflicts) versus IMG's compiler.  That is a compiler-quality gap, not a driver-state one.
