@@ -3735,3 +3735,35 @@ Follow-up to round-173's "native renders terrain without depth":
    `dmesg` on this kernel** (whatever the loglevel), while `pr_err()` did - and the module rebuild
    only takes effect after the GL clients (weston/Xwayland) release the device, otherwise `insmod`
    silently leaves the old module in place.
+
+## Round-175 (2026-10-31): round-173 retracted - native *does* depth-test, and terrain submits ~52 jobs/frame
+
+A temporary `PVR_SUBMIT_LOG` print in the native driver right before each render submission
+(`pvr_job_submit_render`, reverted) settles both open questions at once. For the terrain scene at
+20 fps (10 s run, ~200 frames):
+
+| render size | zs | draws | submissions | what it is |
+|---|---|---|---|---|
+| 800x600 | **yes** | 1 | 579 | the main terrain pass, `fragflags=0x2` (DEPTHBUFFER) |
+| 800x600 | no | 1 | 193 | colour-only composite/clear passes |
+| 256x256 | no | 1 | 771 | shadow pass |
+| 400x300, 200x150, 100x75, 50x37, 25x18, 12x9, 6x4, 3x2 | no | 0 | 581 each | **mip generation blits** |
+| 128x128 … 2x2 | no | 0 | 393 each | **mip generation blits** |
+| 1x1 | no | 0 | 974 | mip generation blits |
+
+So:
+
+1. **Round-173's "native renders terrain without depth" is wrong** - the main pass does bind a depth
+   buffer and submits with the depth flag; the kernel dump window (jobs 600-639) happened to sample the
+   shadow and mip-generation passes, which legitimately have no depth.
+2. **The terrain scene submits ~52 render jobs per frame**, most of them tiny **per-level mip
+   generation** passes (~29/frame) plus the shadow pass. At 20 fps that is ~1 ms per job for the GPU
+   side, whereas the vendor stack runs the same scene at 328 fps - so either per-job cost or the
+   number of jobs is where the terrain gap lives. Zink gets 27 fps with the same app workload, so the
+   *count* of passes is the same for both Mesa paths; the difference must be our per-job GPU/CPU cost
+   or how each job is set up (clip/region, hwrt data-set selection, state reloads).
+
+Next: (a) count submissions/frame for zink for the same scene (Vulkan submissions via a kernel-side
+counter or by instrumenting the Vulkan driver), and (b) make a synthetic microbenchmark of N small
+render passes (e.g. a mip-gen chain) to measure our per-job cost against zink/vendor - if our per-job
+fixed cost is the problem, batch the mip-generation levels into fewer jobs.
