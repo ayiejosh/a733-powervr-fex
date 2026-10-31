@@ -4406,3 +4406,13 @@ Complete round-205/207 record on this tree (patches 0367-0370):
 native/vendor = 798 / 1160 = 0.69.  The gap is the pco shader-codegen efficiency (~13-20% measured on
 realistic shaders) plus the scene-specific multi-render work - no further measurement-only wins are
 expected; next work is codegen.
+
+### Round 208 - the pre-RA dual-issue scheduler is net positive (~12%), not a liability
+
+Interleaved 5-repeat controlled run of the math shader, default vs `PCO_SKIP_PASSES=pco_dual_issue_sched`:
+default median ~979 fps (978.5, 780.1, 1009.8, 952.0, 988.5), skip median ~865 fps (761.4, 854.7,
+864.1, 955.7, 886.8) - skipping the pass is ~12% worse.  Together with round-198 (no_dual_issue is
+5-25% worse on math) the dual-issue machinery is doing real work; the residual ~20% gap vs the
+vendor compiler is quality/tuning (bank conflicts, pairing density) inside that machinery, not a
+missing or harmful pass.  Further work here is genuine compiler engineering (the scheduling-after-RA
+TODO), not a knob.
