@@ -4005,3 +4005,23 @@ That is the exact bar for the merge port: build one batch control stream whose p
 blocks (and the PDS programs they reference) carry the state that our `pvr_draw_flush()` bakes into
 a fresh fragment static stream today, keep one fixed fragment stream per batch, and submit one
 geometry + one fragment job for the batch.
+
+### Round 188 - two more hypotheses measured and closed
+
+1. **GPU clock is not the gap.** The DT exposes the GPU clock mux `gpu0` (parents clk_800/600/400/300/200
+   plus pll-gpu); `clk_summary`/debugfs show it running at **1,104,000,000 Hz (pll-gpu, 1.104 GHz)**
+   with the vendor driver loaded. The open kernel module only `clk_prepare_enable()`s its "core"/"clk"
+   (pvr_power.c) and never sets a rate, but it inherits this high rate, so ALU throughput is not
+   clock-starved.
+
+2. **The per-scene gap is shared by BOTH our stacks, not a Gallium-vs-Vulkan issue.** From the
+   bench31 result files (native / zink / vendor fps): shading 961 / 890 / 1375, cel 528 / 546 / 1153,
+   effect2d 763 / 676 / 1169, bump 413 / 368 / 672, shadow 454 / 454 / 1097, terrain 20 / - / 40,
+   refract 37 / - / 75, while build 1251 / 1155 / 1282 and texture 1391 / 1313 / 1546 are near parity.
+   Native and zink are within ~10% of each other everywhere, so the 1.5-2.2x deficits on the
+   ALU/pixel-pipeline-heavy scenes come from what native and zink share: the shader compiler (pco is
+   used by both; the vendor GL driver uses IMG's compiler) and/or the fragment/pixel-pipeline state.
+
+Conclusion: the next lever is comparing pco's generated code against the vendor compiler's for the
+same GLSL - the vendor-compiled USC capture is now the highest-value investigation (it also yields
+the F16SOP encoding).  Mip generation/merge work stays valid but the ALU-heavy scene gap is larger.
