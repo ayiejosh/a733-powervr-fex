@@ -1373,10 +1373,10 @@ index 00000000..0c679b3f
 +#endif /* PVR_COMPUTE_TRIANGLE_SPV_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_context.c b/src/gallium/drivers/pvr_native/pvr_context.c
 new file mode 100644
-index 00000000..ae3b1987
+index 00000000..1e9766cb
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_context.c
-@@ -0,0 +1,1003 @@
+@@ -0,0 +1,1010 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + */
@@ -1516,6 +1516,8 @@ index 00000000..ae3b1987
 +static void
 +pvr_transfer_unmap(struct pipe_context *pctx, struct pipe_transfer *transfer)
 +{
++   if (transfer->usage & PIPE_MAP_WRITE)
++      pvr_resource(transfer->resource)->write_seq++;
 +   struct pvr_transfer *trans = (struct pvr_transfer *)transfer;
 +   if (trans->staging != NULL) {
 +      if (trans->base.usage & PIPE_MAP_WRITE) {
@@ -2278,7 +2280,10 @@ index 00000000..ae3b1987
 +{
 +   if (format != pres->format)
 +      return false;
-+   const struct pvr_resource *res = pvr_resource(pres);
++   struct pvr_resource *res = pvr_resource(pres);
++   if (getenv("PVR_NO_MIP_CACHE") == NULL && res->mips_valid &&
++       res->mips_write_seq == res->write_seq)
++      return true;
 +   const unsigned faces = res->cube ? 6 : 1;
 +   for (unsigned l = base_level + 1; l <= MIN2(last_level, pres->last_level); l++) {
 +      for (unsigned f = 0; f < faces; f++) {
@@ -2286,6 +2291,8 @@ index 00000000..ae3b1987
 +            return false;
 +      }
 +   }
++   res->mips_valid = true;
++   res->mips_write_seq = res->write_seq;
 +   return true;
 +}
 +
@@ -5252,10 +5259,10 @@ index 00000000..47695cc7
 +#endif /* PVR_CSB_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_draw.c b/src/gallium/drivers/pvr_native/pvr_draw.c
 new file mode 100644
-index 00000000..0cb97d8f
+index 00000000..4e6f1e55
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_draw.c
-@@ -0,0 +1,2292 @@
+@@ -0,0 +1,2298 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -7328,6 +7335,12 @@ index 00000000..0cb97d8f
 +
 +   struct pvr_resource *rt = pvr_resource(d->rt);
 +   const enum pipe_format fmt = d->rt->format;
++   rt->write_seq++;
++   for (unsigned i = 0; i < ctx->fb.nr_cbufs; i++)
++      if (ctx->fb.cbufs[i].texture)
++         pvr_resource(ctx->fb.cbufs[i].texture)->write_seq++;
++   if (ctx->fb.zsbuf.texture)
++      pvr_resource(ctx->fb.zsbuf.texture)->write_seq++;
 +   uint64_t term_addr = 0, sc_addr = 0;
 +   uint32_t *term = arena_alloc(&d->gen, 64, 64, &term_addr);
 +   uint32_t *sc = arena_alloc(&d->gen, 16, 16, &sc_addr);
@@ -14593,10 +14606,10 @@ index 00000000..bb79c92c
 +}
 diff --git a/src/gallium/drivers/pvr_native/pvr_resource.h b/src/gallium/drivers/pvr_native/pvr_resource.h
 new file mode 100644
-index 00000000..5e2c2279
+index 00000000..0d0f62cb
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_resource.h
-@@ -0,0 +1,133 @@
+@@ -0,0 +1,140 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -14672,6 +14685,13 @@ index 00000000..5e2c2279
 +   /* The draw path's render sequence number of the last render that used this resource (0:
 +    * none). A CPU map waits only for a render that uses the resource. */
 +   uint32_t render_seq;
++
++   /* Content version: bumped by every GPU render into this resource and by every CPU write
++    * through a transfer map. Lets pvr_generate_mipmap() skip a chain that is already valid for
++    * the current contents (the app regenerates mips every frame in some scenes). */
++   uint32_t write_seq;
++   bool mips_valid;
++   uint32_t mips_write_seq;
 +};
 +
 +struct pipe_resource *pvr_resource_create(struct pipe_screen *pscreen,

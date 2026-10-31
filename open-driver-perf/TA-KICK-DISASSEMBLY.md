@@ -3923,3 +3923,20 @@ mip generation goes through the transfer/blit path.
 Top lever for terrain/refract is therefore: generate mip chains through the transfer/blit path (or
 otherwise stop paying a full render-pass job set per mip level).  The pass-merge work remains valid
 for the many-render scenes but is not what the terrain gap is made of.
+
+## Round 183 - mip-generation cache lands (patch 0368): terrain +15%, refract +16%
+
+Round-182 attributed the terrain gap to mip generation (native ~29 mip-pass render job sets per
+frame vs ~9 real passes, while zink generates mips through the transfer path).  Ceiling test: with
+mip generation skipped entirely, native terrain went 19-20 -> 27 fps, exactly the zink number.
+
+First fix, patch 0368: track a per-resource content version (bumped by every GPU render into the
+resource and by every CPU write through a transfer map) and remember the version each mip chain was
+generated for.  `pvr_generate_mipmap()` returns immediately when the base contents are unchanged -
+glmark2 calls `glGenerateMipmap` every frame for the static textures too.  Results (glmark2 offscreen
+under weston/headless, native pvr driver): terrain **20 -> 23 fps**, refract **37 -> 43 fps**
+(initial baselines 20/38; zink 26-27/47).  17-group gate: ALL GROUPS PASS (mip 14 levels included).
+
+Remaining terrain/refract gap: the chains that are re-uploaded every frame still pay a render pass
+per level; the transfer/blit mip generator (one job per level instead of a full geometry+PR+fragment
+job set) is the next step for those.

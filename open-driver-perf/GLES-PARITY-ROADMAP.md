@@ -239,3 +239,7 @@ removing the 0.189 ms serial GPU completion per render.
 6. Open question to answer first: the exact per-hw-pass command encoding the reference uses for the
    PBE/ZLS/scissor/EOT register writes inside the control stream (trace `pvr_setup_pbe_state()`'s
    `pbe_cs_words`/`pbe_reg_words` to their emit site and to the CSCB command definitions).
+
+8. Mip generation: patch 0368 caches chains whose base contents are unchanged (glmark2 terrain
+   20->23, refract 37->43 fps; gate all pass).  Remaining gap is the per-frame regenerated chains:
+   generate those through the transfer/blit path (one job per level) instead of a render job set.

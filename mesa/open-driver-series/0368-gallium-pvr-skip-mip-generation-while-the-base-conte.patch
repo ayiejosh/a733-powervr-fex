@@ -1,0 +1,92 @@
+From 73a7404c37d6b37b17d812fae0dffefe9da44960 Mon Sep 17 00:00:00 2001
+From: radxa <radxa@radxa-cubie-a7a>
+Date: Sat, 31 Oct 2026 23:15:42 +0800
+Subject: [PATCH] gallium/pvr: skip mip generation while the base contents are
+ unchanged
+
+Scenes that call glGenerateMipmap every frame (glmark2 terrain/refract do) paid a
+complete render pass per mip level per call. Track a content version on the
+resource, bumped by every GPU render into it and by every CPU write through a
+transfer map, and remember which version the chain was generated for: a
+generation call whose base contents are unchanged returns at once.
+
+glmark2: terrain 20 -> 23 fps, refract 37 -> 43 fps (initial native/zink baselines
+20/38). 17-group gate: ALL GROUPS PASS (mip 14 levels included).
+---
+ src/gallium/drivers/pvr_native/pvr_context.c  | 9 ++++++++-
+ src/gallium/drivers/pvr_native/pvr_draw.c     | 6 ++++++
+ src/gallium/drivers/pvr_native/pvr_resource.h | 7 +++++++
+ 3 files changed, 21 insertions(+), 1 deletion(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_context.c b/src/gallium/drivers/pvr_native/pvr_context.c
+index ae3b1987..1e9766cb 100644
+--- a/src/gallium/drivers/pvr_native/pvr_context.c
++++ b/src/gallium/drivers/pvr_native/pvr_context.c
+@@ -137,6 +137,8 @@ pvr_transfer_map(struct pipe_context *pctx, struct pipe_resource *pres,
+ static void
+ pvr_transfer_unmap(struct pipe_context *pctx, struct pipe_transfer *transfer)
+ {
++   if (transfer->usage & PIPE_MAP_WRITE)
++      pvr_resource(transfer->resource)->write_seq++;
+    struct pvr_transfer *trans = (struct pvr_transfer *)transfer;
+    if (trans->staging != NULL) {
+       if (trans->base.usage & PIPE_MAP_WRITE) {
+@@ -899,7 +901,10 @@ pvr_generate_mipmap(struct pipe_context *pctx, struct pipe_resource *pres,
+ {
+    if (format != pres->format)
+       return false;
+-   const struct pvr_resource *res = pvr_resource(pres);
++   struct pvr_resource *res = pvr_resource(pres);
++   if (getenv("PVR_NO_MIP_CACHE") == NULL && res->mips_valid &&
++       res->mips_write_seq == res->write_seq)
++      return true;
+    const unsigned faces = res->cube ? 6 : 1;
+    for (unsigned l = base_level + 1; l <= MIN2(last_level, pres->last_level); l++) {
+       for (unsigned f = 0; f < faces; f++) {
+@@ -907,6 +912,8 @@ pvr_generate_mipmap(struct pipe_context *pctx, struct pipe_resource *pres,
+             return false;
+       }
+    }
++   res->mips_valid = true;
++   res->mips_write_seq = res->write_seq;
+    return true;
+ }
+ 
+diff --git a/src/gallium/drivers/pvr_native/pvr_draw.c b/src/gallium/drivers/pvr_native/pvr_draw.c
+index 0cb97d8f..4e6f1e55 100644
+--- a/src/gallium/drivers/pvr_native/pvr_draw.c
++++ b/src/gallium/drivers/pvr_native/pvr_draw.c
+@@ -2070,6 +2070,12 @@ pvr_draw_flush(struct pvr_context *ctx)
+ 
+    struct pvr_resource *rt = pvr_resource(d->rt);
+    const enum pipe_format fmt = d->rt->format;
++   rt->write_seq++;
++   for (unsigned i = 0; i < ctx->fb.nr_cbufs; i++)
++      if (ctx->fb.cbufs[i].texture)
++         pvr_resource(ctx->fb.cbufs[i].texture)->write_seq++;
++   if (ctx->fb.zsbuf.texture)
++      pvr_resource(ctx->fb.zsbuf.texture)->write_seq++;
+    uint64_t term_addr = 0, sc_addr = 0;
+    uint32_t *term = arena_alloc(&d->gen, 64, 64, &term_addr);
+    uint32_t *sc = arena_alloc(&d->gen, 16, 16, &sc_addr);
+diff --git a/src/gallium/drivers/pvr_native/pvr_resource.h b/src/gallium/drivers/pvr_native/pvr_resource.h
+index 5e2c2279..0d0f62cb 100644
+--- a/src/gallium/drivers/pvr_native/pvr_resource.h
++++ b/src/gallium/drivers/pvr_native/pvr_resource.h
+@@ -73,6 +73,13 @@ struct pvr_resource {
+    /* The draw path's render sequence number of the last render that used this resource (0:
+     * none). A CPU map waits only for a render that uses the resource. */
+    uint32_t render_seq;
++
++   /* Content version: bumped by every GPU render into this resource and by every CPU write
++    * through a transfer map. Lets pvr_generate_mipmap() skip a chain that is already valid for
++    * the current contents (the app regenerates mips every frame in some scenes). */
++   uint32_t write_seq;
++   bool mips_valid;
++   uint32_t mips_write_seq;
+ };
+ 
+ struct pipe_resource *pvr_resource_create(struct pipe_screen *pscreen,
+-- 
+2.47.3
+
