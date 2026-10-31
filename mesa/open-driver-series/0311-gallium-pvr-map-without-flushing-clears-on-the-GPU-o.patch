@@ -1,0 +1,197 @@
+From 95099c573c523bfe151c9845ec6139e2ed64735c Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 02:48:51 +0800
+Subject: [PATCH 311/314] gallium/pvr: map without flushing, clears on the GPU
+ only
+
+- Resources carry the sequence number of the last render that used them;
+  a CPU map submits the open render only when that render uses the
+  resource, and never for an unsynchronized map. Every map used to
+  submit and wait, which split frames into many renders.
+- A full colour clear opens a render and becomes its background object,
+  and the CPU no longer fills the target as well; a render with a clear
+  and no draws is submitted (it is where the clear happens).
+
+glmark2-es2 off-screen 410 -> 491.
+---
+ src/gallium/drivers/pvr_native/pvr_context.c  | 17 +++++++---
+ src/gallium/drivers/pvr_native/pvr_draw.c     | 33 +++++++++++++++----
+ src/gallium/drivers/pvr_native/pvr_draw.h     |  6 +++-
+ src/gallium/drivers/pvr_native/pvr_resource.h |  4 +++
+ 4 files changed, 47 insertions(+), 13 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_context.c b/src/gallium/drivers/pvr_native/pvr_context.c
+index 98d44faa..21f354be 100644
+--- a/src/gallium/drivers/pvr_native/pvr_context.c
++++ b/src/gallium/drivers/pvr_native/pvr_context.c
+@@ -34,9 +34,12 @@ pvr_transfer_map(struct pipe_context *pctx, struct pipe_resource *pres,
+                  unsigned level, unsigned usage, const struct pipe_box *box,
+                  struct pipe_transfer **out_transfer)
+ {
+-   pvr_draw_flush(pvr_context(pctx));
+    struct pvr_screen *screen = pvr_screen(pctx->screen);
+    struct pvr_resource *res = pvr_resource(pres);
++   /* Submit the open render only if it uses this resource (renders are waited for when
++    * submitted, so nothing older is in flight). */
++   if (!(usage & PIPE_MAP_UNSYNCHRONIZED) && pvr_draw_resource_busy(pvr_context(pctx), res))
++      pvr_draw_flush(pvr_context(pctx));
+    struct pvr_transfer *trans;
+    uint64_t offset;
+ 
+@@ -564,12 +567,16 @@ pvr_clear(struct pipe_context *pctx, unsigned buffers, uint32_t color_clear_mask
+          return;
+    }
+ 
+-   if ((buffers & PIPE_CLEAR_COLOR0) && (color_clear_mask & 0xf) == 0xf && scissor_state == NULL)
+-      pvr_draw_note_clear(ctx, color);
+-   else
++   /* A full colour clear of buffer 0 becomes the render's background object; then there is
++    * nothing for the CPU to fill for it. */
++   bool gpu_cleared = false;
++   if ((buffers & PIPE_CLEAR_COLOR0) && (color_clear_mask & 0xf) == 0xf && scissor_state == NULL &&
++       ctx->fb.nr_cbufs == 1)
++      gpu_cleared = pvr_draw_note_clear(ctx, color);
++   if (!gpu_cleared)
+       pvr_draw_flush(ctx);
+    for (unsigned i = 0; i < ctx->fb.nr_cbufs; i++) {
+-      if ((buffers & (PIPE_CLEAR_COLOR0 << i)) == 0)
++      if ((buffers & (PIPE_CLEAR_COLOR0 << i)) == 0 || (i == 0 && gpu_cleared))
+          continue;
+ 
+       if (ctx->fb.cbufs[i].texture == NULL)
+diff --git a/src/gallium/drivers/pvr_native/pvr_draw.c b/src/gallium/drivers/pvr_native/pvr_draw.c
+index b458cc42..8d15d175 100644
+--- a/src/gallium/drivers/pvr_native/pvr_draw.c
++++ b/src/gallium/drivers/pvr_native/pvr_draw.c
+@@ -81,8 +81,9 @@ struct pvr_draw_state {
+    struct pvr_bo bct_bo;
+    uint64_t bct_addr;
+ 
+-   /* The open render. */
++   /* The open render, and its sequence number (resources it uses carry it). */
+    bool open;
++   uint32_t seq;
+    unsigned ndraws;
+    struct pipe_resource *rt;
+    uint32_t rt_w, rt_h;
+@@ -417,7 +418,9 @@ draw_tex_binding(struct pvr_context *ctx, unsigned stage, unsigned u, uint32_t *
+        (view->target != PIPE_TEXTURE_2D && view->target != PIPE_TEXTURE_RECT) ||
+        !pvr_format_layout_from_pipe(view->format, &layout))
+       return false;
+-   const struct pvr_resource *res = pvr_resource(view->texture);
++   struct pvr_resource *res = pvr_resource(view->texture);
++   if (ctx->draw != NULL)
++      res->render_seq = ctx->draw->seq;
+    const unsigned char view_swz[4] = { view->swizzle_r, view->swizzle_g, view->swizzle_b,
+                                        view->swizzle_a };
+    struct pvr_tex_desc tex = {
+@@ -679,6 +682,7 @@ draw_vertex_program(struct pvr_context *ctx, struct pvr_draw_state *d, struct pv
+          return false;
+       vb_addr[el->vertex_buffer_index] =
+          pvr_resource(vb->buffer.resource)->dev_addr + vb->buffer_offset;
++      pvr_resource(vb->buffer.resource)->render_seq = d->seq;
+       vb_stride[el->vertex_buffer_index] = el->src_stride;
+       dmas[i] = (struct pvr_pds_vertex_dma){
+          .offset = el->src_offset,
+@@ -769,6 +773,8 @@ draw_open(struct pvr_context *ctx, struct pvr_draw_state *d, struct pipe_resourc
+    d->pds.used = 0;
+    pvr_csb_init(&d->ctrl, d->ctrl_bo.map, d->ctrl_bo.size, PVR_CSB_LINK_DWORDS);
+    pipe_resource_reference(&d->rt, rt);
++   d->seq++;
++   pvr_resource(rt)->render_seq = d->seq;
+    d->rt_w = w;
+    d->rt_h = h;
+    d->ndraws = 0;
+@@ -934,6 +940,7 @@ pvr_draw_3d(struct pvr_context *ctx, const struct pipe_draw_info *info,
+          memcpy(p, (const uint8_t *)info->index.user + draws[0].start * info->index_size,
+                 draws[0].count * info->index_size);
+       } else {
++         pvr_resource(info->index.resource)->render_seq = d->seq;
+          idx_addr = pvr_resource(info->index.resource)->dev_addr +
+                     (uint64_t)draws[0].start * info->index_size;
+       }
+@@ -974,22 +981,33 @@ pvr_draw_3d(struct pvr_context *ctx, const struct pipe_draw_info *info,
+    return true;
+ }
+ 
+-void
++bool
+ pvr_draw_note_clear(struct pvr_context *ctx, const union pipe_color_union *color)
+ {
+    struct pvr_draw_state *d = ctx->draw;
+-   if (ctx->fb.nr_cbufs == 0)
+-      return;
++   if (ctx->fb.nr_cbufs == 0 || ctx->fb.cbufs[0].texture == NULL ||
++       !draw_format_ok(ctx->fb.cbufs[0].format))
++      return false;
+    if (d == NULL) {
+       ctx->draw = d = calloc(1, sizeof(struct pvr_draw_state));
+       if (d == NULL)
+-         return;
++         return false;
+    }
+    /* A clear after draws starts a new render. */
+    if (d->open && d->ndraws)
+       pvr_draw_flush(ctx);
++   if (!d->open && (!draw_init(ctx, d) ||
++                    !draw_open(ctx, d, ctx->fb.cbufs[0].texture, ctx->fb.width, ctx->fb.height)))
++      return false;
+    d->clear_valid = true;
+    d->clear_color = draw_pack_color(ctx->fb.cbufs[0].format, color);
++   return true;
++}
++
++bool
++pvr_draw_resource_busy(struct pvr_context *ctx, const struct pvr_resource *res)
++{
++   return ctx->draw != NULL && ctx->draw->open && res->render_seq == ctx->draw->seq;
+ }
+ 
+ void
+@@ -1000,7 +1018,8 @@ pvr_draw_flush(struct pvr_context *ctx)
+    if (d == NULL || !d->open)
+       return;
+    d->open = false;
+-   if (d->ndraws == 0)
++   /* A recorded clear is a render even without draws: it is the only place the clear happens. */
++   if (d->ndraws == 0 && !d->clear_valid)
+       goto done;
+ 
+    struct pvr_resource *rt = pvr_resource(d->rt);
+diff --git a/src/gallium/drivers/pvr_native/pvr_draw.h b/src/gallium/drivers/pvr_native/pvr_draw.h
+index 8df27bcd..da091726 100644
+--- a/src/gallium/drivers/pvr_native/pvr_draw.h
++++ b/src/gallium/drivers/pvr_native/pvr_draw.h
+@@ -22,9 +22,13 @@ bool pvr_draw_3d(struct pvr_context *ctx, const struct pipe_draw_info *info,
+ /* Submit the open render, if any. */
+ void pvr_draw_flush(struct pvr_context *ctx);
+ /* A colour clear of cbuf 0: the next render's background object writes this colour. */
+-void pvr_draw_note_clear(struct pvr_context *ctx, const union pipe_color_union *color);
++bool pvr_draw_note_clear(struct pvr_context *ctx, const union pipe_color_union *color);
+ void pvr_draw_destroy(struct pvr_context *ctx);
+ 
++/* Whether the open render uses this resource, so a CPU access has to submit it first. */
++struct pvr_resource;
++bool pvr_draw_resource_busy(struct pvr_context *ctx, const struct pvr_resource *res);
++
+ /* Whether a sampler view of this format has a texture state layout. */
+ bool pvr_draw_texture_format_supported(enum pipe_format format);
+ 
+diff --git a/src/gallium/drivers/pvr_native/pvr_resource.h b/src/gallium/drivers/pvr_native/pvr_resource.h
+index bac5b415..07b5f513 100644
+--- a/src/gallium/drivers/pvr_native/pvr_resource.h
++++ b/src/gallium/drivers/pvr_native/pvr_resource.h
+@@ -32,6 +32,10 @@ struct pvr_resource {
+ 
+    /* Bytes between rows, for the linear layout. */
+    uint32_t stride;
++
++   /* The draw path's render sequence number of the last render that used this resource (0:
++    * none). A CPU map waits only for a render that uses the resource. */
++   uint32_t render_seq;
+ };
+ 
+ struct pipe_resource *pvr_resource_create(struct pipe_screen *pscreen,
+-- 
+2.47.3
+

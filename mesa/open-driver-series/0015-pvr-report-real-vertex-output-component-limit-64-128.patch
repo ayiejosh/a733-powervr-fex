@@ -1,7 +1,7 @@
-From f225ef5745cf376cf73b59be0c0ab6f06ffcc806 Mon Sep 17 00:00:00 2001
+From c3f466bbd8681b9104524458835df4542e35644c Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Thu, 8 Oct 2026 05:29:45 +0800
-Subject: [PATCH 15/43] pvr: report real vertex output component limit (64 ->
+Subject: [PATCH 015/294] pvr: report real vertex output component limit (64 ->
  128), probed not assumed
 
 maxVertexOutputComponents was 64 - the Vulkan minimum, with no backing constant - while
@@ -29,7 +29,7 @@ PASS; glmark2 --validate still 0 failures / 27 pass.
  3 files changed, 32 insertions(+), 5 deletions(-)
 
 diff --git a/src/imagination/vulkan/pvr_physical_device.c b/src/imagination/vulkan/pvr_physical_device.c
-index 86617f5..96ecacd 100644
+index 86617f5a..96ecacd5 100644
 --- a/src/imagination/vulkan/pvr_physical_device.c
 +++ b/src/imagination/vulkan/pvr_physical_device.c
 @@ -784,7 +784,11 @@ static bool pvr_physical_device_get_properties(
@@ -46,7 +46,7 @@ index 86617f5..96ecacd 100644
        /* Tessellation Limits */
        /* Requires tessellationShader */
 diff --git a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c
-index c9a6c15..e0d90ba 100644
+index c9a6c155..e0d90bad 100644
 --- a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c
 +++ b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c
 @@ -36,6 +36,7 @@
@@ -80,7 +80,7 @@ index c9a6c15..e0d90ba 100644
  
     /* Returns VK_ERROR_OUT_OF_DEVICE_MEMORY to match pvrsrv. */
 diff --git a/src/vulkan/wsi/wsi_common_x11.c b/src/vulkan/wsi/wsi_common_x11.c
-index e2e6ef8..ffad5ce 100644
+index e2e6ef8a..ffad5cee 100644
 --- a/src/vulkan/wsi/wsi_common_x11.c
 +++ b/src/vulkan/wsi/wsi_common_x11.c
 @@ -21,6 +21,7 @@
@@ -113,3 +113,6 @@ index e2e6ef8..ffad5ce 100644
  #endif
  
     return result;
+-- 
+2.47.3
+

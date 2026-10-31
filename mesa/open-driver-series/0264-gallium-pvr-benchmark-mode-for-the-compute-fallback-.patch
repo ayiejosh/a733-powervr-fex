@@ -1,7 +1,7 @@
-From 0fc2f88ba59932d0550423b65f600724e22cc1ce Mon Sep 17 00:00:00 2001
+From 3dc779b250c3d3cf5fc88d8cc3b03e7a1ad9f050 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Mon, 26 Oct 2026 17:42:11 +0800
-Subject: [PATCH 264/269] gallium/pvr: benchmark mode for the compute-fallback
+Subject: [PATCH 264/294] gallium/pvr: benchmark mode for the compute-fallback
  draw path (PVR_PROBE_COMPUTE_BENCH)
 
 Adds a benchmark to the probe that renders through the driver's pipe_context API and measures the full

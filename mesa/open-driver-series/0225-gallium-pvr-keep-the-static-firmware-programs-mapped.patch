@@ -1,7 +1,7 @@
-From 0edc1e4edd6856918f866d8cf3e8a56c8911db88 Mon Sep 17 00:00:00 2001
+From 7914958b3cf23bf0a3e2c99890edcbef34cfbaa7 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sun, 25 Oct 2026 01:09:47 +0800
-Subject: [PATCH 225/269] gallium/pvr: keep the static firmware programs mapped
+Subject: [PATCH 225/294] gallium/pvr: keep the static firmware programs mapped
  - the fault was the probe freeing them
 
 The round-8 fault address was exactly the PDS heap base, and the kernel's static data areas say

@@ -1,7 +1,7 @@
-From 98be6a3401832089067c924b917df3bd83825d6a Mon Sep 17 00:00:00 2001
+From 2161c6fc707e1d5727162f3562f31f3ad7578d50 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Thu, 8 Oct 2026 04:19:05 +0800
-Subject: [PATCH 13/43] kopper: add SWAP_TIMING instrumentation; find the
+Subject: [PATCH 013/294] kopper: add SWAP_TIMING instrumentation; find the
  windowed cost is in the client's draw path
 
 Instrumented kopperSwapBuffersWithDamage to report the frame period and the time spent
@@ -27,7 +27,7 @@ failures / 27 pass.
  1 file changed, 26 insertions(+)
 
 diff --git a/src/gallium/frontends/dri/kopper.c b/src/gallium/frontends/dri/kopper.c
-index c565d77..09f79d4 100644
+index c565d773..09f79d44 100644
 --- a/src/gallium/frontends/dri/kopper.c
 +++ b/src/gallium/frontends/dri/kopper.c
 @@ -522,6 +522,15 @@ kopper_destroy_drawable(struct dri_drawable *drawable)
@@ -77,3 +77,6 @@ index c565d77..09f79d4 100644
     return 0;
  }
  
+-- 
+2.47.3
+

@@ -1,7 +1,7 @@
-From 3ea2916ad9aef33974922c38b70075748f77756d Mon Sep 17 00:00:00 2001
+From 070558011083322410059fa86f0caa4020946f35 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sat, 10 Oct 2026 19:41:38 +0800
-Subject: [PATCH 69/98] pvr: don't wait for the previous submit's jobs in
+Subject: [PATCH 069/294] pvr: don't wait for the previous submit's jobs in
  vkQueueSubmit
 
 pvr_clear_last_submits_syncs() CPU-waited for and destroyed the job
@@ -29,7 +29,7 @@ weston-simple-egl + vkcube: OK.
  1 file changed, 12 insertions(+), 15 deletions(-)
 
 diff --git a/src/imagination/vulkan/pvr_arch_queue.c b/src/imagination/vulkan/pvr_arch_queue.c
-index 2664cfa..42aeb84 100644
+index 2664cfa7..42aeb84f 100644
 --- a/src/imagination/vulkan/pvr_arch_queue.c
 +++ b/src/imagination/vulkan/pvr_arch_queue.c
 @@ -922,9 +922,17 @@ static VkResult pvr_process_cmd_buffer(struct pvr_device *device,

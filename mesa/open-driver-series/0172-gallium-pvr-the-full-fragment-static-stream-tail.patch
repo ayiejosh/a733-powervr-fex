@@ -1,7 +1,7 @@
-From 3cb6f429936b6a282f41fa136a8b8c5ec01b5a8d Mon Sep 17 00:00:00 2001
+From 03d32cd7df65d470702d8b47c0ac280e879b9f0d Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sun, 18 Oct 2026 06:50:52 +0800
-Subject: [PATCH 172/269] gallium/pvr: the full fragment static stream tail
+Subject: [PATCH 172/294] gallium/pvr: the full fragment static stream tail
 
 pvr_frag_km_stream_pds_eot_data_addr_offset() has thirteen tail terms, not the four I read (including
 a second ROGUE_NUM_CR_PDS_BGRND_WORDS block, the USC clear-register block, USC_PIXEL_OUTPUT_CTRL, four

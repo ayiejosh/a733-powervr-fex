@@ -1,0 +1,150 @@
+From db97bcb616d09d4b535d848e8c5b2b413d62dd20 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 00:32:48 +0800
+Subject: [PATCH 302/303] wsi/x11: fix the cached surface geometry poll
+
+The surface struct was not zeroed, so the cache flags started as garbage.
+The first call also consumed the reply it then polled again, and a probe
+that was not ready yet was discarded and re-issued every call, so a slow X
+server never refreshed the cache. Keep one request in flight until it
+completes, and wait for it only to set up the cache.
+---
+ src/vulkan/wsi/wsi_common_x11.c | 82 ++++++++++-----------------------
+ 1 file changed, 24 insertions(+), 58 deletions(-)
+
+diff --git a/src/vulkan/wsi/wsi_common_x11.c b/src/vulkan/wsi/wsi_common_x11.c
+index 379c4090..060e7beb 100644
+--- a/src/vulkan/wsi/wsi_common_x11.c
++++ b/src/vulkan/wsi/wsi_common_x11.c
+@@ -21,7 +21,6 @@
+  * IN THE SOFTWARE.
+  */
+ 
+-#include <time.h>
+ #include <X11/Xlib-xcb.h>
+ #include <X11/xshmfence.h>
+ #define XK_MISCELLANY
+@@ -794,59 +793,38 @@ x11_surface_get_capabilities(VkIcdSurfaceBase *icd_surface,
+    struct wsi_x11_vk_surface *surface = (struct wsi_x11_vk_surface*)icd_surface;
+    struct wsi_x11_connection *wsi_conn =
+       wsi_x11_get_connection(wsi_device, conn);
+-   xcb_get_geometry_cookie_t geom_cookie;
+-   xcb_generic_error_t *err;
++   xcb_generic_error_t *err = NULL;
+    xcb_get_geometry_reply_t *geom;
+ 
+-   struct timespec _c0, _c1; int _ct = 0;
+-   if (getenv("WSICAP_TRACE")) { clock_gettime(CLOCK_MONOTONIC, &_c0); _ct = 1; }
++   /* Keep one geometry request in flight, picked up by this or a later call. */
++   if (!surface->geom_pending) {
++      surface->geom_seq = xcb_get_geometry(conn, window).sequence;
++      surface->geom_pending = true;
++   }
+ 
+-   /* Poll the request left in flight last time; never wait for the reply. */
+-   if (surface->geom_pending) {
++   /* Poll it; wait for it only to establish the cache on the first call. */
++   {
+       void *reply = NULL;
+-      if (xcb_poll_for_reply(conn, surface->geom_seq, &reply, &err)) {
+-         geom = reply;
+-         if (geom) {
+-            surface->geom_w = geom->width;
+-            surface->geom_h = geom->height;
+-            surface->geom_valid = true;
+-         }
+-         free(err);
+-         free(geom);
+-         surface->geom_pending = false;
++      if (surface->geom_valid) {
++         if (xcb_poll_for_reply(conn, surface->geom_seq, &reply, &err))
++            surface->geom_pending = false;
+       } else {
+-         /* Not ready yet - drop it and use the cache below. */
+-         xcb_discard_reply(conn, surface->geom_seq);
++         /* First call for this surface: establish the cache once, blocking. */
++         reply = xcb_wait_for_reply(conn, surface->geom_seq, &err);
+          surface->geom_pending = false;
+       }
+-   }
+-
+-   /* Queue the next probe for the following call. */
+-   geom_cookie = xcb_get_geometry(conn, window);
+-   surface->geom_seq = geom_cookie.sequence;
+-   surface->geom_pending = true;
+-
+-   if (!surface->geom_valid) {
+-      /* First call for this surface: establish the cache once, blocking. */
+-      geom = xcb_get_geometry_reply(conn, geom_cookie, &err);
+-      if (!geom)
+-         return VK_ERROR_SURFACE_LOST_KHR;
+-      surface->geom_w = geom->width;
+-      surface->geom_h = geom->height;
+-      surface->geom_valid = true;
++      geom = reply;
++      if (geom) {
++         surface->geom_w = geom->width;
++         surface->geom_h = geom->height;
++         surface->geom_valid = true;
++      }
+       free(err);
+       free(geom);
+    }
+ 
+-   if (_ct) {
+-      static unsigned long _n; static double _tot, _max;
+-      clock_gettime(CLOCK_MONOTONIC, &_c1);
+-      double ms = (_c1.tv_sec-_c0.tv_sec)*1000.0 + (_c1.tv_nsec-_c0.tv_nsec)/1e6;
+-      _n++; _tot += ms; if (ms > _max) _max = ms;
+-      if (_n % 50 == 0)
+-         fprintf(stderr, "[wc] %lu GetSurfaceCapabilities calls, total %.1f ms, avg %.3f ms, max %.2f ms\n",
+-                 _n, _tot, _tot/_n, _max);
+-   }
++   if (!surface->geom_valid)
++      return VK_ERROR_SURFACE_LOST_KHR;
+ 
+    {
+       VkExtent2D extent = { surface->geom_w, surface->geom_h };
+@@ -1224,7 +1202,7 @@ wsi_CreateXcbSurfaceKHR(VkInstance _instance,
+    if (!visual)
+       return VK_ERROR_OUT_OF_HOST_MEMORY;
+ 
+-   surface = vk_alloc2(&instance->alloc, pAllocator, sizeof(struct wsi_x11_vk_surface), 8,
++   surface = vk_zalloc2(&instance->alloc, pAllocator, sizeof(struct wsi_x11_vk_surface), 8,
+                        VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+    if (surface == NULL)
+       return VK_ERROR_OUT_OF_HOST_MEMORY;
+@@ -1256,7 +1234,7 @@ wsi_CreateXlibSurfaceKHR(VkInstance _instance,
+    if (!visual)
+       return VK_ERROR_OUT_OF_HOST_MEMORY;
+ 
+-   surface = vk_alloc2(&instance->alloc, pAllocator, sizeof(struct wsi_x11_vk_surface), 8,
++   surface = vk_zalloc2(&instance->alloc, pAllocator, sizeof(struct wsi_x11_vk_surface), 8,
+                        VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+    if (surface == NULL)
+       return VK_ERROR_OUT_OF_HOST_MEMORY;
+@@ -2270,20 +2248,8 @@ x11_acquire_next_image(struct wsi_swapchain *wsi_chain,
+    assert(*image_index < chain->base.image_count);
+ #ifdef HAVE_X11_DRM
+    if (chain->images[*image_index].shm_fence &&
+-       !chain->base.image_info.explicit_sync) {
+-      struct timespec _f0, _f1; int _t = 0;
+-      if (getenv("X11ACQ_TRACE")) { clock_gettime(CLOCK_MONOTONIC, &_f0); _t = 1; }
++       !chain->base.image_info.explicit_sync)
+       xshmfence_await(chain->images[*image_index].shm_fence);
+-      if (_t) {
+-         static unsigned long _n; static double _tot, _max;
+-         clock_gettime(CLOCK_MONOTONIC, &_f1);
+-         double ms = (_f1.tv_sec-_f0.tv_sec)*1000.0 + (_f1.tv_nsec-_f0.tv_nsec)/1e6;
+-         _n++; _tot += ms; if (ms > _max) _max = ms;
+-         if (_n % 50 == 0)
+-            fprintf(stderr, "[xa] %lu present-completion waits, total %.1f ms, avg %.3f ms, max %.2f ms\n",
+-                    _n, _tot, _tot/_n, _max);
+-      }
+-   }
+ #endif
+ 
+    return result;
+-- 
+2.47.3
+

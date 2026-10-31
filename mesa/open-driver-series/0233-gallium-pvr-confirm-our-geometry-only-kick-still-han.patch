@@ -1,7 +1,7 @@
-From 46e407d26728b1646d7ab98574c52fa92e5673c9 Mon Sep 17 00:00:00 2001
+From 18531742b95650ce7d678a917e4ec51fb08abe3a Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sun, 25 Oct 2026 04:32:26 +0800
-Subject: [PATCH 233/269] gallium/pvr: confirm our geometry-only kick still
+Subject: [PATCH 233/294] gallium/pvr: confirm our geometry-only kick still
  hangs; reference SIZEINFO values do not help
 
 Round-twenty checks against the round-19 A/B baseline (Vulkan geometry-only reaches "TA finished",

@@ -1,7 +1,7 @@
-From a6a4d7ddf8f0726314c9ee73eb9ef9cddb9e8474 Mon Sep 17 00:00:00 2001
+From 4762191c27d3987bb947b5cce3d36c8d30800d3e Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Fri, 16 Oct 2026 16:34:10 +0800
-Subject: [PATCH 130/269] gallium/pvr: create a kernel GPU context - the first
+Subject: [PATCH 130/294] gallium/pvr: create a kernel GPU context - the first
  GPU-path component
 
 The driver now holds a render context the kernel and the firmware both accept:

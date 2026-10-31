@@ -1,0 +1,27 @@
+--- /tmp/pvr_ccb.c.bak	2026-10-31 10:01:38.538632024 +0800
++++ pvr_ccb.c	2026-10-31 10:01:38.578632186 +0800
+@@ -149,6 +149,24 @@
+ 		pvr_free_list_process_grow_req(pvr_dev, &cmd->cmd_data.cmd_free_list_gs);
+ 		break;
+ 
++	case ROGUE_FWIF_FWCCB_CMD_CONTEXT_RESET_NOTIFICATION: {
++		struct rogue_fwif_fwccb_cmd_context_reset_data *d =
++			&cmd->cmd_data.cmd_context_reset_notification;
++
++		drm_err(from_pvr_device(pvr_dev),
++			"CTXRESET ctx=%u reason=%u dm=%u job=%u flags=0x%x pc=0x%llx fault=0x%llx\n",
++			d->server_common_context_id, (u32)d->reset_reason, d->dm,
++			d->reset_job_ref, d->flags,
++			(unsigned long long)d->pc_address,
++			(unsigned long long)d->fault_address);
++		break;
++	}
++
++	case ROGUE_FWIF_FWCCB_CMD_CONTEXT_FW_PF_NOTIFICATION:
++		drm_err(from_pvr_device(pvr_dev), "FWPF fault=0x%llx\n",
++			(unsigned long long)cmd->cmd_data.cmd_fw_pagefault.fw_fault_addr);
++		break;
++
+ 	default:
+ 		drm_info(from_pvr_device(pvr_dev), "Received unknown FWCCB command %x\n",
+ 			 cmd->cmd_type);

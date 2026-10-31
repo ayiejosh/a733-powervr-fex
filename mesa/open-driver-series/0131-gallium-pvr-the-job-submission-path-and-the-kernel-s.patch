@@ -1,7 +1,7 @@
-From 08d337ad357c404deeea89cc335e20509e78f424 Mon Sep 17 00:00:00 2001
+From 5d3b708fe7378e26ca0da6d9424871655f88744b Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Fri, 16 Oct 2026 16:42:33 +0800
-Subject: [PATCH 131/269] gallium/pvr: the job submission path, and the
+Subject: [PATCH 131/294] gallium/pvr: the job submission path, and the
  kernel's requirement for a stream
 
 SUBMIT_JOBS plumbing: a drm_pvr_job carrying the context handle, job type, and the DEVICE

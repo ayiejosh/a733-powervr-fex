@@ -1,7 +1,7 @@
-From eeb533a2ba55b1c6379551e48194b5317f6071b0 Mon Sep 17 00:00:00 2001
+From 9403cc4910211cb00453d83eea3ff6e064bafcef Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Thu, 8 Oct 2026 04:42:29 +0800
-Subject: [PATCH 14/43] kopper: stop taking the legacy X11 drawable-info path
+Subject: [PATCH 014/294] kopper: stop taking the legacy X11 drawable-info path
  (removes a 21.7 ms sync round-trip)
 
 kopper_update_drawable_info() required screen->fd == -1 to take the kopper fast path. On this
@@ -28,7 +28,7 @@ Also adds env-gated XGEOM_TRACE (platform_x11.c) and KOpper_BRANCH (kopper.c) in
  4 files changed, 50 insertions(+), 1 deletion(-)
 
 diff --git a/src/egl/drivers/dri2/platform_x11.c b/src/egl/drivers/dri2/platform_x11.c
-index a31a9d3..f5d4cf0 100644
+index a31a9d35..f5d4cf08 100644
 --- a/src/egl/drivers/dri2/platform_x11.c
 +++ b/src/egl/drivers/dri2/platform_x11.c
 @@ -25,6 +25,7 @@
@@ -61,7 +61,7 @@ index a31a9d3..f5d4cf0 100644
        return false;
  
 diff --git a/src/gallium/drivers/zink/zink_batch.c b/src/gallium/drivers/zink/zink_batch.c
-index 974e7c7..3a4f17b 100644
+index 974e7c7e..3a4f17bf 100644
 --- a/src/gallium/drivers/zink/zink_batch.c
 +++ b/src/gallium/drivers/zink/zink_batch.c
 @@ -1230,6 +1230,8 @@ static void
@@ -90,7 +90,7 @@ index 974e7c7..3a4f17b 100644
  
  void
 diff --git a/src/gallium/drivers/zink/zink_kopper.c b/src/gallium/drivers/zink/zink_kopper.c
-index abe6625..7967206 100644
+index abe66254..7967206c 100644
 --- a/src/gallium/drivers/zink/zink_kopper.c
 +++ b/src/gallium/drivers/zink/zink_kopper.c
 @@ -648,6 +648,19 @@ kopper_acquire(struct zink_screen *screen, struct zink_resource *res, uint64_t t
@@ -114,7 +114,7 @@ index abe6625..7967206 100644
        zink_kopper_update_last_written(res);
     cdt->swapchain->images[res->obj->dt_idx].acquired = NULL;
 diff --git a/src/gallium/frontends/dri/kopper.c b/src/gallium/frontends/dri/kopper.c
-index 09f79d4..a8e58aa 100644
+index 09f79d44..a8e58aaa 100644
 --- a/src/gallium/frontends/dri/kopper.c
 +++ b/src/gallium/frontends/dri/kopper.c
 @@ -364,7 +364,20 @@ kopper_update_drawable_info(struct dri_drawable *drawable)
@@ -139,3 +139,6 @@ index 09f79d4..a8e58aa 100644
     if (drawable->info.bos.sType == VK_STRUCTURE_TYPE_XCB_SURFACE_CREATE_INFO_KHR && do_kopper_update)
        zink_kopper_update(kopper_get_zink_screen(screen->base.screen), ptex, &drawable->w, &drawable->h);
     else
+-- 
+2.47.3
+

@@ -1,7 +1,7 @@
-From 1e2b64c4152c43aee1fb0e3efe53fddcb2c5e8b0 Mon Sep 17 00:00:00 2001
+From 8d41ae22cd07ca72ffbaa71f26287fc604fc2335 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Thu, 8 Oct 2026 11:09:59 +0800
-Subject: [PATCH 23/43] pvr: storage buffer limit was a floor too (16 -> 96),
+Subject: [PATCH 023/294] pvr: storage buffer limit was a floor too (16 -> 96),
  probed
 
 maxPerStageDescriptorStorageBuffers reported 16. Probed with a new harness
@@ -21,7 +21,7 @@ mrt, varyings, inatt, ubos, stgbuf, linfilter all PASS.
  1 file changed, 4 insertions(+), 2 deletions(-)
 
 diff --git a/src/imagination/vulkan/pvr_physical_device.c b/src/imagination/vulkan/pvr_physical_device.c
-index 0f67470..9d70109 100644
+index 0f674706..9d70109e 100644
 --- a/src/imagination/vulkan/pvr_physical_device.c
 +++ b/src/imagination/vulkan/pvr_physical_device.c
 @@ -761,7 +761,9 @@ static bool pvr_physical_device_get_properties(
@@ -44,3 +44,6 @@ index 0f67470..9d70109 100644
        .maxDescriptorSetStorageBuffersDynamic = 4U,
        .maxDescriptorSetSampledImages = 3U * 128U,
        .maxDescriptorSetStorageImages = 3U * 32U,
+-- 
+2.47.3
+

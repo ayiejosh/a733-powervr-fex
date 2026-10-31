@@ -1,0 +1,55 @@
+From a4ed3d27dfd913c7cc3445d29740d6502564bd6d Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Tue, 27 Oct 2026 13:30:50 +0800
+Subject: [PATCH 293/294] fix(tf-port): pass the vs flag to
+ pvr_pipeline_destroy_shader_data at the perf-branch call sites
+
+(cherry picked from commit 509eaaf7e204048845874fd6e694c2fe79eca6d4)
+---
+ src/imagination/vulkan/pvr_arch_pipeline.c | 9 +++++----
+ 1 file changed, 5 insertions(+), 4 deletions(-)
+
+diff --git a/src/imagination/vulkan/pvr_arch_pipeline.c b/src/imagination/vulkan/pvr_arch_pipeline.c
+index aa63eb45..a4d53b8e 100644
+--- a/src/imagination/vulkan/pvr_arch_pipeline.c
++++ b/src/imagination/vulkan/pvr_arch_pipeline.c
+@@ -1425,7 +1425,7 @@ pvr_destroy_alt_fragment_variant(struct pvr_device *const device,
+    vk_free2(&device->vk.alloc, allocator, alt->pds_fragment_program_buffer);
+    vk_free2(&device->vk.alloc, allocator, alt->pds_coeff_program_buffer);
+    pvr_bo_suballoc_free(alt->shader_bo);
+-   pvr_pipeline_destroy_shader_data(&gfx_pipeline->fs_data_alt);
++   pvr_pipeline_destroy_shader_data(&gfx_pipeline->fs_data_alt, false);
+    gfx_pipeline->has_alt_fs = false;
+ }
+ 
+@@ -3422,7 +3422,7 @@ err_free_coeff_program:
+ err_free_bo:
+    pvr_bo_suballoc_free(slot->shader_bo);
+ err_destroy_data:
+-   pvr_pipeline_destroy_shader_data(&gfx_pipeline->fs_data);
++   pvr_pipeline_destroy_shader_data(&gfx_pipeline->fs_data, false);
+ 
+ restore:
+    gfx_pipeline->fs_data = checked_data;
+@@ -3657,7 +3657,8 @@ pvr_graphics_pipeline_compile(struct pvr_device *const device,
+              !shader_data[stage].common.checks_versioned)
+             break;
+ 
+-         pvr_pipeline_destroy_shader_data(&shader_data[stage]);
++         pvr_pipeline_destroy_shader_data(&shader_data[stage],
++                                       stage == MESA_SHADER_VERTEX);
+          nir_shaders[stage] = unversioned_nir[stage];
+          shader_data[stage] = *unversioned_data[stage];
+          shader_data[stage].common.no_check_versioning = true;
+@@ -3690,7 +3691,7 @@ pvr_graphics_pipeline_compile(struct pvr_device *const device,
+        * context.
+        */
+       if (!alt_fs_shader)
+-         pvr_pipeline_destroy_shader_data(alt_fs_data);
++         pvr_pipeline_destroy_shader_data(alt_fs_data, false);
+    }
+ 
+    if (!pCreateInfo->renderPass)
+-- 
+2.47.3
+

@@ -1,0 +1,62 @@
+From e1a5e196754c33e828c6354f342d4f26017c13eb Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Tue, 27 Oct 2026 15:08:36 +0800
+Subject: [PATCH 294/294] fix(tf-port): initialise the dummy RT dataset after
+ the dataset cache and finish it before the cache
+
+The MR's geometry-only-jobs device init creates a dataset; with the perf branch's
+RT-dataset cache it must be initialised after pvr_rt_dataset_cache_init() and
+finished before pvr_rt_dataset_cache_finish(), otherwise device creation crashes
+in pvr_rt_dataset_cache_take() (this fix was in the validated working tree but
+was missed when the port patches were exported).
+---
+ src/imagination/vulkan/pvr_arch_device.c | 16 ++++++++++------
+ 1 file changed, 10 insertions(+), 6 deletions(-)
+
+diff --git a/src/imagination/vulkan/pvr_arch_device.c b/src/imagination/vulkan/pvr_arch_device.c
+index 8b3e0f89..ae120293 100644
+--- a/src/imagination/vulkan/pvr_arch_device.c
++++ b/src/imagination/vulkan/pvr_arch_device.c
+@@ -951,11 +951,6 @@ VkResult PVR_PER_ARCH(create_device)(struct pvr_physical_device *pdevice,
+    if (result != VK_SUCCESS)
+       goto err_pvr_robustness_buffer_finish;
+ 
+-   /* Render target state for geometry-only kicks outside a render pass. */
+-   result = pvr_device_dummy_rt_init(device);
+-   if (result != VK_SUCCESS)
+-      goto err_pvr_border_color_table_finish;
+-
+    /* Initialize GPU tracing infrastructure */
+    pvr_device_utrace_init(device);
+ 
+@@ -979,6 +974,15 @@ VkResult PVR_PER_ARCH(create_device)(struct pvr_physical_device *pdevice,
+    simple_mtx_init(&device->spm_eot_cache_mtx, mtx_plain);
+    device->spm_eot_cache = NULL;
+ 
++   /* Render target state for geometry-only kicks outside a render pass. This
++    * takes a dataset from the cache above, so it must follow its init.
++    */
++   result = pvr_device_dummy_rt_init(device);
++   if (result != VK_SUCCESS) {
++      pvr_rt_dataset_cache_finish(device);
++      goto err_pvr_border_color_table_finish;
++   }
++
+    *pDevice = pvr_device_to_handle(device);
+ 
+    return VK_SUCCESS;
+@@ -1076,10 +1080,10 @@ void PVR_PER_ARCH(destroy_device)(struct pvr_device *device,
+    simple_mtx_destroy(&device->rs_mtx);
+ 
+    /* After the render states above, which hand their datasets to the cache. */
++   pvr_device_dummy_rt_finish(device);
+    pvr_rt_dataset_cache_finish(device);
+    pvr_arch_mrt_load_op_cache_finish(device);
+    pvr_arch_spm_eot_cache_finish(device);
+-   pvr_device_dummy_rt_finish(device);
+    pvr_arch_border_color_table_finish(device);
+    pvr_robustness_buffer_finish(device);
+    pvr_spm_finish_scratch_buffer_store(device);
+-- 
+2.47.3
+

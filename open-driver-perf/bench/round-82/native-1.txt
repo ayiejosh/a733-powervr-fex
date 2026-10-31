@@ -1,0 +1,153 @@
+MESA: info: pvr: PowerVR B-Series BXM-4-64 (36.56.104.183), device_id 0x36104183, gpu_id 0x240038006800b7
+MESA: info: pvr: pvr_screen_create fd=5 -> PowerVR B-Series BXM-4-64 (36.56.104.183) (draw path: compute fallback until the 3D path is usable)
+MESA: info: pvr: static area heap 0 usage 1 offset 0x0 size 128
+MESA: info: pvr: static area heap 0 usage 3 offset 0x80 size 1024
+MESA: info: pvr: static area heap 1 usage 2 offset 0x0 size 128
+MESA: info: pvr: static area heap 1 usage 0 offset 0x80 size 128
+MESA: info: pvr: static area heap 2 usage 2 offset 0x0 size 128
+MESA: info: pvr: 6 heaps; general base 0x8000000000 size 137438953472 carveout 1152 usable 0x8000000480 (137438952320 bytes), page 4096, vm_context 1
+=======================================================
+    glmark2 2023.01
+=======================================================
+    OpenGL Information
+    GL_VENDOR:      Imagination Technologies
+    GL_RENDERER:    PowerVR B-Series BXM-4-64 (36.56.104.183)
+    GL_VERSION:     OpenGL ES 2.0 Mesa 26.3.0-devel (git-70bdb5a9a7)
+    Surface Config: buf=32 r=8 g=8 b=8 a=8 depth=32 stencil=0 samples=0
+    Surface Size:   800x600 windowed
+=======================================================
+MESA: info: pvr: static memory: YUV CSC table at general+0x80
+MESA: info: pvr: static memory: 12 bytes of firmware programs in 3 carveouts
+MESA: info: pvr: GPU context 1 (render), callstack 0x9ffe1c8000, VDM state 0x9ffe1ca000, GEOM state 0x9ffe1c9000, static state 192 bytes
+[build] use-vbo=false: FPS: 1229 FrameTime: 0.814 ms
+MESA: info: pvr: static memory: YUV CSC table at general+0x80
+MESA: info: pvr: static memory: 12 bytes of firmware programs in 3 carveouts
+MESA: info: pvr: GPU context 2 (render), callstack 0x9ffdd43000, VDM state 0x9ffdd45000, GEOM state 0x9ffdd44000, static state 192 bytes
+[build] use-vbo=true: FPS: 1313 FrameTime: 0.762 ms
+MESA: info: pvr: static memory: YUV CSC table at general+0x80
+MESA: info: pvr: static memory: 12 bytes of firmware programs in 3 carveouts
+MESA: info: pvr: GPU context 3 (render), callstack 0x9ffdd3e000, VDM state 0x9ffdd40000, GEOM state 0x9ffdd3f000, static state 192 bytes
+[texture] texture-filter=nearest: FPS: 1467 FrameTime: 0.682 ms
+MESA: info: pvr: static memory: YUV CSC table at general+0x80
+MESA: info: pvr: static memory: 12 bytes of firmware programs in 3 carveouts
+MESA: info: pvr: GPU context 4 (render), callstack 0x9ffdd39000, VDM state 0x9ffdd3b000, GEOM state 0x9ffdd3a000, static state 192 bytes
+[texture] texture-filter=linear: FPS: 1443 FrameTime: 0.693 ms
+MESA: info: pvr: static memory: YUV CSC table at general+0x80
+MESA: info: pvr: static memory: 12 bytes of firmware programs in 3 carveouts
+MESA: info: pvr: GPU context 5 (render), callstack 0x9ffd6b4000, VDM state 0x9ffd6b6000, GEOM state 0x9ffd6b5000, static state 192 bytes
+[texture] texture-filter=mipmap: FPS: 1493 FrameTime: 0.670 ms
+MESA: info: pvr: static memory: YUV CSC table at general+0x80
+MESA: info: pvr: static memory: 12 bytes of firmware programs in 3 carveouts
+MESA: info: pvr: GPU context 6 (render), callstack 0x9ffcfaf000, VDM state 0x9ffcfb1000, GEOM state 0x9ffcfb0000, static state 192 bytes
+[shading] shading=gouraud: FPS: 961 FrameTime: 1.042 ms
+MESA: info: pvr: static memory: YUV CSC table at general+0x80
+MESA: info: pvr: static memory: 12 bytes of firmware programs in 3 carveouts
+MESA: info: pvr: GPU context 7 (render), callstack 0x9ffcfaa000, VDM state 0x9ffcfac000, GEOM state 0x9ffcfab000, static state 192 bytes
+[shading] shading=blinn-phong-inf: FPS: 801 FrameTime: 1.250 ms
+MESA: info: pvr: static memory: YUV CSC table at general+0x80
+MESA: info: pvr: static memory: 12 bytes of firmware programs in 3 carveouts
+MESA: info: pvr: GPU context 8 (render), callstack 0x9ffcfa5000, VDM state 0x9ffcfa7000, GEOM state 0x9ffcfa6000, static state 192 bytes
+[shading] shading=phong: FPS: 653 FrameTime: 1.533 ms
+MESA: info: pvr: static memory: YUV CSC table at general+0x80
+MESA: info: pvr: static memory: 12 bytes of firmware programs in 3 carveouts
+MESA: info: pvr: GPU context 9 (render), callstack 0x9ffc31d000, VDM state 0x9ffc31f000, GEOM state 0x9ffc31e000, static state 192 bytes
+[shading] shading=cel: FPS: 528 FrameTime: 1.897 ms
+MESA: info: pvr: static memory: YUV CSC table at general+0x80
+MESA: info: pvr: static memory: 12 bytes of firmware programs in 3 carveouts
+MESA: info: pvr: GPU context 10 (render), callstack 0x9ffbf18000, VDM state 0x9ffbf1a000, GEOM state 0x9ffbf19000, static state 192 bytes
+[bump] bump-render=high-poly: FPS: 413 FrameTime: 2.423 ms
+MESA: info: pvr: static memory: YUV CSC table at general+0x80
+MESA: info: pvr: static memory: 12 bytes of firmware programs in 3 carveouts
+MESA: info: pvr: GPU context 11 (render), callstack 0x9ffb194000, VDM state 0x9ffb196000, GEOM state 0x9ffb195000, static state 192 bytes
+[bump] bump-render=normals: FPS: 1384 FrameTime: 0.723 ms
+MESA: info: pvr: static memory: YUV CSC table at general+0x80
+MESA: info: pvr: static memory: 12 bytes of firmware programs in 3 carveouts
+MESA: info: pvr: GPU context 12 (render), callstack 0x9ffad0f000, VDM state 0x9ffad11000, GEOM state 0x9ffad10000, static state 192 bytes
+[bump] bump-render=height: FPS: 1017 FrameTime: 0.983 ms
+MESA: info: pvr: static memory: YUV CSC table at general+0x80
+MESA: info: pvr: static memory: 12 bytes of firmware programs in 3 carveouts
+MESA: info: pvr: GPU context 13 (render), callstack 0x9ffa88a000, VDM state 0x9ffa88c000, GEOM state 0x9ffa88b000, static state 192 bytes
+[effect2d] kernel=0,1,0;1,-4,1;0,1,0;: FPS: 764 FrameTime: 1.310 ms
+MESA: info: pvr: static memory: YUV CSC table at general+0x80
+MESA: info: pvr: static memory: 12 bytes of firmware programs in 3 carveouts
+MESA: info: pvr: GPU context 14 (render), callstack 0x9ffa405000, VDM state 0x9ffa407000, GEOM state 0x9ffa406000, static state 192 bytes
+[effect2d] kernel=1,1,1,1,1;1,1,1,1,1;1,1,1,1,1;: FPS: 341 FrameTime: 2.939 ms
+MESA: info: pvr: static memory: YUV CSC table at general+0x80
+MESA: info: pvr: static memory: 12 bytes of firmware programs in 3 carveouts
+MESA: info: pvr: GPU context 15 (render), callstack 0x9ff9f80000, VDM state 0x9ff9f82000, GEOM state 0x9ff9f81000, static state 192 bytes
+[pulsar] light=false:quads=5:texture=false: FPS: 1377 FrameTime: 0.727 ms
+MESA: info: pvr: static memory: YUV CSC table at general+0x80
+MESA: info: pvr: static memory: 12 bytes of firmware programs in 3 carveouts
+MESA: info: pvr: GPU context 16 (render), callstack 0x9ff9afb000, VDM state 0x9ff9afd000, GEOM state 0x9ff9afc000, static state 192 bytes
+[desktop] blur-radius=5:effect=blur:passes=1:separable=true:windows=4: FPS: 120 FrameTime: 8.357 ms
+MESA: info: pvr: static memory: YUV CSC table at general+0x80
+MESA: info: pvr: static memory: 12 bytes of firmware programs in 3 carveouts
+MESA: info: pvr: GPU context 17 (render), callstack 0x9ff9676000, VDM state 0x9ff9678000, GEOM state 0x9ff9677000, static state 192 bytes
+[desktop] effect=shadow:windows=4: FPS: 456 FrameTime: 2.197 ms
+MESA: info: pvr: static memory: YUV CSC table at general+0x80
+MESA: info: pvr: static memory: 12 bytes of firmware programs in 3 carveouts
+MESA: info: pvr: GPU context 18 (render), callstack 0x9ff91f1000, VDM state 0x9ff91f3000, GEOM state 0x9ff91f2000, static state 192 bytes
+[buffer] columns=200:interleave=false:update-dispersion=0.9:update-fraction=0.5:update-method=map: FPS: 160 FrameTime: 6.263 ms
+MESA: info: pvr: static memory: YUV CSC table at general+0x80
+MESA: info: pvr: static memory: 12 bytes of firmware programs in 3 carveouts
+MESA: info: pvr: GPU context 19 (render), callstack 0x9ff8d6c000, VDM state 0x9ff8d6e000, GEOM state 0x9ff8d6d000, static state 192 bytes
+[buffer] columns=200:interleave=false:update-dispersion=0.9:update-fraction=0.5:update-method=subdata: FPS: 159 FrameTime: 6.324 ms
+MESA: info: pvr: static memory: YUV CSC table at general+0x80
+MESA: info: pvr: static memory: 12 bytes of firmware programs in 3 carveouts
+MESA: info: pvr: GPU context 20 (render), callstack 0x9ff88e7000, VDM state 0x9ff88e9000, GEOM state 0x9ff88e8000, static state 192 bytes
+[buffer] columns=200:interleave=true:update-dispersion=0.9:update-fraction=0.5:update-method=map: FPS: 233 FrameTime: 4.307 ms
+MESA: info: pvr: static memory: YUV CSC table at general+0x80
+MESA: info: pvr: static memory: 12 bytes of firmware programs in 3 carveouts
+MESA: info: pvr: GPU context 21 (render), callstack 0x9ff8462000, VDM state 0x9ff8464000, GEOM state 0x9ff8463000, static state 192 bytes
+[ideas] speed=duration: FPS: 1078 FrameTime: 0.928 ms
+MESA: info: pvr: static memory: YUV CSC table at general+0x80
+MESA: info: pvr: static memory: 12 bytes of firmware programs in 3 carveouts
+MESA: info: pvr: GPU context 22 (render), callstack 0x9ff7fdf000, VDM state 0x9ffcfa4000, GEOM state 0x9ffcfa2000, static state 192 bytes
+[jellyfish] <default>: FPS: 389 FrameTime: 2.571 ms
+MESA: info: pvr: static memory: YUV CSC table at general+0x80
+MESA: info: pvr: static memory: 12 bytes of firmware programs in 3 carveouts
+MESA: info: pvr: GPU context 23 (render), callstack 0x9ff7fca000, VDM state 0x9ff7fcc000, GEOM state 0x9ff7fcb000, static state 192 bytes
+[terrain] <default>: FPS: 20 FrameTime: 50.340 ms
+MESA: info: pvr: static memory: YUV CSC table at general+0x80
+MESA: info: pvr: static memory: 12 bytes of firmware programs in 3 carveouts
+MESA: info: pvr: GPU context 24 (render), callstack 0x9ff7fc5000, VDM state 0x9ff7fc7000, GEOM state 0x9ff7fc6000, static state 192 bytes
+[shadow] <default>: FPS: 390 FrameTime: 2.568 ms
+MESA: info: pvr: static memory: YUV CSC table at general+0x80
+MESA: info: pvr: static memory: 12 bytes of firmware programs in 3 carveouts
+MESA: info: pvr: GPU context 25 (render), callstack 0x9ff724e000, VDM state 0x9ff7250000, GEOM state 0x9ff724f000, static state 192 bytes
+[refract] <default>: FPS: 37 FrameTime: 27.058 ms
+MESA: info: pvr: static memory: YUV CSC table at general+0x80
+MESA: info: pvr: static memory: 12 bytes of firmware programs in 3 carveouts
+MESA: info: pvr: GPU context 26 (render), callstack 0x9ff6dc9000, VDM state 0x9ff6dcb000, GEOM state 0x9ff6dca000, static state 192 bytes
+[conditionals] fragment-steps=0:vertex-steps=0: FPS: 1470 FrameTime: 0.681 ms
+MESA: info: pvr: static memory: YUV CSC table at general+0x80
+MESA: info: pvr: static memory: 12 bytes of firmware programs in 3 carveouts
+MESA: info: pvr: GPU context 27 (render), callstack 0x9ff6944000, VDM state 0x9ff6946000, GEOM state 0x9ff6945000, static state 192 bytes
+[conditionals] fragment-steps=5:vertex-steps=0: FPS: 853 FrameTime: 1.173 ms
+MESA: info: pvr: static memory: YUV CSC table at general+0x80
+MESA: info: pvr: static memory: 12 bytes of firmware programs in 3 carveouts
+MESA: info: pvr: GPU context 28 (render), callstack 0x9ff64bf000, VDM state 0x9ff64c1000, GEOM state 0x9ff64c0000, static state 192 bytes
+[conditionals] fragment-steps=0:vertex-steps=5: FPS: 1457 FrameTime: 0.687 ms
+MESA: info: pvr: static memory: YUV CSC table at general+0x80
+MESA: info: pvr: static memory: 12 bytes of firmware programs in 3 carveouts
+MESA: info: pvr: GPU context 29 (render), callstack 0x9ff603a000, VDM state 0x9ff603c000, GEOM state 0x9ff603b000, static state 192 bytes
+[function] fragment-complexity=low:fragment-steps=5: FPS: 1075 FrameTime: 0.930 ms
+MESA: info: pvr: static memory: YUV CSC table at general+0x80
+MESA: info: pvr: static memory: 12 bytes of firmware programs in 3 carveouts
+MESA: info: pvr: GPU context 30 (render), callstack 0x9ff5bb5000, VDM state 0x9ff5bb7000, GEOM state 0x9ff5bb6000, static state 192 bytes
+[function] fragment-complexity=medium:fragment-steps=5: FPS: 667 FrameTime: 1.501 ms
+MESA: info: pvr: static memory: YUV CSC table at general+0x80
+MESA: info: pvr: static memory: 12 bytes of firmware programs in 3 carveouts
+MESA: info: pvr: GPU context 31 (render), callstack 0x9ff5730000, VDM state 0x9ff5732000, GEOM state 0x9ff5731000, static state 192 bytes
+[loop] fragment-loop=false:fragment-steps=5:vertex-steps=5: FPS: 1074 FrameTime: 0.932 ms
+MESA: info: pvr: static memory: YUV CSC table at general+0x80
+MESA: info: pvr: static memory: 12 bytes of firmware programs in 3 carveouts
+MESA: info: pvr: GPU context 32 (render), callstack 0x9ff52ab000, VDM state 0x9ff52ad000, GEOM state 0x9ff52ac000, static state 192 bytes
+[loop] fragment-steps=5:fragment-uniform=false:vertex-steps=5: FPS: 1076 FrameTime: 0.929 ms
+MESA: info: pvr: static memory: YUV CSC table at general+0x80
+MESA: info: pvr: static memory: 12 bytes of firmware programs in 3 carveouts
+MESA: info: pvr: GPU context 33 (render), callstack 0x9ff4e26000, VDM state 0x9ff4e28000, GEOM state 0x9ff4e27000, static state 192 bytes
+[loop] fragment-steps=5:fragment-uniform=true:vertex-steps=5: FPS: 865 FrameTime: 1.157 ms
+=======================================================
+                                  glmark2 Score: 810 
+=======================================================

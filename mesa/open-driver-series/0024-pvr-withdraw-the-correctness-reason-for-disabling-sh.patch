@@ -1,7 +1,7 @@
-From f4d673eac00efef3c74f7c8ed3b2d49cc97c1a07 Mon Sep 17 00:00:00 2001
+From 7461b3454edc3a549ddf216dd72c7c65a4b87576 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Thu, 8 Oct 2026 11:28:35 +0800
-Subject: [PATCH 24/43] pvr: withdraw the correctness reason for disabling
+Subject: [PATCH 024/294] pvr: withdraw the correctness reason for disabling
  shaderFloat16; keep the performance one
 
 Re-measured shaderFloat16 with the Mesa shader cache disabled, which is essential: with the
@@ -26,7 +26,7 @@ PVRSRV_FP16=1 remains as a diagnostic override, default false (behaviour unchang
  1 file changed, 12 insertions(+), 1 deletion(-)
 
 diff --git a/src/imagination/vulkan/pvr_physical_device.c b/src/imagination/vulkan/pvr_physical_device.c
-index 9d70109..e586eac 100644
+index 9d70109e..e586eac3 100644
 --- a/src/imagination/vulkan/pvr_physical_device.c
 +++ b/src/imagination/vulkan/pvr_physical_device.c
 @@ -346,7 +346,18 @@ static void pvr_physical_device_get_supported_features(
@@ -49,3 +49,6 @@ index 9d70109..e586eac 100644
        .shaderInt8 = true,
        .descriptorIndexing = false,
        .shaderInputAttachmentArrayDynamicIndexing = true,
+-- 
+2.47.3
+

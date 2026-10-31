@@ -1,7 +1,7 @@
-From 06834217cbbf29297880ebd5016e54c1d4864fb8 Mon Sep 17 00:00:00 2001
+From ea04706cc7742fc6f91100dbbf3e1a3bb41dfb70 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sat, 10 Oct 2026 02:44:14 +0800
-Subject: [PATCH 57/98] pco: don't back-propagate pixout into source-encoded
+Subject: [PATCH 057/294] pco: don't back-propagate pixout into source-encoded
  dests
 
 Fixes 2280bf4 ("pco: back-propagate pixel output writes again").
@@ -22,7 +22,7 @@ SPIR-V integer ops) now matches the d253e35 baseline exactly.
  1 file changed, 6 insertions(+)
 
 diff --git a/src/imagination/pco/pco_opt.c b/src/imagination/pco/pco_opt.c
-index fac4293..a4d9822 100644
+index fac42937..a4d9822e 100644
 --- a/src/imagination/pco/pco_opt.c
 +++ b/src/imagination/pco/pco_opt.c
 @@ -263,6 +263,12 @@ static inline bool try_back_prop_instr(struct pco_use *uses, pco_instr *instr)

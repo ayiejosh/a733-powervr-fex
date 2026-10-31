@@ -1,0 +1,595 @@
+From c6066348b8f8c32c2f650f386595386724db344c Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Thu, 29 Oct 2026 21:40:41 +0800
+Subject: [PATCH] gallium/pvr: multiple render targets - one PBE emit per
+ colour attachment
+
+ES2 + GL_EXT_draw_buffers needs several colour outputs, and the open driver had only ever written
+one. The PBE writes a colour target at end of tile through an EMITPIX in the end-of-tile (EOT)
+program, so MRT means one emit per attachment, each with its own PBE state words - exactly what the
+Vulkan driver's pvr_usc_eot() generates. Build the EOT program from NIR with one EMITPIX per
+attachment (a WOP between them so the PBE processes them in order, freep on the last one, which owns
+the pixel), and give emit i the state words of attachment i: its address, format, mrt_index (the
+index into the job's PBE register-word table) and source_pos (the pixel output dword it reads:
+START_BIT0/32/64/96). The fragment variant maps FRAG_RESULT_DATA0..3 onto output dwords 0..3 and the
+per-job PBE register-word table describes each attachment's surface; the background clear program
+stores one value per output so a clear covers every attachment. A render only becomes an MRT render
+when it really is the framebuffer's (materialize/blit renders open their own target).
+
+The one non-obvious failure this hit: nir_lower_blend deletes a colour store whose colormask is zero,
+and Mesa's state tracker zero-fills pipe_blend_state::rt[] past the entries the API configured, so
+attachment 1's store was deleted before pco ever saw it. ES2 has a single blend state and a single
+glColorMask, applied to every draw buffer, so every attachment now uses render target 0's state.
+
+Verified with zink as the reference (same EGL surfaceless harness, open-perf/mrt_test.c:
+2x RGBA8, gl_FragData[0]=red gl_FragData[1]=blue, then samples each attachment and reads the pixel):
+- attached draw: attachment0 255 0 0 255, attachment1 0 0 255 255 - zink gives the same two pixels;
+- glClear covers both attachments (64 128 191 255 in both);
+- a second MRT draw overwrites both (attachment0 green, attachment1 yellow);
+- no-clear draw writes both attachments; the old failure (attachment1 stale) is gone;
+- full gltri gate: 49 modes, every native mode glGetError 0x0; rttest PASS (bad=0/262144);
+  rt8test unchanged (255 0 / 255 128); 0 MMU faults.
+Known limitations: v1 requires every attachment to share attachment 0's format (mixed sets fall back
+to attachment 0 with a warning); per-render-target blend state does not exist in ES2 and is not
+tracked, and tile buffers are not used.
+---
+ src/gallium/drivers/pvr_native/pvr_context.c |  15 +-
+ src/gallium/drivers/pvr_native/pvr_csb.c     |   5 +-
+ src/gallium/drivers/pvr_native/pvr_draw.c    | 205 +++++++++++++------
+ src/gallium/drivers/pvr_native/pvr_probe.c   |   2 +-
+ src/gallium/drivers/pvr_native/pvr_screen.c  |   3 +
+ src/gallium/drivers/pvr_native/pvr_shader.c  |  46 +++--
+ src/gallium/drivers/pvr_native/pvr_shader.h  |   9 +-
+ 7 files changed, 205 insertions(+), 80 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_context.c b/src/gallium/drivers/pvr_native/pvr_context.c
+index 7c28cd91..74a29af5 100644
+--- a/src/gallium/drivers/pvr_native/pvr_context.c
++++ b/src/gallium/drivers/pvr_native/pvr_context.c
+@@ -2,6 +2,7 @@
+  * SPDX-License-Identifier: MIT
+  */
+ #include "pvr_context.h"
++#include "common/pvr_limits.h"
+ 
+ #include "pipe/p_context.h"
+ #include "util/format/u_formats.h"
+@@ -620,13 +621,23 @@ pvr_clear(struct pipe_context *pctx, unsigned buffers, uint32_t color_clear_mask
+    /* A full colour clear of buffer 0 becomes the render's background object; then there is
+     * nothing for the CPU to fill for it. */
+    bool gpu_cleared = false;
++   bool mrt_same_fmt = true;
++   for (unsigned i = 1; i < ctx->fb.nr_cbufs; i++)
++      if (ctx->fb.cbufs[i].format != ctx->fb.cbufs[0].format)
++         mrt_same_fmt = false;
+    if ((buffers & PIPE_CLEAR_COLOR0) && (color_clear_mask & 0xf) == 0xf && scissor_state == NULL &&
+-       ctx->fb.nr_cbufs == 1)
++       ctx->fb.nr_cbufs >= 1 && ctx->fb.nr_cbufs <= PVR_MAX_COLOR_ATTACHMENTS && mrt_same_fmt) {
+       gpu_cleared = pvr_draw_note_clear(ctx, color);
++      /* MRT: one background colour covers every attachment (v1), so submit the clear render now -
++       * deferred clears are single-resource only. */
++      if (gpu_cleared && ctx->fb.nr_cbufs > 1)
++         pvr_draw_flush(ctx);
++   }
+    if (!gpu_cleared)
+       pvr_draw_flush(ctx);
+    for (unsigned i = 0; i < ctx->fb.nr_cbufs; i++) {
+-      if ((buffers & (PIPE_CLEAR_COLOR0 << i)) == 0 || (i == 0 && gpu_cleared))
++      /* A GPU clear covers every attachment (one background colour, one emit each). */
++      if (gpu_cleared || (buffers & (PIPE_CLEAR_COLOR0 << i)) == 0)
+          continue;
+ 
+       if (ctx->fb.cbufs[i].texture == NULL)
+diff --git a/src/gallium/drivers/pvr_native/pvr_csb.c b/src/gallium/drivers/pvr_native/pvr_csb.c
+index bf52c6a9..09a0417b 100644
+--- a/src/gallium/drivers/pvr_native/pvr_csb.c
++++ b/src/gallium/drivers/pvr_native/pvr_csb.c
+@@ -850,7 +850,10 @@ pvr_csb_pbe_state_words(uint64_t addr, enum pipe_format format, uint32_t mrt_ind
+       .address_high = addr,
+       .source_format = pvr_pbe_source_format_from_pipe(format, true),
+       .mrt_index = mrt_index,
+-      .source_pos = ROGUE_PBESTATE_SOURCE_POS_START_BIT0,
++      /* Each attachment's pixel data sits at its own output register (the reference maps output
++       * position 0..3 to START_BIT0/32/64/96), so attachment i reads dword i of the fragment
++       * output, not dword 0. */
++      .source_pos = (enum ROGUE_PBESTATE_SOURCE_POS)(mrt_index <= 3 ? mrt_index : 0),
+       .norm = chan >= 0 && desc->channel[chan].normalized,
+    };
+ 
+diff --git a/src/gallium/drivers/pvr_native/pvr_draw.c b/src/gallium/drivers/pvr_native/pvr_draw.c
+index 909d87c3..958e6fd9 100644
+--- a/src/gallium/drivers/pvr_native/pvr_draw.c
++++ b/src/gallium/drivers/pvr_native/pvr_draw.c
+@@ -60,6 +60,7 @@ struct pvr_draw_pds_prog {
+ 
+ struct pvr_draw_bg {
+    uint32_t color;
++   unsigned nr_outputs;
+    uint64_t pds_offset;
+ };
+ 
+@@ -71,10 +72,11 @@ struct pvr_draw_load {
+    struct pvr_shader *fs;
+ };
+ 
+-/* An end-of-tile program, per target address and format. */
++/* An end-of-tile program, per set of colour targets (one entry per attachment). */
+ struct pvr_draw_eot {
+-   uint64_t addr;
+-   enum pipe_format format;
++   uint64_t addr[PVR_MAX_COLOR_ATTACHMENTS];
++   enum pipe_format format[PVR_MAX_COLOR_ATTACHMENTS];
++   unsigned nr;
+    uint64_t pds_offset;
+    bool zonly;
+ };
+@@ -890,26 +892,31 @@ draw_uniform_program(struct pvr_context *ctx, struct pvr_draw_state *d,
+ 
+ /* The background object for a clear colour: a constant-colour fragment program. */
+ static uint64_t
+-draw_bg_program(struct pvr_context *ctx, struct pvr_draw_state *d, uint32_t color)
++draw_bg_program(struct pvr_context *ctx, struct pvr_draw_state *d, uint32_t color,
++                unsigned nr_outputs)
+ {
+    struct pvr_screen *scr = draw_screen(ctx);
+    nir_builder b;
+    struct pvr_shader *bg;
+ 
+    for (unsigned i = 0; i < d->nr_bg; i++) {
+-      if (d->bg[i].color == color)
++      if (d->bg[i].color == color && d->bg[i].nr_outputs == nr_outputs)
+          return d->bg[i].pds_offset;
+    }
+    b = nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, pco_nir_options(), "pvr_bg");
+    b.shader->info.internal = false;
+-   nir_frag_store_pco(&b, nir_imm_int(&b, (int)color), .base = 0);
++   /* One packed colour into each colour attachment's pixel output dword: the EOT emit for
++    * attachment i reads dword i. */
++   for (unsigned i = 0; i < nr_outputs; i++)
++      nir_frag_store_pco(&b, nir_imm_int(&b, (int)color), .base = i);
+    nir_jump(&b, nir_jump_return);
+    bg = pvr_shader_create(b.shader, scr->pco_ctx);
+    if (bg == NULL || !draw_upload_fs(scr, bg))
+       return 0;
+    /* shortcut: four cached colours, round robin; the evicted programs stay allocated. */
+    const unsigned slot = d->nr_bg < ARRAY_SIZE(d->bg) ? d->nr_bg++ : (color & 3);
+-   d->bg[slot] = (struct pvr_draw_bg){ .color = color, .pds_offset = bg->pds_offset };
++   d->bg[slot] = (struct pvr_draw_bg){ .color = color, .nr_outputs = nr_outputs,
++                                       .pds_offset = bg->pds_offset };
+    return bg->pds_offset;
+ }
+ 
+@@ -973,7 +980,7 @@ draw_load_program(struct pvr_context *ctx, struct pvr_draw_state *d, uint64_t bg
+       nir_store_var(&b, out, color, 0xf);
+       BITSET_SET(b.shader->info.textures_used, 0);
+       BITSET_SET(b.shader->info.textures_used_by_txf, 0);
+-      fs = pvr_shader_create_fs(b.shader, scr->pco_ctx, format, NULL);
++      fs = pvr_shader_create_fs(b.shader, scr->pco_ctx, &format, 1, NULL);
+       if (fs == NULL || !draw_upload_fs(scr, fs) || fs->tex_mask != 1 ||
+           (gen && fs->uniform_dwords < 2)) {
+          mesa_loge("pvr: draw: no load program (%s, gen %d)", util_format_short_name(format), gen);
+@@ -1036,23 +1043,25 @@ draw_load_program(struct pvr_context *ctx, struct pvr_draw_state *d, uint64_t bg
+ /* The end-of-tile program for a target address: PBE state words baked into a USC program, kicked by
+  * a PDS pixel-event data segment. */
+ static uint64_t
+-draw_eot_program(struct pvr_context *ctx, struct pvr_draw_state *d, uint64_t rt_addr,
+-                 enum pipe_format format, bool zonlyrender)
++draw_eot_program(struct pvr_context *ctx, struct pvr_draw_state *d, unsigned nr_attachments,
++                 const uint64_t *rt_addrs, const enum pipe_format *formats, bool zonlyrender)
+ {
+    struct pvr_screen *scr = draw_screen(ctx);
+    struct pvr_shader_eot eot = { 0 };
+    struct pvr_pds_event_program program = { 0 };
+-   uint32_t state_words[2];
++   uint32_t state_words[PVR_MAX_COLOR_ATTACHMENTS * 2];
+    uint32_t staging[64] = { 0 };
+    uint32_t usc_offset;
+ 
+    for (unsigned i = 0; i < d->nr_eot; i++) {
+-      if (d->eot[i].addr == rt_addr && d->eot[i].format == format &&
+-          d->eot[i].zonly == zonlyrender)
++      if (d->eot[i].nr == nr_attachments && d->eot[i].zonly == zonlyrender &&
++          !memcmp(d->eot[i].addr, rt_addrs, nr_attachments * sizeof(rt_addrs[0])) &&
++          !memcmp(d->eot[i].format, formats, nr_attachments * sizeof(formats[0])))
+          return d->eot[i].pds_offset;
+    }
+-   pvr_csb_pbe_state_words(rt_addr, format, 0, zonlyrender, state_words);
+-   if (!pvr_shader_eot_create(scr->pco_ctx, &eot, state_words))
++   for (unsigned i = 0; i < nr_attachments; i++)
++      pvr_csb_pbe_state_words(rt_addrs[i], formats[i], i, zonlyrender, &state_words[2 * i]);
++   if (!pvr_shader_eot_create(scr->pco_ctx, &eot, nr_attachments, state_words))
+       return 0;
+    usc_offset = draw_upload_usc(scr, eot.binary, eot.binary_size);
+    if (usc_offset == 0)
+@@ -1066,11 +1075,14 @@ draw_eot_program(struct pvr_context *ctx, struct pvr_draw_state *d, uint64_t rt_
+    const uint64_t pds_offset = draw_upload_pds(scr, staging, program.data_size * 4);
+    if (pds_offset == 0)
+       return 0;
+-   /* shortcut: 32 cached targets, round robin; the evicted programs stay allocated. */
++   /* shortcut: 32 cached target sets, round robin; the evicted programs stay allocated. */
+    const unsigned slot = d->nr_eot < ARRAY_SIZE(d->eot) ? d->nr_eot++
+-                                                        : (unsigned)(rt_addr >> 12) % ARRAY_SIZE(d->eot);
+-   d->eot[slot] = (struct pvr_draw_eot){ .addr = rt_addr, .format = format,
+-                                         .pds_offset = pds_offset, .zonly = zonlyrender };
++                                                        : (unsigned)(rt_addrs[0] >> 12) % ARRAY_SIZE(d->eot);
++   struct pvr_draw_eot *e = &d->eot[slot];
++   *e = (struct pvr_draw_eot){ .nr = nr_attachments, .pds_offset = pds_offset,
++                               .zonly = zonlyrender };
++   memcpy(e->addr, rt_addrs, nr_attachments * sizeof(e->addr[0]));
++   memcpy(e->format, formats, nr_attachments * sizeof(e->format[0]));
+    return pds_offset;
+ }
+ 
+@@ -1365,7 +1377,18 @@ pvr_draw_3d(struct pvr_context *ctx, const struct pipe_draw_info *info,
+    if (d == NULL || !draw_init(ctx, d))
+       return false;
+ 
+-   /* The fragment shader variant for this target format and blend state. */
++   /* The fragment shader variant for this framebuffer's colour format(s) and blend state. MRT v1:
++    * every attachment shares the first one's format (the background program emits one value). */
++   enum pipe_format rt_formats[PVR_MAX_COLOR_ATTACHMENTS] = { rt_format };
++   unsigned nr_formats = MIN2(ctx->fb.nr_cbufs, PVR_MAX_COLOR_ATTACHMENTS);
++   for (unsigned i = 0; i < nr_formats; i++)
++      rt_formats[i] = ctx->fb.cbufs[i].format;
++   for (unsigned i = 1; i < nr_formats; i++) {
++      if (rt_formats[i] != rt_formats[0]) {
++         nr_formats = 1;
++         break;
++      }
++   }
+    nir_lower_blend_options blend;
+    memset(&blend, 0, sizeof(blend));
+    {
+@@ -1375,45 +1398,55 @@ pvr_draw_3d(struct pvr_context *ctx, const struct pipe_draw_info *info,
+          .src_factor = PIPE_BLENDFACTOR_ONE,
+          .dst_factor = PIPE_BLENDFACTOR_ZERO,
+       };
+-      blend.rt[0].format = rt_format;
+-      blend.rt[0].rgb = replace;
+-      blend.rt[0].alpha = replace;
+-      blend.rt[0].colormask = 0xf;
+-      if (bs != NULL) {
+-         blend.rt[0].colormask = bs->rt[0].colormask;
+-         if (bs->logicop_enable) {
+-            blend.logicop_enable = true;
+-            blend.logicop_func = bs->logicop_func;
+-         } else if (bs->rt[0].blend_enable) {
+-            blend.rt[0].rgb = (nir_lower_blend_channel){
+-               .func = bs->rt[0].rgb_func,
+-               .src_factor = bs->rt[0].rgb_src_factor,
+-               .dst_factor = bs->rt[0].rgb_dst_factor,
+-            };
+-            blend.rt[0].alpha = (nir_lower_blend_channel){
+-               .func = bs->rt[0].alpha_func,
+-               .src_factor = bs->rt[0].alpha_src_factor,
+-               .dst_factor = bs->rt[0].alpha_dst_factor,
+-            };
++      for (unsigned i = 0; i < nr_formats; i++) {
++         /* ES2 (with EXT_draw_buffers) has a single blend state and a single glColorMask, both
++          * applied to every draw buffer, so every attachment uses render target 0's state. Mesa's
++          * state tracker zero-fills pipe_blend_state::rt[] past the entries the API configured,
++          * and nir_lower_blend deletes a colour store whose colormask is zero - which silently
++          * dropped attachment 1's write until this read rt[0] for every attachment. */
++         const struct pipe_rt_blend_state *rtb = bs ? &bs->rt[0] : NULL;
++         blend.rt[i].format = rt_formats[i];
++         blend.rt[i].rgb = replace;
++         blend.rt[i].alpha = replace;
++         blend.rt[i].colormask = 0xf;
++         if (rtb != NULL) {
++            blend.rt[i].colormask = rtb->colormask;
++            if (bs->logicop_enable) {
++               blend.logicop_enable = true;
++               blend.logicop_func = bs->logicop_func;
++            } else if (rtb->blend_enable) {
++               blend.rt[i].rgb = (nir_lower_blend_channel){
++                  .func = rtb->rgb_func,
++                  .src_factor = rtb->rgb_src_factor,
++                  .dst_factor = rtb->rgb_dst_factor,
++               };
++               blend.rt[i].alpha = (nir_lower_blend_channel){
++                  .func = rtb->alpha_func,
++                  .src_factor = rtb->alpha_src_factor,
++                  .dst_factor = rtb->alpha_dst_factor,
++               };
++            }
+          }
+       }
+    }
+    struct pvr_shader *fsv = NULL;
+    for (unsigned i = 0; i < fs->nr_variants; i++) {
+-      if (fs->variants[i].format == rt_format &&
++      if (fs->variants[i].nr_formats == nr_formats &&
++          !memcmp(fs->variants[i].formats, rt_formats, nr_formats * sizeof(rt_formats[0])) &&
+           !memcmp(&fs->variants[i].blend, &blend, sizeof(blend)))
+          fsv = fs->variants[i].sh;
+    }
+    if (fsv == NULL) {
+-      fsv = pvr_shader_create_fs(nir_shader_clone(NULL, fs->src_nir), scr->pco_ctx, rt_format,
+-                                 &blend);
++      fsv = pvr_shader_create_fs(nir_shader_clone(NULL, fs->src_nir), scr->pco_ctx, rt_formats,
++                                 nr_formats, &blend);
+       if (fsv == NULL)
+          return false;
+       /* shortcut: round robin past PVR_SHADER_MAX_VARIANTS; the evicted variant stays allocated. */
+       const unsigned slot = fs->nr_variants < PVR_SHADER_MAX_VARIANTS ? fs->nr_variants++
+-                                                                     : (rt_format + blend.rt[0].colormask) %
++                                                                     : (rt_formats[0] + blend.rt[0].colormask) %
+                                                                           PVR_SHADER_MAX_VARIANTS;
+-      fs->variants[slot].format = rt_format;
++      fs->variants[slot].nr_formats = nr_formats;
++      memcpy(fs->variants[slot].formats, rt_formats, nr_formats * sizeof(rt_formats[0]));
+       fs->variants[slot].blend = blend;
+       fs->variants[slot].sh = fsv;
+    }
+@@ -1754,7 +1787,7 @@ pvr_draw_flush(struct pvr_context *ctx)
+    {
+       const unsigned shared = PIPE_BIND_SHARED | PIPE_BIND_DISPLAY_TARGET | PIPE_BIND_SCANOUT;
+       if (d->ndraws == 0 && d->load_src == NULL && !d->no_defer && d->rt_level == 0 &&
+-          !(d->rt->bind & shared)) {
++          ctx->fb.nr_cbufs <= 1 && !(d->rt->bind & shared)) {
+          if (d->clear_valid) {
+             pvr_resource(d->rt)->clear_pending = true;
+             pvr_resource(d->rt)->clear_color = d->clear_color;
+@@ -1798,15 +1831,61 @@ pvr_draw_flush(struct pvr_context *ctx)
+    /* Depth-only framebuffer (shadow's depth pass): the colour target is a scratch one, so the
+     * PBE must drop all colour writes instead of clearing/storing a full extra target. */
+    const bool zonly = ctx->fb.nr_cbufs == 0 && ctx->fb.zsbuf.texture != NULL;
+-   const uint64_t eot =
+-      draw_eot_program(ctx, d, pvr_resource_level_addr(rt, d->rt_level), fmt, zonly);
+-   const uint64_t bg = draw_bg_program(ctx, d, d->clear_valid ? d->clear_color : 0);
+-   uint64_t pbe_words[3] = { 0 };
+-   if (eot == 0 || bg == 0 ||
+-       !pvr_csb_pbe_words(fmt, pvr_resource_level_stride(rt, d->rt_level), d->rt_w, d->rt_h,
+-                          pvr_resource_level_phys_h(rt, d->rt_level), rt->twiddled, rt->fbc,
+-                          pbe_words))
++   /* MRT: every colour attachment of the framebuffer is written by its own PBE emit words in the
++    * EOT program. v1 requires them to share the first attachment's format (the background program
++    * emits a single pixel value); a mixed set falls back to attachment 0 with a warning. */
++   unsigned nr_attach = 1;
++   uint64_t eot_addrs[PVR_MAX_COLOR_ATTACHMENTS] = { 0 };
++   enum pipe_format eot_formats[PVR_MAX_COLOR_ATTACHMENTS] = { PIPE_FORMAT_NONE };
++   const unsigned nr_fb = MIN2(ctx->fb.nr_cbufs, PVR_MAX_COLOR_ATTACHMENTS);
++   /* MRT only when this render really is the framebuffer's: materialize/blit renders open the
++    * driver's own target (d->rt) while the context framebuffer state still names some other set. */
++   const bool fb_render =
++      !zonly && nr_fb > 1 && d->rt == ctx->fb.cbufs[0].texture &&
++      d->rt_level == ctx->fb.cbufs[0].level;
++   if (zonly) {
++      eot_addrs[0] = pvr_resource_level_addr(rt, d->rt_level);
++      eot_formats[0] = fmt;
++   } else {
++      eot_addrs[0] = pvr_resource_level_addr(rt, d->rt_level);
++      eot_formats[0] = fmt;
++      if (fb_render) {
++         nr_attach = nr_fb;
++         for (unsigned i = 1; i < nr_attach; i++) {
++            struct pvr_resource *ri = pvr_resource(ctx->fb.cbufs[i].texture);
++            eot_addrs[i] = pvr_resource_level_addr(ri, ctx->fb.cbufs[i].level);
++            eot_formats[i] = ctx->fb.cbufs[i].format;
++         }
++         for (unsigned i = 1; i < nr_attach; i++) {
++            if (eot_formats[i] != eot_formats[0]) {
++               static bool warned;
++               if (!warned) {
++                  warned = true;
++                  mesa_logw("pvr: mixed-format MRT is not supported yet; rendering to attachment 0");
++               }
++               nr_attach = 1;
++               break;
++            }
++         }
++      }
++   }
++   const uint64_t eot = draw_eot_program(ctx, d, nr_attach, eot_addrs, eot_formats, zonly);
++   const uint64_t bg = draw_bg_program(ctx, d, d->clear_valid ? d->clear_color : 0,
++                                       zonly ? 1 : nr_attach);
++   uint64_t pbe_words[PVR_MAX_COLOR_ATTACHMENTS * 3] = { 0 };
++   if (eot == 0 || bg == 0 || !pvr_csb_pbe_words(eot_formats[0], pvr_resource_level_stride(rt, d->rt_level),
++                                                 d->rt_w, d->rt_h,
++                                                 pvr_resource_level_phys_h(rt, d->rt_level),
++                                                 rt->twiddled, rt->fbc, pbe_words))
+       goto done;
++   for (unsigned i = 1; i < nr_attach; i++) {
++      struct pvr_resource *ri = pvr_resource(ctx->fb.cbufs[i].texture);
++      if (!pvr_csb_pbe_words(eot_formats[i], pvr_resource_level_stride(ri, ctx->fb.cbufs[i].level),
++                             d->rt_w, d->rt_h,
++                             pvr_resource_level_phys_h(ri, ctx->fb.cbufs[i].level),
++                             ri->twiddled, ri->fbc, &pbe_words[i * 3]))
++         goto done;
++   }
+    if (zonly)
+       memset(pbe_words, 0, sizeof(pbe_words)); /* reference z-only: zero PBE reg words */
+ 
+@@ -1816,9 +1895,19 @@ pvr_draw_flush(struct pvr_context *ctx)
+       pvr_geom_static_stream(gstream, sizeof(gstream), d->ctrl_addr, d->bct_addr, true, 0, false,
+                              1, 0, PVR_HAS_QUIRK(&scr->dev_info, 49927));
+    const uint32_t flen =
+-      pvr_frag_static_stream(fstream, sizeof(fstream), pbe_words, 1, (uint32_t)eot, false);
++      pvr_frag_static_stream(fstream, sizeof(fstream), pbe_words, nr_attach, (uint32_t)eot, false);
+    if (glen == 0 || flen == 0)
+       goto done;
++   if (getenv("PVR_FRAG_LOG") != NULL) {
++      fprintf(stderr, "FRAG nr=%u eot=%" PRIu64 " bg=%" PRIu64 " flen=%u pbe=", nr_attach, eot, bg,
++              flen);
++      for (unsigned i = 0; i < nr_attach * 3; i++)
++         fprintf(stderr, "%016" PRIx64 ",", pbe_words[i]);
++      fprintf(stderr, " region:");
++      for (unsigned i = 14; i < 26; i++)
++         fprintf(stderr, " %08x", ((const uint32_t *)fstream)[i]);
++      fprintf(stderr, "\n");
++   }
+    uint64_t bgnd[3], pr_bgnd[3];
+    /* Without a clear, the background reloads what the target held. A depth-only render drops the
+     * colour writes anyway, so it uses the (cheap) clear background instead of a full-target load. */
+@@ -1852,8 +1941,10 @@ pvr_draw_flush(struct pvr_context *ctx)
+    ((uint32_t *)fstream)[2] = (uint32_t)sc_addr; /* isp_scissor_base after the 2-dword header */
+    ((uint32_t *)fstream)[3] = (uint32_t)(sc_addr >> 32);
+ 
+-   if (!pvr_job_submit_render(&scr->vm, d->gctx.handle, gstream, glen, fstream, flen, d->cur_hwrt->dset, d->cur_hwrt->rt_data_idx, frag_flags,
+-                              &d->slots[d->cur_slot].sync))
++   const bool submit_ok =
++      pvr_job_submit_render(&scr->vm, d->gctx.handle, gstream, glen, fstream, flen, d->cur_hwrt->dset, d->cur_hwrt->rt_data_idx, frag_flags,
++                              &d->slots[d->cur_slot].sync);
++   if (!submit_ok)
+       mesa_loge("pvr: draw: the render was not submitted (%u draws)", d->ndraws);
+    d->slots[d->cur_slot].seq = d->seq;
+    d->cur_hwrt->data_seq[d->cur_hwrt->rt_data_idx] = d->seq;
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index 698d3cfb..cab00387 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -1825,7 +1825,7 @@ probe_place_eot_program(struct pvr_screen *scr, uint64_t rtaddr)
+ 
+    pvr_csb_pbe_state_words(rtaddr, PIPE_FORMAT_R8G8B8A8_UNORM, 0, state_words);
+ 
+-   if (!pvr_shader_eot_create(scr->pco_ctx, &eot, state_words)) {
++   if (!pvr_shader_eot_create(scr->pco_ctx, &eot, 1, state_words)) {
+       printf("hwrt:          could not compile the end-of-tile program\n");
+       return 0;
+    }
+diff --git a/src/gallium/drivers/pvr_native/pvr_screen.c b/src/gallium/drivers/pvr_native/pvr_screen.c
+index 35164778..051669ba 100644
+--- a/src/gallium/drivers/pvr_native/pvr_screen.c
++++ b/src/gallium/drivers/pvr_native/pvr_screen.c
+@@ -270,6 +270,9 @@ pvr_screen_create(int fd, const struct pipe_screen_config *config,
+       caps->max_texture_array_layers = 1;
+       /* Any extent samples and renders (twiddled levels are padded to powers of two). */
+       caps->npot_textures = true;
++      /* Multiple render targets: the PBE writes one emit per attachment (EOT program) and the
++       * fragment variant maps data0..3. ES3 needs 4; v1 requires a shared format (see flush). */
++      caps->max_render_targets = 4;
+       caps->generate_mipmap = true; /* GPU box filter renders, pvr_generate_mipmap */
+ 
+       /* Separate RGB/alpha blend equations. Not a guess: Mesa's own ES2 requirement
+diff --git a/src/gallium/drivers/pvr_native/pvr_shader.c b/src/gallium/drivers/pvr_native/pvr_shader.c
+index e126ec45..929d04ee 100644
+--- a/src/gallium/drivers/pvr_native/pvr_shader.c
++++ b/src/gallium/drivers/pvr_native/pvr_shader.c
+@@ -284,19 +284,28 @@ pvr_shader_init_vs_alloc(struct nir_shader *nir, pco_data *data)
+ }
+ 
+ static struct pvr_shader *
+-pvr_shader_create_with(struct nir_shader *nir, pco_ctx *ctx, enum pipe_format color_format,
+-                       const nir_lower_blend_options *blend)
++pvr_shader_create_with(struct nir_shader *nir, pco_ctx *ctx, const enum pipe_format *color_formats,
++                       unsigned nr_formats, const nir_lower_blend_options *blend)
+ {
+    struct pvr_shader *shader = calloc(1, sizeof(*shader));
+    pco_data data = { 0 };
+    if (shader == NULL)
+       return NULL;
+    if (nir->info.stage == MESA_SHADER_FRAGMENT) {
+-      data.fs.output_formats[FRAG_RESULT_DATA0] = color_format;
++      for (unsigned i = 0; i < MIN2(nr_formats, PVR_MAX_COLOR_ATTACHMENTS); i++) {
++         /* Give each colour output its own pixel-output register (dword): the EOT program's
++          * per-attachment PBE emit reads that dword by position. The reference does the same
++          * via usc_mrt_resource output_reg. */
++         const unsigned dwords =
++            DIV_ROUND_UP(util_format_get_blocksize(color_formats[i]), 4u);
++         data.fs.output_formats[FRAG_RESULT_DATA0 + i] = color_formats[i];
++         data.fs.outputs[FRAG_RESULT_DATA0 + i] = (pco_range){ .start = i, .count = dwords };
++      }
+       /* Blending is lowered into the shader (pco runs nir_lower_blend with these). */
+-      if (blend != NULL && color_format != PIPE_FORMAT_NONE) {
++      if (blend != NULL && nr_formats > 0 && color_formats[0] != PIPE_FORMAT_NONE) {
+          data.fs.blend_opts = *blend;
+-         data.fs.blend_opts.rt[0].format = color_format;
++         for (unsigned i = 0; i < MIN2(nr_formats, PVR_MAX_COLOR_ATTACHMENTS); i++)
++            data.fs.blend_opts.rt[i].format = color_formats[i];
+          data.fs.masked_outputs = blend->rt[0].colormask == 0;
+       }
+       /* No depth replication into a colour output: 0 would mean "replicate into output 0", which
+@@ -404,14 +413,14 @@ pvr_shader_create_with(struct nir_shader *nir, pco_ctx *ctx, enum pipe_format co
+ struct pvr_shader *
+ pvr_shader_create(struct nir_shader *nir, pco_ctx *ctx)
+ {
+-   return pvr_shader_create_with(nir, ctx, PIPE_FORMAT_NONE, NULL);
++   return pvr_shader_create_with(nir, ctx, NULL, 0, NULL);
+ }
+ 
+ struct pvr_shader *
+-pvr_shader_create_fs(struct nir_shader *nir, pco_ctx *ctx, enum pipe_format color_format,
+-                     const nir_lower_blend_options *blend)
++pvr_shader_create_fs(struct nir_shader *nir, pco_ctx *ctx, const enum pipe_format *color_formats,
++                     unsigned nr_formats, const nir_lower_blend_options *blend)
+ {
+-   return pvr_shader_create_with(nir, ctx, color_format, blend);
++   return pvr_shader_create_with(nir, ctx, color_formats, nr_formats, blend);
+ }
+ 
+ /* The one-attribute vertex DMA both builders are generated from. Shared so the code and its data
+@@ -939,18 +948,23 @@ pvr_shader_compile_compute(pco_ctx *ctx, struct nir_shader *nir, pco_data *data,
+ 
+ bool
+ pvr_shader_eot_create(pco_ctx *ctx, struct pvr_shader_eot *eot,
+-                      const uint32_t state_words[2])
++                      unsigned nr_attachments, const uint32_t *state_words)
+ {
+    nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, pco_nir_options(),
+                                                   "pvr_eot");
+-   nir_def *state0 = nir_imm_int(&b, state_words[0]);
+-   nir_def *state1 = nir_imm_int(&b, state_words[1]);
+-   nir_intrinsic_instr *last = nir_emitpix_pco(&b, state0, state1);
++   nir_intrinsic_instr *last = NULL;
++   /* One pixel-event emit per colour attachment, as the reference's pvr_usc_eot: a wop between
++    * emits so the PBE processes them in order, and the last one owns the pixel (freep). */
++   for (unsigned u = 0; u < nr_attachments; u++) {
++      if (u > 0)
++         nir_wop_pco(&b);
++      last = nir_emitpix_pco(&b, nir_imm_int(&b, state_words[2 * u]),
++                             nir_imm_int(&b, state_words[2 * u + 1]));
++   }
+    pco_data data = { .fs.uses.olchk_skip = true };
+ 
+-   /* The reference marks the last emit as owning the pixel: `freep` releases the pixel for the
+-    * next EOT in the tile. */
+-   nir_intrinsic_set_freep(last, true);
++   if (last != NULL)
++      nir_intrinsic_set_freep(last, true);
+    nir_jump(&b, nir_jump_return);
+ 
+    if (!pvr_shader_compile_data(ctx, b.shader, &data, &eot->pco, &eot->binary,
+diff --git a/src/gallium/drivers/pvr_native/pvr_shader.h b/src/gallium/drivers/pvr_native/pvr_shader.h
+index 9fec3797..669ec1de 100644
+--- a/src/gallium/drivers/pvr_native/pvr_shader.h
++++ b/src/gallium/drivers/pvr_native/pvr_shader.h
+@@ -13,6 +13,7 @@
+ #include <stdint.h>
+ 
+ #include "pco/pco.h"
++#include "common/pvr_limits.h"
+ #include "nir/nir_lower_blend.h"
+ 
+ #include "util/format/u_formats.h"
+@@ -31,7 +32,7 @@ struct pvr_shader_eot {
+ };
+ 
+ bool pvr_shader_eot_create(pco_ctx *ctx, struct pvr_shader_eot *eot,
+-                           const uint32_t state_words[2]);
++                           unsigned nr_attachments, const uint32_t *state_words);
+ 
+ /* One compiled shader: the pco shader and the microcode it encoded. */
+ /* A combined image sampler in shared registers: image words, image meta, sampler words, sampler
+@@ -78,7 +79,8 @@ struct pvr_shader {
+     * last variant (owned here). */
+    struct nir_shader *src_nir;
+    struct {
+-      enum pipe_format format;
++      enum pipe_format formats[PVR_MAX_COLOR_ATTACHMENTS];
++      unsigned nr_formats;
+       nir_lower_blend_options blend;
+       struct pvr_shader *sh;
+    } variants[PVR_SHADER_MAX_VARIANTS];
+@@ -134,7 +136,8 @@ struct pvr_shader *pvr_shader_create(struct nir_shader *nir, pco_ctx *ctx);
+ /* A fragment shader built for one colour-buffer format: gl_FragColor/DATA0 is packed to that format
+  * in output register 0, which is what the end-of-tile program reads. */
+ struct pvr_shader *pvr_shader_create_fs(struct nir_shader *nir, pco_ctx *ctx,
+-                                        enum pipe_format color_format,
++                                        const enum pipe_format *color_formats,
++                                        unsigned nr_formats,
+                                         const nir_lower_blend_options *blend);
+ 
+ /* Compile any stage and hand back pco's data section as well (the compute path needs it). */
+-- 
+2.47.3
+

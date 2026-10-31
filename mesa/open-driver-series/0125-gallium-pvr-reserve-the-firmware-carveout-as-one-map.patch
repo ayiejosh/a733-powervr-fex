@@ -1,7 +1,7 @@
-From 6b26dcf87367a7e8e648a2692d0cd6b774afa211 Mon Sep 17 00:00:00 2001
+From 716d75237046adfce353ca947eccca20ca227781 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Fri, 16 Oct 2026 15:42:50 +0800
-Subject: [PATCH 125/269] gallium/pvr: reserve the firmware carveout as one
+Subject: [PATCH 125/294] gallium/pvr: reserve the firmware carveout as one
  mapping, not one per area
 
 The build-up to CREATE_CONTEXT needs the firmware's static memory, and the first

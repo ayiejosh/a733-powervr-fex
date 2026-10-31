@@ -1,0 +1,94 @@
+From 3ea2916ad9aef33974922c38b70075748f77756d Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sat, 10 Oct 2026 19:41:38 +0800
+Subject: [PATCH 69/73] pvr: don't wait for the previous submit's jobs in
+ vkQueueSubmit
+
+pvr_clear_last_submits_syncs() CPU-waited for and destroyed the job
+signal syncs of the previous submit, so every vkQueueSubmit() blocked
+until the previous submit had finished on the GPU and two submits were
+never in flight at once. Keep them instead: barriers and queue signals
+in later submits already wait on them on the GPU, and
+pvr_update_job_syncs() drops each one when a job of its type replaces
+it. Semaphore waits that no job consumed are still waited for here.
+
+BXM-4-64, vkrender with three frames in flight (a fence per frame):
+render 512 0.40-0.41 -> 0.34-0.36 ms, render+copy 512 0.70-0.71 ->
+0.54-0.63 ms, render 2048 2.14-2.27 -> 1.88-2.29 ms. With a fence wait
+after every frame (600 frames, 8 runs, pinned to the A76 cores): render
+512 0.3685 -> 0.3625 ms; the other vkrender modes and vkheavy unchanged.
+
+CTS (synchronization list 1718 + 5062 + 9170 + 838 + 282 cases) was run
+with this and the other three commits of this series applied: identical
+to before, except one case that ran into the kernel's 500 ms job timeout
+(memory.pipeline_barrier.graphics.host_write_vertex_buffer.1048576_vertex_buffer_stride_2,
+which passes in 20+ other runs; kernel timeout recovery bug). weston +
+weston-simple-egl + vkcube: OK.
+---
+ src/imagination/vulkan/pvr_arch_queue.c | 27 +++++++++++--------------
+ 1 file changed, 12 insertions(+), 15 deletions(-)
+
+diff --git a/src/imagination/vulkan/pvr_arch_queue.c b/src/imagination/vulkan/pvr_arch_queue.c
+index 2664cfa..42aeb84 100644
+--- a/src/imagination/vulkan/pvr_arch_queue.c
++++ b/src/imagination/vulkan/pvr_arch_queue.c
+@@ -922,9 +922,17 @@ static VkResult pvr_process_cmd_buffer(struct pvr_device *device,
+    return VK_SUCCESS;
+ }
+ 
++/*
++ * Semaphore waits of the previous submit that no job consumed (no job of that
++ * type) are waited for here, as before. The previous submit's job signal syncs
++ * are kept rather than waited for: barriers and queue signals in later submits
++ * wait on them on the GPU side, and pvr_update_job_syncs() drops each one when
++ * a job of its type replaces it. Waiting for them here blocked every
++ * vkQueueSubmit() until the previous submit had finished on the GPU.
++ */
+ static VkResult pvr_clear_last_submits_syncs(struct pvr_queue *queue)
+ {
+-   struct vk_sync_wait waits[PVR_JOB_TYPE_MAX * 2];
++   struct vk_sync_wait waits[PVR_JOB_TYPE_MAX];
+    uint32_t wait_count = 0;
+    VkResult result;
+ 
+@@ -936,22 +944,16 @@ static VkResult pvr_clear_last_submits_syncs(struct pvr_queue *queue)
+             .wait_value = 0,
+          };
+       }
+-
+-      if (queue->last_job_signal_sync[i]) {
+-         waits[wait_count++] = (struct vk_sync_wait){
+-            .sync = queue->last_job_signal_sync[i],
+-            .stage_mask = ~(VkPipelineStageFlags2)0,
+-            .wait_value = 0,
+-         };
+-      }
+    }
+ 
++   if (!wait_count)
++      return VK_SUCCESS;
++
+    result = vk_sync_wait_many(&queue->device->vk,
+                               wait_count,
+                               waits,
+                               VK_SYNC_WAIT_COMPLETE,
+                               UINT64_MAX);
+-
+    if (result != VK_SUCCESS)
+       return vk_error(queue, result);
+ 
+@@ -960,11 +962,6 @@ static VkResult pvr_clear_last_submits_syncs(struct pvr_queue *queue)
+          vk_sync_destroy(&queue->device->vk, queue->next_job_wait_sync[i]);
+          queue->next_job_wait_sync[i] = NULL;
+       }
+-
+-      if (queue->last_job_signal_sync[i]) {
+-         vk_sync_destroy(&queue->device->vk, queue->last_job_signal_sync[i]);
+-         queue->last_job_signal_sync[i] = NULL;
+-      }
+    }
+ 
+    return VK_SUCCESS;
+-- 
+2.47.3
+

@@ -1,7 +1,7 @@
-From dcd4d261ca03ec085a7411e827ab26fb3bc7328f Mon Sep 17 00:00:00 2001
+From 03af16c845f3c2dffc4ebd1a158f1e45447c5bef Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Wed, 14 Oct 2026 02:03:37 +0800
-Subject: [PATCH 105/105] pvr/powervr: register the emulated timeline sync type
+Subject: [PATCH 105/294] pvr/powervr: register the emulated timeline sync type
  only without kernel timeline syncobj
 
 The winsys always appended the emulated timeline sync type after the DRM
@@ -26,7 +26,7 @@ used by the job paths.
  3 files changed, 15 insertions(+), 41 deletions(-)
 
 diff --git a/src/imagination/vulkan/pvr_arch_queue.c b/src/imagination/vulkan/pvr_arch_queue.c
-index 42aeb84..657f076 100644
+index 42aeb84f..657f076e 100644
 --- a/src/imagination/vulkan/pvr_arch_queue.c
 +++ b/src/imagination/vulkan/pvr_arch_queue.c
 @@ -150,27 +150,8 @@ static VkResult pvr_queue_init(struct pvr_device *device,
@@ -69,7 +69,7 @@ index 42aeb84..657f076 100644
     for (uint32_t i = 0; i < ARRAY_SIZE(queue->next_job_wait_sync); i++) {
        if (queue->next_job_wait_sync[i])
 diff --git a/src/imagination/vulkan/pvr_queue.h b/src/imagination/vulkan/pvr_queue.h
-index b5194a9..1bb4ea4 100644
+index b5194a93..1bb4ea43 100644
 --- a/src/imagination/vulkan/pvr_queue.h
 +++ b/src/imagination/vulkan/pvr_queue.h
 @@ -39,13 +39,6 @@ struct pvr_queue {
@@ -87,7 +87,7 @@ index b5194a9..1bb4ea4 100644
  
  VK_DEFINE_HANDLE_CASTS(pvr_queue, vk.base, VkQueue, VK_OBJECT_TYPE_QUEUE)
 diff --git a/src/imagination/vulkan/winsys/powervr/pvr_drm.c b/src/imagination/vulkan/winsys/powervr/pvr_drm.c
-index bdac96b..d03ad5f 100644
+index bdac96bb..d03ad5fd 100644
 --- a/src/imagination/vulkan/winsys/powervr/pvr_drm.c
 +++ b/src/imagination/vulkan/winsys/powervr/pvr_drm.c
 @@ -678,6 +678,7 @@ VkResult pvr_drm_winsys_create(const int render_fd,

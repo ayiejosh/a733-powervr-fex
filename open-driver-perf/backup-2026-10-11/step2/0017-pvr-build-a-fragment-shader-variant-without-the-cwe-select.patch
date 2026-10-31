@@ -1,0 +1,604 @@
+From c87374c4c6f11358c708f8df0dcbeccfccf9846a Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Tue, 13 Oct 2026 14:56:01 +0800
+Subject: [PATCH] pvr: build a fragment shader variant without the colour write
+ enable select
+
+zink makes the colour write enables dynamic state for every pipeline, so every
+fragment shader ends with a read of the framebuffer under an ordering lock and
+a select between the old and the new colour, even though nearly every draw
+writes all outputs. That costs 5-18% on light fragment shaders.
+
+Build a second fragment shader for graphics pipelines whose colour write
+enables can leave an output masked: the same NIR lowered with the new
+pco_fs_data.no_cwe flag (the preprocess then does not set
+meta_present.color_write_enable), translated, encoded and uploaded with the
+existing helpers by swapping the primary and alternate slots. The variant is
+dropped if it spills, if the shader has no colour write enable mask, or if the
+two builds do not agree on coefficients, uses, multiview and tile buffers.
+
+At draw time pvr_gfx_select_fs_variant() picks the variant when no output the
+shader writes is masked (!pvr_fs_cwe_reads_fb) and reports whether the choice
+changed; the caller marks the fragment descriptors dirty after it recomputed
+them from the pipeline bind, so a flip always re-emits the fragment state.
+Changes of the rasterizer discard state also mark them dirty. Everything that
+reads the fragment shader data or state goes through pvr_gfx_fs_data() and
+pvr_gfx_fs_state(); the shared register count is the maximum of both builds.
+The variant is freed by one helper on destroy and on the error paths of the
+pipeline compile.
+
+glmark2 off-screen (zink), noaltfs -> default: loop 764 -> 877, desktop shadow
+277 -> 327, effect2d 445 -> 505, jellyfish 248 -> 270, shadow 283 -> 314,
+function 576 -> 590 FPS. CTS cwe2, robust, ubo, nullimg, pco, cf (without the
+8-bit subgroup vote cases that hang the compiler on every build), cf2, tfbc2,
+loops, compute, caselist 1-3, dr_list, rp_extra and a 12000-case sample give
+the same results as before; the few single cases that differed while four test
+processes shared the GPU pass when run alone on every build. glmark2
+--validate 27/0, and a Vulkan test that flips the colour write enable between
+draws of one pipeline passes. PVR_DEBUG=noaltfs turns it off.
+---
+ src/imagination/common/pvr_debug.c           |   2 +
+ src/imagination/common/pvr_debug.h           |   1 +
+ src/imagination/pco/pco_data.h               |   4 +
+ src/imagination/vulkan/pvr_arch_cmd_buffer.c |  78 ++++++--
+ src/imagination/vulkan/pvr_arch_pipeline.c   | 193 ++++++++++++++++++-
+ src/imagination/vulkan/pvr_cmd_buffer.h      |   2 +
+ src/imagination/vulkan/pvr_pipeline.h        |   7 +
+ 7 files changed, 270 insertions(+), 17 deletions(-)
+
+diff --git a/src/imagination/common/pvr_debug.c b/src/imagination/common/pvr_debug.c
+index 696aad8..24a9e29 100644
+--- a/src/imagination/common/pvr_debug.c
++++ b/src/imagination/common/pvr_debug.c
+@@ -42,6 +42,8 @@ static const struct debug_named_value debug_control[] = {
+      "Disable lossless TFBC frame buffer compression." },
+    { "noclearfold", PVR_DEBUG_NO_CLEAR_FOLD,
+      "Submit every clear-only render pass instead of folding it into a later pass." },
++   { "noaltfs", PVR_DEBUG_NO_ALT_FS,
++     "Do not build the fragment shader variant without the colour write enable select." },
+    DEBUG_NAMED_VALUE_END
+ };
+ /* clang-format on */
+diff --git a/src/imagination/common/pvr_debug.h b/src/imagination/common/pvr_debug.h
+index 06751c6..a87f4be 100644
+--- a/src/imagination/common/pvr_debug.h
++++ b/src/imagination/common/pvr_debug.h
+@@ -40,6 +40,7 @@ extern uint32_t PVR_DEBUG;
+ #define PVR_DEBUG_INFO BITFIELD_BIT(3)
+ #define PVR_DEBUG_NO_FBC BITFIELD_BIT(4)
+ #define PVR_DEBUG_NO_CLEAR_FOLD BITFIELD_BIT(5)
++#define PVR_DEBUG_NO_ALT_FS BITFIELD_BIT(6)
+ 
+ void pvr_process_debug_variable(void);
+ 
+diff --git a/src/imagination/pco/pco_data.h b/src/imagination/pco/pco_data.h
+index 241d4a3..6b022fa 100644
+--- a/src/imagination/pco/pco_data.h
++++ b/src/imagination/pco/pco_data.h
+@@ -150,6 +150,10 @@ typedef struct _pco_fs_data {
+     * reads the framebuffer for them only when one of these bits is clear.
+     */
+    uint32_t cwe_meta_mask;
++   /* Built for the draws that enable every colour output: no colour write
++    * enable select is inserted.
++    */
++   bool no_cwe;
+ } pco_fs_data;
+ 
+ /** PCO compute shader-specific data. */
+diff --git a/src/imagination/vulkan/pvr_arch_cmd_buffer.c b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
+index fb8e8d8..fde135e 100644
+--- a/src/imagination/vulkan/pvr_arch_cmd_buffer.c
++++ b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
+@@ -125,6 +125,25 @@ struct pvr_renderpass_hwsetup_render *pvr_arch_pass_info_get_hw_render(
+ 
+ static void pvr_clear_fold_flush(struct pvr_cmd_buffer *cmd_buffer);
+ 
++/* The fragment shader build the draws use: the alternate one has no colour
++ * write enable select, see pvr_gfx_select_fs_variant().
++ */
++static inline const pco_data *
++pvr_gfx_fs_data(const struct pvr_cmd_buffer_state *state)
++{
++   return state->fs_alt && state->gfx_pipeline->has_alt_fs
++             ? &state->gfx_pipeline->fs_data_alt
++             : &state->gfx_pipeline->fs_data;
++}
++
++static inline const struct pvr_fragment_shader_state *
++pvr_gfx_fs_state(const struct pvr_cmd_buffer_state *state)
++{
++   return state->fs_alt && state->gfx_pipeline->has_alt_fs
++             ? &state->gfx_pipeline->fragment_alt
++             : &state->gfx_pipeline->shader_state.fragment;
++}
++
+ static void pvr_cmd_buffer_free_sub_cmd(struct pvr_cmd_buffer *cmd_buffer,
+                                         struct pvr_sub_cmd *sub_cmd)
+ {
+@@ -6471,7 +6490,7 @@ static VkResult pvr_setup_descriptor_mappings(
+ 
+    case PVR_STAGE_ALLOCATION_FRAGMENT:
+       desc_state = &cmd_buffer->state.gfx_desc_state;
+-      data = &cmd_buffer->state.gfx_pipeline->fs_data;
++      data = pvr_gfx_fs_data(&cmd_buffer->state);
+       break;
+ 
+    case PVR_STAGE_ALLOCATION_COMPUTE:
+@@ -6785,7 +6804,7 @@ static VkResult pvr_setup_descriptor_mappings(
+                &device->tile_buffer_state;
+             const struct pvr_graphics_pipeline *const gfx_pipeline =
+                cmd_buffer->state.gfx_pipeline;
+-            const pco_data *const fs_data = &gfx_pipeline->fs_data;
++            const pco_data *const fs_data = pvr_gfx_fs_data(&cmd_buffer->state);
+ 
+             unsigned num_tile_buffers =
+                fs_data->fs.tile_buffers.count / fs_data->fs.tile_buffers.stride;
+@@ -7494,6 +7513,11 @@ static uint32_t pvr_calc_shared_regs_count(
+ 
+    if (gfx_pipeline->shader_state.fragment.shader_bo) {
+       uint32_t fragment_regs = gfx_pipeline->fs_data.common.shareds;
++
++      if (gfx_pipeline->has_alt_fs) {
++         fragment_regs =
++            MAX2(fragment_regs, gfx_pipeline->fs_data_alt.common.shareds);
++      }
+       shared_regs = MAX2(shared_regs, fragment_regs);
+    }
+ 
+@@ -7549,7 +7573,7 @@ static void pvr_setup_output_select(struct pvr_cmd_buffer *const cmd_buffer)
+    struct ROGUE_TA_STATE_HEADER *const header = &cmd_buffer->state.emit_header;
+    struct pvr_ppp_state *const ppp_state = &cmd_buffer->state.ppp_state;
+    const pco_data *const vs_data = &gfx_pipeline->vs_data;
+-   const pco_data *const fs_data = &gfx_pipeline->fs_data;
++   const pco_data *const fs_data = pvr_gfx_fs_data(&cmd_buffer->state);
+    uint32_t output_selects;
+    uint32_t varying[2];
+ 
+@@ -7666,7 +7690,7 @@ pvr_setup_isp_faces_and_control(struct pvr_cmd_buffer *const cmd_buffer,
+ {
+    struct ROGUE_TA_STATE_HEADER *const header = &cmd_buffer->state.emit_header;
+    const struct pvr_fragment_shader_state *const fragment_shader_state =
+-      &cmd_buffer->state.gfx_pipeline->shader_state.fragment;
++      pvr_gfx_fs_state(&cmd_buffer->state);
+    const struct pvr_render_pass_info *const pass_info =
+       &cmd_buffer->state.render_pass_info;
+    struct vk_dynamic_graphics_state *dynamic_state =
+@@ -8235,7 +8259,7 @@ setup_pds_fragment_program(struct pvr_cmd_buffer *const cmd_buffer,
+ {
+    struct pvr_cmd_buffer_state *const state = &cmd_buffer->state;
+    const struct pvr_fragment_shader_state *const fragment_shader_state =
+-      &state->gfx_pipeline->shader_state.fragment;
++      pvr_gfx_fs_state(state);
+    const struct vk_dynamic_graphics_state *const dynamic_state =
+       &cmd_buffer->vk.dynamic_graphics_state;
+    const struct pvr_pds_kickusc_program *program =
+@@ -8281,7 +8305,7 @@ setup_pds_coeff_program(struct pvr_cmd_buffer *const cmd_buffer,
+ {
+    struct pvr_cmd_buffer_state *const state = &cmd_buffer->state;
+    const struct pvr_fragment_shader_state *const fragment_shader_state =
+-      &state->gfx_pipeline->shader_state.fragment;
++      pvr_gfx_fs_state(state);
+    const struct vk_dynamic_graphics_state *const dynamic_state =
+       &cmd_buffer->vk.dynamic_graphics_state;
+    const VkProvokingVertexModeEXT provoking_vertex =
+@@ -8348,10 +8372,10 @@ pvr_setup_fragment_state_pointers(struct pvr_cmd_buffer *const cmd_buffer,
+                                   struct pvr_sub_cmd_gfx *const sub_cmd)
+ {
+    struct pvr_cmd_buffer_state *const state = &cmd_buffer->state;
+-   const pco_data *const fs_data = &state->gfx_pipeline->fs_data;
++   const pco_data *const fs_data = pvr_gfx_fs_data(state);
+ 
+    const struct pvr_fragment_shader_state *const fragment_shader_state =
+-      &state->gfx_pipeline->shader_state.fragment;
++      pvr_gfx_fs_state(state);
+    const struct pvr_stage_allocation_descriptor_state *descriptor_shader_state =
+       &fragment_shader_state->descriptor_state;
+    const struct pvr_pipeline_stage_state *fragment_state =
+@@ -8981,7 +9005,7 @@ pvr_emit_dirty_ppp_state(struct pvr_cmd_buffer *const cmd_buffer,
+    struct vk_dynamic_graphics_state *const dynamic_state =
+       &cmd_buffer->vk.dynamic_graphics_state;
+    const struct pvr_fragment_shader_state *fragment_state =
+-      &state->gfx_pipeline->shader_state.fragment;
++      pvr_gfx_fs_state(state);
+    VkResult result;
+ 
+    /* TODO: The emit_header will be dirty only if
+@@ -9010,8 +9034,8 @@ pvr_emit_dirty_ppp_state(struct pvr_cmd_buffer *const cmd_buffer,
+                   !pvr_needs_fs_passthrough(dynamic_state);
+    if (!dynamic_state->rs.rasterizer_discard_enable &&
+        state->dirty.fragment_descriptors &&
+-       state->gfx_pipeline->shader_state.fragment.shader_bo &&
+-       !state->gfx_pipeline->fs_data.common.uses.empty && !skip_fs) {
++       pvr_gfx_fs_state(state)->shader_bo &&
++       !pvr_gfx_fs_data(state)->common.uses.empty && !skip_fs) {
+       result = pvr_setup_fragment_state_pointers(cmd_buffer, sub_cmd);
+       if (result != VK_SUCCESS)
+          return result;
+@@ -9261,6 +9285,27 @@ static void pvr_emit_dirty_vdm_state(struct pvr_cmd_buffer *const cmd_buffer,
+    pvr_csb_clear_relocation_mark(csb);
+ }
+ 
++/* Picks the fragment shader build for the draw: the one without the colour
++ * write enable select when every colour output the shader writes is enabled.
++ * Returns its data, and whether the choice changed since the last draw: the
++ * caller marks the fragment descriptors dirty, after it has recomputed them.
++ */
++static const pco_data *
++pvr_gfx_select_fs_variant(struct pvr_cmd_buffer *cmd_buffer, bool *flipped)
++{
++   struct pvr_cmd_buffer_state *const state = &cmd_buffer->state;
++   const struct pvr_graphics_pipeline *const gfx_pipeline = state->gfx_pipeline;
++   const bool alt =
++      gfx_pipeline->has_alt_fs &&
++      !pvr_fs_cwe_reads_fb(&cmd_buffer->vk.dynamic_graphics_state,
++                           &gfx_pipeline->fs_data.fs);
++
++   *flipped = alt != state->fs_alt;
++   state->fs_alt = alt;
++
++   return pvr_gfx_fs_data(state);
++}
++
+ static VkResult pvr_validate_draw_state(struct pvr_cmd_buffer *cmd_buffer)
+ {
+    struct pvr_cmd_buffer_state *const state = &cmd_buffer->state;
+@@ -9268,7 +9313,9 @@ static VkResult pvr_validate_draw_state(struct pvr_cmd_buffer *cmd_buffer)
+       &cmd_buffer->vk.dynamic_graphics_state;
+    const struct pvr_graphics_pipeline *const gfx_pipeline = state->gfx_pipeline;
+    const pco_data *const vs_data = &gfx_pipeline->vs_data;
+-   const pco_data *const fs_data = &gfx_pipeline->fs_data;
++   bool fs_flipped;
++   const pco_data *const fs_data =
++      pvr_gfx_select_fs_variant(cmd_buffer, &fs_flipped);
+    struct pvr_sub_cmd_gfx *sub_cmd;
+    bool fstencil_writemask_zero;
+    bool bstencil_writemask_zero;
+@@ -9392,6 +9439,7 @@ static VkResult pvr_validate_draw_state(struct pvr_cmd_buffer *cmd_buffer)
+     */
+    state->dirty.vertex_descriptors |= state->dirty.gfx_desc_dirty;
+    state->dirty.fragment_descriptors |= state->dirty.gfx_desc_dirty;
++   state->dirty.fragment_descriptors |= fs_flipped;
+ 
+    if (BITSET_TEST(dynamic_state->dirty, MESA_VK_DYNAMIC_CB_BLEND_CONSTANTS) ||
+        BITSET_TEST(dynamic_state->dirty, MESA_VK_DYNAMIC_RS_FRONT_FACE) ||
+@@ -9402,13 +9450,15 @@ static VkResult pvr_validate_draw_state(struct pvr_cmd_buffer *cmd_buffer)
+        BITSET_TEST(dynamic_state->dirty,
+                    MESA_VK_DYNAMIC_MS_ALPHA_TO_COVERAGE_ENABLE) ||
+        BITSET_TEST(dynamic_state->dirty, MESA_VK_DYNAMIC_MS_SAMPLE_MASK) ||
++       BITSET_TEST(dynamic_state->dirty,
++                   MESA_VK_DYNAMIC_RS_RASTERIZER_DISCARD_ENABLE) ||
+        BITSET_TEST(dynamic_state->dirty,
+                    MESA_VK_DYNAMIC_MS_RASTERIZATION_SAMPLES)) {
+       state->dirty.fragment_descriptors = true;
+    }
+ 
+    const struct pvr_fragment_shader_state *const fragment_shader_state =
+-      &gfx_pipeline->shader_state.fragment;
++      pvr_gfx_fs_state(state);
+    bool skip_fs = fragment_shader_state->is_passthrough &&
+                   !pvr_needs_fs_passthrough(dynamic_state);
+ 
+@@ -9416,7 +9466,7 @@ static VkResult pvr_validate_draw_state(struct pvr_cmd_buffer *cmd_buffer)
+       result = pvr_setup_descriptor_mappings(
+          cmd_buffer,
+          PVR_STAGE_ALLOCATION_FRAGMENT,
+-         &state->gfx_pipeline->shader_state.fragment.descriptor_state,
++         &pvr_gfx_fs_state(state)->descriptor_state,
+          NULL,
+          &state->pds_fragment_descriptor_data_offset);
+       if (result != VK_SUCCESS) {
+diff --git a/src/imagination/vulkan/pvr_arch_pipeline.c b/src/imagination/vulkan/pvr_arch_pipeline.c
+index 3de794b..7013288 100644
+--- a/src/imagination/vulkan/pvr_arch_pipeline.c
++++ b/src/imagination/vulkan/pvr_arch_pipeline.c
+@@ -24,6 +24,7 @@
+  * SOFTWARE.
+  */
+ 
++#include "pvr_debug.h"
+ #include "pvr_pipeline.h"
+ 
+ #include <assert.h>
+@@ -964,6 +965,17 @@ static void pvr_early_init_shader_data(pco_data *data,
+                                        const void *pCreateInfo,
+                                        struct pvr_device *const device);
+ 
++/* Whether the colour write enables of the pipeline can leave an output
++ * masked out.
++ */
++static bool
++pvr_cb_color_write_enable_possible(const struct vk_graphics_pipeline_state *state)
++{
++   return BITSET_TEST(state->dynamic, MESA_VK_DYNAMIC_CB_COLOR_WRITE_ENABLES) ||
++          (state->cb && state->cb->color_write_enables !=
++                           BITFIELD_MASK(MESA_VK_MAX_COLOR_ATTACHMENTS));
++}
++
+ static void
+ pvr_preprocess_shader_data(pco_data *data,
+                            nir_shader *nir,
+@@ -1364,6 +1376,24 @@ static void pvr_pipeline_destroy_shader_data(pco_data *data)
+    }
+ }
+ 
++static void
++pvr_destroy_alt_fragment_variant(struct pvr_device *const device,
++                                 const VkAllocationCallbacks *const allocator,
++                                 struct pvr_graphics_pipeline *const gfx_pipeline)
++{
++   struct pvr_fragment_shader_state *alt = &gfx_pipeline->fragment_alt;
++
++   if (!gfx_pipeline->has_alt_fs)
++      return;
++
++   pvr_pds_descriptor_program_destroy(device, allocator, &alt->descriptor_state);
++   vk_free2(&device->vk.alloc, allocator, alt->pds_fragment_program_buffer);
++   vk_free2(&device->vk.alloc, allocator, alt->pds_coeff_program_buffer);
++   pvr_bo_suballoc_free(alt->shader_bo);
++   pvr_pipeline_destroy_shader_data(&gfx_pipeline->fs_data_alt);
++   gfx_pipeline->has_alt_fs = false;
++}
++
+ static void
+ pvr_graphics_pipeline_destroy(struct pvr_device *const device,
+                               const VkAllocationCallbacks *const allocator,
+@@ -1406,6 +1436,8 @@ pvr_graphics_pipeline_destroy(struct pvr_device *const device,
+    pvr_pipeline_destroy_shader_data(&gfx_pipeline->vs_data);
+    pvr_pipeline_destroy_shader_data(&gfx_pipeline->fs_data);
+ 
++   pvr_destroy_alt_fragment_variant(device, allocator, gfx_pipeline);
++
+    vk_free2(&device->vk.alloc, allocator, gfx_pipeline->vs_stats);
+    vk_free2(&device->vk.alloc, allocator, gfx_pipeline->fs_stats);
+ 
+@@ -2848,9 +2880,7 @@ pvr_preprocess_shader_data(pco_data *data,
+          state->ms->rasterization_samples == VK_SAMPLE_COUNT_1_BIT &&
+          (state->ms->sample_mask & 1) && !state->ms->sample_shading_enable;
+ 
+-      if (BITSET_TEST(state->dynamic, MESA_VK_DYNAMIC_CB_COLOR_WRITE_ENABLES) ||
+-          (state->cb && state->cb->color_write_enables !=
+-                           BITFIELD_MASK(MESA_VK_MAX_COLOR_ATTACHMENTS))) {
++      if (!data->fs.no_cwe && pvr_cb_color_write_enable_possible(state)) {
+          data->fs.meta_present.color_write_enable = true;
+       }
+       if (BITSET_TEST(state->dynamic, MESA_VK_DYNAMIC_MS_ALPHA_TO_ONE_ENABLE) ||
+@@ -3045,6 +3075,102 @@ pvr_graphics_lower_stage(pco_ctx *pco_ctx,
+    pvr_postprocess_shader_data(data, nir, pCreateInfo, layout, mrt_setup);
+ }
+ 
++/* True if the job and PPP state that only follows the pipeline bind stays valid
++ * when draws switch between two builds of the fragment shader.
++ */
++static bool pvr_fs_variants_compatible(const pco_data *a, const pco_data *b)
++{
++   return a->common.coeffs == b->common.coeffs &&
++          a->common.multiview == b->common.multiview &&
++          !memcmp(&a->common.uses, &b->common.uses, sizeof(a->common.uses)) &&
++          !memcmp(&a->fs.tile_buffers,
++                  &b->fs.tile_buffers,
++                  sizeof(a->fs.tile_buffers)) &&
++          a->fs.uses.w == b->fs.uses.w && a->fs.uses.z == b->fs.uses.z &&
++          a->fs.uses.pntc == b->fs.uses.pntc &&
++          a->fs.uses.phase_change == b->fs.uses.phase_change &&
++          a->fs.uses.fbfetch == b->fs.uses.fbfetch &&
++          a->fs.uses.depth_feedback == b->fs.uses.depth_feedback &&
++          a->fs.uses.discard == b->fs.uses.discard &&
++          a->fs.uses.sample_shading == b->fs.uses.sample_shading &&
++          a->fs.uses.sample_locations == b->fs.uses.sample_locations &&
++          a->fs.uses.alpha_to_coverage == b->fs.uses.alpha_to_coverage &&
++          a->fs.uses.fbfetch_static == b->fs.uses.fbfetch_static;
++}
++
++/* Builds the alternate fragment shader variant with the pipeline's own helpers:
++ * the checked variant is moved out of the primary slots while they are filled,
++ * then the new one is moved into the alternate slots. A failure only drops the
++ * variant.
++ */
++static void
++pvr_build_alt_fragment_variant(struct pvr_device *device,
++                               const VkAllocationCallbacks *allocator,
++                               struct vk_pipeline_layout *layout,
++                               struct pvr_graphics_pipeline *gfx_pipeline,
++                               pco_shader *alt_fs,
++                               nir_shader *alt_nir,
++                               uint32_t cache_line_size)
++{
++   struct pvr_fragment_shader_state *slot =
++      &gfx_pipeline->shader_state.fragment;
++   const pco_data checked_data = gfx_pipeline->fs_data;
++   const struct pvr_fragment_shader_state checked_state = *slot;
++   VkResult result;
++
++   memset(slot, 0, sizeof(*slot));
++   pvr_fragment_state_save(gfx_pipeline, alt_fs);
++
++   if (!pvr_fs_variants_compatible(&checked_data, &gfx_pipeline->fs_data))
++      goto err_destroy_data;
++
++   pvr_graphics_pipeline_setup_fragment_coeff_program(gfx_pipeline, alt_nir);
++
++   result = pvr_gpu_upload_usc(device,
++                               pco_shader_binary_data(alt_fs),
++                               pco_shader_binary_size(alt_fs),
++                               cache_line_size,
++                               &slot->shader_bo);
++   if (result != VK_SUCCESS)
++      goto err_destroy_data;
++
++   result = pvr_pds_coeff_program_create_and_upload(device, allocator, slot);
++   if (result != VK_SUCCESS)
++      goto err_free_bo;
++
++   result = pvr_pds_fragment_program_create(device, allocator, alt_fs, slot);
++   if (result != VK_SUCCESS)
++      goto err_free_coeff_program;
++
++   result =
++      pvr_pds_descriptor_program_create_and_upload(device,
++                                                   allocator,
++                                                   layout,
++                                                   MESA_SHADER_FRAGMENT,
++                                                   &gfx_pipeline->fs_data,
++                                                   &slot->descriptor_state);
++   if (result != VK_SUCCESS)
++      goto err_free_frag_program;
++
++   gfx_pipeline->fs_data_alt = gfx_pipeline->fs_data;
++   gfx_pipeline->fragment_alt = *slot;
++   gfx_pipeline->has_alt_fs = true;
++   goto restore;
++
++err_free_frag_program:
++   vk_free2(&device->vk.alloc, allocator, slot->pds_fragment_program_buffer);
++err_free_coeff_program:
++   vk_free2(&device->vk.alloc, allocator, slot->pds_coeff_program_buffer);
++err_free_bo:
++   pvr_bo_suballoc_free(slot->shader_bo);
++err_destroy_data:
++   pvr_pipeline_destroy_shader_data(&gfx_pipeline->fs_data);
++
++restore:
++   gfx_pipeline->fs_data = checked_data;
++   *slot = checked_state;
++}
++
+ static VkResult
+ pvr_graphics_pipeline_compile(struct pvr_device *const device,
+                               struct vk_pipeline_cache *cache,
+@@ -3192,12 +3318,27 @@ pvr_graphics_pipeline_compile(struct pvr_device *const device,
+     * versioned descriptor checks (see below).
+     */
+    nir_shader *unversioned_nir[MESA_SHADER_STAGES] = { 0 };
++   nir_shader *alt_fs_nir = NULL;
++   pco_data *alt_fs_data = NULL;
++   pco_shader *alt_fs_shader = NULL;
+    pco_data *unversioned_data[MESA_SHADER_STAGES] = { 0 };
+ 
+    for (mesa_shader_stage stage = 0; stage < MESA_SHADER_STAGES; ++stage) {
+       if (!nir_shaders[stage])
+          continue;
+ 
++      /* A variant of the fragment shader without the colour write enable
++       * select, for the draws that write every colour output.
++       */
++      if (stage == MESA_SHADER_FRAGMENT && !build_fs_passthrough &&
++          !PVR_IS_DEBUG_SET(NO_ALT_FS) &&
++          pvr_cb_color_write_enable_possible(state)) {
++         alt_fs_nir = nir_shader_clone(shader_mem_ctx, nir_shaders[stage]);
++         alt_fs_data = ralloc(shader_mem_ctx, pco_data);
++         *alt_fs_data = shader_data[stage];
++         alt_fs_data->fs.no_cwe = true;
++      }
++
+       if (shader_data[stage].common.robust_buffer_access ||
+           shader_data[stage].common.null_descriptor) {
+          unversioned_nir[stage] =
+@@ -3213,6 +3354,21 @@ pvr_graphics_pipeline_compile(struct pvr_device *const device,
+                                layout,
+                                state,
+                                &mrt_setup);
++
++      /* Without a colour write enable mask both builds would be the same. */
++      if (stage == MESA_SHADER_FRAGMENT && alt_fs_nir &&
++          !shader_data[stage].fs.cwe_meta_mask)
++         alt_fs_nir = NULL;
++
++      if (stage == MESA_SHADER_FRAGMENT && alt_fs_nir) {
++         pvr_graphics_lower_stage(pco_ctx,
++                                  alt_fs_nir,
++                                  alt_fs_data,
++                                  pCreateInfo,
++                                  layout,
++                                  state,
++                                  &mrt_setup);
++      }
+    }
+ 
+    for (mesa_shader_stage stage = 0; stage < MESA_SHADER_STAGES; ++stage) {
+@@ -3259,6 +3415,26 @@ pvr_graphics_pipeline_compile(struct pvr_device *const device,
+       pco_encode_ir(pco_ctx, *pco);
+    }
+ 
++   if (alt_fs_nir) {
++      alt_fs_shader =
++         pco_trans_nir(pco_ctx, alt_fs_nir, alt_fs_data, shader_mem_ctx);
++      if (alt_fs_shader) {
++         pco_process_ir(pco_ctx, alt_fs_shader);
++
++         /* Spilling does not work for a variant: drop it. */
++         if (pco_shader_data(alt_fs_shader)->common.spilled_temps)
++            alt_fs_shader = NULL;
++         else
++            pco_encode_ir(pco_ctx, alt_fs_shader);
++      }
++
++      /* The descriptor bindings of a dropped variant are not in the build
++       * context.
++       */
++      if (!alt_fs_shader)
++         pvr_pipeline_destroy_shader_data(alt_fs_data);
++   }
++
+    if (!pCreateInfo->renderPass)
+       pvr_arch_destroy_mrt_setup(device, &mrt_setup);
+ 
+@@ -3361,6 +3537,16 @@ pvr_graphics_pipeline_compile(struct pvr_device *const device,
+        * `fragment_state->stage_state.pds_temps_count` appropriately.
+        */
+       assert(fragment_state->descriptor_state.pds_info.temps_required == 0);
++
++      if (alt_fs_shader) {
++         pvr_build_alt_fragment_variant(device,
++                                        allocator,
++                                        layout,
++                                        gfx_pipeline,
++                                        alt_fs_shader,
++                                        alt_fs_nir,
++                                        cache_line_size);
++      }
+    }
+ 
+    result = pvr_pds_vertex_attrib_programs_create_and_upload(
+@@ -3403,6 +3589,7 @@ err_free_vertex_attrib_program:
+       pvr_pds_vertex_attrib_program_destroy(device, allocator, attrib_program);
+    }
+ err_free_frag_descriptor_program:
++   pvr_destroy_alt_fragment_variant(device, allocator, gfx_pipeline);
+    pvr_pds_descriptor_program_destroy(device,
+                                       allocator,
+                                       &fragment_state->descriptor_state);
+diff --git a/src/imagination/vulkan/pvr_cmd_buffer.h b/src/imagination/vulkan/pvr_cmd_buffer.h
+index 7e384cb..9bbdcb4 100644
+--- a/src/imagination/vulkan/pvr_cmd_buffer.h
++++ b/src/imagination/vulkan/pvr_cmd_buffer.h
+@@ -458,6 +458,8 @@ struct pvr_cmd_buffer_state {
+ 
+    struct pvr_pending_clear pending_clears[PVR_MAX_PENDING_CLEARS];
+    uint32_t pending_clear_count;
++   /* The draw uses the pipeline's alternate fragment shader variant. */
++   bool fs_alt;
+    uint32_t pending_clear_next_pass;
+    bool pending_clear_flushing;
+    /* The clears of the dynamic render pass being recorded, if it can be folded. */
+diff --git a/src/imagination/vulkan/pvr_pipeline.h b/src/imagination/vulkan/pvr_pipeline.h
+index 69855df..711229b 100644
+--- a/src/imagination/vulkan/pvr_pipeline.h
++++ b/src/imagination/vulkan/pvr_pipeline.h
+@@ -133,6 +133,13 @@ struct pvr_graphics_pipeline {
+       struct pvr_vertex_shader_state vertex;
+       struct pvr_fragment_shader_state fragment;
+    } shader_state;
++   /* A second build of the fragment shader without the colour write enable
++    * select, used by the draws that write every colour output. It has the same
++    * interface as the one above, see pvr_fs_variants_compatible().
++    */
++   pco_data fs_data_alt;
++   struct pvr_fragment_shader_state fragment_alt;
++   bool has_alt_fs;
+ 
+    /* Debug Info */
+    struct pvr_stats *vs_stats;
+-- 
+2.47.3
+

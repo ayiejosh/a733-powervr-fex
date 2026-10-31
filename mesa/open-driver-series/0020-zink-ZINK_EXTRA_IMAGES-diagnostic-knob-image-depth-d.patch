@@ -1,7 +1,7 @@
-From 2f75449d4e2297a91f5dfef3909e1ef22a133ebc Mon Sep 17 00:00:00 2001
+From 6f07fc4db05f773545ebf1cc4ed07ed927ea5022 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Thu, 8 Oct 2026 09:47:10 +0800
-Subject: [PATCH 20/43] zink: ZINK_EXTRA_IMAGES diagnostic knob; image depth
+Subject: [PATCH 020/294] zink: ZINK_EXTRA_IMAGES diagnostic knob; image depth
  does not fix the loop latency
 
 Measured the explicit-sync release wait directly (WSIREL_TRACE) against swapchain depth:
@@ -18,7 +18,7 @@ depth is not the lever. Knob kept (default 0 = no behaviour change) for future d
  1 file changed, 2 insertions(+), 1 deletion(-)
 
 diff --git a/src/gallium/drivers/zink/zink_kopper.c b/src/gallium/drivers/zink/zink_kopper.c
-index 3c91504..5e5f5c3 100644
+index 3c915044..5e5f5c39 100644
 --- a/src/gallium/drivers/zink/zink_kopper.c
 +++ b/src/gallium/drivers/zink/zink_kopper.c
 @@ -317,7 +317,8 @@ kopper_CreateSwapchain(struct zink_screen *screen, struct kopper_displaytarget *
@@ -31,3 +31,6 @@ index 3c91504..5e5f5c3 100644
     cswap->scci.preTransform = cdt->caps.currentTransform;
     if (cdt->formats[1])
        cswap->scci.pNext = &cdt->format_list;
+-- 
+2.47.3
+

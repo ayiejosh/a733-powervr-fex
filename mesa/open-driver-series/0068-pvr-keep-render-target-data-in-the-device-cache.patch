@@ -1,7 +1,7 @@
-From 98f4701439ea48426e2fe592c333f6ffa4b6b913 Mon Sep 17 00:00:00 2001
+From a928f4a43e6af2e1d7c740468b7f784ef4bef26a Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sat, 10 Oct 2026 16:09:36 +0800
-Subject: [PATCH 68/98] pvr: keep render target data in the device cache
+Subject: [PATCH 068/294] pvr: keep render target data in the device cache
 
 The vheap/RTC, TPC, MTA, MList and region header buffers of a render
 target dataset were all allocated GPU-uncached, so every tile of every
@@ -22,7 +22,7 @@ a frame, 3-8 partial renders per frame): pixel-exact. CTS (5062 + 9170
  1 file changed, 13 insertions(+), 5 deletions(-)
 
 diff --git a/src/imagination/vulkan/pvr_arch_job_render.c b/src/imagination/vulkan/pvr_arch_job_render.c
-index 4befa9e..8a64b85 100644
+index 4befa9ef..8a64b855 100644
 --- a/src/imagination/vulkan/pvr_arch_job_render.c
 +++ b/src/imagination/vulkan/pvr_arch_job_render.c
 @@ -197,6 +197,14 @@ pvr_rt_get_isp_region_size(struct pvr_device *device,

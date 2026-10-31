@@ -1,0 +1,38 @@
+From 2011502bc310ea0336398d77644f55d22677dd99 Mon Sep 17 00:00:00 2001
+From: Ashish Chauhan <ashish.chauhan@imgtec.com>
+Date: Fri, 2 Oct 2026 13:57:09 +0100
+Subject: [PATCH 274/294] pvr: program DOUTI count from the fragment shader
+ inputs
+
+The number of DOUTI commands was taken from the vertex shader's output
+range. The iterators feed the fragment shader, so the count should follow
+the coefficients the fragment shader consumes instead.
+
+The two differ when a vertex output isn't read by the fragment shader.
+Transform feedback makes that common, since a varying can be captured
+without being iterated, and transform feedback tests fail without this.
+
+Signed-off-by: Ashish Chauhan <ashish.chauhan@imgtec.com>
+Reviewed-by: Simon Perretta <simon.perretta@imgtec.com>
+Part-of: <https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/44385>
+(cherry picked from commit 03fd7d3424165a7feb27c1950935273ab663fa4e)
+---
+ src/imagination/vulkan/pvr_arch_pipeline.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/imagination/vulkan/pvr_arch_pipeline.c b/src/imagination/vulkan/pvr_arch_pipeline.c
+index 2564e59c..aa63eb45 100644
+--- a/src/imagination/vulkan/pvr_arch_pipeline.c
++++ b/src/imagination/vulkan/pvr_arch_pipeline.c
+@@ -1724,7 +1724,7 @@ static void pvr_graphics_pipeline_setup_fragment_coeff_program(
+                       "amend nir var linking.");
+       }
+ 
+-      unsigned count = vtxout_range->count;
++      unsigned count = cf_range->count / ROGUE_USC_COEFFICIENT_SET_SIZE;
+ 
+       unsigned vtxout = vtxout_range->start;
+ 
+-- 
+2.47.3
+

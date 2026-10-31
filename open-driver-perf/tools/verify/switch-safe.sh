@@ -17,10 +17,25 @@ stop_clients() {
    if pgrep -x X >/dev/null || pgrep -x kwin_x11 >/dev/null || pgrep -x startplasma-x11 >/dev/null; then
       echo "ABORT: X/kwin/plasma still alive"; exit 1
    fi
+   # A GPU connection still open while pvrsrvkm is removed NULL-derefs in the vendor kernel module
+   # (LinuxServicesConnectionFromFile, seen 2026-10-30 03:08 -> Oops -> hard reset). Wait for every
+   # client fd on the DRM nodes to close, then give the driver's connection teardown a moment.
+   i=0
+   while [ $i -lt 20 ]; do
+      busy=$(sudo fuser /dev/dri/card0 /dev/dri/card1 /dev/dri/renderD128 /dev/pvr 2>/dev/null | tr -d ' ')
+      [ -z "$busy" ] && break
+      sleep 0.5; i=$((i+1))
+   done
+   if [ -n "${busy:-}" ]; then
+      echo "ABORT: GPU device still open: $(sudo fuser -v /dev/dri/card0 /dev/dri/card1 2>&1 | tail -2)"
+      exit 1
+   fi
+   sync; sleep 1
 }
 case "$target" in
 open)
    stop_clients
+   sudo rmmod powervr 2>/dev/null   # a stale unbound module would make insmod fail with "File exists"
    if lsmod | grep -q '^pvrsrvkm '; then
       sudo rmmod pvrsrvkm || { echo "ABORT: rmmod pvrsrvkm failed"; exit 1; }
       sleep 1
@@ -28,7 +43,31 @@ open)
    lsmod | grep -q '^pvrsrvkm ' && { echo "ABORT: pvrsrvkm still loaded"; exit 1; }
    sudo insmod /lib/modules/$(uname -r)/extra/powervr/powervr.ko || { echo "ABORT: powervr insmod failed"; exit 1; }
    sleep 1
-   [ "$(drv)" = powervr ] || { echo "ABORT: not bound to powervr ($(drv))"; exit 1; }
+   if [ "$(drv)" != powervr ]; then
+      # Repeated unbind/rebind/rmmod cycles can leave the GPU clock/power state such that the open probe
+      # reads BVNC 0.0.0.0 (firmware heuristic path fails). Vendor probe re-initialises the clocks; try it.
+      echo "powervr did not bind; recovering via a vendor probe cycle"
+      sudo dmesg | tail -20 | grep -q "rogue_0.0.0.0" && echo "  (saw rogue_0.0.0.0 probe attempt)"
+      sudo rmmod powervr 2>/dev/null
+      sudo sh -c 'echo auto > /sys/bus/platform/devices/1800000.gpu/power/control' 2>/dev/null
+      sudo modprobe pvrsrvkm 2>/dev/null
+      sleep 3
+      if [ "$(drv)" = pvrsrvkm ]; then
+         sudo rmmod pvrsrvkm
+         sleep 1
+         sudo insmod /lib/modules/$(uname -r)/extra/powervr/powervr.ko 2>/dev/null
+         sleep 2
+      fi
+   fi
+   if [ "$(drv)" != powervr ]; then
+      # Do not leave the board without a driver/desktop: restore the vendor stack and fail loudly.
+      sudo rmmod powervr 2>/dev/null
+      sudo modprobe pvrsrvkm 2>/dev/null
+      sleep 2
+      sudo systemctl start display-manager 2>/dev/null
+      echo "ABORT: open driver will not bind after a vendor probe cycle (left board on vendor+desktop); a clean reboot is needed for the open stack"
+      exit 1
+   fi
    ;;
 vendor)
    stop_clients
@@ -38,7 +77,22 @@ vendor)
    fi
    lsmod | grep -q '^powervr ' && { echo "ABORT: powervr still loaded"; exit 1; }
    sudo modprobe pvrsrvkm || { echo "ABORT: modprobe pvrsrvkm failed"; exit 1; }
-   sleep 2
+   # Let the vendor module finish init (firmware load, drm registration) before any client opens the
+   # GPU: a client opening during init has NULL-derefed in LinuxServicesConnectionFromFile and
+   # hard-reset this board twice (03:08 and 04:15 on 2026-10-30, both on the restore path).
+   # Wait for the whole vendor bring-up, not just drm registration: the firmware and shader binary
+   # load a few seconds later, and a client opening before they finish has NULL-derefed in
+   # LinuxServicesConnectionFromFile three times (03:08, 04:15, 06:18 on 2026-10-30), each resetting
+   # the board. Require both firmware lines, then settle.
+   i=0
+   while [ $i -lt 60 ]; do
+      tail=$(sudo dmesg | tail -60)
+      echo "$tail" | grep -q "Initialized pvr" &&
+         echo "$tail" | grep -q "RGX Firmware image" &&
+         echo "$tail" | grep -q "Shader binary image" && break
+      sleep 0.5; i=$((i+1))
+   done
+   sleep 5
    [ "$(drv)" = pvrsrvkm ] || { echo "ABORT: not bound to pvrsrvkm ($(drv))"; exit 1; }
    sudo systemctl start display-manager
    ;;

@@ -1,7 +1,7 @@
-From 193516c37f7211d38520e34070452ba02914dbac Mon Sep 17 00:00:00 2001
+From 9b9ea0df32c7fc5fd9f8633cfaec389b8f44d72c Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sat, 10 Oct 2026 10:58:14 +0800
-Subject: [PATCH 62/98] pvr/pco: read pixel coordinates directly in
+Subject: [PATCH 062/294] pvr/pco: read pixel coordinates directly in
  single-sampled transfer shaders
 
 Internal fragment shaders always picked the pixel or sample position at run
@@ -25,7 +25,7 @@ selection matches d253e35; gate 44/44.
  6 files changed, 13 insertions(+), 3 deletions(-)
 
 diff --git a/src/imagination/pco/pco_data.h b/src/imagination/pco/pco_data.h
-index 44f0f82..7a99527 100644
+index 44f0f824..7a995274 100644
 --- a/src/imagination/pco/pco_data.h
 +++ b/src/imagination/pco/pco_data.h
 @@ -118,6 +118,9 @@ typedef struct _pco_fs_data {
@@ -39,7 +39,7 @@ index 44f0f82..7a99527 100644
  
     pco_range sample_locations;
 diff --git a/src/imagination/pco/pco_trans_nir.c b/src/imagination/pco/pco_trans_nir.c
-index 726e186..9f0727c 100644
+index 726e1860..9f0727c2 100644
 --- a/src/imagination/pco/pco_trans_nir.c
 +++ b/src/imagination/pco/pco_trans_nir.c
 @@ -472,8 +472,10 @@ static pco_ref fs_is_single_sampled(trans_ctx *tctx)
@@ -56,7 +56,7 @@ index 726e186..9f0727c 100644
  
  /**
 diff --git a/src/imagination/vulkan/pvr_arch_job_transfer.c b/src/imagination/vulkan/pvr_arch_job_transfer.c
-index 68cc58d..bfcd9f2 100644
+index 68cc58da..bfcd9f2b 100644
 --- a/src/imagination/vulkan/pvr_arch_job_transfer.c
 +++ b/src/imagination/vulkan/pvr_arch_job_transfer.c
 @@ -2931,6 +2931,7 @@ static VkResult pvr_3d_copy_blit_core(struct pvr_transfer_ctx *ctx,
@@ -76,7 +76,7 @@ index 68cc58d..bfcd9f2 100644
                 transfer_cmd->cmd_buffer->device,
                 &ctx->frag_store,
 diff --git a/src/imagination/vulkan/pvr_transfer_frag_store.c b/src/imagination/vulkan/pvr_transfer_frag_store.c
-index 89dc066..3b4bff5 100644
+index 89dc066d..3b4bff51 100644
 --- a/src/imagination/vulkan/pvr_transfer_frag_store.c
 +++ b/src/imagination/vulkan/pvr_transfer_frag_store.c
 @@ -124,7 +124,7 @@ static uint32_t pvr_transfer_frag_shader_key(
@@ -89,7 +89,7 @@ index 89dc066..3b4bff5 100644
     shift_hash(hash, 1U);
     hash |= (uint32_t)false;
 diff --git a/src/imagination/vulkan/pvr_usc.c b/src/imagination/vulkan/pvr_usc.c
-index 7c86d01..49a734c 100644
+index 7c86d013..49a734c4 100644
 --- a/src/imagination/vulkan/pvr_usc.c
 +++ b/src/imagination/vulkan/pvr_usc.c
 @@ -906,6 +906,7 @@ pco_shader *pvr_uscgen_tq(pco_ctx *ctx,
@@ -101,7 +101,7 @@ index 7c86d01..49a734c 100644
     switch (pixel_size) {
     case 1:
 diff --git a/src/imagination/vulkan/pvr_usc.h b/src/imagination/vulkan/pvr_usc.h
-index 67b3ccd..5c91d0f 100644
+index 67b3ccda..5c91d0fa 100644
 --- a/src/imagination/vulkan/pvr_usc.h
 +++ b/src/imagination/vulkan/pvr_usc.h
 @@ -66,6 +66,8 @@ struct pvr_tq_shader_properties {

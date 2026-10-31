@@ -1,7 +1,7 @@
-From 73737e192750ce62ab0c998fe0fb2da365c108a7 Mon Sep 17 00:00:00 2001
+From ff76e62452eefe425eeb75fbb85af37c645c17cd Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Fri, 16 Oct 2026 13:48:02 +0800
-Subject: [PATCH 116/269] gallium/pvr: GL initialises on the driver - context,
+Subject: [PATCH 116/294] gallium/pvr: GL initialises on the driver - context,
  transfers, and the format gate
 
 Three things, in the order the crashes demanded them:

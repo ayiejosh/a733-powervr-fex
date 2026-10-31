@@ -1,7 +1,7 @@
-From c78195f80226f518c9f032d78aed575813fb3d00 Mon Sep 17 00:00:00 2001
+From a815c207c0e6c21069bd6e192bdd9927160ba00c Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sun, 25 Oct 2026 19:53:41 +0800
-Subject: [PATCH 249/269] gallium/pvr: replay a captured Vulkan TQ fill job
+Subject: [PATCH 249/294] gallium/pvr: replay a captured Vulkan TQ fill job
  from the native probe
 
 Add pvr_job_submit_transfer_sync() and a PVR_PROBE_TQ_STREAM-gated tq_fill_check() that

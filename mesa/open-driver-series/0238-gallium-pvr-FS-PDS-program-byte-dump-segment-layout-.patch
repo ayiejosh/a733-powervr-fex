@@ -1,7 +1,7 @@
-From 6ac4750af60a5275cccda2577b9bace083bf85df Mon Sep 17 00:00:00 2001
+From 1312d12df27d840175ef5ee0b7918e9c42410c10 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sun, 25 Oct 2026 05:59:57 +0800
-Subject: [PATCH 238/269] gallium/pvr: FS PDS program byte dump; segment layout
+Subject: [PATCH 238/294] gallium/pvr: FS PDS program byte dump; segment layout
  vs the reference
 
 Added PVR_DUMP_FS_PROG to print the generated fragment PDS launcher bytes. The launcher (and Mesa's

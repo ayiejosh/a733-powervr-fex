@@ -1,7 +1,7 @@
-From c9029a7c5331f50b364be3f4c3693f572f5e87de Mon Sep 17 00:00:00 2001
+From 307a9cd2dc2e96978804cf8b2f0d7cac6c51eda2 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Fri, 23 Oct 2026 17:26:34 +0800
-Subject: [PATCH 185/269] gallium/pvr: the kernel now CREATES the free lists
+Subject: [PATCH 185/294] gallium/pvr: the kernel now CREATES the free lists
  and HWRT data set
 
 Getting there took four corrections, each one the kernel naming the rule I had broken:

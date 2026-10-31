@@ -1,7 +1,7 @@
-From 859daf65d9463a478f3072d55e78270bb4f43c5f Mon Sep 17 00:00:00 2001
+From d3024438889f9a64c5e6cc2caa83efecf8d6d7d1 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sun, 11 Oct 2026 04:46:54 +0800
-Subject: [PATCH 78/98] pvr: cache SPM end of tile programs across renders
+Subject: [PATCH 078/294] pvr: cache SPM end of tile programs across renders
 
 Like the load op, every render state set up its SPM end of tile state by
 compiling the EOT program with pco and uploading the USC and PDS
@@ -23,7 +23,7 @@ identical to before.
  5 files changed, 110 insertions(+), 3 deletions(-)
 
 diff --git a/src/imagination/vulkan/pvr_arch_device.c b/src/imagination/vulkan/pvr_arch_device.c
-index d70df95..dc72086 100644
+index d70df955..dc720865 100644
 --- a/src/imagination/vulkan/pvr_arch_device.c
 +++ b/src/imagination/vulkan/pvr_arch_device.c
 @@ -931,6 +931,8 @@ VkResult PVR_PER_ARCH(create_device)(struct pvr_physical_device *pdevice,
@@ -44,7 +44,7 @@ index d70df95..dc72086 100644
     pvr_robustness_buffer_finish(device);
     pvr_spm_finish_scratch_buffer_store(device);
 diff --git a/src/imagination/vulkan/pvr_arch_spm.c b/src/imagination/vulkan/pvr_arch_spm.c
-index 5c2883c..8f616ba 100644
+index 5c2883cc..8f616bac 100644
 --- a/src/imagination/vulkan/pvr_arch_spm.c
 +++ b/src/imagination/vulkan/pvr_arch_spm.c
 @@ -451,6 +451,43 @@ static VkResult pvr_pds_pixel_event_program_create_and_upload(
@@ -180,7 +180,7 @@ index 5c2883c..8f616ba 100644
  }
  
 diff --git a/src/imagination/vulkan/pvr_device.h b/src/imagination/vulkan/pvr_device.h
-index 0e5b6a2..28d9f56 100644
+index 0e5b6a27..28d9f56f 100644
 --- a/src/imagination/vulkan/pvr_device.h
 +++ b/src/imagination/vulkan/pvr_device.h
 @@ -195,6 +195,10 @@ struct pvr_device {
@@ -195,7 +195,7 @@ index 0e5b6a2..28d9f56 100644
  
  struct pvr_device_memory {
 diff --git a/src/imagination/vulkan/pvr_spm.c b/src/imagination/vulkan/pvr_spm.c
-index 9bc8e4d..4e9f0ba 100644
+index 9bc8e4d6..4e9f0ba2 100644
 --- a/src/imagination/vulkan/pvr_spm.c
 +++ b/src/imagination/vulkan/pvr_spm.c
 @@ -213,6 +213,9 @@ VkResult pvr_spm_scratch_buffer_get_buffer(
@@ -209,7 +209,7 @@ index 9bc8e4d..4e9f0ba 100644
     pvr_bo_suballoc_free(spm_eot_state->usc_eot_program);
  }
 diff --git a/src/imagination/vulkan/pvr_spm.h b/src/imagination/vulkan/pvr_spm.h
-index 5af66fb..254291f 100644
+index 5af66fb1..254291f9 100644
 --- a/src/imagination/vulkan/pvr_spm.h
 +++ b/src/imagination/vulkan/pvr_spm.h
 @@ -72,6 +72,9 @@ struct pvr_spm_eot_state {

@@ -1,0 +1,188 @@
+From c30d346e5126841d2e8bcd5036d2591c516e0d3c Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sat, 31 Oct 2026 10:59:53 +0800
+Subject: [PATCH] gallium/pvr: place the firmware static programs at screen
+ creation, not lazily in the draw path
+
+The VDM sync launcher, the pixel-event (EOT) program and the YUV CSC table live in
+PDS/USC/general heap carveouts that the firmware reads on every job. They were
+placed lazily by draw_init(), so any job that did not go through the draw path -
+a transfer (TQ) job, or the probe's transfer replay - ran with those areas empty
+and made the firmware fault on them (the probe's own VM check already documented
+this failure mode: the fault address is exactly the PDS heap base).
+
+pvr_screen now places them once in pvr_screen_create() and keeps them for the life
+of the screen; draw_init() and the probe's VM check reuse that placement instead of
+allocating a second carveout. No behaviour change for draws (same bytes, same
+addresses; 17-group gate ALL GROUPS PASS).
+
+The transfer-copy replay still faults in the ISP data master, so the empty static
+areas were not the remaining cause there - but they were a real bug for any
+transfer-only job.
+---
+ src/gallium/drivers/pvr_native/pvr_draw.c   |  2 +-
+ src/gallium/drivers/pvr_native/pvr_probe.c  | 31 +++++++++++++--------
+ src/gallium/drivers/pvr_native/pvr_screen.c | 11 +++++++-
+ src/gallium/drivers/pvr_native/pvr_screen.h |  8 ++++++
+ 4 files changed, 38 insertions(+), 14 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_draw.c b/src/gallium/drivers/pvr_native/pvr_draw.c
+index deb4984d..4b093332 100644
+--- a/src/gallium/drivers/pvr_native/pvr_draw.c
++++ b/src/gallium/drivers/pvr_native/pvr_draw.c
+@@ -277,7 +277,7 @@ draw_init(struct pvr_context *ctx, struct pvr_draw_state *d)
+    if (d->ready || d->failed)
+       return d->ready;
+    d->failed = true;
+-   if (!scr->vm_valid || !pvr_static_memory_init(&scr->vm, &scr->dev_info, &d->sm) ||
++   if (!scr->vm_valid || !scr->static_ready ||
+        !pvr_gpu_context_create(&scr->vm, &scr->dev_info, &d->gctx))
+       return false;
+    /* Free lists: PM-owned, no CPU access (same sizes the probe and Vulkan use). */
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index c64408eb..392f2c47 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -409,17 +409,17 @@ vm_roundtrip(int fd, struct pipe_screen *pscreen)
+        * executing from unmapped memory: the BIF0 fault address is exactly the PDS heap base. Keep
+        * them mapped for the rest of the process (a real driver would place them at screen creation
+        * and never free them, which is what this stands in for). */
+-      static struct pvr_static_memory sm;
++      struct pvr_static_memory *sm = &scr->sm;
+       const unsigned usc_slot = 2; /* GENERAL, PDS, USC as pvr_static_heaps orders them */
+       const pco_precomp_data *precomp =
+          (const pco_precomp_data *)pco_usclib_common[VS_NOP_COMMON];
+ 
+-      if (!pvr_static_memory_init(vm, dev_info, &sm)) {
+-         printf("vm:            FAIL: could not place the firmware programs\n");
++      if (!scr->static_ready) {
++         printf("vm:            FAIL: the screen did not place the firmware programs\n");
+          goto out;
+       }
+ 
+-      if (sm.program_bytes == 0) {
++      if (sm->program_bytes == 0) {
+          printf("vm:            FAIL: no firmware program bytes were written\n");
+          goto out;
+       }
+@@ -429,11 +429,10 @@ vm_roundtrip(int fd, struct pipe_screen *pscreen)
+          const uint32_t bytes = precomp->size_dwords * sizeof(uint32_t);
+ 
+          if (usc_off == PVR_STATIC_ABSENT ||
+-             memcmp((const uint8_t *)sm.map[usc_slot] + usc_off, precomp->binary,
++             memcmp((const uint8_t *)sm->map[usc_slot] + usc_off, precomp->binary,
+                     bytes) != 0) {
+             printf("vm:            FAIL: the VDM sync program is not at the USC heap's "
+                    "vdm_sync offset\n");
+-            pvr_static_memory_fini(vm, &sm);
+             goto out;
+          }
+       }
+@@ -444,7 +443,7 @@ vm_roundtrip(int fd, struct pipe_screen *pscreen)
+       {
+          const uint64_t pds_sync = vm->offsets[DRM_PVR_HEAP_PDS_CODE_DATA].vdm_sync;
+          const uint64_t pds_eot = vm->offsets[DRM_PVR_HEAP_PDS_CODE_DATA].eot;
+-         const uint8_t *pds_map = sm.map[1];
++         const uint8_t *pds_map = sm->map[1];
+          bool launcher = false, eot = false;
+ 
+          for (unsigned b = 0; b < 64; b++) {
+@@ -458,7 +457,6 @@ vm_roundtrip(int fd, struct pipe_screen *pscreen)
+             printf("vm:            FAIL: a generated PDS program is empty (launcher %s, "
+                    "eot %s)\n", launcher ? "written" : "EMPTY",
+                    eot ? "written" : "EMPTY");
+-            pvr_static_memory_fini(vm, &sm);
+             goto out;
+          }
+       }
+@@ -470,18 +468,18 @@ vm_roundtrip(int fd, struct pipe_screen *pscreen)
+ 
+          printf("OURSTATIC: pds_vdm_sync at 0x%" PRIx64 ":", pds_sync);
+          for (unsigned i = 0; i < 128; i++)
+-            printf(" %02x", ((const uint8_t *)sm.map[1])[pds_sync + i]);
++            printf(" %02x", ((const uint8_t *)sm->map[1])[pds_sync + i]);
+          printf("\nOURSTATIC: usc_vdm_sync at 0x%" PRIx64 ":", usc_sync);
+          for (unsigned i = 0; i < 128; i++)
+-            printf(" %02x", ((const uint8_t *)sm.map[2])[usc_sync + i]);
++            printf(" %02x", ((const uint8_t *)sm->map[2])[usc_sync + i]);
+          printf("\nOURSTATIC: pds_eot at 0x%" PRIx64 ":", pds_eot);
+          for (unsigned i = 0; i < 128; i++)
+-            printf(" %02x", ((const uint8_t *)sm.map[1])[pds_eot + i]);
++            printf(" %02x", ((const uint8_t *)sm->map[1])[pds_eot + i]);
+          printf("\n");
+       }
+       printf("vm:            firmware programs: VDM sync verified at the kernel's USC "
+              "vdm_sync offset, PDS launcher and pixel-event programs generated "
+-             "(%u bytes counted)\n", sm.program_bytes);
++             "(%u bytes counted)\n", sm->program_bytes);
+    }
+ 
+    /* A kernel GPU context - the handle every job is submitted against. This is the first
+@@ -6024,6 +6022,15 @@ tq_copy_check(int fd, struct pipe_screen *pscreen)
+       if (mask & 64U) w[37] = 0x2500;
+    }
+ 
++   /* Field overrides for isolating which background-object pointer faults (stream layout:
++    * bgnd0 low/high = dwords 2/3, bgnd1 low/high = 4/5). */
++   if (getenv("PVR_PROBE_TQ_COPY_BGND0") != NULL)
++      ((uint32_t *)stream)[2] = (uint32_t)strtoul(getenv("PVR_PROBE_TQ_COPY_BGND0"), NULL, 0);
++   if (getenv("PVR_PROBE_TQ_COPY_BGND0U") != NULL)
++      ((uint32_t *)stream)[3] = (uint32_t)strtoul(getenv("PVR_PROBE_TQ_COPY_BGND0U"), NULL, 0);
++   if (getenv("PVR_PROBE_TQ_COPY_BGND1") != NULL)
++      ((uint32_t *)stream)[5] = (uint32_t)strtoul(getenv("PVR_PROBE_TQ_COPY_BGND1"), NULL, 0);
++
+    /* The clear register (stream dword 30) is patched in both tag-on and tag-off cases so a PBE
+     * clear-store is distinguishable from a copy (PVR_PROBE_TQ_COPY_RAWCLR keeps the stream value). */
+    if (getenv("PVR_PROBE_TQ_COPY_RAWCLR") == NULL)
+diff --git a/src/gallium/drivers/pvr_native/pvr_screen.c b/src/gallium/drivers/pvr_native/pvr_screen.c
+index 592d5959..57a5fb3d 100644
+--- a/src/gallium/drivers/pvr_native/pvr_screen.c
++++ b/src/gallium/drivers/pvr_native/pvr_screen.c
+@@ -401,8 +401,17 @@ pvr_screen_create(int fd, const struct pipe_screen_config *config,
+     * resource can be created, which is worth being able to see when probing a node
+     * this driver cannot actually drive. */
+    screen->vm_valid = pvr_vm_init(fd, &screen->vm);
+-   if (!screen->vm_valid)
++   if (!screen->vm_valid) {
+       mesa_logi("pvr: no GPU address space; resources will not be creatable");
++   } else {
++      /* The firmware reads the VDM sync launcher and the pixel-event (EOT) program from
++       * these carveouts on every job - a transfer job reaches them without ever creating
++       * a draw context, so they cannot be placed lazily in the draw path. */
++      screen->static_ready =
++         pvr_static_memory_init(&screen->vm, &screen->dev_info, &screen->sm);
++      if (!screen->static_ready)
++         mesa_logi("pvr: could not place the firmware static programs; jobs will not run");
++   }
+ 
+    simple_mtx_init(&screen->bo_cache_lock, mtx_plain);
+    const char *dbg = getenv("PVR_NATIVE_DEBUG");
+diff --git a/src/gallium/drivers/pvr_native/pvr_screen.h b/src/gallium/drivers/pvr_native/pvr_screen.h
+index 0e05e6b5..f0282d81 100644
+--- a/src/gallium/drivers/pvr_native/pvr_screen.h
++++ b/src/gallium/drivers/pvr_native/pvr_screen.h
+@@ -10,6 +10,7 @@
+ #include "common/pvr_device_info.h"
+ #include "pco/pco.h"
+ #include "pvr_bo.h"
++#include "pvr_static.h"
+ #include "pvr_vm.h"
+ 
+ struct pvr_screen {
+@@ -49,6 +50,13 @@ struct pvr_screen {
+    struct pvr_vm vm;
+    bool vm_valid;
+ 
++   /* The firmware static programs (VDM sync launcher, pixel-event/EOT program, YUV CSC
++    * table) live in heap carveouts the firmware reads on every job - including a transfer
++    * job that never goes through the draw path. Place them once, at screen creation, and
++    * keep them mapped for the life of the screen. */
++   struct pvr_static_memory sm;
++   bool static_ready;
++
+    /* PVR_NATIVE_DEBUG=no_twiddle,no_fbc: linear (or uncompressed) render targets, read once. */
+    bool no_twiddle, no_fbc;
+ 
+-- 
+2.47.3
+

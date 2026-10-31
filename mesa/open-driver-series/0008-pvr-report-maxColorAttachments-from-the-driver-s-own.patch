@@ -1,7 +1,7 @@
-From d6416de7a57db9371723d31cda8a8cf75414c090 Mon Sep 17 00:00:00 2001
+From 4706ef85ddd3b4371177f9cf3b546547aed45b78 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Thu, 8 Oct 2026 03:10:01 +0800
-Subject: [PATCH 08/43] pvr: report maxColorAttachments from the driver's own
+Subject: [PATCH 008/294] pvr: report maxColorAttachments from the driver's own
  constant (4 -> 8)
 
 .maxColorAttachments was hardcoded to 4U while the driver's own
@@ -26,7 +26,7 @@ constant, its array sizes and asserts, and vendor parity rather than on a measur
  1 file changed, 6 insertions(+), 1 deletion(-)
 
 diff --git a/src/imagination/vulkan/pvr_physical_device.c b/src/imagination/vulkan/pvr_physical_device.c
-index 57c2fd8..6a49178 100644
+index 57c2fd82..6a491782 100644
 --- a/src/imagination/vulkan/pvr_physical_device.c
 +++ b/src/imagination/vulkan/pvr_physical_device.c
 @@ -878,7 +878,12 @@ static bool pvr_physical_device_get_properties(
@@ -43,3 +43,6 @@ index 57c2fd8..6a49178 100644
        .sampledImageColorSampleCounts =
           VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_2_BIT | VK_SAMPLE_COUNT_4_BIT,
        .sampledImageIntegerSampleCounts =
+-- 
+2.47.3
+

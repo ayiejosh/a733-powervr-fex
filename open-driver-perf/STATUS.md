@@ -36,3 +36,76 @@ One-page state; details in HANDOFF.md, TA-KICK-DISASSEMBLY.md, RESULTS.md, PERF-
 Vendor `pvrsrvkm` + desktop, 0 kernel faults, open firmware original
 (`sha256 1db1c399c17401d1f79d46c880db81c724d748c784d4639433b076aba2f9c0d2`). Watch + verify:
 `tools/firmware/check-open-firmware.sh`, `tools/verify/verify.sh` (both read-only).
+
+## 2026-10-27 (afternoon): TF port shipped as PR #12; open stack now needs a reboot
+
+- `VK_EXT_transform_feedback` port onto the perf branch is validated and published as
+  **PR #12** (`mesa-tf-port-2026-10-27`, patches 0270-0293, 293-patch series; Vulkan PASS, zink ES 3.1,
+  glmark2 608 vs 543-594 before). PR is mergeable/clean, awaiting review/merge.
+- The board was restored to vendor + desktop after the validation runs. The **open `powervr` stack cannot be
+  brought back without a clean reboot**: after the repeated unbind/rebind/rmmod experiments its probe now
+  reads BVNC `0.0.0.0` (firmware heuristics fail, module never binds), and the vendor-probe recovery cycle
+  (built into `switch-safe.sh`) is not enough any more. Vendor stack is unaffected - board is healthy on
+  vendor + desktop. A reboot restores the open stack for further experiments.
+- Remaining work: (1) IMG-side observability ask for the DM2/TA stall (draft ready, needs the human to send);
+  (2) after a reboot, optionally re-run the extra TF validation (`glmark2 --validate`, `vkcube`) for PR #12.
+
+## 2026-10-27 20:05: DM2/TA blocker SOLVED
+
+Native probe now reaches `Kick TA -> TA finished -> Kick 3D -> 3D finished` with no fault (was: DM2 timeout
++ HWR). Root cause was two native-driver draw-data bugs (VM_MAP silently replacing code-heap pages -> zero
+vertex PDS program; PDS const-map entries at byte instead of dword offsets), plus two 3D-stage bugs found once
+TA ran (PBE linestride in bytes instead of pixels; missing render-completion syncobj signal). Fixes are PR #12
+patches 0295-0296, found with the differential capture/replay tools in `tools/pvrcap/`.
+Still open: the render target is written but all black (draw/vertex data); and the PR merge + v0.1.2 release.
+
+## 2026-10-28 09:35: refract fixed (patch 0315), perf work ongoing
+
+Refract's FBO failure was the native driver refusing mipmapped textures (glmark2 asks for a full mip chain
+when the colour target uses a mipmap min filter); patch 0315 accepts them level-0-only with a no-op
+generate_mipmap. Verified: FBO reproducer COMPLETE, refract runs on native GL (82). Wayland harness clean full
+run: native 534 (33/33 scenes). Next: performance (TFBC/twiddled colour + depth, multi-render overhead) with
+the benchmark-optimization loop; PR #12 head now ebae1d2.
+
+## 2026-10-28 11:55: twiddled + TFBC colour targets (patch 0316)
+
+Native 3D targets are now twiddled + lossless-TFBC compressed (NATIVE-TFBC-PORT.md): full Wayland suite
+471 -> 542/541 (+15%), build scene 824 -> 1121 FPS, pixel-exact GPU two-pass verification; only refract
+3% slower. Patch 0316 pushed to PR #12 (head 75240bf). Board back on vendor + desktop, 0 faults.
+
+## 2026-10-28 12:10: twiddled depth (patch 0317) - full suite 641
+
+Twiddled ZLS depth buffers: full Wayland suite 471 linear -> 542 twiddled colour -> 641 colour+depth
+(+36% over linear); shadow 160 -> 201 FPS. Patch 0317 pushed (PR #12 head 25f08e1). Board vendor + desktop,
+0 faults, firmware original.
+
+## 2026-10-28 12:18: twiddled depth textures (patch 0318) - full suite 659
+
+Sampled depth textures twiddled: shadow 201 -> 290 FPS, desktop 80 -> 106; full Wayland suite 659
+(471 linear baseline, +40%). PR #12 head fc0f7a6 (patches 0316-0318). Board vendor + desktop, 0 faults,
+firmware original. Next: depth pixel verification, CPU readback staging, multi-render overhead.
+
+## 2026-10-29 11:15: patch 0326 - depth-only colour-target traffic removed
+
+Depth-only framebuffers (shadow depth pass) now render as z-only: empty-tile PBE state, no colour
+store/clear, cheap clear background. A/B on the same harness: 692/692 -> 696/694 full glmark2; shadow
+330 -> 335; full gltri gate passes; 0 MMU faults. Series now 326 patches, pushed with mesa commit
+c97ee6bd. Open from the 10-29 handoff remain: desktop blur caching, effect2d profiling, refract mip-gen
+cost, mipmapped non-renderable textures, live-desktop deferred clears, PR title.
+
+## 2026-10-29 12:05: patch 0327 - RGB565 decode fix + mip chains via conversion
+
+RGB565 textures sampled black in the native driver (TPU decode of packed 16-bit colour is wrong), so
+B5G6R5 is now refused for sampling and the state tracker converts to RGBX8/RGBA8; the converted texture
+gets the normal twiddled mip chain, closing the "mipmapped non-renderable format keeps level 0 only" gap
+for this case. zink-identical checksums for plain 565 sampling and a CPU-uploaded 565 mip chain; full
+gltri gate passes; full glmark2 675 (DRI3 warning only), 0 faults. Series 327, PR pushed. R8/RG8 decode
+remains a known limitation (WIP branch `wip/linear-mips` kept locally).
+
+## 2026-10-29 13:00: methodology correction - bench30 native runs were zink
+
+The distro X11 glmark2 is GLX, which never loaded the native driver; bench30's "native" columns were
+zink. Built glmark2 with -Dflavors=x11-glesv2 (EGL/X11) so one binary measures all three stacks:
+native 728/728, zink 775/775, vendor IMG GLES 1199/1181 (totals 24.1k / 25.6k / 39.6k FPS).
+Corrected scripts/artifacts: open-perf/bench31.sh, open-perf/glm2x11/ (build kept out of git).
+Re-measure 0326/0327 perf deltas with bench31 before quoting them; correctness gates unchanged.

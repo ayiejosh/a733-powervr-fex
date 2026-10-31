@@ -1,7 +1,7 @@
-From 22bccac7f49c3d560175b2309cba1019b3d2c1af Mon Sep 17 00:00:00 2001
+From 99fa9e8b4466f1329e386bce72f7b8d9a55317ff Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Mon, 26 Oct 2026 01:58:21 +0800
-Subject: [PATCH 255/269] gallium/pvr: the replayed compute shader executes and
+Subject: [PATCH 255/294] gallium/pvr: the replayed compute shader executes and
  its stores land (values/addresses still odd)
 
 The captured compute job's shader demonstrably runs in the native replay: with a shader that stores a

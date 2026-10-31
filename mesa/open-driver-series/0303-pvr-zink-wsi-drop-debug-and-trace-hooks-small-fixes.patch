@@ -1,0 +1,1101 @@
+From f597c3f114972c6105dc90a6b11d1c65459ca932 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 00:32:48 +0800
+Subject: [PATCH 303/303] pvr, zink, wsi: drop debug and trace hooks, small
+ fixes
+
+- Remove the PVR_DUMP_*, PVR_CSB_*, PVR_*_TRACE, PVR_SUBMIT_MIX and
+  PVR_VK_GEOM_ONLY hooks and the unlocked allocation counters.
+- Remove the zink, kopper, X11 WSI, DRM WSI and EGL timing traces and the
+  ZINK_EXTRA_IMAGES knob.
+- Tear down the device caches when the dummy render target fails to init.
+- Drop a duplicate forward declaration in pvr_csb.h, fix a nested comment
+  in pvr_native/pvr_csb.h, and move five pco doxygen comments back onto
+  their functions.
+---
+ src/egl/drivers/dri2/platform_x11.c           | 12 ---
+ src/gallium/drivers/pvr_native/pvr_csb.h      |  2 +-
+ src/gallium/drivers/zink/zink_batch.c         | 20 +----
+ src/gallium/drivers/zink/zink_context.c       | 10 +--
+ src/gallium/drivers/zink/zink_kopper.c        | 43 +---------
+ src/gallium/drivers/zink/zink_resource.c      |  5 --
+ src/gallium/frontends/dri/kopper.c            | 34 --------
+ src/imagination/pco/pco_nir.c                 | 29 ++++---
+ src/imagination/pco/pco_opt.c                 | 14 ++--
+ src/imagination/pco/pco_trans_nir.c           | 30 +++----
+ src/imagination/vulkan/pvr_arch_cmd_buffer.c  | 78 +------------------
+ .../vulkan/pvr_arch_descriptor_set.c          | 16 ----
+ src/imagination/vulkan/pvr_arch_device.c      |  4 +
+ src/imagination/vulkan/pvr_arch_job_compute.c | 44 -----------
+ src/imagination/vulkan/pvr_arch_job_render.c  | 31 --------
+ src/imagination/vulkan/pvr_arch_pipeline.c    | 14 ----
+ src/imagination/vulkan/pvr_bo.c               |  9 ---
+ src/imagination/vulkan/pvr_csb.h              |  1 -
+ src/imagination/vulkan/pvr_device.c           | 46 -----------
+ .../winsys/powervr/pvr_drm_job_compute.c      | 13 ----
+ .../vulkan/winsys/powervr/pvr_drm_job_null.c  |  3 -
+ .../winsys/powervr/pvr_drm_job_render.c       | 57 --------------
+ src/vulkan/wsi/wsi_common_drm.c               | 21 -----
+ 23 files changed, 45 insertions(+), 491 deletions(-)
+
+diff --git a/src/egl/drivers/dri2/platform_x11.c b/src/egl/drivers/dri2/platform_x11.c
+index f5d4cf08..a31a9d35 100644
+--- a/src/egl/drivers/dri2/platform_x11.c
++++ b/src/egl/drivers/dri2/platform_x11.c
+@@ -25,7 +25,6 @@
+  *    Kristian Høgsberg <krh@bitplanet.net>
+  */
+ 
+-#include <time.h>
+ #include <dlfcn.h>
+ #include <errno.h>
+ #include <fcntl.h>
+@@ -121,20 +120,9 @@ x11_get_drawable_info(struct dri_drawable *draw, int *x, int *y, int *w, int *h,
+    xcb_get_geometry_reply_t *reply;
+    xcb_generic_error_t *error;
+    bool ret;
+-   struct timespec _g0, _g1; int _timed = 0;
+-   if (getenv("XGEOM_TRACE")) { clock_gettime(CLOCK_MONOTONIC, &_g0); _timed = 1; }
+ 
+    cookie = xcb_get_geometry(dri2_dpy->conn, dri2_surf->drawable);
+    reply = xcb_get_geometry_reply(dri2_dpy->conn, cookie, &error);
+-   if (_timed) {
+-      static unsigned long _n; static double _tot, _max;
+-      clock_gettime(CLOCK_MONOTONIC, &_g1);
+-      double ms = (_g1.tv_sec-_g0.tv_sec)*1000.0 + (_g1.tv_nsec-_g0.tv_nsec)/1e6;
+-      _n++; _tot += ms; if (ms > _max) _max = ms;
+-      if (_n % 100 == 0)
+-         fprintf(stderr, "[xg] %lu geometry round-trips, total %.1f ms, avg %.3f ms, max %.2f ms\n",
+-                 _n, _tot, _tot/_n, _max);
+-   }
+    if (reply == NULL)
+       return false;
+ 
+diff --git a/src/gallium/drivers/pvr_native/pvr_csb.h b/src/gallium/drivers/pvr_native/pvr_csb.h
+index 5aad5121..d2f56c5a 100644
+--- a/src/gallium/drivers/pvr_native/pvr_csb.h
++++ b/src/gallium/drivers/pvr_native/pvr_csb.h
+@@ -8,7 +8,7 @@
+  * raising an error anyone will see. That is why emit() refuses rather than truncating.
+  *
+  * The packet layouts are NOT defined here - they come from csbgen, the same generator
+- * the Vulkan driver uses (csbgen/*.xml -> the headers below, which provide a field
++ * the Vulkan driver uses (the csbgen XML files -> the headers below, which provide a field
+  * struct plus pack/unpack per packet). Only the stream plumbing is ours.
+  */
+ #ifndef PVR_CSB_H
+diff --git a/src/gallium/drivers/zink/zink_batch.c b/src/gallium/drivers/zink/zink_batch.c
+index 3a4f17bf..c615d47e 100644
+--- a/src/gallium/drivers/zink/zink_batch.c
++++ b/src/gallium/drivers/zink/zink_batch.c
+@@ -1,5 +1,4 @@
+ #include "zink_batch.h"
+-#include <time.h>
+ #include "zink_context.h"
+ #include "zink_descriptors.h"
+ #include "zink_kopper.h"
+@@ -816,12 +815,7 @@ submit_queue(void *data, void *gdata, int thread_index)
+ 
+    simple_mtx_lock(screen->queue_lock);
+    VRAM_ALLOC_LOOP(result,
+-      ({ struct timespec _q0,_q1; clock_gettime(CLOCK_MONOTONIC,&_q0);
+-         VkResult _r = VKSCR(QueueSubmit)(screen->queue, num_si, submit, VK_NULL_HANDLE);
+-         clock_gettime(CLOCK_MONOTONIC,&_q1);
+-         if (getenv("ZINK_TIMING")) { double _ms=(_q1.tv_sec-_q0.tv_sec)*1000.0+(_q1.tv_nsec-_q0.tv_nsec)/1e6;
+-            if (_ms>1.0) fprintf(stderr,"[zt] queuesubmit %.2f ms\n",_ms); }
+-         _r; }),
++      VKSCR(QueueSubmit)(screen->queue, num_si, submit, VK_NULL_HANDLE),
+       if (result != VK_SUCCESS) {
+          mesa_loge("ZINK: vkQueueSubmit failed (%s)", vk_Result_to_str(result));
+          bs->is_device_lost = true;
+@@ -870,7 +864,6 @@ end:
+ void
+ zink_end_batch(struct zink_context *ctx)
+ {
+-   struct timespec _e0,_e1; clock_gettime(CLOCK_MONOTONIC,&_e0);
+    MESA_TRACE_FUNC();
+    if (!ctx->queries_disabled)
+       zink_suspend_queries(ctx);
+@@ -1230,8 +1223,6 @@ static void
+ batch_usage_wait(struct zink_context *ctx, struct zink_batch_usage *u, unsigned submit_count, bool trywait)
+ {
+    MESA_TRACE_FUNC();
+-   struct timespec _b0, _b1; int _timed = 0;
+-   if (getenv("BATCH_WAIT_TRACE")) { clock_gettime(CLOCK_MONOTONIC, &_b0); _timed = 1; }
+    if (!zink_batch_usage_exists(u))
+       return;
+    /* this batch state was already completed and reset */
+@@ -1239,15 +1230,6 @@ batch_usage_wait(struct zink_context *ctx, struct zink_batch_usage *u, unsigned
+       return;
+    if (zink_batch_usage_unflushed_wait(ctx, u, submit_count, trywait))
+       zink_wait_on_batch(ctx, u->usage);
+-   if (_timed) {
+-      static unsigned long _n; static double _tot, _max;
+-      clock_gettime(CLOCK_MONOTONIC, &_b1);
+-      double ms = (_b1.tv_sec-_b0.tv_sec)*1000.0 + (_b1.tv_nsec-_b0.tv_nsec)/1e6;
+-      _n++; _tot += ms; if (ms > _max) _max = ms;
+-      if (_n % 500 == 0)
+-         fprintf(stderr, "[bw] %lu waits, total %.1f ms, avg %.3f ms, max %.2f ms\n",
+-                 _n, _tot, _tot/_n, _max);
+-   }
+ }
+ 
+ void
+diff --git a/src/gallium/drivers/zink/zink_context.c b/src/gallium/drivers/zink/zink_context.c
+index 5553a1ba..7310b368 100644
+--- a/src/gallium/drivers/zink/zink_context.c
++++ b/src/gallium/drivers/zink/zink_context.c
+@@ -23,7 +23,6 @@
+ 
+ #include "zink_clear.h"
+ #include "zink_context.h"
+-#include <stdio.h>
+ #include "zink_descriptors.h"
+ #include "zink_fence.h"
+ #include "zink_format.h"
+@@ -3891,12 +3890,8 @@ zink_evaluate_depth_buffer(struct pipe_context *pctx)
+ static void
+ sync_flush(struct zink_context *ctx, struct zink_batch_state *bs)
+ {
+-   if (zink_screen(ctx->base.screen)->threaded_submit) {
+-      if (getenv("ZINK_FENCE_TRACE"))
+-         fprintf(stderr, "[zf] sync_flush: waiting on flush_completed (signalled=%d)\n",
+-                 util_queue_fence_is_signalled(&bs->flush_completed));
++   if (zink_screen(ctx->base.screen)->threaded_submit)
+       util_queue_fence_wait(&bs->flush_completed);
+-   }
+ }
+ 
+ static inline VkAccessFlags
+@@ -4055,9 +4050,6 @@ flush_batch(struct zink_context *ctx, bool sync)
+       zink_flush_clears(ctx);
+    zink_batch_no_rp_safe(ctx);
+ 
+-   if (getenv("ZINK_FENCE_TRACE"))
+-      fprintf(stderr, "[zf] flush_batch: waiting on unsync_fence (signalled=%d)\n",
+-              util_queue_fence_is_signalled(&ctx->unsync_fence));
+    util_queue_fence_wait(&ctx->unsync_fence);
+    util_queue_fence_reset(&ctx->flush_fence);
+    zink_end_batch(ctx);
+diff --git a/src/gallium/drivers/zink/zink_kopper.c b/src/gallium/drivers/zink/zink_kopper.c
+index 5e5f5c39..60eb9ef2 100644
+--- a/src/gallium/drivers/zink/zink_kopper.c
++++ b/src/gallium/drivers/zink/zink_kopper.c
+@@ -22,7 +22,6 @@
+  * DEALINGS IN THE SOFTWARE.
+  */
+ 
+-#include <stdio.h>
+ #include "util/detect_os.h"
+ 
+ #include "zink_context.h"
+@@ -30,7 +29,6 @@
+ #include "zink_surface.h"
+ #include "zink_resource.h"
+ #include "zink_kopper.h"
+-#include <time.h>
+ 
+ static void
+ zink_kopper_set_present_mode_for_interval(struct kopper_displaytarget *cdt, int interval)
+@@ -58,9 +56,6 @@ zink_kopper_set_present_mode_for_interval(struct kopper_displaytarget *cdt, int
+    } else if (interval > 0) {
+       cdt->present_mode = VK_PRESENT_MODE_FIFO_KHR;
+    }
+-   if (getenv("ZINK_PM_TRACE"))
+-      fprintf(stderr, "[pm] interval=%d type=%d -> present_mode=%d\n",
+-              interval, cdt->type, cdt->present_mode);
+    assert(cdt->present_modes & BITFIELD_BIT(cdt->present_mode));
+ #endif
+ }
+@@ -317,8 +312,7 @@ kopper_CreateSwapchain(struct zink_screen *screen, struct kopper_displaytarget *
+       cswap->scci.clipped = VK_TRUE;
+    }
+    cswap->scci.presentMode = cdt->present_mode;
+-   cswap->scci.minImageCount = cdt->caps.minImageCount +
+-      (getenv("ZINK_EXTRA_IMAGES") ? atoi(getenv("ZINK_EXTRA_IMAGES")) : 0);
++   cswap->scci.minImageCount = cdt->caps.minImageCount;
+    cswap->scci.preTransform = cdt->caps.currentTransform;
+    if (cdt->formats[1])
+       cswap->scci.pNext = &cdt->format_list;
+@@ -406,10 +400,6 @@ kopper_GetSwapchainImages(struct zink_screen *screen, struct kopper_swapchain *c
+       }
+    }
+    cswap->max_acquires = cswap->num_images - cswap->scci.minImageCount + 1;
+-   if (getenv("SWAPCHAIN_INFO"))
+-      fprintf(stderr, "[sc] num_images=%u minImageCount=%u presentMode=%d -> max_acquires=%u\n",
+-              cswap->num_images, cswap->scci.minImageCount, (int)cswap->scci.presentMode,
+-              cswap->max_acquires);
+    return error;
+ }
+ 
+@@ -575,8 +565,6 @@ static VkResult
+ kopper_acquire(struct zink_screen *screen, struct zink_resource *res, uint64_t timeout)
+ {
+    struct kopper_displaytarget *cdt = res->obj->dt;
+-   struct timespec _t0, _t1;
+-   clock_gettime(CLOCK_MONOTONIC, &_t0);
+ 
+    /* if:
+     * - we don't need a new image
+@@ -631,15 +619,7 @@ kopper_acquire(struct zink_screen *screen, struct zink_resource *res, uint64_t t
+          if (!acquire)
+             return VK_ERROR_OUT_OF_HOST_MEMORY;
+       }
+-      { struct timespec _a0,_a1; int _at=getenv("ACQ_TRACE")!=NULL;
+-        if(_at) clock_gettime(CLOCK_MONOTONIC,&_a0);
+       ret = VKSCR(AcquireNextImageKHR)(screen->dev, cdt->swapchain->swapchain, timeout, acquire, VK_NULL_HANDLE, &res->obj->dt_idx);
+-      if(_at){ static unsigned long _an; static double _atot,_amax;
+-        clock_gettime(CLOCK_MONOTONIC,&_a1);
+-        double _ms=(_a1.tv_sec-_a0.tv_sec)*1000.0+(_a1.tv_nsec-_a0.tv_nsec)/1e6;
+-        _an++; _atot+=_ms; if(_ms>_amax)_amax=_ms;
+-        if(_an%50==0) fprintf(stderr,"[acq] AcquireNextImage waits=%lu total=%.1fms avg=%.2fms max=%.2fms\n",
+-            _an,_atot,_atot/_an,_amax); } }
+       if (ret != VK_SUCCESS && ret != VK_SUBOPTIMAL_KHR) {
+          if (ret == VK_ERROR_OUT_OF_DATE_KHR) {
+             res->obj->new_dt = true;
+@@ -661,19 +641,6 @@ kopper_acquire(struct zink_screen *screen, struct zink_resource *res, uint64_t t
+    if (cdt->swapchain->images[res->obj->dt_idx].readback)
+       zink_resource(cdt->swapchain->images[res->obj->dt_idx].readback)->valid = false;
+    res->obj->image = cdt->swapchain->images[res->obj->dt_idx].image;
+-   /* ponytail: SWAPCHAIN_INFO - what kind of image is the render target when windowed? */
+-   if (getenv("SWAPCHAIN_INFO")) {
+-      static int _done;
+-      if (!_done++) {
+-         uint32_t _mods = res->modifiers_count;
+-         uint64_t _m0 = _mods ? res->modifiers[0] : 0;
+-         fprintf(stderr, "[swi] swapchain target: fmt=%d %ux%u linear=%d modifiers=%u m0=0x%llx "
+-                 "vkusage=0x%llx layout=%d\n",
+-                 (int)res->base.b.format, res->base.b.width0, res->base.b.height0,
+-                 res->linear, _mods, (unsigned long long)_m0,
+-                 (unsigned long long)res->obj->vkusage, (int)res->layout);
+-      }
+-   }
+    if (!cdt->age_locked)
+       zink_kopper_update_last_written(res);
+    cdt->swapchain->images[res->obj->dt_idx].acquired = NULL;
+@@ -699,9 +666,6 @@ kopper_acquire(struct zink_screen *screen, struct zink_resource *res, uint64_t t
+       p_atomic_inc(&cdt->swapchain->num_acquires);
+    }
+    cdt->swapchain->images[res->obj->dt_idx].dt_has_data = false;
+-   clock_gettime(CLOCK_MONOTONIC, &_t1);
+-   { double _ms = (_t1.tv_sec-_t0.tv_sec)*1000.0 + (_t1.tv_nsec-_t0.tv_nsec)/1e6;
+-     if (getenv("ZINK_TIMING") && _ms > 2.0) fprintf(stderr, "[zt] acquire %.2f ms\n", _ms); }
+    return VK_SUCCESS;
+ }
+ 
+@@ -796,8 +760,6 @@ static void
+ kopper_present(void *data, void *gdata, int thread_idx)
+ {
+    struct zink_kopper_present_info *cpi = data;
+-   struct timespec _p0, _p1;
+-   clock_gettime(CLOCK_MONOTONIC, &_p0);
+    struct kopper_displaytarget *cdt = cpi->res->obj->dt;
+    struct kopper_swapchain *swapchain = cpi->swapchain;
+    struct zink_screen *screen = gdata;
+@@ -835,9 +797,6 @@ kopper_present(void *data, void *gdata, int thread_idx)
+       cpi->info.waitSemaphoreCount = 0;
+    }
+    VkResult error2 = VKSCR(QueuePresentKHR)(screen->queue, &cpi->info);
+-   clock_gettime(CLOCK_MONOTONIC, &_p1);
+-   if (getenv("ZINK_TIMING")) fprintf(stderr, "[zt] present %.2f ms\n",
+-      (_p1.tv_sec-_p0.tv_sec)*1000.0 + (_p1.tv_nsec-_p0.tv_nsec)/1e6);
+    zink_screen_debug_marker_end(screen, screen->frame_marker_emitted);
+    zink_screen_debug_marker_begin(screen, "frame");
+    simple_mtx_unlock(screen->queue_lock);
+diff --git a/src/gallium/drivers/zink/zink_resource.c b/src/gallium/drivers/zink/zink_resource.c
+index 27215c75..c37fa55f 100644
+--- a/src/gallium/drivers/zink/zink_resource.c
++++ b/src/gallium/drivers/zink/zink_resource.c
+@@ -1907,11 +1907,6 @@ resource_create(struct pipe_screen *pscreen,
+          res->queue = VK_QUEUE_FAMILY_FOREIGN_EXT;
+       res->layout = res->dmabuf ? VK_IMAGE_LAYOUT_PREINITIALIZED : VK_IMAGE_LAYOUT_UNDEFINED;
+       res->linear = linear;
+-      if (getenv("ZINK_TILING"))
+-         fprintf(stderr, "[tl] %ux%u linear=%d modifiers=%d m0=0x%llx dt=%d\n",
+-                 templ->width0, templ->height0, linear, res->modifiers_count,
+-                 res->modifiers_count ? (unsigned long long)res->modifiers[0] : 0,
+-                 !!res->obj->dt);
+       res->aspect = aspect_from_format(templ->format);
+    }
+ 
+diff --git a/src/gallium/frontends/dri/kopper.c b/src/gallium/frontends/dri/kopper.c
+index a8e58aaa..d2189798 100644
+--- a/src/gallium/frontends/dri/kopper.c
++++ b/src/gallium/frontends/dri/kopper.c
+@@ -370,14 +370,6 @@ kopper_update_drawable_info(struct dri_drawable *drawable)
+     * validation, measured at 21.7 ms per frame. The XCB-surface-create-info check below
+     * already identifies a Vulkan surface, so require only that. */
+    bool do_kopper_update = is_window && ptex;
+-   if (getenv("KOpper_BRANCH")) {
+-      static int _n;
+-      if (++_n % 50 == 1)
+-         fprintf(stderr, "[kb] is_window=%d ptex=%d screen_fd=%d sType=0x%x -> %s\n",
+-                 is_window, !!ptex, screen->fd, drawable->info.bos.sType,
+-                 (drawable->info.bos.sType == VK_STRUCTURE_TYPE_XCB_SURFACE_CREATE_INFO_KHR && do_kopper_update)
+-                    ? "FASTPATH(no round-trip)" : "get_drawable_info(ROUND-TRIP)");
+-   }
+    if (drawable->info.bos.sType == VK_STRUCTURE_TYPE_XCB_SURFACE_CREATE_INFO_KHR && do_kopper_update)
+       zink_kopper_update(kopper_get_zink_screen(screen->base.screen), ptex, &drawable->w, &drawable->h);
+    else
+@@ -535,15 +527,6 @@ kopper_destroy_drawable(struct dri_drawable *drawable)
+ int64_t
+ kopperSwapBuffersWithDamage(struct dri_drawable *drawable, uint32_t flush_flags, int nrects, const int *rects)
+ {
+-   /* ponytail: SWAP_TIMING - separate time spent INSIDE eglSwapBuffers (the present path)
+-    * from the frame period, so the client-side cost can be attributed. */
+-   struct timespec _s0, _s1;
+-   static struct timespec _last;
+-   static int _n;
+-   clock_gettime(CLOCK_MONOTONIC, &_s0);
+-   double _period = 0.0;
+-   if (_last.tv_sec)
+-      _period = (_s0.tv_sec-_last.tv_sec)*1000.0 + (_s0.tv_nsec-_last.tv_nsec)/1e6;
+    struct dri_context *ctx = dri_get_current();
+    struct pipe_resource *ptex;
+ 
+@@ -579,14 +562,6 @@ kopperSwapBuffersWithDamage(struct dri_drawable *drawable, uint32_t flush_flags,
+    if (drawable->is_window && !zink_kopper_check(ptex))
+       return -1;
+    if (!drawable->textures[ST_ATTACHMENT_FRONT_LEFT]) {
+-      if (getenv("SWAP_TIMING")) {
+-         clock_gettime(CLOCK_MONOTONIC, &_s1);
+-         double inside = (_s1.tv_sec-_s0.tv_sec)*1000.0 + (_s1.tv_nsec-_s0.tv_nsec)/1e6;
+-         if (++_n > 20 && _n % 20 == 0)
+-            fprintf(stderr, "[swap] frame %d: period %.2f ms, inside swap %.2f ms, outside %.2f ms\n",
+-                    _n, _period, inside, _period - inside);
+-      }
+-      clock_gettime(CLOCK_MONOTONIC, &_last);
+       return 0;
+    }
+ 
+@@ -594,15 +569,6 @@ kopperSwapBuffersWithDamage(struct dri_drawable *drawable, uint32_t flush_flags,
+    drawable->textures[ST_ATTACHMENT_BACK_LEFT] = drawable->textures[ST_ATTACHMENT_FRONT_LEFT];
+    drawable->textures[ST_ATTACHMENT_FRONT_LEFT] = ptex;
+ 
+-   if (getenv("SWAP_TIMING")) {
+-      clock_gettime(CLOCK_MONOTONIC, &_s1);
+-      double inside = (_s1.tv_sec-_s0.tv_sec)*1000.0 + (_s1.tv_nsec-_s0.tv_nsec)/1e6;
+-      if (++_n > 20 && _n % 20 == 0)
+-         fprintf(stderr, "[swap] frame %d: period %.2f ms, inside swap %.2f ms, outside %.2f ms\n",
+-                 _n, _period, inside, _period - inside);
+-   }
+-   clock_gettime(CLOCK_MONOTONIC, &_last);
+-
+    return 0;
+ }
+ 
+diff --git a/src/imagination/pco/pco_nir.c b/src/imagination/pco/pco_nir.c
+index cac45351..609f8073 100644
+--- a/src/imagination/pco/pco_nir.c
++++ b/src/imagination/pco/pco_nir.c
+@@ -943,14 +943,6 @@ static inline bool should_spill_shmem(const pco_ctx *ctx, unsigned shared_size)
+    return ((float)shared_size / (float)max_shmem) > PCO_SHMEM_THRESHOLD;
+ }
+ 
+-/**
+- * \brief Lowers a NIR shader.
+- *
+- * \param[in] ctx PCO compiler context.
+- * \param[in,out] nir NIR shader.
+- * \param[in,out] data Shader data.
+- */
+-
+ /**
+  * \brief Access shape for a buffer access pco cannot do as written.
+  *
+@@ -982,6 +974,13 @@ pco_mem_access_size_align_cb(nir_intrinsic_op intrin, uint8_t bytes,
+    };
+ }
+ 
++/**
++ * \brief Lowers a NIR shader.
++ *
++ * \param[in] ctx PCO compiler context.
++ * \param[in,out] nir NIR shader.
++ * \param[in,out] data Shader data.
++ */
+ void pco_lower_nir(pco_ctx *ctx, nir_shader *nir, pco_data *data)
+ {
+    bool internal = nir->info.internal;
+@@ -1340,13 +1339,6 @@ remat_load_const(nir_builder *b, nir_instr *instr, UNUSED void *cb_data)
+    return true;
+ }
+ 
+-/**
+- * \brief Runs post-processing passes on a NIR shader.
+- *
+- * \param[in] ctx PCO compiler context.
+- * \param[in,out] nir NIR shader.
+- * \param[in,out] data Shader data.
+- */
+ /* Uniform buffer ranges larger than this stay in memory. */
+ #define PCO_UBO_PRELOAD_MAX_DWORDS 256U
+ #define PCO_UBO_PRELOAD_TOTAL_DWORDS 256U
+@@ -1449,6 +1441,13 @@ static void gather_ubo_preloads(nir_shader *nir, pco_common_data *common)
+    }
+ }
+ 
++/**
++ * \brief Runs post-processing passes on a NIR shader.
++ *
++ * \param[in] ctx PCO compiler context.
++ * \param[in,out] nir NIR shader.
++ * \param[in,out] data Shader data.
++ */
+ void pco_postprocess_nir(pco_ctx *ctx, nir_shader *nir, pco_data *data)
+ {
+    bool internal = nir->info.internal;
+diff --git a/src/imagination/pco/pco_opt.c b/src/imagination/pco/pco_opt.c
+index b1d961d5..7977c1bb 100644
+--- a/src/imagination/pco/pco_opt.c
++++ b/src/imagination/pco/pco_opt.c
+@@ -399,13 +399,6 @@ static inline bool can_fwd_prop_src(const pco_instr *to_instr,
+    return true;
+ }
+ 
+-/**
+- * \brief Tries to forward-propagate an instruction.
+- *
+- * \param[in] writes Global list of writes.
+- * \param[in] instr Instruction to try and forward-propagate.
+- * \return True if forward-propagation was successful.
+- */
+ /* Whether a virtual register keeps its value from one instruction to a later
+  * one: both in the same block, with no write to the register in between.
+  */
+@@ -426,6 +419,13 @@ static bool vreg_unchanged_between(pco_ref vreg, pco_instr *from, pco_instr *to)
+    return true;
+ }
+ 
++/**
++ * \brief Tries to forward-propagate an instruction.
++ *
++ * \param[in] writes Global list of writes.
++ * \param[in] instr Instruction to try and forward-propagate.
++ * \return True if forward-propagation was successful.
++ */
+ static inline bool try_fwd_prop_instr(pco_instr **writes, pco_instr *instr)
+ {
+    bool progress = false;
+diff --git a/src/imagination/pco/pco_trans_nir.c b/src/imagination/pco/pco_trans_nir.c
+index 3339b720..67b0aec8 100644
+--- a/src/imagination/pco/pco_trans_nir.c
++++ b/src/imagination/pco/pco_trans_nir.c
+@@ -3637,14 +3637,6 @@ static inline bool is_min(nir_op op)
+    UNREACHABLE("");
+ }
+ 
+-/**
+- * \brief Translates a NIR min/max op into PCO.
+- *
+- * \param[in,out] tctx Translation context.
+- * \param[in] op The NIR op.
+- * \param[in] src Instruction source.
+- * \return The translated PCO instruction.
+- */
+ /* Whether an ALU source resolves to a constant that is not NaN. */
+ static bool alu_src_is_nonnan_const(const nir_alu_instr *alu, unsigned i)
+ {
+@@ -3653,6 +3645,14 @@ static bool alu_src_is_nonnan_const(const nir_alu_instr *alu, unsigned i)
+    return nir_scalar_is_const(c) && !isnan(nir_scalar_as_float(c));
+ }
+ 
++/**
++ * \brief Translates a NIR min/max op into PCO.
++ *
++ * \param[in,out] tctx Translation context.
++ * \param[in] op The NIR op.
++ * \param[in] src Instruction source.
++ * \return The translated PCO instruction.
++ */
+ static pco_instr *trans_min_max(trans_ctx *tctx,
+                                 nir_op op,
+                                 pco_ref dest,
+@@ -3856,13 +3856,6 @@ trans_conv(trans_ctx *tctx, nir_op op, pco_ref dest, pco_ref src)
+                           .roundzero = roundzero);
+ }
+ 
+-/**
+- * \brief Translates a NIR alu instruction into PCO.
+- *
+- * \param[in] tctx Translation context.
+- * \param[in] alu The nir alu instruction.
+- * \return The PCO instruction.
+- */
+ /**
+  * \brief Returns the scalar 32-bit ALU instruction of type \p op producing source
+  * \p s of \p alu if \p alu is its only user, so it can be folded into \p alu
+@@ -3890,6 +3883,13 @@ single_use_alu_src(const nir_alu_instr *alu, unsigned s, nir_op op)
+    return prod;
+ }
+ 
++/**
++ * \brief Translates a NIR alu instruction into PCO.
++ *
++ * \param[in] tctx Translation context.
++ * \param[in] alu The nir alu instruction.
++ * \return The PCO instruction.
++ */
+ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
+ {
+    const nir_op_info *info = &nir_op_infos[alu->op];
+diff --git a/src/imagination/vulkan/pvr_arch_cmd_buffer.c b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
+index 34153c59..a7c8e087 100644
+--- a/src/imagination/vulkan/pvr_arch_cmd_buffer.c
++++ b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
+@@ -87,6 +87,7 @@
+ #include "vk_synchronization.h"
+ #include "vk_util.h"
+ 
++
+ /* Structure used to pass data into pvr_compute_generate_control_stream()
+  * function.
+  */
+@@ -7134,20 +7135,6 @@ static VkResult pvr_setup_descriptor_mappings(
+       pvr_bo->dev_addr.addr -
+       device->heaps.pds_heap->base_addr.addr;
+ 
+-   if (getenv("PVR_DUMP_COMPUTE_DESCRIPTORS") && stage == PVR_STAGE_ALLOCATION_COMPUTE) {
+-      FILE *f = fopen(getenv("PVR_DUMP_COMPUTE_DESCRIPTORS"), "ab");
+-      uint32_t i;
+-
+-      if (f) {
+-         fprintf(f, "DESC off=0x%x size_dw=%u:", *descriptor_data_offset_out,
+-                 pds_info->data_size_in_dwords);
+-         for (i = 0; i < pds_info->data_size_in_dwords; i++)
+-            fprintf(f, " %08x", dword_buffer[i]);
+-         fprintf(f, "\n");
+-         fclose(f);
+-      }
+-   }
+-
+    return VK_SUCCESS;
+ }
+ 
+@@ -7430,49 +7417,6 @@ static void pvr_compute_update_kernel(
+       }
+    }
+ 
+-   if (getenv("PVR_DUMP_COMPUTE_PDS_RUNTIME")) {
+-      FILE *f = fopen(getenv("PVR_DUMP_COMPUTE_PDS_RUNTIME"), "ab");
+-      uint32_t i;
+-
+-      if (f) {
+-         struct {
+-            const char *name;
+-            struct pvr_suballoc_bo *bo;
+-            uint32_t off, dwords;
+-         } blobs[] = {
+-            { "cs_code", pipeline->pds_cs_program.pvr_bo,
+-              pipeline->pds_cs_program.code_offset, program_info->code_size_in_dwords },
+-            { "cs_data", pipeline->pds_cs_program.pvr_bo,
+-              pipeline->pds_cs_program.data_offset, program_info->data_size_in_dwords },
+-            { "desc_code", pipeline->descriptor_state.pds_code.pvr_bo,
+-              pipeline->descriptor_state.pds_code.code_offset,
+-              pipeline->descriptor_state.pds_info.code_size_in_dwords },
+-         };
+-
+-         for (i = 0; i < ARRAY_SIZE(blobs); i++) {
+-            const uint32_t *dw;
+-            uint32_t j;
+-
+-            if (blobs[i].bo == NULL)
+-               continue;
+-            const uint8_t *map = pvr_bo_suballoc_get_map_addr(blobs[i].bo);
+-            uint64_t base = blobs[i].bo->dev_addr.addr;
+-            uint64_t start = cmd_buffer->device->heaps.pds_heap->base_addr.addr + blobs[i].off;
+-            uint32_t local;
+-
+-            if (map == NULL || start < base)
+-               continue;
+-            local = (uint32_t)(start - base);
+-            dw = (const uint32_t *)(map + local);
+-            fprintf(f, "PDSRT %s off=0x%x dw=%u:", blobs[i].name, blobs[i].off, blobs[i].dwords);
+-            for (j = 0; j < blobs[i].dwords; j++)
+-               fprintf(f, " %08x", dw[j]);
+-            fprintf(f, "\n");
+-         }
+-         fclose(f);
+-      }
+-   }
+-
+    struct pvr_compute_kernel_info info = {
+       .indirect_buffer_addr = indirect_addr,
+       .usc_target = ROGUE_CDMCTRL_USC_TARGET_ANY,
+@@ -11600,28 +11544,8 @@ void PVR_PER_ARCH(CmdWriteTimestamp2)(VkCommandBuffer commandBuffer,
+    UNREACHABLE("Timestamp queries are not supported.");
+ }
+ 
+-extern uint64_t pvr_alloc_count, pvr_alloc_bytes;
+-
+ VkResult PVR_PER_ARCH(EndCommandBuffer)(VkCommandBuffer commandBuffer)
+ {
+-   /* Report what this command buffer allocated, for PVR_ALLOC_TRACE=1. A driver that
+-    * allocates buffers per command buffer pays for them every frame. */
+-   {
+-      static uint64_t last_count, last_bytes;
+-      static int last_frames;
+-      extern uint64_t pvr_alloc_count, pvr_alloc_bytes;
+-
+-      if (getenv("PVR_ALLOC_TRACE")) {
+-         uint64_t dcount = pvr_alloc_count - last_count;
+-         uint64_t dbytes = pvr_alloc_bytes - last_bytes;
+-         last_count = pvr_alloc_count;
+-         last_bytes = pvr_alloc_bytes;
+-         if (++last_frames <= 5 || last_frames % 50 == 0)
+-            fprintf(stderr, "[alloc] command buffer %d: %llu bo(s), %llu KiB\n", last_frames,
+-                    (unsigned long long)dcount, (unsigned long long)(dbytes / 1024));
+-      }
+-   }
+-
+    VK_FROM_HANDLE(pvr_cmd_buffer, cmd_buffer, commandBuffer);
+    struct pvr_cmd_buffer_state *state = &cmd_buffer->state;
+    VkResult result;
+diff --git a/src/imagination/vulkan/pvr_arch_descriptor_set.c b/src/imagination/vulkan/pvr_arch_descriptor_set.c
+index b5bc6e39..9adbd08a 100644
+--- a/src/imagination/vulkan/pvr_arch_descriptor_set.c
++++ b/src/imagination/vulkan/pvr_arch_descriptor_set.c
+@@ -50,22 +50,6 @@ write_buffer(const struct pvr_descriptor_set *set,
+ 
+    memcpy(desc_mapping, &buffer_desc, sizeof(buffer_desc));
+ 
+-   if (getenv("PVR_DUMP_DESC_SET")) {
+-      FILE *f = fopen(getenv("PVR_DUMP_DESC_SET"), "ab");
+-
+-      if (f) {
+-         const uint32_t *dw = (const uint32_t *)((const uint8_t *)set->mapping + (desc_offset & ~3u));
+-         uint32_t i;
+-
+-         fprintf(f, "SET addr=0x%llx size=%u desc_off=%u buffer_addr=0x%llx range=%u words:",
+-                 (unsigned long long)set->dev_addr.addr, set->size, desc_offset,
+-                 (unsigned long long)buffer_addr.addr, (unsigned)range);
+-         for (i = 0; i < 4; i++)
+-            fprintf(f, " %08x", dw[i]);
+-         fprintf(f, "\n");
+-         fclose(f);
+-      }
+-   }
+ }
+ 
+ static void
+diff --git a/src/imagination/vulkan/pvr_arch_device.c b/src/imagination/vulkan/pvr_arch_device.c
+index ae120293..71d048be 100644
+--- a/src/imagination/vulkan/pvr_arch_device.c
++++ b/src/imagination/vulkan/pvr_arch_device.c
+@@ -980,6 +980,10 @@ VkResult PVR_PER_ARCH(create_device)(struct pvr_physical_device *pdevice,
+    result = pvr_device_dummy_rt_init(device);
+    if (result != VK_SUCCESS) {
+       pvr_rt_dataset_cache_finish(device);
++      pvr_arch_mrt_load_op_cache_finish(device);
++      pvr_arch_spm_eot_cache_finish(device);
++      simple_mtx_destroy(&device->rs_mtx);
++      pvr_device_utrace_finish(device);
+       goto err_pvr_border_color_table_finish;
+    }
+ 
+diff --git a/src/imagination/vulkan/pvr_arch_job_compute.c b/src/imagination/vulkan/pvr_arch_job_compute.c
+index 5a31f64f..75cb0c4b 100644
+--- a/src/imagination/vulkan/pvr_arch_job_compute.c
++++ b/src/imagination/vulkan/pvr_arch_job_compute.c
+@@ -230,50 +230,6 @@ VkResult pvr_arch_compute_job_submit(struct pvr_compute_ctx *ctx,
+    }
+ #endif
+ 
+-   if (getenv("PVR_DUMP_COMPUTE_JOB")) {
+-      char path[512];
+-      FILE *f;
+-
+-      snprintf(path, sizeof(path), "%s/fw_stream.bin", getenv("PVR_DUMP_COMPUTE_JOB"));
+-      f = fopen(path, "wb");
+-      if (f) {
+-         uint32_t len = submit_info.fw_stream_len;
+-
+-         fwrite(&len, sizeof(len), 1, f);
+-         fwrite(submit_info.fw_stream, 1, len, f);
+-         fclose(f);
+-      }
+-
+-      snprintf(path, sizeof(path), "%s/ctrl_stream.bin", getenv("PVR_DUMP_COMPUTE_JOB"));
+-      f = fopen(path, "wb");
+-      if (f) {
+-         const struct pvr_csb *cs = &sub_cmd->control_stream;
+-         uint64_t addr = pvr_csb_get_start_address(cs).addr;
+-         uint32_t len = (uint32_t)((const uint8_t *)cs->next - (const uint8_t *)cs->start);
+-
+-         fwrite(&addr, sizeof(addr), 1, f);
+-         fwrite(&len, sizeof(len), 1, f);
+-         fwrite(cs->start, 1, len, f);
+-         fclose(f);
+-      }
+-
+-      snprintf(path, sizeof(path), "%s/state_bo.bin", getenv("PVR_DUMP_COMPUTE_JOB"));
+-      f = fopen(path, "wb");
+-      if (f) {
+-         struct pvr_bo *bo = ctx->ctx_switch.compute_state_bo;
+-         uint64_t addr = bo->vma->dev_addr.addr;
+-         uint32_t size = bo->bo->size;
+-         void *map = bo->bo->map;
+-
+-         fwrite(&addr, sizeof(addr), 1, f);
+-         fwrite(&size, sizeof(size), 1, f);
+-         if (map)
+-            fwrite(map, 1, size, f);
+-         fclose(f);
+-      }
+-      fprintf(stderr, "PVR_DUMP_COMPUTE_JOB: captured compute job to %s\n", getenv("PVR_DUMP_COMPUTE_JOB"));
+-   }
+-
+    return device->ws->ops->compute_submit(ctx->ws_ctx,
+                                           &submit_info,
+                                           &device->pdevice->dev_info,
+diff --git a/src/imagination/vulkan/pvr_arch_job_render.c b/src/imagination/vulkan/pvr_arch_job_render.c
+index ac61dcf1..3e2d847b 100644
+--- a/src/imagination/vulkan/pvr_arch_job_render.c
++++ b/src/imagination/vulkan/pvr_arch_job_render.c
+@@ -1157,26 +1157,6 @@ static void pvr_frag_state_stream_init(struct pvr_render_ctx *ctx,
+    /* PVR_TILE_TRACE=1: what tiling does this job actually use, and does it take the
+     * skip_init_hdrs path? One line, so the numbers can be checked against the
+     * timing rather than inferred. */
+-   if (getenv("PVR_TILE_TRACE")) {
+-      static bool traced;
+-      if (!traced) {
+-         traced = true;
+-         fprintf(stderr,
+-                 "[tile] rt %ux%u samples=%u -> tiles %ux%u mtiles %ux%u tiles_per_mtile "
+-                 "%ux%u x_tile_max=%u y_tile_max=%u\n",
+-                 rt_dataset->width, rt_dataset->height, rt_dataset->samples,
+-                 tiling_info.num_tiles_x, tiling_info.num_tiles_y, tiling_info.mtiles_x,
+-                 tiling_info.mtiles_y, tiling_info.tiles_per_mtile_x,
+-                 tiling_info.tiles_per_mtile_y, tiling_info.x_tile_max, tiling_info.y_tile_max);
+-         fprintf(stderr,
+-                 "[tile] features: simple_internal_parameter_format=%d gpu_multicore_support=%d "
+-                 "process_empty_tiles=%d -> skip_init_hdrs=%d\n",
+-                 PVR_HAS_FEATURE(dev_info, simple_internal_parameter_format),
+-                 PVR_HAS_FEATURE(dev_info, gpu_multicore_support), job->process_empty_tiles,
+-                 (PVR_HAS_FEATURE(dev_info, gpu_multicore_support) &&
+-                  PVR_HAS_FEATURE(dev_info, simple_internal_parameter_format)));
+-      }
+-   }
+    pvr_csb_pack (stream_ptr, CR_ISP_CTL, value) {
+       value.sample_pos = true;
+       value.process_empty_tiles = job->process_empty_tiles;
+@@ -1417,18 +1397,7 @@ static void pvr_render_job_ws_fragment_pr_init_based_on_fragment_state(
+     * can be diffed against it instead of against my transcription of the helper. */
+    /* ponytail: PVR_CSB_TAIL - dump the bytes from the EOT offset to the end of the stream, plus the two
+     * length values, which is everything round 82 could not answer by reading. */
+-   if (getenv("PVR_CSB_TAIL")) {
+-      const uint32_t main_len = pvr_csb_unpack((uint64_t *)state->fw_stream, KMD_STREAM_HDR).length;
+-      fprintf(stderr, "[tail] fw_stream_len=%u main_len=%u eot=%u:", state->fw_stream_len, main_len,
+-              eot_data_addr_byte_offset);
+-      for (uint32_t b = eot_data_addr_byte_offset; b + 4 <= state->fw_stream_len && b < 440; b += 4) {
+-         uint32_t w; memcpy(&w, &state->fw_stream[b], 4); fprintf(stderr, " %08x", w);
+-      }
+-      fprintf(stderr, "\n");
+-   }
+ 
+-   if (getenv("PVR_CSB_OFFSETS"))
+-      fprintf(stderr, "[off] pbe=%u eot=%u\n", pbe_reg_byte_offset, eot_data_addr_byte_offset);
+    const uint32_t view_index =
+       job->view_state.force_pds_pixel_event_data_offset_zero
+          ? 0
+diff --git a/src/imagination/vulkan/pvr_arch_pipeline.c b/src/imagination/vulkan/pvr_arch_pipeline.c
+index a4d53b8e..f299d789 100644
+--- a/src/imagination/vulkan/pvr_arch_pipeline.c
++++ b/src/imagination/vulkan/pvr_arch_pipeline.c
+@@ -651,20 +651,6 @@ static VkResult pvr_pds_descriptor_program_create_and_upload(
+          .destination = data->common.literals.start,
+       };
+ 
+-      if (getenv("PVR_DUMP_LITERALS")) {
+-         FILE *f = fopen(getenv("PVR_DUMP_LITERALS"), "ab");
+-         uint32_t i;
+-
+-         if (f) {
+-            fprintf(f, "LIT addr=0x%llx count=%u:",
+-                    (unsigned long long)descriptor_state->static_consts->dev_addr.addr,
+-                    data->common.literals.count);
+-            for (i = 0; i < data->common.literals.count; i++)
+-               fprintf(f, " %08x", data->common.literal_vals[i]);
+-            fprintf(f, "\n");
+-            fclose(f);
+-         }
+-      }
+    }
+ 
+    /* Pass the 64-bit address (as 2x32-bit regs) of the global shmem buffer. */
+diff --git a/src/imagination/vulkan/pvr_bo.c b/src/imagination/vulkan/pvr_bo.c
+index 445f756c..0c429cf5 100644
+--- a/src/imagination/vulkan/pvr_bo.c
++++ b/src/imagination/vulkan/pvr_bo.c
+@@ -31,8 +31,6 @@
+ #include <stdio.h>
+ #include <vulkan/vulkan.h>
+ 
+-/* Counters read by the PVR_ALLOC_TRACE=1 report in pvr_arch_cmd_buffer.c. */
+-uint64_t pvr_alloc_count, pvr_alloc_bytes;
+ 
+ #if defined(HAVE_VALGRIND)
+ #   include <valgrind.h>
+@@ -359,13 +357,6 @@ VkResult pvr_bo_alloc(struct pvr_device *device,
+ 
+    pvr_bo->ref_count = 1;
+ 
+-   /* PVR_ALLOC_TRACE=1 in pvr_arch_cmd_buffer.c reports how many BOs a command
+-    * buffer allocates, because a driver that allocates per command buffer pays
+-    * for it every frame. Counted unconditionally: two increments are cheaper
+-    * than a branch and the report is only read under the env var.
+-    */
+-   pvr_alloc_count++;
+-   pvr_alloc_bytes += size;
+ 
+    result = device->ws->ops->buffer_create(device->ws,
+                                            size,
+diff --git a/src/imagination/vulkan/pvr_csb.h b/src/imagination/vulkan/pvr_csb.h
+index 22ec1a21..3c7dba05 100644
+--- a/src/imagination/vulkan/pvr_csb.h
++++ b/src/imagination/vulkan/pvr_csb.h
+@@ -77,7 +77,6 @@ VkResult pvr_csb_bo_get(struct pvr_device *device,
+                         struct pvr_bo **const pvr_bo_out);
+ void pvr_csb_bo_put(struct pvr_device *device, struct pvr_bo *pvr_bo);
+ 
+-struct pvr_device;
+ 
+ enum pvr_cmd_stream_type {
+    PVR_CMD_STREAM_TYPE_INVALID = 0, /* explicitly treat 0 as invalid */
+diff --git a/src/imagination/vulkan/pvr_device.c b/src/imagination/vulkan/pvr_device.c
+index cdb8d446..4e5dd853 100644
+--- a/src/imagination/vulkan/pvr_device.c
++++ b/src/imagination/vulkan/pvr_device.c
+@@ -252,18 +252,6 @@ VkResult pvr_AllocateMemory(VkDevice _device,
+    assert(pAllocateInfo->sType == VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO);
+    assert(pAllocateInfo->allocationSize > 0);
+ 
+-   if (getenv("PVR_API_TRACE")) {
+-      static unsigned n;
+-      const char *pnext = "none";
+-      vk_foreach_struct_const (sType, ext, pAllocateInfo->pNext) {
+-         if ((unsigned)sType == VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO)
+-            pnext = "allocate_flags";
+-      }
+-      fprintf(stderr, "[api] alloc %u size=%llu type=%u pNext=%s\n", n++,
+-              (unsigned long long)pAllocateInfo->allocationSize,
+-              pAllocateInfo->memoryTypeIndex, pnext);
+-   }
+-
+    const VkMemoryType *mem_type =
+       &device->pdevice->memory.memoryTypes[pAllocateInfo->memoryTypeIndex];
+    const VkMemoryHeap *mem_heap =
+@@ -863,11 +851,6 @@ VkResult pvr_CreateBuffer(VkDevice _device,
+    /* Temporary API trace: to find what an application does differently once
+     * buffer device addresses are advertised, log the buffers and allocations it
+     * asks for and diff the two runs. */
+-   if (getenv("PVR_API_TRACE")) {
+-      static unsigned n;
+-      fprintf(stderr, "[api] buffer %u size=%llu usage=0x%08x flags=0x%x\n", n++,
+-              (unsigned long long)pCreateInfo->size, pCreateInfo->usage, pCreateInfo->flags);
+-   }
+ 
+    *pBuffer = pvr_buffer_to_handle(buffer);
+ 
+@@ -1017,21 +1000,6 @@ VkResult pvr_gpu_upload_usc(struct pvr_device *device,
+    map = pvr_bo_suballoc_get_map_addr(suballoc_bo);
+    memcpy(map, code, code_size);
+ 
+-   if (getenv("PVR_DUMP_USC_PROGRAMS")) {
+-      FILE *f = fopen(getenv("PVR_DUMP_USC_PROGRAMS"), "a");
+-      uint32_t off = (uint32_t)(suballoc_bo->dev_addr.addr - device->heaps.usc_heap->base_addr.addr);
+-
+-      if (f) {
+-         const uint32_t *dw = code;
+-         uint32_t i;
+-
+-         fprintf(f, "USC off=0x%x bytes=%zu:", off, code_size);
+-         for (i = 0; i < (code_size + 3) / 4; i++) fprintf(f, " %08x", dw[i]);
+-         fprintf(f, "\n");
+-         fclose(f);
+-      }
+-   }
+-
+    *pvr_bo_out = suballoc_bo;
+ 
+    return VK_SUCCESS;
+@@ -1121,20 +1089,6 @@ VkResult pvr_gpu_upload_pds(struct pvr_device *device,
+       pds_upload_out->code_size = 0;
+    }
+ 
+-   if (getenv("PVR_DUMP_PDS_PROGRAMS")) {
+-      FILE *f = fopen(getenv("PVR_DUMP_PDS_PROGRAMS"), "a");
+-      uint32_t i;
+-
+-      if (f) {
+-         fprintf(f, "PDS data_off=0x%x data_dw=%u code_off=0x%x code_dw=%u\n",
+-                 pds_upload_out->data_offset, pds_upload_out->data_size,
+-                 pds_upload_out->code_offset, pds_upload_out->code_size);
+-         if (data) { fprintf(f, " D:"); for (i = 0; i < data_size_dwords; i++) fprintf(f, " %08x", data[i]); fprintf(f, "\n"); }
+-         if (code) { fprintf(f, " C:"); for (i = 0; i < code_size_dwords; i++) fprintf(f, " %08x", code[i]); fprintf(f, "\n"); }
+-         fclose(f);
+-      }
+-   }
+-
+    return VK_SUCCESS;
+ }
+ 
+diff --git a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_compute.c b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_compute.c
+index 0c9e7ac6..9aeba50e 100644
+--- a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_compute.c
++++ b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_compute.c
+@@ -112,19 +112,6 @@ VkResult pvr_drm_winsys_compute_ctx_create(
+                                          static_ctx_state_fw_stream,
+                                          &ctx_args.static_context_state_len);
+ 
+-   if (getenv("PVR_DUMP_COMPUTE_CTXSTATE")) {
+-      FILE *f = fopen(getenv("PVR_DUMP_COMPUTE_CTXSTATE"), "wb");
+-
+-      if (f) {
+-         uint32_t len = (uint32_t)ctx_args.static_context_state_len;
+-
+-         fwrite(&len, sizeof(len), 1, f);
+-         fwrite((const void *)(uintptr_t)ctx_args.static_context_state, 1, len, f);
+-         fclose(f);
+-         fprintf(stderr, "PVR_DUMP_COMPUTE_CTXSTATE: %u bytes\n", len);
+-      }
+-   }
+-
+    result = pvr_ioctlf(ws->render_fd,
+                        DRM_IOCTL_PVR_CREATE_CONTEXT,
+                        &ctx_args,
+diff --git a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_null.c b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_null.c
+index 39fd709e..4c93d183 100644
+--- a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_null.c
++++ b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_null.c
+@@ -45,9 +45,6 @@ VkResult pvr_drm_winsys_null_job_submit(struct pvr_winsys *ws,
+ {
+    const struct pvr_drm_winsys *drm_ws = to_pvr_drm_winsys(ws);
+    uint32_t tmp_syncobj;
+-   if (getenv("PVR_SUBMIT_MIX")) { static unsigned long _n, _by[8]; _n++; _by[wait_count < 8 ? wait_count : 7]++;
+-      if (_n % 200 == 0) fprintf(stderr, "[mx] null=%lu waits:0=%lu 1=%lu 2=%lu 3+=%lu\n",
+-                                 _n, _by[0], _by[1], _by[2], _by[3]+_by[4]+_by[5]+_by[6]+_by[7]); }
+    VkResult result;
+    int ret;
+ 
+diff --git a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c
+index 738e85f5..46e7fd2b 100644
+--- a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c
++++ b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c
+@@ -475,8 +475,6 @@ VkResult pvr_drm_winsys_render_submit(
+ 
+ {
+    const struct pvr_drm_winsys *drm_ws = to_pvr_drm_winsys(ctx->ws);
+-   if (getenv("PVR_SUBMIT_MIX")) { static unsigned long _n; _n++;
+-      if (_n % 100 == 0) fprintf(stderr, "[mx] render_job_submits=%lu\n", _n); }
+    const struct pvr_drm_winsys_render_ctx *drm_ctx =
+       to_pvr_drm_winsys_render_ctx(ctx);
+    const struct pvr_winsys_geometry_state *const geom_state =
+@@ -610,68 +608,13 @@ VkResult pvr_drm_winsys_render_submit(
+       jobs_args[2].sync_ops.count = num_frag_syncs;
+ 
+    /* ponytail: PVR_JOB_TRACE - hardware jobs per submit, to compare clients. */
+-   if (getenv("PVR_JOB_TRACE")) {
+-      static unsigned long subs, jobs, geom, pr, frag;
+-      subs++;
+-      jobs += args.jobs.count;
+-      if (submit_info->geometry.fw_stream_len) geom++;
+-      if (submit_info->fragment_pr.fw_stream_len) pr++;
+-      if (submit_info->fragment.fw_stream_len) frag++;
+-      if (subs % 100 == 0) {
+-         struct timespec _n; static struct timespec _p;
+-         clock_gettime(CLOCK_MONOTONIC, &_n);
+-         double dt = _p.tv_sec ? (_n.tv_sec-_p.tv_sec) + (_n.tv_nsec-_p.tv_nsec)/1e9 : 0.0;
+-         static unsigned long _ls, _lj; static double _lt;
+-         _lt += dt; _p = _n;
+-         if (_lt >= 1.0) {
+-            fprintf(stderr, "[jt] rate: %.0f submits/s, %.0f jobs/s (avg %.2f jobs/submit)\n",
+-                    (subs-_ls)/_lt, (jobs-_lj)/_lt, (double)jobs/subs);
+-            _ls = subs; _lj = jobs; _lt = 0.0;
+-         }
+-      }
+-   }
+ 
+    /* ponytail: PVR_CSB_DUMP - hexdump the STATIC command streams a working driver submits.
+     * fw_stream is an inline byte array, so this needs no buffer mapping. This is ground truth for the
+     * gallium driver's missing job assembly, which otherwise has nothing to copy from. */
+-   if (getenv("PVR_CSB_TAIL")) {
+-        /* ponytail: len, the header's own length word, and the last eight dwords - enough to say what
+-         * the four unexplained dwords after the EOT offset (364) actually are. */
+-        const uint8_t *p = submit_info->fragment.fw_stream;
+-        const uint32_t len = submit_info->fragment.fw_stream_len;
+-        uint32_t hdr = 0;
+-        if (len >= 4) memcpy(&hdr, p, 4);
+-        fprintf(stderr, "[tail] len=%u hdr_word=%u eot=364 last8:", len, hdr);
+-        for (uint32_t b = (len > 32 ? len - 32 : 0); b + 4 <= len; b += 4) {
+-           uint32_t w; memcpy(&w, p + b, 4); fprintf(stderr, " %08x", w);
+-        }
+-        fprintf(stderr, "\n");
+-     }
+-
+-     if (getenv("PVR_CSB_DUMP")) {
+-      static unsigned long _d;
+-      const struct { const char *what; const uint8_t *p; uint32_t len; } _st[] = {
+-         { "geometry",    submit_info->geometry.fw_stream, submit_info->geometry.fw_stream_len },
+-         { "fragment_pr", submit_info->fragment_pr.fw_stream, submit_info->fragment_pr.fw_stream_len },
+-         { "fragment",    submit_info->fragment.fw_stream, submit_info->fragment.fw_stream_len },
+-      };
+-      if (_d++ < 40) {
+-         for (unsigned _i = 0; _i < 3; _i++) {
+-            if (!_st[_i].len) continue;
+-            fprintf(stderr, "[csb] %s len=%u:", _st[_i].what, _st[_i].len);
+-            for (uint32_t _b = 0; _b + 4 <= _st[_i].len && _b < 256; _b += 4) {
+-               uint32_t _w; memcpy(&_w, &_st[_i].p[_b], 4);
+-               fprintf(stderr, " %08x", _w);
+-            }
+-            fprintf(stderr, "\n");
+-         }
+-      }
+-   }
+ 
+    /* ponytail: PVR_VK_GEOM_ONLY - submit only the geometry job, so the firmware trace of a
+     * geometry-only TA kick from the working client can be compared with the native probe's. */
+-   if (getenv("PVR_VK_GEOM_ONLY"))
+-      args.jobs.count = 1;
+ 
+    /* Returns VK_ERROR_OUT_OF_DEVICE_MEMORY to match pvrsrv. */
+    return pvr_ioctlf(drm_ws->base.render_fd,
+diff --git a/src/vulkan/wsi/wsi_common_drm.c b/src/vulkan/wsi/wsi_common_drm.c
+index 9579e5ef..dbf65b2d 100644
+--- a/src/vulkan/wsi/wsi_common_drm.c
++++ b/src/vulkan/wsi/wsi_common_drm.c
+@@ -1096,31 +1096,10 @@ wsi_drm_wait_for_explicit_sync_release(struct wsi_swapchain *chain,
+     * We will forward the GPU signal to the VkSemaphore/VkFence of the acquire.
+     */
+    uint32_t first_signalled;
+-   struct timespec _r0, _r1; int _rt = getenv("WSIREL_TRACE") != NULL;
+-   if (_rt) clock_gettime(CLOCK_MONOTONIC, &_r0);
+    ret = device->sync->timeline_wait(device->sync, handles, points, unacquired_image_count,
+                                      wsi_drm_rel_timeout_to_abs(rel_timeout_ns),
+                                      DRM_SYNCOBJ_WAIT_FLAGS_WAIT_AVAILABLE,
+                                      &first_signalled);
+-   if (_rt) {
+-      static unsigned long _rn; static double _rtot, _rmax;
+-      clock_gettime(CLOCK_MONOTONIC, &_r1);
+-      double _ms = (_r1.tv_sec-_r0.tv_sec)*1000.0 + (_r1.tv_nsec-_r0.tv_nsec)/1e6;
+-      _rn++; _rtot += _ms; if (_ms > _rmax) _rmax = _ms;
+-      /* ponytail: log the point waited on, to tell "compositor signals late" from "wrong point". */
+-      if (getenv("WSIREL_POINTS")) {
+-         fprintf(stderr, "[relpt] ret=%d first=%d n=%u waited=%.2fms points=",
+-                 ret, ret == 0 ? (int)first_signalled : -1,
+-                 unacquired_image_count, _ms);
+-         for (uint32_t _i = 0; _i < unacquired_image_count && _i < 8; _i++)
+-            fprintf(stderr, "img%u:h%u@p%llu ", indices[_i], handles[_i],
+-                    (unsigned long long)points[_i]);
+-         fprintf(stderr, "\n");
+-      }
+-      if (_rn % 50 == 0)
+-         fprintf(stderr, "[rel] explicit-sync release waits=%lu total=%.1fms avg=%.2fms max=%.2fms images=%u\n",
+-                 _rn, _rtot, _rtot/_rn, _rmax, unacquired_image_count);
+-   }
+ 
+    /* Return the first image that materialized. */
+    if (ret != 0)
+-- 
+2.47.3
+

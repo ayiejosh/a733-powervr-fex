@@ -1,7 +1,7 @@
-From 4a3f5980656dff5528aed9eb972d00f6ae8b801a Mon Sep 17 00:00:00 2001
+From eb83944ff134da5014c639f8f975cf83524c3af7 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Fri, 16 Oct 2026 15:11:58 +0800
-Subject: [PATCH 122/269] gallium/pvr: the control stream builder, reusing
+Subject: [PATCH 122/294] gallium/pvr: the control stream builder, reusing
  csbgen's packet layouts
 
 The first piece of the command stream: a writer that reserves slots in a buffer the

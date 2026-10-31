@@ -1,7 +1,7 @@
-From f0067acb1bef51401a39d8f6353e36c6078cab23 Mon Sep 17 00:00:00 2001
+From 267973a4c5017aa843dbb1ea2bb162cf1fc4324c Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sun, 11 Oct 2026 13:12:15 +0800
-Subject: [PATCH 96/98] pco: lower loops that every instance runs alike to
+Subject: [PATCH 096/294] pco: lower loops that every instance runs alike to
  plain branches
 
 A loop whose breaks and continues all sit under uniform conditions runs
@@ -38,7 +38,7 @@ UBO, null image, TFBC and dynamic rendering lists.
  3 files changed, 257 insertions(+), 53 deletions(-)
 
 diff --git a/src/imagination/pco/pco_cf.c b/src/imagination/pco/pco_cf.c
-index 4e0d820..3345626 100644
+index 4e0d820a..3345626a 100644
 --- a/src/imagination/pco/pco_cf.c
 +++ b/src/imagination/pco/pco_cf.c
 @@ -328,29 +328,58 @@ lower_if_uniform(pco_if *pif,
@@ -498,7 +498,7 @@ index 4e0d820..3345626 100644
   * \brief Control-flow pass.
   *
 diff --git a/src/imagination/pco/pco_internal.h b/src/imagination/pco/pco_internal.h
-index 71063ab..dc97a3f 100644
+index 71063ab6..dc97a3f6 100644
 --- a/src/imagination/pco/pco_internal.h
 +++ b/src/imagination/pco/pco_internal.h
 @@ -314,6 +314,7 @@ typedef struct _pco_if {
@@ -520,7 +520,7 @@ index 71063ab..dc97a3f 100644
  
  #define VEC_USER_MULTI ((void *)(~0ULL))
 diff --git a/src/imagination/pco/pco_ra.c b/src/imagination/pco/pco_ra.c
-index 1a8354f..879c653 100644
+index 1a8354f2..879c6535 100644
 --- a/src/imagination/pco/pco_ra.c
 +++ b/src/imagination/pco/pco_ra.c
 @@ -759,6 +759,9 @@ static bool pco_ra_func(pco_func *func, pco_ra_ctx *ctx)

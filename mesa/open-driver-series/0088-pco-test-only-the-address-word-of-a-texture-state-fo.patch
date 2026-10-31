@@ -1,8 +1,8 @@
-From 14b0a9d8c669a1028174cd2354402c9a4d9139ec Mon Sep 17 00:00:00 2001
+From ab649d93fce95fe31ca0d8af20bb1fc3e7614d73 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sun, 11 Oct 2026 09:25:26 +0800
-Subject: [PATCH 88/98] pco: test only the address word of a texture state for
- null
+Subject: [PATCH 088/294] pco: test only the address word of a texture state
+ for null
 
 A null descriptor is all zeros, and the null test of a combined image
 sampler compared all four texture state dwords with zero. The image
@@ -24,7 +24,7 @@ loops/indexing/graphicsfuzz list (6428), TFBC copy/clear/texture sample
  1 file changed, 7 insertions(+), 2 deletions(-)
 
 diff --git a/src/imagination/pco/pco_trans_nir.c b/src/imagination/pco/pco_trans_nir.c
-index 3c7c7e5..b5b5eb0 100644
+index 3c7c7e52..b5b5eb04 100644
 --- a/src/imagination/pco/pco_trans_nir.c
 +++ b/src/imagination/pco/pco_trans_nir.c
 @@ -2557,7 +2557,11 @@ static pco_instr *trans_is_null_desc(trans_ctx *tctx,

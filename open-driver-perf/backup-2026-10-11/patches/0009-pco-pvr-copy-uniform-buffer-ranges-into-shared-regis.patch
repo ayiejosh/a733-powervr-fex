@@ -1,0 +1,401 @@
+From e903693765c24443e0f78498736c7f1a4892b8b4 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sun, 11 Oct 2026 06:01:30 +0800
+Subject: [PATCH 09/10] pco, pvr: copy uniform buffer ranges into shared
+ registers
+
+Every uniform buffer load was a memory load in each shader invocation,
+so a vertex shader reading three matrices issued about a dozen loads per
+vertex. zink puts all GL uniforms in a uniform buffer, and replacing two
+of the matrices of glmark2's phong vertex shader by constants alone made
+the scene 33% faster.
+
+pco now picks, per uniform buffer, the dword range read at constant
+offsets (at most 64 dwords per buffer, 128 and 4 buffers per shader) and
+reads it from shared registers. The descriptor upload program copies the
+range from the buffer at each draw: the driver looks up the buffer in
+the bound descriptor set when it fills in the program's data, and points
+the copy at the zero page if the descriptor is null or smaller than the
+range (a bounds checked shader then takes the path that doesn't read the
+copy). Bounds checked loads have computed offsets, so they keep reading
+memory. Bindings that may change after bind or be partially bound are
+left alone, since their descriptors can't be read when the draw is
+recorded.
+
+glmark2-es2 through zink, off-screen 800x600, FPS of two runs each,
+before -> after: build 498/490 -> 730/751, phong 238/237 -> 425/423,
+gouraud 368/367 -> 668/656, bump high-poly 145/144 -> 287/290, terrain
+12/12 -> 18/19, jellyfish 148/144 -> 171/171, the others unchanged.
+
+CTS: new uniform buffer sample (4773: ubo, binding_model uniform buffer
+and dynamic offset cases), robustness list (4025), 5062 list,
+loops/indexing/graphicsfuzz list (6428), compute.pipeline (1235),
+dynamic_rendering sample (6745), TFBC list (9170), synchronization
+(1718): identical to before. glmark2 --validate: 27 pass, 0 fail.
+---
+ src/imagination/pco/pco_data.h                |  24 ++++
+ src/imagination/pco/pco_nir.c                 | 105 ++++++++++++++++++
+ src/imagination/pco/pco_trans_nir.c           |  24 ++++
+ src/imagination/vulkan/pds/pvr_pds.h          |   1 +
+ src/imagination/vulkan/pds/pvr_pipeline_pds.c |   6 +-
+ src/imagination/vulkan/pvr_arch_cmd_buffer.c  |  50 +++++++++
+ src/imagination/vulkan/pvr_arch_pipeline.c    |  18 +++
+ 7 files changed, 227 insertions(+), 1 deletion(-)
+
+diff --git a/src/imagination/pco/pco_data.h b/src/imagination/pco/pco_data.h
+index e37d9d5..8b9d43a 100644
+--- a/src/imagination/pco/pco_data.h
++++ b/src/imagination/pco/pco_data.h
+@@ -192,6 +192,12 @@ typedef struct _pco_binding_data {
+     * other buffer descriptors is always 0.
+     */
+    bool is_dynamic;
++
++   /** Whether the descriptor may still change, or be invalid, when a draw
++    * is recorded (update after bind, partially bound), so that its contents
++    * can't be read then.
++    */
++   bool no_preload;
+ } pco_binding_data;
+ 
+ /** PCO descriptor set data. */
+@@ -213,6 +219,21 @@ typedef struct _pco_push_const_data {
+ } pco_push_const_data;
+ 
+ /** PCO common data. */
++/** A uniform buffer range that the descriptor upload program copies into
++ * shared registers, so that the shader reads it from there instead of from
++ * memory at every invocation.
++ */
++typedef struct _pco_ubo_preload {
++   uint16_t desc_set;
++   uint16_t binding;
++   uint16_t elem;
++   uint16_t offset; /** First dword copied. */
++   uint16_t count; /** Number of dwords copied. */
++   uint16_t start; /** Destination shared register, set by the driver. */
++} pco_ubo_preload;
++
++#define PCO_MAX_UBO_PRELOADS 4
++
+ typedef struct _pco_common_data {
+    /** System value mappings. */
+    pco_range sys_vals[SYSTEM_VALUE_MAX];
+@@ -246,6 +267,9 @@ typedef struct _pco_common_data {
+    pco_range literals; /** Shared registers holding literal_vals. */
+    uint32_t literal_vals[32];
+ 
++   pco_ubo_preload ubo_preloads[PCO_MAX_UBO_PRELOADS];
++   unsigned num_ubo_preloads;
++
+    unsigned entry_offset; /** Offset of the shader entrypoint. */
+ 
+    struct {
+diff --git a/src/imagination/pco/pco_nir.c b/src/imagination/pco/pco_nir.c
+index 4201d4d..f12cbf9 100644
+--- a/src/imagination/pco/pco_nir.c
++++ b/src/imagination/pco/pco_nir.c
+@@ -1320,6 +1320,108 @@ remat_load_const(nir_builder *b, nir_instr *instr, UNUSED void *cb_data)
+  * \param[in,out] nir NIR shader.
+  * \param[in,out] data Shader data.
+  */
++/* Uniform buffer ranges larger than this stay in memory. */
++#define PCO_UBO_PRELOAD_MAX_DWORDS 64U
++#define PCO_UBO_PRELOAD_TOTAL_DWORDS 128U
++
++/**
++ * \brief Picks the uniform buffer ranges read at constant offsets for the
++ * driver to copy into shared registers (see pco_ubo_preload).
++ *
++ * Bounds checked loads have computed offsets, so they are not affected.
++ *
++ * \param[in] nir NIR shader.
++ * \param[in,out] common Shader common data.
++ */
++static void gather_ubo_preloads(nir_shader *nir, pco_common_data *common)
++{
++   struct {
++      uint32_t packed_desc;
++      uint32_t elem;
++      uint32_t lo; /* First dword read. */
++      uint32_t hi; /* Dword after the last one read. */
++   } ubos[16];
++   unsigned num_ubos = 0;
++
++   common->num_ubo_preloads = 0;
++
++   nir_foreach_function_impl (impl, nir) {
++      nir_foreach_block (block, impl) {
++         nir_foreach_instr (instr, block) {
++            if (instr->type != nir_instr_type_intrinsic)
++               continue;
++
++            nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
++            if (intr->intrinsic != nir_intrinsic_load_ubo ||
++                intr->def.bit_size != 32 || !nir_src_is_const(intr->src[0]) ||
++                !nir_src_is_const(intr->src[1]) ||
++                nir_src_as_uint(intr->src[1]) % 4)
++               continue;
++
++            uint32_t packed_desc = nir_src_comp_as_uint(intr->src[0], 0);
++            uint32_t elem = nir_src_comp_as_uint(intr->src[0], 1);
++            unsigned desc_set;
++            unsigned binding;
++            pco_unpack_desc(packed_desc, &desc_set, &binding);
++            if (is_inline_ubo(desc_set, binding, common) ||
++                common->desc_sets[desc_set].bindings[binding].no_preload)
++               continue;
++
++            uint32_t lo = nir_src_as_uint(intr->src[1]) / 4;
++            uint32_t hi = lo + intr->def.num_components;
++
++            unsigned u;
++            for (u = 0; u < num_ubos; u++) {
++               if (ubos[u].packed_desc == packed_desc && ubos[u].elem == elem)
++                  break;
++            }
++
++            if (u == num_ubos) {
++               if (num_ubos == ARRAY_SIZE(ubos))
++                  continue;
++
++               ubos[num_ubos].packed_desc = packed_desc;
++               ubos[num_ubos].elem = elem;
++               ubos[num_ubos].lo = lo;
++               ubos[num_ubos].hi = hi;
++               num_ubos++;
++               continue;
++            }
++
++            ubos[u].lo = MIN2(ubos[u].lo, lo);
++            ubos[u].hi = MAX2(ubos[u].hi, hi);
++         }
++      }
++   }
++
++   unsigned total = 0;
++   for (unsigned u = 0;
++        u < num_ubos && common->num_ubo_preloads < PCO_MAX_UBO_PRELOADS;
++        u++) {
++      /* Start the copy on a 16-byte boundary; never extend it past the last
++       * dword read, which could be the end of the buffer.
++       */
++      uint32_t lo = ubos[u].lo & ~3U;
++      uint32_t count = ubos[u].hi - lo;
++      if (count > PCO_UBO_PRELOAD_MAX_DWORDS ||
++          total + count > PCO_UBO_PRELOAD_TOTAL_DWORDS)
++         continue;
++
++      unsigned desc_set;
++      unsigned binding;
++      pco_unpack_desc(ubos[u].packed_desc, &desc_set, &binding);
++
++      common->ubo_preloads[common->num_ubo_preloads++] = (pco_ubo_preload){
++         .desc_set = desc_set,
++         .binding = binding,
++         .elem = ubos[u].elem,
++         .offset = lo,
++         .count = count,
++      };
++      total += count;
++   }
++}
++
+ void pco_postprocess_nir(pco_ctx *ctx, nir_shader *nir, pco_data *data)
+ {
+    bool internal = nir->info.internal;
+@@ -1352,6 +1454,9 @@ void pco_postprocess_nir(pco_ctx *ctx, nir_shader *nir, pco_data *data)
+          NIR_PASS(_, nir, nir_opt_dce);
+    }
+ 
++   if (!internal)
++      gather_ubo_preloads(nir, &data->common);
++
+    NIR_PASS(_, nir, nir_lower_all_phis_to_scalar);
+ 
+    /* Temporary: lower phi undefs to zero because at this stage we don't want to
+diff --git a/src/imagination/pco/pco_trans_nir.c b/src/imagination/pco/pco_trans_nir.c
+index 98b441b..c770bb8 100644
+--- a/src/imagination/pco/pco_trans_nir.c
++++ b/src/imagination/pco/pco_trans_nir.c
+@@ -1360,6 +1360,30 @@ static pco_instr *trans_load_buffer(trans_ctx *tctx,
+                                      });
+    }
+ 
++   /* Read uniform buffer ranges the driver copied into shared registers
++    * (see pco_ubo_preload) from there.
++    */
++   if (intr->intrinsic == nir_intrinsic_load_ubo && !is_dynidx &&
++       nir_src_is_const(intr->src[1]) && !(nir_src_as_uint(intr->src[1]) % 4)) {
++      const unsigned dword = nir_src_as_uint(intr->src[1]) / 4;
++      unsigned desc_set;
++      unsigned binding;
++      pco_unpack_desc(packed_desc, &desc_set, &binding);
++
++      for (unsigned u = 0; u < common->num_ubo_preloads; u++) {
++         const pco_ubo_preload *preload = &common->ubo_preloads[u];
++         if (preload->desc_set != desc_set || preload->binding != binding ||
++             preload->elem != elem || dword < preload->offset ||
++             dword + chans > preload->offset + preload->count)
++            continue;
++
++         pco_ref src = pco_ref_hwreg_vec(preload->start + dword - preload->offset,
++                                         PCO_REG_CLASS_SHARED,
++                                         chans);
++         return pco_mov(&tctx->b, dest, src, .rpt = chans);
++      }
++   }
++
+    pco_ref base_addr[2];
+    pco_ref_hwreg_addr_comps(sh_index, PCO_REG_CLASS_SHARED, base_addr);
+ 
+diff --git a/src/imagination/vulkan/pds/pvr_pds.h b/src/imagination/vulkan/pds/pvr_pds.h
+index fe133bc..2f883fb 100644
+--- a/src/imagination/vulkan/pds/pvr_pds.h
++++ b/src/imagination/vulkan/pds/pvr_pds.h
+@@ -928,6 +928,7 @@ struct pvr_pds_descriptor_set {
+ #define PVR_BUFFER_TYPE_SCRATCH_INFO (13)
+ #define PVR_BUFFER_TYPE_SAMPLE_LOCATIONS (14)
+ #define PVR_BUFFER_TYPE_GLOBAL_SHMEM (15)
++#define PVR_BUFFER_TYPE_UBO_PRELOAD (16)
+ #define PVR_BUFFER_TYPE_INVALID (~0)
+ 
+ struct pvr_pds_buffer {
+diff --git a/src/imagination/vulkan/pds/pvr_pipeline_pds.c b/src/imagination/vulkan/pds/pvr_pipeline_pds.c
+index 0b58cba..3027d89 100644
+--- a/src/imagination/vulkan/pds/pvr_pipeline_pds.c
++++ b/src/imagination/vulkan/pds/pvr_pipeline_pds.c
+@@ -1617,7 +1617,8 @@ void pvr_pds_generate_descriptor_upload_program(
+       case PVR_BUFFER_TYPE_SPILL_INFO:
+       case PVR_BUFFER_TYPE_SCRATCH_INFO:
+       case PVR_BUFFER_TYPE_SAMPLE_LOCATIONS:
+-      case PVR_BUFFER_TYPE_GLOBAL_SHMEM: {
++      case PVR_BUFFER_TYPE_GLOBAL_SHMEM:
++      case PVR_BUFFER_TYPE_UBO_PRELOAD: {
+          struct pvr_const_map_entry_special_buffer *special_buffer_entry;
+ 
+          special_buffer_entry =
+@@ -1632,6 +1633,9 @@ void pvr_pds_generate_descriptor_upload_program(
+          case PVR_BUFFER_TYPE_DYNAMIC:
+             special_buffer_entry->data = buffer->desc_set;
+             break;
++         case PVR_BUFFER_TYPE_UBO_PRELOAD:
++            special_buffer_entry->buffer_index = buffer->buffer_id;
++            break;
+ 
+          default:
+             break;
+diff --git a/src/imagination/vulkan/pvr_arch_cmd_buffer.c b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
+index 805889c..0cb207e 100644
+--- a/src/imagination/vulkan/pvr_arch_cmd_buffer.c
++++ b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
+@@ -5735,6 +5735,43 @@ pvr_setup_vertex_buffers(struct pvr_cmd_buffer *cmd_buffer,
+ static VkResult pvr_cmd_upload_push_consts(struct pvr_cmd_buffer *cmd_buffer,
+                                            enum pvr_stage_allocation stage);
+ 
++/* Where the descriptor upload program copies a uniform buffer range from
++ * (see pco_ubo_preload): the buffer, or zeros if the descriptor is null or
++ * too small for the range, in which case a bounds checked shader takes the
++ * path that doesn't read the copy.
++ */
++static pvr_dev_addr_t
++pvr_ubo_preload_addr(const struct pvr_cmd_buffer *cmd_buffer,
++                     const struct pvr_descriptor_state *desc_state,
++                     const pco_ubo_preload *preload)
++{
++   const pvr_dev_addr_t zeros =
++      cmd_buffer->device->null_state.zero_bo->vma->dev_addr;
++   const struct pvr_descriptor_set *set = desc_state->sets[preload->desc_set];
++   if (!set)
++      return zeros;
++
++   const struct pvr_descriptor_set_layout_binding *binding =
++      &set->layout->bindings[preload->binding];
++   const struct pvr_buffer_descriptor *desc;
++   if (binding->type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC) {
++      desc = &set->dynamic_buffers[binding->dynamic_buffer_idx + preload->elem];
++   } else {
++      desc = (const struct pvr_buffer_descriptor *)((const uint8_t *)set->mapping +
++                                                    binding->offset +
++                                                    preload->elem *
++                                                       binding->stride);
++   }
++
++   const uint64_t end =
++      (uint64_t)(preload->offset + preload->count) * sizeof(uint32_t);
++   if (!desc->addr || end > desc->size)
++      return zeros;
++
++   return PVR_DEV_ADDR(desc->addr + desc->offset +
++                       preload->offset * sizeof(uint32_t));
++}
++
+ static VkResult pvr_setup_descriptor_mappings(
+    struct pvr_cmd_buffer *const cmd_buffer,
+    enum pvr_stage_allocation stage,
+@@ -5836,6 +5873,19 @@ static VkResult pvr_setup_descriptor_mappings(
+             (struct pvr_const_map_entry_special_buffer *)entries;
+ 
+          switch (special_buff_entry->buffer_type) {
++         case PVR_BUFFER_TYPE_UBO_PRELOAD: {
++            const pco_ubo_preload *preload =
++               &data->common.ubo_preloads[special_buff_entry->buffer_index];
++            const pvr_dev_addr_t addr =
++               pvr_ubo_preload_addr(cmd_buffer, desc_state, preload);
++
++            PVR_WRITE(qword_buffer,
++                      addr.addr,
++                      special_buff_entry->const_offset,
++                      pds_info->data_size_in_dwords);
++            break;
++         }
++
+          case PVR_BUFFER_TYPE_DYNAMIC: {
+             unsigned desc_set = special_buff_entry->data;
+             const struct pvr_descriptor_set *descriptor_set;
+diff --git a/src/imagination/vulkan/pvr_arch_pipeline.c b/src/imagination/vulkan/pvr_arch_pipeline.c
+index 9164bc6..283cb27 100644
+--- a/src/imagination/vulkan/pvr_arch_pipeline.c
++++ b/src/imagination/vulkan/pvr_arch_pipeline.c
+@@ -584,6 +584,15 @@ static VkResult pvr_pds_descriptor_program_create_and_upload(
+       };
+    }
+ 
++   for (unsigned u = 0; u < data->common.num_ubo_preloads; u++) {
++      program.buffers[program.buffer_count++] = (struct pvr_pds_buffer){
++         .type = PVR_BUFFER_TYPE_UBO_PRELOAD,
++         .size_in_dwords = data->common.ubo_preloads[u].count,
++         .destination = data->common.ubo_preloads[u].start,
++         .buffer_id = u,
++      };
++   }
++
+    if (stage == MESA_SHADER_FRAGMENT &&
+        data->common.sys_vals[SYSTEM_VALUE_FRONT_FACE].count > 0) {
+       program.buffers[program.buffer_count++] = (struct pvr_pds_buffer){
+@@ -2597,6 +2606,10 @@ static void pvr_init_descriptors(pco_data *data,
+ 
+          binding_data->is_inline_ubo = layout_binding->type ==
+                                        VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK;
++         binding_data->no_preload =
++            layout_binding->flags &
++            (VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT |
++             VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT);
+       }
+    }
+ }
+@@ -2914,6 +2927,11 @@ static void pvr_postprocess_shader_data(pco_data *data,
+ 
+    pvr_setup_descriptors(data, nir, layout);
+ 
++   for (unsigned u = 0; u < data->common.num_ubo_preloads; u++) {
++      data->common.ubo_preloads[u].start = data->common.shareds;
++      data->common.shareds += data->common.ubo_preloads[u].count;
++   }
++
+    /* TODO: common things, like large constants being put into shareds. */
+ }
+ 
+-- 
+2.47.3
+

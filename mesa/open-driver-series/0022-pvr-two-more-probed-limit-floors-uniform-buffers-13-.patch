@@ -1,7 +1,7 @@
-From e3f78b2b57bbc0f210ea589a63060a84c2fd3f22 Mon Sep 17 00:00:00 2001
+From 4c5f84b7e1e11f361dd00f3187b1e94c5b99e9e8 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Thu, 8 Oct 2026 11:08:37 +0800
-Subject: [PATCH 22/43] pvr: two more probed limit floors (uniform buffers
+Subject: [PATCH 022/294] pvr: two more probed limit floors (uniform buffers
  13->64, sampled images 32->128)
 
 maxPerStageDescriptorUniformBuffers was 13 - just above the spec minimum of 12 and, unlike
@@ -33,7 +33,7 @@ inatt, ubos all PASS.
  1 file changed, 9 insertions(+), 4 deletions(-)
 
 diff --git a/src/imagination/vulkan/pvr_physical_device.c b/src/imagination/vulkan/pvr_physical_device.c
-index 84c91a1..0f67470 100644
+index 84c91a10..0f674706 100644
 --- a/src/imagination/vulkan/pvr_physical_device.c
 +++ b/src/imagination/vulkan/pvr_physical_device.c
 @@ -757,9 +757,14 @@ static bool pvr_physical_device_get_properties(
@@ -71,3 +71,6 @@ index 84c91a1..0f67470 100644
        .maxDescriptorSetStorageImages = 3U * 32U,
        .maxDescriptorSetInputAttachments = 8U,
  
+-- 
+2.47.3
+

@@ -1,7 +1,7 @@
-From 12c78b5a10306dc491a6f8a51a3149915c3f1a10 Mon Sep 17 00:00:00 2001
+From f4e228b112cb003a9828a2431f2b58c9b80c0c34 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Fri, 16 Oct 2026 15:19:57 +0800
-Subject: [PATCH 123/269] gallium/pvr: glClear works - the first GL operation
+Subject: [PATCH 123/294] gallium/pvr: glClear works - the first GL operation
  this driver actually performs
 
   clear: whole target 0xff0000ff, scissored top-left 0xff00ff00, outside the box

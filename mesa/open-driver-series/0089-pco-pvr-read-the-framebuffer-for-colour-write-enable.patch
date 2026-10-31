@@ -1,8 +1,8 @@
-From aad4287c8713114626edacbfd8d9bffedf167f22 Mon Sep 17 00:00:00 2001
+From f99bb799d4270a33e9c621360486e7614e6164c8 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sun, 11 Oct 2026 09:54:04 +0800
-Subject: [PATCH 89/98] pco, pvr: read the framebuffer for colour write enable
- only when disabled
+Subject: [PATCH 089/294] pco, pvr: read the framebuffer for colour write
+ enable only when disabled
 
 zink makes colour write enable dynamic in every pipeline. The fragment
 shader then read the old pixel for every output, selected it with a
@@ -33,7 +33,7 @@ dynamic rendering, TFBC and robustness lists.
  5 files changed, 97 insertions(+), 56 deletions(-)
 
 diff --git a/src/imagination/pco/pco_data.h b/src/imagination/pco/pco_data.h
-index 31e0b14..241d4a3 100644
+index 31e0b149..241d4a30 100644
 --- a/src/imagination/pco/pco_data.h
 +++ b/src/imagination/pco/pco_data.h
 @@ -139,11 +139,17 @@ typedef struct _pco_fs_data {
@@ -56,7 +56,7 @@ index 31e0b14..241d4a3 100644
  
  /** PCO compute shader-specific data. */
 diff --git a/src/imagination/pco/pco_nir.c b/src/imagination/pco/pco_nir.c
-index b554e7a..141afb7 100644
+index b554e7aa..141afb73 100644
 --- a/src/imagination/pco/pco_nir.c
 +++ b/src/imagination/pco/pco_nir.c
 @@ -294,7 +294,11 @@ static void gather_fs_data(nir_shader *nir, pco_data *data)
@@ -73,7 +73,7 @@ index b554e7a..141afb7 100644
  
     data->fs.uses.sample_shading |= nir->info.fs.uses_sample_shading;
 diff --git a/src/imagination/pco/pco_nir_pvfio.c b/src/imagination/pco/pco_nir_pvfio.c
-index 90dff3e..ebeac8f 100644
+index 90dff3e1..ebeac8fc 100644
 --- a/src/imagination/pco/pco_nir_pvfio.c
 +++ b/src/imagination/pco/pco_nir_pvfio.c
 @@ -613,6 +613,23 @@ static bool lower_isp_fb(nir_builder *b, struct pfo_state *state)
@@ -231,7 +231,7 @@ index 90dff3e..ebeac8f 100644
  
     if (!shader->info.internal)
 diff --git a/src/imagination/vulkan/pvr_arch_cmd_buffer.c b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
-index d431f4f..43d613e 100644
+index d431f4f4..43d613ef 100644
 --- a/src/imagination/vulkan/pvr_arch_cmd_buffer.c
 +++ b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
 @@ -7068,6 +7068,19 @@ pvr_needs_fs_passthrough(const struct vk_dynamic_graphics_state *dynamic_state)
@@ -293,7 +293,7 @@ index d431f4f..43d613e 100644
     }
  
 diff --git a/src/imagination/vulkan/pvr_arch_pipeline.c b/src/imagination/vulkan/pvr_arch_pipeline.c
-index 613988f..3de794b 100644
+index 613988f1..3de794bd 100644
 --- a/src/imagination/vulkan/pvr_arch_pipeline.c
 +++ b/src/imagination/vulkan/pvr_arch_pipeline.c
 @@ -2853,7 +2853,10 @@ pvr_preprocess_shader_data(pco_data *data,

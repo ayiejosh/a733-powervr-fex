@@ -1,7 +1,7 @@
-From 0ef4f87bc775306b562875f29fa79244ab47ebe6 Mon Sep 17 00:00:00 2001
+From 724c59137bc09bd6898bee08d33ca0bf1d1f5b05 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Thu, 8 Oct 2026 03:19:54 +0800
-Subject: [PATCH 10/43] pvr: fix two limits that violated Vulkan's required
+Subject: [PATCH 010/294] pvr: fix two limits that violated Vulkan's required
  minimums
 
 Found by dumping the real limits (new bench/pvr-vulkan/vlimits) and checking them against a
@@ -27,7 +27,7 @@ glmark2 --validate still 0 failures / 27 pass.
  1 file changed, 7 insertions(+), 2 deletions(-)
 
 diff --git a/src/imagination/vulkan/pvr_physical_device.c b/src/imagination/vulkan/pvr_physical_device.c
-index c0806a6..55e2a03 100644
+index c0806a62..55e2a03e 100644
 --- a/src/imagination/vulkan/pvr_physical_device.c
 +++ b/src/imagination/vulkan/pvr_physical_device.c
 @@ -806,10 +806,15 @@ static bool pvr_physical_device_get_properties(
@@ -48,3 +48,6 @@ index c0806a6..55e2a03 100644
  
        /* Compute Shader Limits */
        .maxComputeSharedMemorySize = 16U * 1024U,
+-- 
+2.47.3
+

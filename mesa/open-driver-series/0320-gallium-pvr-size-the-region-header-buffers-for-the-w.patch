@@ -1,0 +1,72 @@
+From 3e49df6b869813ec8a9184a2108c5481c017d6df Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 23:51:16 +0800
+Subject: [PATCH 320/324] gallium/pvr: size the region header buffers for the
+ whole tile grid
+
+The region header buffer of each RT data was sized with the ISP region
+count (the value the data set is created with), not with the bytes the TA
+writes: one 6-dword header per 2x2 tile group over the macrotile grid.
+Page rounding hid it up to about 1024x512; from 32x32 tiles on (1024x1024,
+1000x1000, refract's 1600x1200 target, the shadow and terrain targets)
+every tile of the render was lost and the target kept its old contents.
+
+gltri at 1000x1000, 1024x1024, 1600x1200, 2048x2048 and 4096x4096 now
+renders the triangle (red = 1/8 of the target) instead of nothing.
+---
+ src/gallium/drivers/pvr_native/pvr_draw.c |  2 +-
+ src/gallium/drivers/pvr_native/pvr_hwrt.c | 10 ++++++++++
+ src/gallium/drivers/pvr_native/pvr_hwrt.h |  3 ++-
+ 3 files changed, 13 insertions(+), 2 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_draw.c b/src/gallium/drivers/pvr_native/pvr_draw.c
+index b98c2f4c..1252b9c2 100644
+--- a/src/gallium/drivers/pvr_native/pvr_draw.c
++++ b/src/gallium/drivers/pvr_native/pvr_draw.c
+@@ -338,7 +338,7 @@ draw_hwrt(struct pvr_context *ctx, struct pvr_draw_state *d, uint32_t w, uint32_
+       sizes[0] = sz.tpc_size;
+       sizes[1] = 4096; /* VHEAP table, single layer: no RTC */
+       sizes[2] = sizes[3] = 4096; /* MLIST: ~1 KiB for a 256 MiB global free list */
+-      sizes[4] = sizes[5] = sz.region_header_size;
++      sizes[4] = sizes[5] = sz.region_headers_bytes;
+       sizes[6] = (uint64_t)local_pages * 4;
+       for (unsigned i = 0; i < ARRAY_SIZE(sizes); i++) {
+          if (!draw_general_bo(scr, sizes[i], flags[i], &e->bo[i], &e->addr[i], false)) {
+diff --git a/src/gallium/drivers/pvr_native/pvr_hwrt.c b/src/gallium/drivers/pvr_native/pvr_hwrt.c
+index 391d47b5..51cf476f 100644
+--- a/src/gallium/drivers/pvr_native/pvr_hwrt.c
++++ b/src/gallium/drivers/pvr_native/pvr_hwrt.c
+@@ -64,6 +64,16 @@ pvr_hwrt_sizes(const struct pvr_device_info *dev_info, uint32_t width, uint32_t
+       rgn = DIV_ROUND_UP(rgn * rogue_get_region_header_size(dev_info), 4);
+    }
+    out->region_header_size = rgn;
++   /* The TA writes a region header of rogue_get_region_header_size() dwords per tile group (one
++    * group per 2x2 tiles with the version-2 simple format) over the whole macrotile grid. Sizing
++    * the buffer with the region count alone (or the reference's count times the dword count, as
++    * bytes) only fits while the page rounding absorbs it: renders of 32x32 tiles and more (e.g.
++    * 1024x1024) lost every tile. */
++   {
++      const uint32_t group = simple && spf_ver == 2 ? 2 : 1;
++      const uint64_t groups = (uint64_t)(mtx * mtile_x1 / group) * (mty * mtile_y1 / group);
++      out->region_headers_bytes = ALIGN_POT(groups * rogue_get_region_header_size(dev_info) * 4, 64);
++   }
+ 
+    max_mt = MAX2(util_next_power_of_two64((uint64_t)mtx * mtile_x1),
+                  util_next_power_of_two64((uint64_t)mty * mtile_y1));
+diff --git a/src/gallium/drivers/pvr_native/pvr_hwrt.h b/src/gallium/drivers/pvr_native/pvr_hwrt.h
+index 716dbcb8..7c2fb328 100644
+--- a/src/gallium/drivers/pvr_native/pvr_hwrt.h
++++ b/src/gallium/drivers/pvr_native/pvr_hwrt.h
+@@ -14,7 +14,8 @@ struct pvr_hwrt_sizes {
+    uint32_t tiles_per_mtile_x, tiles_per_mtile_y;
+    uint64_t tpc_size;
+    uint32_t tpc_stride;
+-   uint64_t region_header_size;
++   uint64_t region_header_size; /* the ISP region size the data set is created with */
++   uint64_t region_headers_bytes; /* the region header buffer of one RT data */
+    bool simple_parameter_format;
+    uint32_t simple_parameter_format_version;
+ };
+-- 
+2.47.3
+

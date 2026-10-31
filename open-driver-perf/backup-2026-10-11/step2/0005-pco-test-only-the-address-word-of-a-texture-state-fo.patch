@@ -1,0 +1,55 @@
+From 14b0a9d8c669a1028174cd2354402c9a4d9139ec Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sun, 11 Oct 2026 09:25:26 +0800
+Subject: [PATCH 05/11] pco: test only the address word of a texture state for
+ null
+
+A null descriptor is all zeros, and the null test of a combined image
+sampler compared all four texture state dwords with zero. The image
+address (image word 1, dwords 2 and 3) is never 0 for a valid image, so
+test those two only: half the work in every shader that guards texture
+accesses, which zink's nullDescriptor makes all of them.
+
+glmark2-es2 through zink, off-screen 800x600, FPS of two runs each,
+before -> after: effect2d 3x3 402/403 -> 418/424, effect2d 5x5 229/230 ->
+235/236, jellyfish 189/186 -> 203/199, loop (uniform) 357/350 -> 370/375,
+the others unchanged.
+
+CTS: robustness2 sampled_image/combined_image_sampler null_descriptor
+sample (1188, 324 pass), robustness list (4025), 5062 list,
+loops/indexing/graphicsfuzz list (6428), TFBC copy/clear/texture sample
+(4223): identical to before. glmark2 --validate: 27 pass, 0 fail.
+---
+ src/imagination/pco/pco_trans_nir.c | 9 +++++++--
+ 1 file changed, 7 insertions(+), 2 deletions(-)
+
+diff --git a/src/imagination/pco/pco_trans_nir.c b/src/imagination/pco/pco_trans_nir.c
+index 3c7c7e5..b5b5eb0 100644
+--- a/src/imagination/pco/pco_trans_nir.c
++++ b/src/imagination/pco/pco_trans_nir.c
+@@ -2557,7 +2557,11 @@ static pco_instr *trans_is_null_desc(trans_ctx *tctx,
+    unsigned sh_index =
+       fetch_resource_base_reg_packed(common, packed_desc, elem, &stride, NULL, &is_img_smp, NULL);
+ 
+-   unsigned num_dwords = is_img_smp ? ROGUE_NUM_TEXSTATE_DWORDS : stride;
++   /* A null descriptor is all zeros. The texture state's address (image word
++    * 1, dwords 2 and 3) is never 0 for a valid image, so test only that.
++    */
++   const unsigned first_dword = is_img_smp ? 2 : 0;
++   unsigned num_dwords = is_img_smp ? 2 : stride;
+ 
+    if (is_dynidx) {
+       dynidx_stride = pco_ref_new_ssa32(tctx->func);
+@@ -2569,7 +2573,8 @@ static pco_instr *trans_is_null_desc(trans_ctx *tctx,
+       pco_ref dword_is_zero =
+          pco_ref_new_ssa(tctx->func, pco_ref_get_bits(dest), 1);
+ 
+-      pco_ref dword_reg = pco_ref_hwreg(sh_index + u, PCO_REG_CLASS_SHARED);
++      pco_ref dword_reg =
++         pco_ref_hwreg(sh_index + first_dword + u, PCO_REG_CLASS_SHARED);
+       if (is_dynidx) {
+          pco_ref dynidx_dword_reg = pco_ref_new_ssa32(tctx->func);
+          pco_dynidx(&tctx->b,
+-- 
+2.47.3
+

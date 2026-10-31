@@ -1,0 +1,176 @@
+From c97ee6bdd1ff779e392ca225beae1af231c2fca5 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Thu, 29 Oct 2026 11:08:19 +0800
+Subject: [PATCH] gallium/pvr: depth-only renders drop the colour target, not
+ clear it
+
+A framebuffer with a depth buffer and no colour attachment rendered into a scratch colour
+target, so every shadow depth pass also cleared and stored a full-size RGBA target that nobody
+reads. Render such passes as the reference's "z only render": the PBE state words are zeroed and
+marked empty-tile so the pixel events write no colour, the PBE register words are zero, the ZLS
+stream sets zonlyrender, and the colour background is the cheap clear instead of a full-target
+load. The depth store/load is unchanged.
+
+Full gltri gate passes all modes against zink; shadow scene 330 -> 335 FPS under the bench harness
+(single-scene runs vary more), full glmark2 692/692 -> 696/694, no MMU faults.
+---
+ src/gallium/drivers/pvr_native/pvr_csb.c  | 15 ++++++++++++--
+ src/gallium/drivers/pvr_native/pvr_csb.h  |  4 ++--
+ src/gallium/drivers/pvr_native/pvr_draw.c | 24 +++++++++++++++--------
+ 3 files changed, 31 insertions(+), 12 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_csb.c b/src/gallium/drivers/pvr_native/pvr_csb.c
+index 914ca7a3..bf52c6a9 100644
+--- a/src/gallium/drivers/pvr_native/pvr_csb.c
++++ b/src/gallium/drivers/pvr_native/pvr_csb.c
+@@ -832,10 +832,19 @@ pvr_pbe_memlayout_linear(void)
+ 
+ void
+ pvr_csb_pbe_state_words(uint64_t addr, enum pipe_format format, uint32_t mrt_index,
+-                        uint32_t words[2])
++                        bool emptytile, uint32_t words[2])
+ {
+    const struct util_format_description *desc = util_format_description(format);
+    const int chan = util_format_get_first_non_void_channel(format);
++   if (emptytile) {
++      /* Depth-only render (reference "z only render"): the pixel events must not write colour.
++       * Zero address/format words and set emptytile so the PBE drops every fragment. */
++      struct ROGUE_PBESTATE_STATE_WORD0 z0 = { 0 };
++      struct ROGUE_PBESTATE_STATE_WORD1 z1 = { .emptytile = true };
++      ROGUE_PBESTATE_STATE_WORD0_pack(&words[0], &z0);
++      ROGUE_PBESTATE_STATE_WORD1_pack(&words[1], &z1);
++      return;
++   }
+    struct ROGUE_PBESTATE_STATE_WORD0 sw0 = { .address_low = addr };
+    struct ROGUE_PBESTATE_STATE_WORD1 sw1 = {
+       .address_high = addr,
+@@ -1602,7 +1611,8 @@ bool
+ pvr_frag_static_stream_set_zls(void *stream, uint32_t stream_len,
+                                const struct pvr_device_info *dev_info, uint32_t zls_format,
+                                uint64_t zbase, uint32_t width, uint32_t height, bool load,
+-                               bool store, uint32_t bgdepth, uint32_t zls_stride, bool twiddled)
++                               bool store, uint32_t bgdepth, uint32_t zls_stride, bool twiddled,
++                               bool zonlyrender)
+ {
+    const uint32_t pbe_dwords = PVR_MAX_COLOR_ATTACHMENTS * ROGUE_NUM_PBESTATE_REG_WORDS * 2;
+    const uint32_t ctrl_off = (PVR_FRAG_PRE_PBE_DWORDS + pbe_dwords +
+@@ -1639,6 +1649,7 @@ pvr_frag_static_stream_set_zls(void *stream, uint32_t stream_len,
+       .forcezstore = store,
+       .loadtwiddled = twiddled,
+       .storetwiddled = twiddled,
++      .zonlyrender = zonlyrender,
+    };
+    const struct ROGUE_CR_ISP_ZLOAD_BASE base = { .addr = zbase };
+    ROGUE_CR_ISP_ZLSCTL_pack(&dw[zlsctl_off / 4], &ctl);
+diff --git a/src/gallium/drivers/pvr_native/pvr_csb.h b/src/gallium/drivers/pvr_native/pvr_csb.h
+index 61abc377..e833ae6c 100644
+--- a/src/gallium/drivers/pvr_native/pvr_csb.h
++++ b/src/gallium/drivers/pvr_native/pvr_csb.h
+@@ -528,7 +528,7 @@ bool pvr_frag_static_stream_set_zls(void *stream, uint32_t stream_len,
+                                     const struct pvr_device_info *dev_info, uint32_t zls_format,
+                                     uint64_t zbase, uint32_t width, uint32_t height, bool load,
+                                     bool store, uint32_t bgdepth, uint32_t zls_stride,
+-                                    bool twiddled);
++                                    bool twiddled, bool zonlyrender);
+ 
+ bool pvr_csb_emit_ta_pds_sizeinfo(struct pvr_csb *csb, const struct pvr_pds_sizes *sizes,
+                                   bool tri_merge_disable, uint32_t batchnum);
+@@ -555,7 +555,7 @@ bool pvr_csb_pbe_words(enum pipe_format format, uint32_t stride_bytes, uint32_t
+  * PBE at the render target at end of tile. `words[0]` is STATE_WORD0, `words[1]` STATE_WORD1, the
+  * same layout the reference's pvr_pbe_state_words() produces. */
+ void pvr_csb_pbe_state_words(uint64_t addr, enum pipe_format format, uint32_t mrt_index,
+-                             uint32_t words[2]);
++                             bool emptytile, uint32_t words[2]);
+ 
+ /* The PBE (pixel backend) render-target address: PBESTATE_STATE_WORD0 + STATE_WORD1.
+  *
+diff --git a/src/gallium/drivers/pvr_native/pvr_draw.c b/src/gallium/drivers/pvr_native/pvr_draw.c
+index cbf27bbb..d83cf154 100644
+--- a/src/gallium/drivers/pvr_native/pvr_draw.c
++++ b/src/gallium/drivers/pvr_native/pvr_draw.c
+@@ -76,6 +76,7 @@ struct pvr_draw_eot {
+    uint64_t addr;
+    enum pipe_format format;
+    uint64_t pds_offset;
++   bool zonly;
+ };
+ 
+ /* Mip generation renders every level size of a chain (refract: about a dozen per frame), and a
+@@ -1008,7 +1009,7 @@ draw_load_program(struct pvr_context *ctx, struct pvr_draw_state *d, uint64_t bg
+  * a PDS pixel-event data segment. */
+ static uint64_t
+ draw_eot_program(struct pvr_context *ctx, struct pvr_draw_state *d, uint64_t rt_addr,
+-                 enum pipe_format format)
++                 enum pipe_format format, bool zonlyrender)
+ {
+    struct pvr_screen *scr = draw_screen(ctx);
+    struct pvr_shader_eot eot = { 0 };
+@@ -1018,10 +1019,11 @@ draw_eot_program(struct pvr_context *ctx, struct pvr_draw_state *d, uint64_t rt_
+    uint32_t usc_offset;
+ 
+    for (unsigned i = 0; i < d->nr_eot; i++) {
+-      if (d->eot[i].addr == rt_addr && d->eot[i].format == format)
++      if (d->eot[i].addr == rt_addr && d->eot[i].format == format &&
++          d->eot[i].zonly == zonlyrender)
+          return d->eot[i].pds_offset;
+    }
+-   pvr_csb_pbe_state_words(rt_addr, format, 0, state_words);
++   pvr_csb_pbe_state_words(rt_addr, format, 0, zonlyrender, state_words);
+    if (!pvr_shader_eot_create(scr->pco_ctx, &eot, state_words))
+       return 0;
+    usc_offset = draw_upload_usc(scr, eot.binary, eot.binary_size);
+@@ -1040,7 +1042,7 @@ draw_eot_program(struct pvr_context *ctx, struct pvr_draw_state *d, uint64_t rt_
+    const unsigned slot = d->nr_eot < ARRAY_SIZE(d->eot) ? d->nr_eot++
+                                                         : (unsigned)(rt_addr >> 12) % ARRAY_SIZE(d->eot);
+    d->eot[slot] = (struct pvr_draw_eot){ .addr = rt_addr, .format = format,
+-                                         .pds_offset = pds_offset };
++                                         .pds_offset = pds_offset, .zonly = zonlyrender };
+    return pds_offset;
+ }
+ 
+@@ -1760,8 +1762,11 @@ pvr_draw_flush(struct pvr_context *ctx)
+    sc[0] = d->rt_w;
+    sc[1] = d->rt_h;
+ 
++   /* Depth-only framebuffer (shadow's depth pass): the colour target is a scratch one, so the
++    * PBE must drop all colour writes instead of clearing/storing a full extra target. */
++   const bool zonly = ctx->fb.nr_cbufs == 0 && ctx->fb.zsbuf.texture != NULL;
+    const uint64_t eot =
+-      draw_eot_program(ctx, d, pvr_resource_level_addr(rt, d->rt_level), fmt);
++      draw_eot_program(ctx, d, pvr_resource_level_addr(rt, d->rt_level), fmt, zonly);
+    const uint64_t bg = draw_bg_program(ctx, d, d->clear_valid ? d->clear_color : 0);
+    uint64_t pbe_words[3] = { 0 };
+    if (eot == 0 || bg == 0 ||
+@@ -1769,6 +1774,8 @@ pvr_draw_flush(struct pvr_context *ctx)
+                           pvr_resource_level_phys_h(rt, d->rt_level), rt->twiddled, rt->fbc,
+                           pbe_words))
+       goto done;
++   if (zonly)
++      memset(pbe_words, 0, sizeof(pbe_words)); /* reference z-only: zero PBE reg words */
+ 
+    _Alignas(8) uint8_t gstream[256];
+    _Alignas(8) uint8_t fstream[1024];
+@@ -1780,8 +1787,9 @@ pvr_draw_flush(struct pvr_context *ctx)
+    if (glen == 0 || flen == 0)
+       goto done;
+    uint64_t bgnd[3], pr_bgnd[3];
+-   /* Without a clear, the background reloads what the target held. */
+-   if (d->clear_valid || !draw_load_program(ctx, d, bgnd))
++   /* Without a clear, the background reloads what the target held. A depth-only render drops the
++    * colour writes anyway, so it uses the (cheap) clear background instead of a full-target load. */
++   if (d->clear_valid || zonly || !draw_load_program(ctx, d, bgnd))
+       pvr_csb_pds_bgnd_words((uint32_t)bg, (uint32_t)bg, (uint32_t)bg, 0, 0, 0, bgnd);
+    memcpy(pr_bgnd, bgnd, sizeof(bgnd));
+    pvr_frag_static_stream_fill_bgnd(fstream, sizeof(fstream), d->bct_addr, bgnd, pr_bgnd);
+@@ -1804,7 +1812,7 @@ pvr_draw_flush(struct pvr_context *ctx)
+                                             : (uint32_t)zr->dev_size;
+       if (!pvr_frag_static_stream_set_zls(fstream, flen, &scr->dev_info, zf, zr->dev_addr,
+                                           zwidth, zheight, !d->zclear_valid, true,
+-                                          bgdepth, zstride, zr->twiddled))
++                                          bgdepth, zstride, zr->twiddled, zonly))
+          goto done;
+       frag_flags |= DRM_PVR_SUBMIT_JOB_FRAG_CMD_DEPTHBUFFER;
+    }
+-- 
+2.47.3
+

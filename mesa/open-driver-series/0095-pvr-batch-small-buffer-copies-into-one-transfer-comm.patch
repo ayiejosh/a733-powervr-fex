@@ -1,7 +1,7 @@
-From 8c1ea61dd1c97e68efa2c99ad253ac553b6c1906 Mon Sep 17 00:00:00 2001
+From b8ac03226b524e33907e1f324bf765f4ba7baf32 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sun, 11 Oct 2026 12:04:15 +0800
-Subject: [PATCH 95/98] pvr: batch small buffer copies into one transfer
+Subject: [PATCH 095/294] pvr: batch small buffer copies into one transfer
  command
 
 Every transfer command is a kernel job and a 3D kick of about 125 us.
@@ -34,7 +34,7 @@ lists.
  2 files changed, 181 insertions(+), 7 deletions(-)
 
 diff --git a/src/imagination/vulkan/pvr_cmd_buffer.h b/src/imagination/vulkan/pvr_cmd_buffer.h
-index 7408599..1c17de5 100644
+index 7408599e..1c17de5a 100644
 --- a/src/imagination/vulkan/pvr_cmd_buffer.h
 +++ b/src/imagination/vulkan/pvr_cmd_buffer.h
 @@ -34,7 +34,8 @@ struct pvr_vertex_binding {
@@ -72,7 +72,7 @@ index 7408599..1c17de5 100644
      * to link buffer objects allocated during job submission into
      * cmd_buffer::bo_list head.
 diff --git a/src/imagination/vulkan/rogue/pvr_blit.c b/src/imagination/vulkan/rogue/pvr_blit.c
-index 5451253..61d0a78 100644
+index 54512538..61d0a789 100644
 --- a/src/imagination/vulkan/rogue/pvr_blit.c
 +++ b/src/imagination/vulkan/rogue/pvr_blit.c
 @@ -1408,6 +1408,155 @@ void pvr_rogue_CmdClearDepthStencilImage(

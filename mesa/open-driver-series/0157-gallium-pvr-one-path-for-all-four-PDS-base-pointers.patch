@@ -1,7 +1,7 @@
-From 8e49f2dc05fee257e3bf80d35d6309992d0a6bef Mon Sep 17 00:00:00 2001
+From c64f4b10a22a5ee8a4ed87e5d10b04ffb24c51fd Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sat, 17 Oct 2026 09:31:49 +0800
-Subject: [PATCH 157/269] gallium/pvr: one path for all four PDS base pointers
+Subject: [PATCH 157/294] gallium/pvr: one path for all four PDS base pointers
 
   csb: TA PDS bases: all four fit bits[4:31] and round-trip; a 40-bit address refused on each
        rather than truncated

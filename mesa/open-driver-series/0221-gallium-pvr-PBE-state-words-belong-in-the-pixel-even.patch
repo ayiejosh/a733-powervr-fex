@@ -1,7 +1,7 @@
-From 9593e55d7c0cb4ecdfdbbaeff97bcffb812d7406 Mon Sep 17 00:00:00 2001
+From 39db3a8a04fda86ce899b4db7a0b487c0959f086 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sun, 25 Oct 2026 00:26:58 +0800
-Subject: [PATCH 221/269] gallium/pvr: PBE state words belong in the
+Subject: [PATCH 221/294] gallium/pvr: PBE state words belong in the
  pixel-event program, not the fragment stream
 
 Comparing the CCCB commands the kernel hands the firmware for our draw and for the working Vulkan

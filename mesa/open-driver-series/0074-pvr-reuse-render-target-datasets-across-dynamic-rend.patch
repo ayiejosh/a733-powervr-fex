@@ -1,7 +1,7 @@
-From 805fddd92321474e93cc3c60137165f8b5e656b1 Mon Sep 17 00:00:00 2001
+From 651593454eca149f4d54629f7594c778440762a5 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sun, 11 Oct 2026 04:11:20 +0800
-Subject: [PATCH 74/98] pvr: reuse render target datasets across dynamic
+Subject: [PATCH 074/294] pvr: reuse render target datasets across dynamic
  renders
 
 Dynamic rendering creates a render state, and with it a render target
@@ -25,7 +25,7 @@ CTS: robustness list (4025), 5062 list, loops/indexing/graphicsfuzz list
  5 files changed, 101 insertions(+), 1 deletion(-)
 
 diff --git a/src/imagination/vulkan/pvr_arch_device.c b/src/imagination/vulkan/pvr_arch_device.c
-index e46aabc..1e2d552 100644
+index e46aabc5..1e2d5521 100644
 --- a/src/imagination/vulkan/pvr_arch_device.c
 +++ b/src/imagination/vulkan/pvr_arch_device.c
 @@ -30,6 +30,7 @@
@@ -55,7 +55,7 @@ index e46aabc..1e2d552 100644
     pvr_robustness_buffer_finish(device);
     pvr_spm_finish_scratch_buffer_store(device);
 diff --git a/src/imagination/vulkan/pvr_arch_job_render.c b/src/imagination/vulkan/pvr_arch_job_render.c
-index 8a64b85..0cf5183 100644
+index 8a64b855..0cf5183e 100644
 --- a/src/imagination/vulkan/pvr_arch_job_render.c
 +++ b/src/imagination/vulkan/pvr_arch_job_render.c
 @@ -639,6 +639,12 @@ VkResult pvr_arch_render_target_dataset_create(
@@ -72,7 +72,7 @@ index 8a64b85..0cf5183 100644
  
     rt_dataset = vk_zalloc(&device->vk.alloc,
 diff --git a/src/imagination/vulkan/pvr_device.h b/src/imagination/vulkan/pvr_device.h
-index 0f09e0c..cec8d67 100644
+index 0f09e0c3..cec8d675 100644
 --- a/src/imagination/vulkan/pvr_device.h
 +++ b/src/imagination/vulkan/pvr_device.h
 @@ -182,6 +182,13 @@ struct pvr_device {
@@ -90,7 +90,7 @@ index 0f09e0c..cec8d67 100644
  
  struct pvr_device_memory {
 diff --git a/src/imagination/vulkan/pvr_rt_dataset.c b/src/imagination/vulkan/pvr_rt_dataset.c
-index 8f110ce..b827903 100644
+index 8f110ce7..b8279038 100644
 --- a/src/imagination/vulkan/pvr_rt_dataset.c
 +++ b/src/imagination/vulkan/pvr_rt_dataset.c
 @@ -60,7 +60,10 @@ void pvr_rt_vheap_rtc_data_fini(struct pvr_rt_dataset *rt_dataset)
@@ -180,7 +180,7 @@ index 8f110ce..b827903 100644
 +   simple_mtx_destroy(&device->rt_cache_mtx);
 +}
 diff --git a/src/imagination/vulkan/pvr_rt_dataset.h b/src/imagination/vulkan/pvr_rt_dataset.h
-index c0e56aa..8fd5530 100644
+index c0e56aaf..8fd5530d 100644
 --- a/src/imagination/vulkan/pvr_rt_dataset.h
 +++ b/src/imagination/vulkan/pvr_rt_dataset.h
 @@ -11,6 +11,7 @@

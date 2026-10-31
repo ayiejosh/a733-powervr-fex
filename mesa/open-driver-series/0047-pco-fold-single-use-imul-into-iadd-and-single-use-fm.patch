@@ -1,7 +1,7 @@
-From 31ce4a932f051f1d3a5297bfeb263bae74332ae9 Mon Sep 17 00:00:00 2001
+From 9ee97e7412c26587eeced04e932eb5ef3b2aaa9d Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sat, 10 Oct 2026 00:57:51 +0800
-Subject: [PATCH 47/98] pco: fold single-use imul into iadd and single-use
+Subject: [PATCH 047/294] pco: fold single-use imul into iadd and single-use
  fmad/fmul/fadd into fsat
 
 NIR ALU ops were translated one to one: iadd(imul(a, b), c) became an
@@ -24,7 +24,7 @@ vkedge and vkrender gates pass.
  1 file changed, 66 insertions(+), 4 deletions(-)
 
 diff --git a/src/imagination/pco/pco_trans_nir.c b/src/imagination/pco/pco_trans_nir.c
-index 6ca9203..b250dd2 100644
+index 6ca92030..b250dd23 100644
 --- a/src/imagination/pco/pco_trans_nir.c
 +++ b/src/imagination/pco/pco_trans_nir.c
 @@ -3772,6 +3772,26 @@ trans_conv(trans_ctx *tctx, nir_op op, pco_ref dest, pco_ref src)

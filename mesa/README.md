@@ -347,7 +347,7 @@ because that checkout's only remote is **upstream `gitlab.freedesktop.org/mesa/m
 | file | what it is |
 |---|---|
 | `mesa-main-open-driver-all.patch` | the whole delta as one patch, like `mesa-main-local-all.patch` |
-| `open-driver-series/` | the commits as numbered `format-patch` files, in apply order: 0001-0043 from 2026-10-09, 0044-0098 from 2026-10-11, 0099-0105 from 2026-10-14, 0106-0269 from 2026-10-27 (the native `pvr` driver work and its probe tooling) |
+| `open-driver-series/` | the commits as numbered `format-patch` files, in apply order: 0001-0043 from 2026-10-09, 0044-0098 from 2026-10-11, 0099-0105 from 2026-10-14, 0106-0269 from 2026-10-27 (the native `pvr` driver work and its probe tooling), 0270-0294 from 2026-10-27 (the VK_EXT_transform_feedback port) |
 
 **Apply with:**
 
@@ -533,3 +533,71 @@ geometry stage times out (documented, with every client-visible input compared b
 working Vulkan client). GL on this board is therefore served through zink -> the open Vulkan driver
 (glmark2-es2 543-594 at 800x600, ahead of the vendor GL score 522), while the native GL frontend remains
 the open item.
+
+
+## Added 2026-10-27: VK_EXT_transform_feedback port, patches 0270-0294
+
+The official **Mesa MR !44385 "pvr: implement VK_EXT_transform_feedback"** (Ashish Chauhan, IMG; merged into
+Mesa main 2026-10-13, 20 commits) cherry-picked onto the perf branch, plus the two upstream u_trace
+prerequisite commits the base predates, plus three integration fixes — 25 more `format-patch` files
+(`0270…0293`), and `mesa-main-open-driver-all.patch` is regenerated as the whole delta against upstream
+`9a2b374`: **294 patches, 173 files, +25495 / -928** (`git am` of all 294 onto `9a2b374` reproduces the ported
+branch tree byte-identically).
+
+Integration notes:
+- `pvr_pipeline_destroy_shader_data()` gained a `vs` argument; the perf branch's alt-fragment and
+  versioned-shader retry call sites pass `false` / `stage == MESA_SHADER_VERTEX`.
+- The MR's dummy render-target dataset is created for fragment jobs outside a render pass; with the perf
+  branch's RT-dataset cache it has to be initialized **after** `pvr_rt_dataset_cache_init()` and finished
+  **before** `pvr_rt_dataset_cache_finish()` - patch 0294. Without it, device creation crashes in
+  `pvr_rt_dataset_cache_take` (the first patch export missed this fix; it is included now and the series was
+  re-validated).
+
+**Validated on the board** (open `powervr` kernel driver, official IMG firmware):
+- Vulkan `vkrender 512 3`: PASS (262144/262144 pixels);
+- zink through headless weston: **`GL_VERSION: OpenGL ES 3.1 Mesa 26.3.0-devel`** (the perf branch without
+  this port is GL 2.1 / ES 2.0);
+- glmark2 800x600: **578-608** with the port, against 543-594 for the same branch before it — GLES 3.1
+  arrived with no performance regression. Re-validated after including patch 0294: Vulkan PASS as both user and
+  root, zink GLES 3.1, glmark2 578. The driver still needs `PVR_I_WANT_A_BROKEN_VULKAN_DRIVER=1` (BXM-4-64 is
+  not declared conformant), as before.
+
+## Added 2026-10-27 (evening): the native DM2/TA blocker fixed, patches 0295-0296
+
+The native Gallium client's geometry kick (TA processed by the firmware, DM2 never finishing) was not a
+firmware, MTS or kernel limit. An ioctl-level capture and replay of the working Vulkan client and of the
+native probe (`open-driver-perf/tools/pvrcap/`) reproduced both outcomes, and grafting one component at a
+time showed the native context, HWRT data set and free lists are fine: the native process runs the Vulkan
+draw data to `TA finished`. The draw data the native driver builds was wrong:
+
+- **0295** `pvr_vm_map()` did not reserve code-heap pages. The shader stage maps the vertex PDS program, its
+  data and the VS/FS USC code at the first usable page of the PDS/USC heaps; the render context later
+  allocated the same pages, and VM_MAP silently replaced the earlier mappings (drm_gpuvm unmaps what a new
+  mapping overlaps), so the VDM ran a zero-filled buffer as the vertex program. Also
+  `pvr_shader_vertex_data()` wrote the PDS const map at byte offsets (the map gives dword offsets) and skipped
+  the literal entries, so the attribute DMA had base 0, stride 0, control 0. Each bug alone still hangs.
+- **0296** once the TA ran, the 3D stage faulted: the PBE line stride was given in bytes instead of pixels
+  (writes past the render target), and the render's completion syncobj was never signalled.
+
+Result on the board: native geometry-only probe `Kick TA -> TA finished` 3/3, no HWR; the full native render
+runs `TA finished -> 3D finished` with no fault and the GPU writes the whole target. The written image is all
+black (no visible triangle yet) - that is the next item, so native GL is not usable yet. Note for anyone
+bisecting: a terminate-only VDM stream hangs the TA even for the working Vulkan driver, so it is not a valid
+"minimal" test.
+
+## Added 2026-10-27 (night): native GL draws through the TA/3D path, patches 0297-0298
+
+- **0297** the probe's render drew only its background: ISPCTL enables scissoring and the fragment stream left
+  `CR_ISP_SCISSOR_BASE` at 0. With a full-target scissor table the probe triangle renders.
+- **0298** `pvr_draw.c` moves that render path into the driver's `draw_vbo`: draws accumulate into one control
+  stream per render target and the render is submitted at flush, readback or target change; the vertex PDS program
+  is built from the GL vertex elements; the FS is compiled per colour format; a colour clear becomes the background
+  object. Found on the way: the index-list packet dropped address bits 39:32; the firmware static-program carveouts
+  were only mapped by the probe; fragment shaders were built with `z_replicate = 0` (depth written over the colour)
+  and with runtime coverage checks that read an unset shared register (every fragment discarded).
+
+Result: a GLES2 program (`open-driver-perf/tools/pvrcap/gltri.c`: surfaceless EGL, FBO, `glClear` + `glDrawArrays`
+with its own shaders) renders the same image through the native driver (`MESA_LOADER_DRIVER_OVERRIDE=pvr`) as through
+zink - 32768 red pixels on green, `Kick TA -> TA finished -> Kick 3D -> 3D finished`. Native GL is not complete yet:
+varyings, uniforms, textures, depth, blending, culling and loading a target without a clear are still missing, so
+glmark2 does not run on it yet.

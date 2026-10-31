@@ -1,7 +1,7 @@
-From e3cf93fb50dee71bafd7a0f9e4d51b58e628aa29 Mon Sep 17 00:00:00 2001
+From 6dfd26e859ad0418decdd42ff2d04c31c28239ef Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Thu, 8 Oct 2026 18:05:18 +0800
-Subject: [PATCH 35/43] wsi: log the release timeline point waited on
+Subject: [PATCH 035/294] wsi: log the release timeline point waited on
  (WSIREL_POINTS, off by default)
 
 Extends the existing WSIREL_TRACE instrumentation in wsi_drm_wait_for_explicit_sync_release() to
@@ -20,7 +20,7 @@ glmark2 --validate 27/0.
  1 file changed, 10 insertions(+)
 
 diff --git a/src/vulkan/wsi/wsi_common_drm.c b/src/vulkan/wsi/wsi_common_drm.c
-index 0735a1f..9579e5e 100644
+index 0735a1f5..9579e5ef 100644
 --- a/src/vulkan/wsi/wsi_common_drm.c
 +++ b/src/vulkan/wsi/wsi_common_drm.c
 @@ -1107,6 +1107,16 @@ wsi_drm_wait_for_explicit_sync_release(struct wsi_swapchain *chain,
@@ -40,3 +40,6 @@ index 0735a1f..9579e5e 100644
        if (_rn % 50 == 0)
           fprintf(stderr, "[rel] explicit-sync release waits=%lu total=%.1fms avg=%.2fms max=%.2fms images=%u\n",
                   _rn, _rtot, _rtot/_rn, _rmax, unacquired_image_count);
+-- 
+2.47.3
+

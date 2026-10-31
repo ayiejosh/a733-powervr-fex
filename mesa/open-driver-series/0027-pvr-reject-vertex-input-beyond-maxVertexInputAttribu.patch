@@ -1,7 +1,7 @@
-From 8c2140c342524525559a924ecc52d0c2a6e226a6 Mon Sep 17 00:00:00 2001
+From e6683845378407734770c8b8952a4c960bcbc79b Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Thu, 8 Oct 2026 13:14:20 +0800
-Subject: [PATCH 27/43] pvr: reject vertex input beyond
+Subject: [PATCH 027/294] pvr: reject vertex input beyond
  maxVertexInputAttributes instead of crashing
 
 The advertised limit is maxVertexInputAttributes = 16 (MAX_VERTEX_GENERIC_ATTRIBS), but
@@ -38,7 +38,7 @@ ubos, stgbuf, vattrib(16) all PASS; glmark2 --validate 27/0.
  2 files changed, 47 insertions(+), 6 deletions(-)
 
 diff --git a/src/imagination/pco/pco_nir_pvfio.c b/src/imagination/pco/pco_nir_pvfio.c
-index 71efda9..3660c75 100644
+index 71efda9f..3660c753 100644
 --- a/src/imagination/pco/pco_nir_pvfio.c
 +++ b/src/imagination/pco/pco_nir_pvfio.c
 @@ -865,15 +865,27 @@ static bool lower_pvi(nir_builder *b, nir_intrinsic_instr *intr, void *cb_data)
@@ -84,7 +84,7 @@ index 71efda9..3660c75 100644
  
        nir_def *packed_comps[4];
 diff --git a/src/imagination/vulkan/pvr_arch_pipeline.c b/src/imagination/vulkan/pvr_arch_pipeline.c
-index 90f6ca3..b0e896a 100644
+index 90f6ca33..b0e896ad 100644
 --- a/src/imagination/vulkan/pvr_arch_pipeline.c
 +++ b/src/imagination/vulkan/pvr_arch_pipeline.c
 @@ -1794,12 +1794,12 @@ static void pvr_init_vs_attribs(
@@ -135,3 +135,6 @@ index 90f6ca3..b0e896a 100644
     struct vk_dynamic_graphics_state *const dynamic_state =
        &gfx_pipeline->dynamic_state;
     struct vk_graphics_pipeline_all_state all_state;
+-- 
+2.47.3
+

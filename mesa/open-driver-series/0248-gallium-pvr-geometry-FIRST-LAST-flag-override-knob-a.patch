@@ -1,7 +1,7 @@
-From ea5e5ce49c140c6ec3010351470a1e76d95f7901 Mon Sep 17 00:00:00 2001
+From 4d85f0ccc625d7b1e75d5291c70930e3715772fc Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sun, 25 Oct 2026 13:56:15 +0800
-Subject: [PATCH 248/269] gallium/pvr: geometry FIRST/LAST flag override knob -
+Subject: [PATCH 248/294] gallium/pvr: geometry FIRST/LAST flag override knob -
  all variants negative
 
 PVR_PROBE_GEOM_FLAGS overrides the geometry job's kick flags. FIRST|LAST (default), 0, FIRST-only and

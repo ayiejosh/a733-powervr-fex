@@ -1,7 +1,7 @@
-From 8adbe8c501ea7080517faa63b6fed4449c083177 Mon Sep 17 00:00:00 2001
+From d3b1cc114ff484f8cfbfcd6ac7e4bf6835715879 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Mon, 26 Oct 2026 01:45:21 +0800
-Subject: [PATCH 253/269] wip: capture a Vulkan compute draw and replay it from
+Subject: [PATCH 253/294] wip: capture a Vulkan compute draw and replay it from
  the native driver
 
 The reference now has a compute-based triangle draw (vktq_draw + tri.comp: a compute shader rasterises a

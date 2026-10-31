@@ -1,0 +1,16 @@
+#version 450
+layout(local_size_x = 64) in;
+layout(std430, binding = 0) readonly buffer I { uvec4 i[]; };
+layout(std430, binding = 1) writeonly buffer O { uint o[]; };
+void main() {
+   uint id = gl_GlobalInvocationID.x; uvec4 v = i[id];
+   vec4 a = vec4(v & 0xffffu) * 0.001, b = vec4(v >> 16u) * 0.002;
+   vec4 c = a * b + a, d = b * b - a;
+   vec4 e = c * d + b, f = d * a + c;
+   uvec4 g = v + uvec4(1u, 2u, 3u, 4u), h = (v ^ uvec4(7u)) + g;
+   uvec4 k = g * h, m = (h + k) ^ g;
+   o[id * 16u + 0u] = floatBitsToUint(e.x); o[id * 16u + 1u] = floatBitsToUint(e.y); o[id * 16u + 2u] = floatBitsToUint(e.z); o[id * 16u + 3u] = floatBitsToUint(e.w);
+   o[id * 16u + 4u] = floatBitsToUint(f.x); o[id * 16u + 5u] = floatBitsToUint(f.y); o[id * 16u + 6u] = floatBitsToUint(f.z); o[id * 16u + 7u] = floatBitsToUint(f.w);
+   o[id * 16u + 8u] = m.x; o[id * 16u + 9u] = m.y; o[id * 16u + 10u] = m.z; o[id * 16u + 11u] = m.w;
+   o[id * 16u + 12u] = k.x; o[id * 16u + 13u] = k.y; o[id * 16u + 14u] = k.z; o[id * 16u + 15u] = k.w;
+}

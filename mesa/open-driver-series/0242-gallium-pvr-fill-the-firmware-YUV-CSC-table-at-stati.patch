@@ -1,7 +1,7 @@
-From eff9d13db38fec3ba303d0694f356c304441f3c8 Mon Sep 17 00:00:00 2001
+From e4bd237959e7a7491e805c43e24d7af524b06e8e Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sun, 25 Oct 2026 06:35:22 +0800
-Subject: [PATCH 242/269] gallium/pvr: fill the firmware YUV CSC table at
+Subject: [PATCH 242/294] gallium/pvr: fill the firmware YUV CSC table at
  static memory init; env-gated static area dump
 
 The reference driver writes the firmware's YUV CSC table (general heap static area at +0x80, 1024 B) at

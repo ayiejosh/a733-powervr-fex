@@ -1,7 +1,7 @@
-From d253e35777340e1f17ecac76419aa8fe24a4c140 Mon Sep 17 00:00:00 2001
+From 72ad2d640c570689cd74ca16e225f89ac7d8abda Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Fri, 9 Oct 2026 08:12:44 +0800
-Subject: [PATCH 43/43] Revert the GEOM/FRAG timeline conversion - it passes
+Subject: [PATCH 043/294] Revert the GEOM/FRAG timeline conversion - it passes
  every probe but breaks weston
 
 Reverts 61001c4 and a94f4b3. The conversion was correctness-green on the whole probe
@@ -30,7 +30,7 @@ from step 1 remain in place and unused, so a corrected attempt can start from th
  1 file changed, 3 insertions(+), 26 deletions(-)
 
 diff --git a/src/imagination/vulkan/pvr_arch_queue.c b/src/imagination/vulkan/pvr_arch_queue.c
-index 67ab290..2664cfa 100644
+index 67ab2902..2664cfa7 100644
 --- a/src/imagination/vulkan/pvr_arch_queue.c
 +++ b/src/imagination/vulkan/pvr_arch_queue.c
 @@ -332,9 +332,7 @@ pvr_process_graphics_cmd_for_view(struct pvr_device *device,
@@ -83,3 +83,6 @@ index 67ab290..2664cfa 100644
        result = vk_sync_create(&device->vk,
                                &device->pdevice->ws->syncobj_type,
                                0U,
+-- 
+2.47.3
+

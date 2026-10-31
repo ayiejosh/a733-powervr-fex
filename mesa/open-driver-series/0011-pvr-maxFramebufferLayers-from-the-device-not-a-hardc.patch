@@ -1,7 +1,7 @@
-From f5ee3cf16be3ea864a05a0fdba3113e51a314b7d Mon Sep 17 00:00:00 2001
+From b43e2fb2293b9b39bdd16e81700b8098e852a9eb Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Thu, 8 Oct 2026 03:22:46 +0800
-Subject: [PATCH 11/43] pvr: maxFramebufferLayers from the device, not a
+Subject: [PATCH 011/294] pvr: maxFramebufferLayers from the device, not a
  hardcoded 256 (-> 2048)
 
 Same pattern as maxColorAttachments: pvr_arch_job_render.c asserts
@@ -21,7 +21,7 @@ glmark2 --validate still 0 failures / 27 pass; windowed 39 FPS unchanged.
  1 file changed, 5 insertions(+), 1 deletion(-)
 
 diff --git a/src/imagination/vulkan/pvr_physical_device.c b/src/imagination/vulkan/pvr_physical_device.c
-index 55e2a03..86617f5 100644
+index 55e2a03e..86617f5a 100644
 --- a/src/imagination/vulkan/pvr_physical_device.c
 +++ b/src/imagination/vulkan/pvr_physical_device.c
 @@ -872,7 +872,11 @@ static bool pvr_physical_device_get_properties(
@@ -37,3 +37,6 @@ index 55e2a03..86617f5 100644
  
        /* Note: update nir_shader_compiler_options.max_samples when changing this.
         * 2x is included because the driver implements it: pvr_cr_isp_aa_mode_type()
+-- 
+2.47.3
+

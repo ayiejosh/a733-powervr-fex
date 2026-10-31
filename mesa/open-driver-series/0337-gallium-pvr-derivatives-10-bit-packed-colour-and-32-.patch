@@ -1,0 +1,68 @@
+From ba12e2e9c00b3eac3ca99b689fb5f72afc662d4d Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Thu, 29 Oct 2026 23:05:16 +0800
+Subject: [PATCH] gallium/pvr: derivatives, 10-bit packed colour and 32-bit
+ float textures
+
+Three ES2 extensions the vendor ships and this driver did not, each gated by one piece of missing
+driver state:
+
+- GL_OES_standard_derivatives: pco lowers nir_intrinsic_ddx/ddy for the fragment stage already (the
+  same lowering the Vulkan driver uses), so the extension only needed
+  caps->fragment_shader_derivatives.
+- GL_EXT_texture_type_2_10_10_10_REV: R10G10B10A2_UNORM/B10G10R10A2_UNORM as sampler views, decoded
+  by the TPU as A2R10B10G10 (the reference's mapping; the format description's swizzle selects the
+  channel order).
+- GL_OES_texture_float: R32G32B32A32_FLOAT as a sampler view, decoded as F32F32F32F32.
+
+Verified against zink with open-perf/ext_texture_test.c (all three advertised, same centrel pixels):
+- derivatives: a fragment shader using dFdx(v.x)*64, dFdy(v.y)*64 over a 64-pixel quad renders
+  (255,255,0,255) - identical;
+- 2_10_10_10 packed texel (1023,512,256,3) decodes to (255,128,64,255) - identical;
+- RGBA32F texel (0.25,0.5,0.75,1.0) decodes to (64,128,191,255) - identical.
+Full gate green: 49 gltri modes (all native glGetError 0x0), 28 mip modes, rttest PASS
+(bad=0/262144), rt8test unchanged, sRGB and MRT (2/4/mixed) unchanged, instancing unchanged,
+0 MMU faults.
+---
+ src/gallium/drivers/pvr_native/pvr_csb.c    | 10 ++++++++++
+ src/gallium/drivers/pvr_native/pvr_screen.c |  3 +++
+ 2 files changed, 13 insertions(+)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_csb.c b/src/gallium/drivers/pvr_native/pvr_csb.c
+index 3c78589f..871ba27f 100644
+--- a/src/gallium/drivers/pvr_native/pvr_csb.c
++++ b/src/gallium/drivers/pvr_native/pvr_csb.c
+@@ -479,6 +479,16 @@ pvr_format_layout_from_pipe(enum pipe_format format, struct pvr_format_layout *l
+    case PIPE_FORMAT_B5G6R5_UNORM:
+       layout_out->components = ROGUE_TEXSTATE_FORMAT_R5G6B5;
+       break;
++   /* 10-bit packed colour, the layout the reference maps to A2R10B10G10 (the description's
++    * swizzle selects the channel order). */
++   case PIPE_FORMAT_R10G10B10A2_UNORM:
++   case PIPE_FORMAT_B10G10R10A2_UNORM:
++      layout_out->components = ROGUE_TEXSTATE_FORMAT_A2R10B10G10;
++      break;
++   /* 32-bit float textures (OES_texture_float). */
++   case PIPE_FORMAT_R32G32B32A32_FLOAT:
++      layout_out->components = ROGUE_TEXSTATE_FORMAT_F32F32F32F32;
++      break;
+    default:
+       return false;
+    }
+diff --git a/src/gallium/drivers/pvr_native/pvr_screen.c b/src/gallium/drivers/pvr_native/pvr_screen.c
+index 1579f001..3153b5f5 100644
+--- a/src/gallium/drivers/pvr_native/pvr_screen.c
++++ b/src/gallium/drivers/pvr_native/pvr_screen.c
+@@ -277,6 +277,9 @@ pvr_screen_create(int fd, const struct pipe_screen_config *config,
+        * gl_InstanceID, so the cap's system-value meaning only arises in ES3 shaders, which this
+        * driver does not expose yet. */
+       caps->vs_instanceid = true;
++      /* pco lowers ddx/ddy for the fragment stage (nir_intrinsic_ddx/ddy in pco_trans_nir), so
++       * GL_OES_standard_derivatives can be advertised. */
++      caps->fragment_shader_derivatives = true;
+       caps->vertex_element_instance_divisor = true;
+       /* Multiple render targets: the PBE writes one emit per attachment (EOT program) and the
+        * fragment variant maps data0..3. ES3 needs 4; v1 requires a shared format (see flush). */
+-- 
+2.47.3
+

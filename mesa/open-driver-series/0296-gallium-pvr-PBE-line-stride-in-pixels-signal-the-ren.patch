@@ -1,0 +1,139 @@
+From 60c1f175e642b569e2bbd8738273ec63c157b51c Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Tue, 27 Oct 2026 20:00:55 +0800
+Subject: [PATCH 296/296] gallium/pvr: PBE line stride in pixels, signal the
+ render completion syncobj
+
+With the TA running, the native render reached the 3D stage and hit two
+more bugs:
+
+- pvr_csb_pbe_words() passed the stride in bytes to the PBE linestride,
+  which counts pixels in units of two (pbestate.xml; the Vulkan driver
+  feeds it pvr_stride_from_pitch()). RGBA8 rows were spaced 4x too far
+  apart and the PBE wrote past the render target: BIF0 page fault at
+  RT + 0x100040, then HWR.
+
+- pvr_job_submit_render() waited on done_sync, but no job signalled it:
+  the fragment job's sync ops only waited on pr_sync. The wait always
+  timed out although the firmware finished the 3D render.
+
+Also adds PVR_PROBE_DUMP_RT=<file.ppm> to dump the render target.
+
+The native probe's full render now runs Kick TA -> TA finished ->
+Kick 3D -> 3D finished with no fault, and the GPU writes the whole
+target. The written pixels are all black (no visible triangle): the
+next thing to fix.
+---
+ src/gallium/drivers/pvr_native/pvr_csb.c   | 10 ++++++----
+ src/gallium/drivers/pvr_native/pvr_csb.h   |  2 +-
+ src/gallium/drivers/pvr_native/pvr_probe.c | 11 +++++++++++
+ src/gallium/drivers/pvr_native/pvr_vm.c    |  9 +++++++--
+ 4 files changed, 25 insertions(+), 7 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_csb.c b/src/gallium/drivers/pvr_native/pvr_csb.c
+index fc6eb65d..9f7a9906 100644
+--- a/src/gallium/drivers/pvr_native/pvr_csb.c
++++ b/src/gallium/drivers/pvr_native/pvr_csb.c
+@@ -543,16 +543,18 @@ pvr_csb_emit_ta_output_sel(struct pvr_csb *csb, const struct pvr_ta_output_sel *
+ }
+ 
+ uint32_t
+-pvr_pbe_linestride(uint32_t stride_bytes)
++pvr_pbe_linestride(uint32_t stride_px)
+ {
++   /* The field counts pixels in units of two (pbestate.xml), like the Vulkan driver's
++    * pvr_stride_from_pitch() input; a byte stride spaces the rows bpp times too far apart. */
+    /* A zero stride would underflow into a huge value rather than fail - the same shape as the
+     * texture descriptor's zero-extent case. */
+-   if (stride_bytes == 0) {
++   if (stride_px == 0) {
+       mesa_loge("pvr: PBE linestride from a zero stride");
+       return 0;
+    }
+ 
+-   return (stride_bytes - 1) / ROGUE_PBESTATE_REG_WORD0_LINESTRIDE_UNIT_SIZE;
++   return (stride_px - 1) / ROGUE_PBESTATE_REG_WORD0_LINESTRIDE_UNIT_SIZE;
+ }
+ 
+ #define PVR_CMD_DW(x) ROGUE_##x##_length
+@@ -822,7 +824,7 @@ pvr_csb_pbe_words(enum pipe_format format, uint32_t stride_bytes, uint32_t width
+       .tilerelative = true,
+       .memlayout = ROGUE_PBESTATE_MEMLAYOUT_LINEAR,
+       .rotation = ROGUE_PBESTATE_ROTATION_TYPE_0_DEG,
+-      .linestride = pvr_pbe_linestride(stride_bytes),
++      .linestride = pvr_pbe_linestride(stride_bytes / util_format_get_blocksize(format)),
+    };
+    struct ROGUE_PBESTATE_REG_WORD1 reg1 = {
+       .maxclip_x = width - 1,
+diff --git a/src/gallium/drivers/pvr_native/pvr_csb.h b/src/gallium/drivers/pvr_native/pvr_csb.h
+index 567b1d3c..5c1aa62b 100644
+--- a/src/gallium/drivers/pvr_native/pvr_csb.h
++++ b/src/gallium/drivers/pvr_native/pvr_csb.h
+@@ -586,7 +586,7 @@ bool pvr_csb_emit_pbe_target(struct pvr_csb *csb, const struct pvr_pbe_target *t
+  * ceiling), so targets are LINEAR and the twiddled modes are deliberately not offered - a target
+  * described as twiddled while its memory is linear would be read with the wrong addressing, and
+  * that is the kind of wrong that produces a picture rather than an error. */
+-uint32_t pvr_pbe_linestride(uint32_t stride_bytes);
++uint32_t pvr_pbe_linestride(uint32_t stride_px);
+ 
+ /* The PBE's size fields are the LOG2 of the pixel dimension, not the dimension:
+  *   reg.size_x = util_logbase2_ceil(surface_params->width);
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index b6b5a84a..e7b8a3ea 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -1428,6 +1428,17 @@ real_job_done:
+                          "after %u us (first word 0x%08x, was 0x%08x)\n", glen, f2,
+                          changed ? "CHANGED BY THE GPU" : "unchanged", waited_us,
+                          *(uint32_t *)rt, before);
++                  /* Probe hook: write the render target as a PPM to look at the draw. */
++                  if (getenv("PVR_PROBE_DUMP_RT") != NULL) {
++                     FILE *ppm = fopen(getenv("PVR_PROBE_DUMP_RT"), "wb");
++                     const uint8_t *px = (const uint8_t *)rt;
++                     if (ppm != NULL) {
++                        fprintf(ppm, "P6 %u %u 255\n", RTW, RTH);
++                        for (uint32_t i = 0; i < RTW * RTH; i++)
++                           fwrite(&px[4 * i], 1, 3, ppm);
++                        fclose(ppm);
++                     }
++                  }
+                } else {
+                   printf("hwrt:          the render submit was refused\n");
+                }
+diff --git a/src/gallium/drivers/pvr_native/pvr_vm.c b/src/gallium/drivers/pvr_native/pvr_vm.c
+index ecafc4ed..0d4d2bd2 100644
+--- a/src/gallium/drivers/pvr_native/pvr_vm.c
++++ b/src/gallium/drivers/pvr_native/pvr_vm.c
+@@ -687,7 +687,7 @@ pvr_job_submit_render(struct pvr_vm *vm, uint32_t context_handle,
+     * scheduled fence). Submitting fewer than that leaves the firmware with a render it never
+     * completes: accepted by the kernel, no pixels, no error. */
+    uint32_t geom_sync = 0, pr_sync = 0, done_sync = 0;
+-   struct drm_pvr_sync_op geom_ops[1], pr_ops[2], frag_ops[1];
++   struct drm_pvr_sync_op geom_ops[1], pr_ops[2], frag_ops[2];
+    struct drm_pvr_job jobs[3];
+    struct drm_pvr_ioctl_submit_jobs_args args = {
+       .jobs = { .stride = sizeof(jobs[0]), .count = ARRAY_SIZE(jobs),
+@@ -723,6 +723,11 @@ pvr_job_submit_render(struct pvr_vm *vm, uint32_t context_handle,
+       .handle = pr_sync,
+       .flags = DRM_PVR_SYNC_OP_FLAG_WAIT | DRM_PVR_SYNC_OP_FLAG_HANDLE_TYPE_SYNCOBJ,
+    };
++   /* done_sync is what the caller waits on: the fragment job has to signal it. */
++   frag_ops[1] = (struct drm_pvr_sync_op){
++      .handle = done_sync,
++      .flags = DRM_PVR_SYNC_OP_FLAG_SIGNAL | DRM_PVR_SYNC_OP_FLAG_HANDLE_TYPE_SYNCOBJ,
++   };
+ 
+    jobs[0] = (struct drm_pvr_job){
+       .type = DRM_PVR_JOB_TYPE_GEOMETRY,
+@@ -755,7 +760,7 @@ pvr_job_submit_render(struct pvr_vm *vm, uint32_t context_handle,
+       .context_handle = context_handle,
+       .cmd_stream = (uint64_t)(uintptr_t)frag_stream,
+       .cmd_stream_len = frag_len,
+-      .sync_ops = { .stride = sizeof(frag_ops[0]), .count = 1,
++      .sync_ops = { .stride = sizeof(frag_ops[0]), .count = ARRAY_SIZE(frag_ops),
+                     .array = (__u64)(uintptr_t)frag_ops },
+       .hwrt = { .set_handle = hwrt_set_handle,
+                 .data_index = getenv("PVR_PROBE_HWRT_IDX")
+-- 
+2.47.3
+

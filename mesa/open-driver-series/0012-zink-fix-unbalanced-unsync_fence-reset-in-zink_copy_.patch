@@ -1,7 +1,7 @@
-From 863bd729d41b6984821bd147f319653c8cbd3676 Mon Sep 17 00:00:00 2001
+From 1c7c759c681db1c050b274f1bc56c11eb06b5ec6 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Thu, 8 Oct 2026 03:46:20 +0800
-Subject: [PATCH 12/43] zink: fix unbalanced unsync_fence reset in
+Subject: [PATCH 012/294] zink: fix unbalanced unsync_fence reset in
  zink_copy_image_buffer
 
 zink_copy_image_buffer() resets ctx->unsync_fence when called with unsync set, and signals
@@ -21,7 +21,7 @@ which fence is involved.
  1 file changed, 16 insertions(+), 2 deletions(-)
 
 diff --git a/src/gallium/drivers/zink/zink_context.c b/src/gallium/drivers/zink/zink_context.c
-index e178150..5553a1b 100644
+index e1781507..5553a1ba 100644
 --- a/src/gallium/drivers/zink/zink_context.c
 +++ b/src/gallium/drivers/zink/zink_context.c
 @@ -23,6 +23,7 @@
@@ -72,3 +72,6 @@ index e178150..5553a1b 100644
        }
        zink_resource_image_transfer_dst_barrier(ctx, img, level, box, unsync);
        if (!unsync)
+-- 
+2.47.3
+

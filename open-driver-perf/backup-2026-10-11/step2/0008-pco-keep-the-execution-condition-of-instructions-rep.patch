@@ -1,0 +1,138 @@
+From 316b9a89b8dfbfb194d0f1eecb47fa4f60364540 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sun, 11 Oct 2026 11:29:39 +0800
+Subject: [PATCH 08/11] pco: keep the execution condition of instructions
+ replaced after CF lowering
+
+pco_const_imms and the modifier/vec passes in pco_opt run after control
+flow is lowered, and rebuilt instructions with the default execution
+condition. A replaced instruction inside a predicated if body lost its
+predicate, and an (ignorepe) one became masked. Copy the execution
+condition to the replacement.
+---
+ src/imagination/pco/pco_builder.h    | 16 +++++++++++++++-
+ src/imagination/pco/pco_const_imms.c | 17 +++++++++++------
+ src/imagination/pco/pco_opt.c        | 14 +++++++-------
+ 3 files changed, 33 insertions(+), 14 deletions(-)
+
+diff --git a/src/imagination/pco/pco_builder.h b/src/imagination/pco/pco_builder.h
+index 558c4d7..e11a4cb 100644
+--- a/src/imagination/pco/pco_builder.h
++++ b/src/imagination/pco/pco_builder.h
+@@ -467,7 +467,21 @@ static inline bool pco_instr_has_default_exec(pco_instr *instr)
+ {
+    if (!pco_instr_has_exec_cnd(instr))
+       return true;
+-
+    return pco_instr_get_exec_cnd(instr) == PCO_EXEC_CND_E1_ZX;
+ }
++
++/**
++ * \brief Gives an instruction the execution condition of the one it replaces.
++ *
++ * Passes after control-flow lowering must keep predicated instructions
++ * predicated, and keep (ignorepe) the producers of uniform branch conditions.
++ *
++ * \param[in,out] to The replacement instruction.
++ * \param[in] from The instruction being replaced.
++ */
++static inline void pco_instr_copy_exec_cnd(pco_instr *to, pco_instr *from)
++{
++   if (pco_instr_has_exec_cnd(from) && pco_instr_has_exec_cnd(to))
++      pco_instr_set_exec_cnd(to, pco_instr_get_exec_cnd(from));
++}
+ #endif /* PCO_BUILDER_H */
+diff --git a/src/imagination/pco/pco_const_imms.c b/src/imagination/pco/pco_const_imms.c
+index de6ad37..d5b4a81 100644
+--- a/src/imagination/pco/pco_const_imms.c
++++ b/src/imagination/pco/pco_const_imms.c
+@@ -320,7 +320,9 @@ bool pco_const_imms(pco_shader *shader)
+ 
+             pco_builder b =
+                pco_builder_create(func, pco_cursor_before_instr(instr));
+-            pco_mov(&b, instr->dest[0], pco_ref_hwreg(reg, PCO_REG_CLASS_SHARED));
++            pco_instr *mov =
++               pco_mov(&b, instr->dest[0], pco_ref_hwreg(reg, PCO_REG_CLASS_SHARED));
++            pco_instr_copy_exec_cnd(mov, instr);
+             pco_instr_delete(instr);
+             progress = true;
+          }
+@@ -359,7 +361,8 @@ bool pco_const_imms(pco_shader *shader)
+                /* Already materialized in this block: move from it instead. */
+                pco_builder hb =
+                   pco_builder_create(func, pco_cursor_before_instr(instr));
+-               pco_mov(&hb, instr->dest[0], hoisted[i].reg);
++               pco_instr *mov = pco_mov(&hb, instr->dest[0], hoisted[i].reg);
++               pco_instr_copy_exec_cnd(mov, instr);
+                pco_instr_delete(instr);
+                progress = true;
+                goto next_instr;
+@@ -391,20 +394,22 @@ next_instr: ;
+          pco_ref const_reg =
+             pco_ref_hwreg(const_reg_def->idx, PCO_REG_CLASS_CONST);
+ 
++         pco_instr *repl;
+          if (!const_reg_def->flr && !const_reg_def->neg) {
+-            pco_mov(&b, dest, const_reg);
++            repl = pco_mov(&b, dest, const_reg);
+          } else if (!const_reg_def->flr && const_reg_def->neg) {
+-            pco_fneg(&b, dest, const_reg);
++            repl = pco_fneg(&b, dest, const_reg);
+          } else if (const_reg_def->flr && !const_reg_def->neg) {
+-            pco_fflr(&b, dest, const_reg);
++            repl = pco_fflr(&b, dest, const_reg);
+          } else {
+             /* TODO: use floor and neg mods when support for > 1 is added. */
+             const_reg = pco_ref_flr(const_reg);
+             const_reg = pco_ref_neg(const_reg);
+ 
+-            pco_fadd(&b, dest, const_reg, pco_zero);
++            repl = pco_fadd(&b, dest, const_reg, pco_zero);
+          }
+ 
++         pco_instr_copy_exec_cnd(repl, instr);
+          pco_instr_delete(instr);
+          progress = true;
+       }
+diff --git a/src/imagination/pco/pco_opt.c b/src/imagination/pco/pco_opt.c
+index a4d9822..76afe3a 100644
+--- a/src/imagination/pco/pco_opt.c
++++ b/src/imagination/pco/pco_opt.c
+@@ -145,6 +145,7 @@ static inline bool pco_opt_prep_mods(pco_shader *shader,
+ 
+          pco_builder b = pco_builder_create(func, pco_cursor_before_instr(mod));
+          pco_instr *mov = pco_mov(&b, mod->dest[0], src);
++         pco_instr_copy_exec_cnd(mov, mod);
+          util_dynarray_append(&ctx->mods, mov);
+          pco_instr_delete(mod);
+ 
+@@ -173,11 +174,10 @@ static inline bool pco_opt_lower_mods(pco_shader *shader,
+       pco_builder b =
+          pco_builder_create(mod->parent_func, pco_cursor_before_instr(mod));
+ 
+-      if (mod->src[0].flr)
+-         pco_fadd(&b, mod->dest[0], mod->src[0], pco_nzero);
+-      else
+-         pco_mbyp(&b, mod->dest[0], mod->src[0]);
+-
++      pco_instr *repl = mod->src[0].flr
++                           ? pco_fadd(&b, mod->dest[0], mod->src[0], pco_nzero)
++                           : pco_mbyp(&b, mod->dest[0], mod->src[0]);
++      pco_instr_copy_exec_cnd(repl, mod);
+       pco_instr_delete(mod);
+ 
+       progress = true;
+@@ -812,8 +812,8 @@ bool pco_opt_comp_only_vecs(pco_shader *shader)
+ 
+             pco_builder b =
+                pco_builder_create(func, pco_cursor_before_instr(comp));
+-            pco_mov(&b, comp->dest[0], vec->src[offset]);
+-
++            pco_instr *mov = pco_mov(&b, comp->dest[0], vec->src[offset]);
++            pco_instr_copy_exec_cnd(mov, comp);
+             pco_instr_delete(comp);
+          }
+ 
+-- 
+2.47.3
+

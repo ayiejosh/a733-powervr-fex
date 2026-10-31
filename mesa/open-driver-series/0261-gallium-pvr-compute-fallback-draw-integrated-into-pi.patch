@@ -1,7 +1,7 @@
-From 7d2b2153e8907a3615e01df9d45e405bd4ca35e3 Mon Sep 17 00:00:00 2001
+From 3b982599b241194e51b44f536515bd606a0dce2c Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Mon, 26 Oct 2026 09:21:25 +0800
-Subject: [PATCH 261/269] gallium/pvr: compute fallback draw integrated into
+Subject: [PATCH 261/294] gallium/pvr: compute fallback draw integrated into
  pipe_context - draw_vbo renders on the GPU
 
 Adds the compute fallback as a first-class part of the driver:

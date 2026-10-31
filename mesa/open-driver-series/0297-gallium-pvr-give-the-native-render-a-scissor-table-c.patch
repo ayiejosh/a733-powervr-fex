@@ -1,0 +1,139 @@
+From f0d4cdd0accf074494750b36649f0f89a0b3b03f Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Tue, 27 Oct 2026 22:00:58 +0800
+Subject: [PATCH] gallium/pvr: give the native render a scissor table; colour
+ hooks for the probe
+
+The native render reached "3D finished" but drew only the background:
+ISPCTL enables scissoring and the fragment stream left
+CR_ISP_SCISSOR_BASE at 0, so the ISP rejected every primitive. The
+probe now uploads one full-target rectangle (IPF SCISSOR_WORD_0/1, as
+the Vulkan driver writes it) and names it in the stream.
+
+Two probe hooks make the output checkable: PVR_PROBE_FS_COLOR sets the
+packed RGBA8 value the fragment shader writes (it wrote constant 0,
+which is why the target looked empty), and PVR_PROBE_BG_COLOR builds a
+second constant-colour program for the background object.
+
+With FS red over a green background the native TA -> 3D path draws the
+probe triangle: 32768 red pixels, exactly the triangle's area on the
+512x512 target. It is upside down (Vulkan-style y); GL needs the
+viewport flip.
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c | 72 ++++++++++++++++++++--
+ 1 file changed, 67 insertions(+), 5 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index e7b8a3ea..4bdfa56b 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -171,6 +171,8 @@ probe_create_extra_contexts(int fd, uint32_t vm_context_handle, bool with_comput
+ static uint64_t g_vertex_prog_code_offset;
+ static uint64_t g_vertex_prog_data_offset;
+ static uint64_t g_fs_pds_base_offset;
++/* PDS-heap offset of the background-object program (PVR_PROBE_BG_COLOR), 0 = use the FS program. */
++static uint64_t g_bg_pds_base_offset;
+ /* The vertex buffer's device address (three positions, 3 floats each). */
+ static uint64_t g_vertex_data_addr;
+ /* What the compiled vertex shader needs from the PDS vertex program: its temp count goes into the
+@@ -1357,10 +1359,10 @@ real_job_done:
+                {
+                   uint64_t bgnd[3], pr_bgnd[3];
+ 
+-                  pvr_csb_pds_bgnd_words(g_fs_pds_base_offset, g_fs_pds_base_offset,
+-                                         g_fs_pds_base_offset, 0, 0, 0, bgnd);
+-                  pvr_csb_pds_bgnd_words(g_fs_pds_base_offset, g_fs_pds_base_offset,
+-                                         g_fs_pds_base_offset, 0, 0, 0, pr_bgnd);
++                  pvr_csb_pds_bgnd_words((g_bg_pds_base_offset ? g_bg_pds_base_offset : g_fs_pds_base_offset), (g_bg_pds_base_offset ? g_bg_pds_base_offset : g_fs_pds_base_offset),
++                                         (g_bg_pds_base_offset ? g_bg_pds_base_offset : g_fs_pds_base_offset), 0, 0, 0, bgnd);
++                  pvr_csb_pds_bgnd_words((g_bg_pds_base_offset ? g_bg_pds_base_offset : g_fs_pds_base_offset), (g_bg_pds_base_offset ? g_bg_pds_base_offset : g_fs_pds_base_offset),
++                                         (g_bg_pds_base_offset ? g_bg_pds_base_offset : g_fs_pds_base_offset), 0, 0, 0, pr_bgnd);
+                   pvr_frag_static_stream_fill_bgnd(fstream, sizeof(fstream), rbctaddr, bgnd,
+                                                    pr_bgnd);
+                   /* The reference's ISP/background scalars for a 512x512 single-colour draw
+@@ -1370,6 +1372,25 @@ real_job_done:
+                                                  isp_ctl, isp_event_info);
+                   printf("hwrt:          fragment stream: PDS bgnd = PDS+0x%x, border table 0x%"
+                          PRIx64 "\n", (unsigned)g_fs_pds_base_offset, rbctaddr);
++                  /* The ISP reads scissor rectangles from CR_ISP_SCISSOR_BASE whenever ISPCTL enables
++                   * scissoring; left at 0 it clips against whatever is (not) there and rejects every
++                   * primitive, leaving only the background. One full-target rectangle, as the
++                   * reference writes it (IPF SCISSOR_WORD_0/1: xmin<<16|xmax, ymin<<16|ymax). */
++                  {
++                     struct pvr_bo sbo = { 0 };
++                     const uint64_t saddr = pvr_vm_alloc(vm, 4096, vm->general.page_size);
++                     if (saddr != 0 && pvr_bo_create(pvm_fd_for_probe, 4096, 1, &sbo) &&
++                         pvr_vm_map(vm, saddr, sbo.handle, sbo.size) &&
++                         pvr_bo_map(pvm_fd_for_probe, &sbo)) {
++                        uint32_t *sw = sbo.map, *fw = (uint32_t *)fstream;
++                        sw[0] = RTW;
++                        sw[1] = RTH;
++                        fw[2] = (uint32_t)saddr; /* isp_scissor_base follows the 2-dword header */
++                        fw[3] = (uint32_t)(saddr >> 32);
++                        printf("hwrt:          scissor table at 0x%" PRIx64 " (0..%u x 0..%u)\n",
++                               saddr, RTW, RTH);
++                     }
++                  }
+                }
+ 
+                if (getenv("PVR_PROBE_FRAG_ONLY_REAL")) {
+@@ -1913,7 +1934,12 @@ shader_compile_check(struct pipe_screen *pscreen)
+    b = nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, pco_nir_options(),
+                                       "pvr_check_fs");
+    b.shader->info.internal = false;
+-   nir_frag_store_pco(&b, nir_imm_int(&b, 0), .base = 0);
++   /* Probe hook: PVR_PROBE_FS_COLOR=0xAABBGGRR is the packed RGBA8 value the shader writes (default 0,
++    * which renders black and cannot be told apart from an empty target). */
++   nir_frag_store_pco(&b, nir_imm_int(&b, getenv("PVR_PROBE_FS_COLOR")
++                                             ? (int)strtoul(getenv("PVR_PROBE_FS_COLOR"), NULL, 0)
++                                             : 0),
++                      .base = 0);
+    nir_jump(&b, nir_jump_return);
+ 
+    g_fs_shader = pvr_shader_create(b.shader, screen->pco_ctx);
+@@ -2185,6 +2211,42 @@ shader_compile_check(struct pipe_screen *pscreen)
+                printf("shader:        FS PDS program at PDS+0x%" PRIx64
+                       " (%u B = %u data + %u code dwords)\n", g_fs_pds_base_offset, flen,
+                       g_fs_prog_info.data_dwords, g_fs_prog_info.code_dwords);
++               /* Probe hook: PVR_PROBE_BG_COLOR=0xAABBGGRR builds a second constant-colour fragment
++                * program for the background object, so a draw shows as one colour over another. */
++               if (getenv("PVR_PROBE_BG_COLOR") != NULL) {
++                  nir_builder bb = nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT,
++                                                                  pco_nir_options(), "pvr_bg_fs");
++                  struct pvr_shader *bg;
++                  struct pvr_bo bub = { 0 }, bpb = { 0 };
++                  uint64_t bu = 0, bp = 0;
++                  bb.shader->info.internal = false;
++                  nir_frag_store_pco(&bb,
++                                     nir_imm_int(&bb, (int)strtoul(getenv("PVR_PROBE_BG_COLOR"),
++                                                                   NULL, 0)),
++                                     .base = 0);
++                  nir_jump(&bb, nir_jump_return);
++                  bg = pvr_shader_create(bb.shader, scr->pco_ctx);
++                  if (bg != NULL)
++                     bu = pvr_vm_heap_alloc(&scr->vm, DRM_PVR_HEAP_USC_CODE, bg->binary_size, 16,
++                                            &bub);
++                  if (bu != 0 && pvr_bo_map(scr->fd, &bub)) {
++                     uint8_t bprog[1024] = { 0 };
++                     struct pvr_shader_pds_launcher_info binfo;
++                     uint32_t blen;
++                     memcpy(bub.map, bg->binary, bg->binary_size);
++                     blen = pvr_shader_pds_launcher(bg, (uint32_t)(bu - usc->base), bprog,
++                                                    sizeof(bprog), &binfo);
++                     if (blen > 0)
++                        bp = pvr_vm_heap_alloc(&scr->vm, DRM_PVR_HEAP_PDS_CODE_DATA, blen, 16,
++                                               &bpb);
++                     if (bp != 0 && pvr_bo_map(scr->fd, &bpb)) {
++                        memcpy(bpb.map, bprog, blen);
++                        g_bg_pds_base_offset = bp - pds->base;
++                     }
++                  }
++                  printf("shader:        background program %s (PDS+0x%" PRIx64 ")\n",
++                         g_bg_pds_base_offset ? "placed" : "FAILED", g_bg_pds_base_offset);
++               }
+             } else {
+                printf("shader:        FAIL: could not place the FS PDS program\n");
+                ok = false;
+-- 
+2.47.3
+

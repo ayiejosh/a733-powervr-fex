@@ -1,0 +1,84 @@
+From fd933a18014a991055fbe58a8b0996f991471c5e Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sat, 10 Oct 2026 19:41:38 +0800
+Subject: [PATCH 71/73] pco: swap imadd32/imul32 multiplicands to read pooled
+ literals
+
+imadd32 and imul32 multiply src0 by src1, but neither the literal pool
+nor the legalizer knew that, and src1 maps to S1, which can't read a
+shared register. A 32-bit multiplier literal therefore stayed a
+bbyp0bm_imm32 group. Let shared_readable_ssa() accept a literal in src1
+when src0 can move to S1, and let try_swap_commutative_srcs() swap them.
+blocks_src_swap() now also looks through a comp to the vector's mov, so
+a coefficient register (which S1 can't read) still blocks the swap
+instead of costing a mov after legalization.
+
+BXM-4-64: cstp 19 -> 17 instruction groups, cstpi 115 -> 113, cstpf
+117 -> 115 (the hash prologue's two multiplier literals).
+
+CTS (synchronization list 1718 + 5062 + 9170 + 838 + 282 cases) was run
+with this and the other three commits of this series applied: identical
+to before, except one case that ran into the kernel's 500 ms job timeout
+(memory.pipeline_barrier.graphics.host_write_vertex_buffer.1048576_vertex_buffer_stride_2,
+which passes in 20+ other runs; kernel timeout recovery bug). weston +
+weston-simple-egl + vkcube: OK.
+---
+ src/imagination/pco/pco_const_imms.c | 10 ++++++++++
+ src/imagination/pco/pco_legalize.c   |  6 ++++--
+ 2 files changed, 14 insertions(+), 2 deletions(-)
+
+diff --git a/src/imagination/pco/pco_const_imms.c b/src/imagination/pco/pco_const_imms.c
+index 8c70399..de6ad37 100644
+--- a/src/imagination/pco/pco_const_imms.c
++++ b/src/imagination/pco/pco_const_imms.c
+@@ -178,6 +178,9 @@ static bool blocks_src_swap(pco_instr *const *defs, pco_ref ref)
+       return !ref_src_map_valid(ref, PCO_IO_S1, NULL);
+ 
+    const pco_instr *def = defs[ref.val];
++   /* A component of a vector: look at what the vector came from. */
++   if (def && def->op == PCO_OP_COMP && pco_ref_is_ssa(def->src[0]))
++      def = defs[def->src[0].val];
+    if (!def)
+       return false;
+ 
+@@ -233,6 +236,13 @@ static bool *shared_readable_ssa(pco_func *func, void *mem_ctx)
+             enum pco_io mapped = PCO_IO_S0 + info->src_intrn_map[s] - 1;
+             if (ref_src_map_valid(shared, mapped, NULL))
+                continue;
++            /* imadd32/imul32 multiply src0 by src1: the legalizer swaps
++             * them to put the shared register in S0.
++             */
++            if ((instr->op == PCO_OP_IMADD32 || instr->op == PCO_OP_IMUL32) &&
++                s == 1 &&
++                !blocks_src_swap(defs, instr->src[0]))
++               continue;
+          }
+ 
+          ok[psrc->val] = false;
+diff --git a/src/imagination/pco/pco_legalize.c b/src/imagination/pco/pco_legalize.c
+index 7763f33..f18aab8 100644
+--- a/src/imagination/pco/pco_legalize.c
++++ b/src/imagination/pco/pco_legalize.c
+@@ -102,7 +102,8 @@ static bool src_mods_supported(const pco_instr *instr,
+ }
+ 
+ /**
+- * \brief Swaps the commutative sources of fadd/fmul/fmad when that maps
++ * \brief Swaps the commutative sources of fadd/fmul/fmad/imadd32/imul32 when
++ *        that maps
+  *        both to valid hardware sources, saving a mov (e.g. a special
+  *        register such as the fragment position into S1).
+  */
+@@ -110,7 +111,8 @@ static void try_swap_commutative_srcs(pco_instr *instr,
+                                       const struct pco_op_info *info)
+ {
+    if (instr->op != PCO_OP_FADD && instr->op != PCO_OP_FMUL &&
+-       instr->op != PCO_OP_FMAD)
++       instr->op != PCO_OP_FMAD && instr->op != PCO_OP_IMADD32 &&
++       instr->op != PCO_OP_IMUL32)
+       return;
+ 
+    if (!info->src_intrn_map[0] || !info->src_intrn_map[1])
+-- 
+2.47.3
+

@@ -1,0 +1,53 @@
+From 70d3423f91cc22706129e8ca9796074191599e30 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sat, 31 Oct 2026 11:35:19 +0800
+Subject: [PATCH] gallium/pvr: probe exposes the remaining transfer-state
+ selectors for the TQ replay
+
+Adds stream overrides for the background size info (BGND3), isp_ctl and isp_aa, and
+control-stream overrides for the primitive block's SIZEINFO1 (word 56) and SIZEINFO2
+(word 60). Sweeping them shows no combination changes the copy replay's firmware
+page fault except BGND3=0, which moves it to 0x10000 - so the background size info
+participates in the address decode but is not the selector that makes the firmware
+treat the texture-state program as a DMA descriptor instead of a kick.
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c | 16 ++++++++++++++++
+ 1 file changed, 16 insertions(+)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index c89d141c..72f28844 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -6030,6 +6030,14 @@ tq_copy_check(int fd, struct pipe_screen *pscreen)
+       ((uint32_t *)stream)[3] = (uint32_t)strtoul(getenv("PVR_PROBE_TQ_COPY_BGND0U"), NULL, 0);
+    if (getenv("PVR_PROBE_TQ_COPY_BGND1") != NULL)
+       ((uint32_t *)stream)[5] = (uint32_t)strtoul(getenv("PVR_PROBE_TQ_COPY_BGND1"), NULL, 0);
++   if (getenv("PVR_PROBE_TQ_COPY_BGND3") != NULL) {
++      ((uint32_t *)stream)[6] = (uint32_t)strtoul(getenv("PVR_PROBE_TQ_COPY_BGND3"), NULL, 0);
++      ((uint32_t *)stream)[7] = (uint32_t)strtoul(getenv("PVR_PROBE_TQ_COPY_BGND3"), NULL, 0);
++   }
++   if (getenv("PVR_PROBE_TQ_COPY_ISPCTL") != NULL)
++      ((uint32_t *)stream)[36] = (uint32_t)strtoul(getenv("PVR_PROBE_TQ_COPY_ISPCTL"), NULL, 0);
++   if (getenv("PVR_PROBE_TQ_COPY_ISPAA") != NULL)
++      ((uint32_t *)stream)[37] = (uint32_t)strtoul(getenv("PVR_PROBE_TQ_COPY_ISPAA"), NULL, 0);
+ 
+    /* The clear register (stream dword 30) is patched in both tag-on and tag-off cases so a PBE
+     * clear-store is distinguishable from a copy (PVR_PROBE_TQ_COPY_RAWCLR keeps the stream value). */
+@@ -6235,6 +6243,14 @@ tq_copy_check(int fd, struct pipe_screen *pscreen)
+             ((uint32_t *)csbo.map)[58] =
+                (uint32_t)strtoul(getenv("PVR_PROBE_TQ_COPY_CSDB"), NULL, 0);
+          }
++         if (getenv("PVR_PROBE_TQ_COPY_CS56") != NULL) {
++            ((uint32_t *)csbo.map)[56] =
++               (uint32_t)strtoul(getenv("PVR_PROBE_TQ_COPY_CS56"), NULL, 0);
++         }
++         if (getenv("PVR_PROBE_TQ_COPY_CS60") != NULL) {
++            ((uint32_t *)csbo.map)[60] =
++               (uint32_t)strtoul(getenv("PVR_PROBE_TQ_COPY_CS60"), NULL, 0);
++         }
+          if (getenv("PVR_PROBE_TQ_COPY_CSVAR") != NULL) {
+             /* Override TA_STATE_PDS_VARYINGBASE (word 57). */
+             ((uint32_t *)csbo.map)[57] =
+-- 
+2.47.3
+

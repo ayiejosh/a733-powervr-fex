@@ -1,0 +1,417 @@
+From 4d0a5611931ea54ad9628f0dd9dd35b90883e7f8 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 02:39:26 +0800
+Subject: [PATCH 310/314] gallium/pvr: integers, honest formats, varying
+ subsets, HWRT data set cache
+
+- Advertise native integers: the state tracker stored int uniforms as
+  floats while pco read them as integers, so a loop bounded by uniform
+  int 1 ran 0x3f800000 times and hung the geometry data master
+  (glmark2 loop).
+- is_format_supported answers per binding with what the draw path can use
+  (textures with a texture-state layout, RGBA8/BGRA8/X render targets,
+  depth formats, float32 vertex attributes), so the state tracker
+  converts RGB8 textures and integer attributes instead of passing
+  formats the draw then rejects. RGBX8/BGRX8/R8 textures added.
+- A fragment shader may read fewer components of a varying slot than the
+  vertex shader writes (stages are compiled apart); iterate those.
+- HWRT data sets are cached by target size (4, least recently used freed
+  with DESTROY_HWRT_DATASET and their buffers), each with its own local
+  free list as the reference. One leaked per size change exhausted the
+  firmware (CREATE_HWRT_DATASET: ENOSPC) and every later draw fell back.
+
+glmark2-es2 off-screen now runs every default scene on the 3D path except
+depth-texture and unbound-sampler draws; score 410 (synchronous submits).
+---
+ src/gallium/drivers/pvr_native/pvr_csb.c    |   5 +
+ src/gallium/drivers/pvr_native/pvr_draw.c   | 164 ++++++++++++++------
+ src/gallium/drivers/pvr_native/pvr_draw.h   |   4 +
+ src/gallium/drivers/pvr_native/pvr_screen.c |  34 +++-
+ src/gallium/drivers/pvr_native/pvr_vm.c     |  16 ++
+ src/gallium/drivers/pvr_native/pvr_vm.h     |   4 +
+ 6 files changed, 178 insertions(+), 49 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_csb.c b/src/gallium/drivers/pvr_native/pvr_csb.c
+index b705ee85..74345710 100644
+--- a/src/gallium/drivers/pvr_native/pvr_csb.c
++++ b/src/gallium/drivers/pvr_native/pvr_csb.c
+@@ -440,8 +440,13 @@ pvr_format_layout_from_pipe(enum pipe_format format, struct pvr_format_layout *l
+    switch (format) {
+    case PIPE_FORMAT_R8G8B8A8_UNORM:
+    case PIPE_FORMAT_B8G8R8A8_UNORM:
++   case PIPE_FORMAT_R8G8B8X8_UNORM: /* the description's swizzle reads alpha as 1 */
++   case PIPE_FORMAT_B8G8R8X8_UNORM:
+       layout_out->components = ROGUE_TEXSTATE_FORMAT_U8U8U8U8;
+       break;
++   case PIPE_FORMAT_R8_UNORM:
++      layout_out->components = ROGUE_TEXSTATE_FORMAT_U8;
++      break;
+    case PIPE_FORMAT_R8G8_UNORM:
+       layout_out->components = ROGUE_TEXSTATE_FORMAT_U8U8;
+       break;
+diff --git a/src/gallium/drivers/pvr_native/pvr_draw.c b/src/gallium/drivers/pvr_native/pvr_draw.c
+index 8ae12aaf..b458cc42 100644
+--- a/src/gallium/drivers/pvr_native/pvr_draw.c
++++ b/src/gallium/drivers/pvr_native/pvr_draw.c
+@@ -46,6 +46,8 @@ struct pvr_draw_bg {
+    uint64_t pds_offset;
+ };
+ 
++#define PVR_DRAW_HWRT_CACHE 4
++
+ struct pvr_draw_state {
+    bool ready, failed;
+    /* The heap carveouts with the firmware's static programs (VDM sync, pixel event, fence): the
+@@ -56,13 +58,20 @@ struct pvr_draw_state {
+    uint64_t fl_addr[2];
+    uint32_t fl_handle[2];
+ 
+-   /* HWRT data set for the current target size: tpc, vheap, mlist0, mlist1, rgn0, rgn1. */
+-   uint32_t dset, dset_w, dset_h;
+-   /* Which of the data set's two render-target datas the next render uses: the reference moves to
+-    * the other one after every fragment submit. */
+-   uint32_t rt_data_idx;
+-   struct pvr_bo hw_bo[6];
+-   uint64_t hw_addr[6];
++   /* HWRT data sets by target size, least recently used evicted and freed: a scene that renders
++    * to targets of several sizes used to leak one per size change until the firmware had no room
++    * for another. Each has its own local free list, as the reference's rt datasets do, and
++    * buffers tpc, vheap, mlist0, mlist1, rgn0, rgn1, local free list. */
++   struct pvr_draw_hwrt {
++      uint32_t dset, w, h, last_use;
++      /* Which of the two render-target datas the next render uses: the reference moves to the
++       * other one after every fragment submit. */
++      uint32_t rt_data_idx;
++      uint32_t fl_handle;
++      struct pvr_bo bo[7];
++      uint64_t addr[7];
++   } hwrt[PVR_DRAW_HWRT_CACHE], *cur_hwrt;
++   uint32_t hwrt_clock;
+ 
+    struct pvr_draw_arena gen; /* general heap: TA blocks, scissor, indices */
+    struct pvr_draw_arena pds; /* PDS heap: per-draw vertex programs */
+@@ -157,49 +166,98 @@ draw_init(struct pvr_context *ctx, struct pvr_draw_state *d)
+    return true;
+ }
+ 
+-/* The HWRT data set for a target size, sized from pvr_hwrt_sizes(). */
++static void
++draw_general_bo_free(struct pvr_screen *scr, struct pvr_bo *bo, uint64_t *addr)
++{
++   pvr_bo_unmap(bo);
++   if (*addr != 0) {
++      pvr_vm_unmap(&scr->vm, *addr, bo->size);
++      pvr_vm_free(&scr->vm, *addr, bo->size);
++      *addr = 0;
++   }
++   if (bo->handle != 0)
++      pvr_bo_destroy(scr->fd, bo);
++   memset(bo, 0, sizeof(*bo));
++}
++
++static void
++draw_hwrt_free(struct pvr_screen *scr, struct pvr_draw_hwrt *e)
++{
++   /* The data set first (it references the free list), then the free list, then the buffers. */
++   pvr_hwrt_dataset_destroy(&scr->vm, e->dset);
++   pvr_free_list_destroy(&scr->vm, e->fl_handle);
++   for (unsigned i = 0; i < ARRAY_SIZE(e->bo); i++)
++      draw_general_bo_free(scr, &e->bo[i], &e->addr[i]);
++   memset(e, 0, sizeof(*e));
++}
++
++/* The HWRT data set for a target size, sized from pvr_hwrt_sizes(). Renders are waited for before
++ * the next one is built, so an evicted data set is idle. */
+ static bool
+ draw_hwrt(struct pvr_context *ctx, struct pvr_draw_state *d, uint32_t w, uint32_t h)
+ {
+    struct pvr_screen *scr = draw_screen(ctx);
++   struct pvr_draw_hwrt *e = NULL;
+    struct pvr_hwrt_sizes sz;
+-   uint64_t sizes[6];
+-   static const uint64_t flags[6] = { 0, 0, DRM_PVR_BO_PM_FW_PROTECT, DRM_PVR_BO_PM_FW_PROTECT,
+-                                      0, 0 };
++   uint64_t sizes[7];
++   static const uint64_t flags[7] = { 0, 0, DRM_PVR_BO_PM_FW_PROTECT, DRM_PVR_BO_PM_FW_PROTECT,
++                                      0, 0, DRM_PVR_BO_PM_FW_PROTECT };
++   const uint32_t local_pages =
++      (uint32_t)(ALIGN_POT(scr->dev_runtime_info.min_free_list_size, 65536) / 4096);
+ 
+-   if (d->dset != 0 && d->dset_w == w && d->dset_h == h)
+-      return true;
+-   /* shortcut: the previous data set and its buffers are leaked on a size change; free them
+-    * (destroy ioctl + unmap) once targets change size often. */
+-   d->dset = 0;
+-   if (!pvr_hwrt_sizes(&scr->dev_info, w, h, 1, 1, &sz))
+-      return false;
+-   sizes[0] = sz.tpc_size;
+-   sizes[1] = 4096; /* VHEAP table, single layer: no RTC */
+-   sizes[2] = sizes[3] = 4096; /* MLIST: ~1 KiB for a 256 MiB global free list */
+-   sizes[4] = sizes[5] = sz.region_header_size;
+-   for (unsigned i = 0; i < 6; i++) {
+-      if (!draw_general_bo(scr, sizes[i], flags[i], &d->hw_bo[i], &d->hw_addr[i], false))
++   for (unsigned i = 0; i < PVR_DRAW_HWRT_CACHE; i++) {
++      if (d->hwrt[i].dset != 0 && d->hwrt[i].w == w && d->hwrt[i].h == h)
++         e = &d->hwrt[i];
++   }
++   if (e == NULL) {
++      e = &d->hwrt[0];
++      for (unsigned i = 1; i < PVR_DRAW_HWRT_CACHE; i++) {
++         if (d->hwrt[i].dset == 0 || (e->dset != 0 && d->hwrt[i].last_use < e->last_use))
++            e = &d->hwrt[i];
++      }
++      if (e->dset != 0)
++         draw_hwrt_free(scr, e);
++      if (!pvr_hwrt_sizes(&scr->dev_info, w, h, 1, 1, &sz))
++         return false;
++      sizes[0] = sz.tpc_size;
++      sizes[1] = 4096; /* VHEAP table, single layer: no RTC */
++      sizes[2] = sizes[3] = 4096; /* MLIST: ~1 KiB for a 256 MiB global free list */
++      sizes[4] = sizes[5] = sz.region_header_size;
++      sizes[6] = (uint64_t)local_pages * 4;
++      for (unsigned i = 0; i < ARRAY_SIZE(sizes); i++) {
++         if (!draw_general_bo(scr, sizes[i], flags[i], &e->bo[i], &e->addr[i], false)) {
++            draw_hwrt_free(scr, e);
++            return false;
++         }
++      }
++      if (!pvr_free_list_create(&scr->vm, e->addr[6], local_pages, local_pages, 0, 0,
++                                &e->fl_handle)) {
++         draw_hwrt_free(scr, e);
++         return false;
++      }
++      struct pvr_hwrt_dataset_desc desc = {
++         .tpc_dev_addr = e->addr[0],
++         .tpc_size = (uint32_t)sz.tpc_size,
++         .tpc_stride = sz.tpc_stride,
++         .vheap_table_dev_addr = e->addr[1],
++         .pm_mlist_dev_addr = { e->addr[2], e->addr[3] },
++         .region_header_dev_addr = { e->addr[4], e->addr[5] },
++         .free_list_handles = { e->fl_handle, d->fl_handle[1] },
++         .width = w,
++         .height = h,
++         .samples = 1,
++         .layers = 1,
++         .region_header_size = (uint32_t)sz.region_header_size,
++      };
++      if (!pvr_hwrt_dataset_create(&scr->vm, &desc, &e->dset)) {
++         draw_hwrt_free(scr, e);
+          return false;
++      }
++      e->w = w;
++      e->h = h;
+    }
+-   struct pvr_hwrt_dataset_desc desc = {
+-      .tpc_dev_addr = d->hw_addr[0],
+-      .tpc_size = (uint32_t)sz.tpc_size,
+-      .tpc_stride = sz.tpc_stride,
+-      .vheap_table_dev_addr = d->hw_addr[1],
+-      .pm_mlist_dev_addr = { d->hw_addr[2], d->hw_addr[3] },
+-      .region_header_dev_addr = { d->hw_addr[4], d->hw_addr[5] },
+-      .free_list_handles = { d->fl_handle[0], d->fl_handle[1] },
+-      .width = w,
+-      .height = h,
+-      .samples = 1,
+-      .layers = 1,
+-      .region_header_size = (uint32_t)sz.region_header_size,
+-   };
+-   if (!pvr_hwrt_dataset_create(&scr->vm, &desc, &d->dset))
+-      return false;
+-   d->dset_w = w;
+-   d->dset_h = h;
++   e->last_use = ++d->hwrt_clock;
++   d->cur_hwrt = e;
+    return true;
+ }
+ 
+@@ -290,7 +348,9 @@ draw_coeff_program(struct pvr_screen *scr, struct pvr_shader *fs, const struct p
+    while (read) {
+       const unsigned slot = u_bit_scan64(&read);
+       const unsigned count = fs->varyings[slot].count / ROGUE_USC_COEFFICIENT_SET_SIZE;
+-      if (vs->varyings[slot].count != count || vs->varyings[slot].start < 4 ||
++      /* The stages are compiled apart, so the fragment shader may read fewer components of a
++       * slot than the vertex shader writes; it iterates only those. */
++      if (count == 0 || vs->varyings[slot].count < count || vs->varyings[slot].start < 4 ||
+           fpu >= PVR_MAXIMUM_ITERATIONS - 1)
+          return false;
+       unsigned vtxout = vs->varyings[slot].start - 2;
+@@ -335,6 +395,13 @@ draw_coeff_program(struct pvr_screen *scr, struct pvr_shader *fs, const struct p
+    return fs->coeff_offset != 0;
+ }
+ 
++bool
++pvr_draw_texture_format_supported(enum pipe_format format)
++{
++   struct pvr_format_layout layout;
++   return pvr_format_layout_from_pipe(format, &layout);
++}
++
+ /* One combined image sampler for texture unit u of a stage: image words, image meta (zero: 2D,
+  * one layer, no packing), sampler words, sampler meta (compare op NEVER, 0). */
+ static bool
+@@ -992,9 +1059,9 @@ pvr_draw_flush(struct pvr_context *ctx)
+    ((uint32_t *)fstream)[2] = (uint32_t)sc_addr; /* isp_scissor_base after the 2-dword header */
+    ((uint32_t *)fstream)[3] = (uint32_t)(sc_addr >> 32);
+ 
+-   if (!pvr_job_submit_render(&scr->vm, d->gctx.handle, gstream, glen, fstream, flen, d->dset, d->rt_data_idx))
++   if (!pvr_job_submit_render(&scr->vm, d->gctx.handle, gstream, glen, fstream, flen, d->cur_hwrt->dset, d->cur_hwrt->rt_data_idx))
+       mesa_loge("pvr: draw: the render did not complete (%u draws)", d->ndraws);
+-   d->rt_data_idx ^= 1;
++   d->cur_hwrt->rt_data_idx ^= 1;
+ 
+ done:
+    d->clear_valid = false;
+@@ -1008,7 +1075,12 @@ pvr_draw_destroy(struct pvr_context *ctx)
+    if (ctx->draw == NULL)
+       return;
+    pvr_draw_flush(ctx);
+-   /* shortcut: GPU objects of the draw path are released with the VM at screen destruction. */
++   for (unsigned i = 0; i < PVR_DRAW_HWRT_CACHE; i++) {
++      if (ctx->draw->hwrt[i].dset != 0)
++         draw_hwrt_free(draw_screen(ctx), &ctx->draw->hwrt[i]);
++   }
++   /* shortcut: the other GPU objects of the draw path are released with the VM at screen
++    * destruction. */
+    free(ctx->draw);
+    ctx->draw = NULL;
+ }
+diff --git a/src/gallium/drivers/pvr_native/pvr_draw.h b/src/gallium/drivers/pvr_native/pvr_draw.h
+index 1f730d3e..8df27bcd 100644
+--- a/src/gallium/drivers/pvr_native/pvr_draw.h
++++ b/src/gallium/drivers/pvr_native/pvr_draw.h
+@@ -10,6 +10,7 @@
+ 
+ #include <stdbool.h>
+ #include <stdint.h>
++#include "util/format/u_formats.h"
+ 
+ struct pvr_context;
+ struct pipe_draw_info;
+@@ -24,4 +25,7 @@ void pvr_draw_flush(struct pvr_context *ctx);
+ void pvr_draw_note_clear(struct pvr_context *ctx, const union pipe_color_union *color);
+ void pvr_draw_destroy(struct pvr_context *ctx);
+ 
++/* Whether a sampler view of this format has a texture state layout. */
++bool pvr_draw_texture_format_supported(enum pipe_format format);
++
+ #endif /* PVR_DRAW_H */
+diff --git a/src/gallium/drivers/pvr_native/pvr_screen.c b/src/gallium/drivers/pvr_native/pvr_screen.c
+index d0216913..6e64e31f 100644
+--- a/src/gallium/drivers/pvr_native/pvr_screen.c
++++ b/src/gallium/drivers/pvr_native/pvr_screen.c
+@@ -5,6 +5,7 @@
+  * No draw path, no rasterisation, no resource management - none is claimed.
+  */
+ #include "pvr_screen.h"
++#include "pvr_draw.h"
+ #include "pvr_public.h"
+ 
+ #include <stdio.h>
+@@ -78,7 +79,7 @@ pvr_is_format_supported(UNUSED struct pipe_screen *pscreen,
+                         UNUSED enum pipe_texture_target target,
+                         unsigned sample_count,
+                         unsigned storage_sample_count,
+-                        UNUSED unsigned bindings)
++                        unsigned bindings)
+ {
+    const struct util_format_description *desc;
+ 
+@@ -86,10 +87,29 @@ pvr_is_format_supported(UNUSED struct pipe_screen *pscreen,
+       return false;
+ 
+    desc = util_format_description(format);
+-   if (desc == NULL)
++   if (desc == NULL || desc->layout != UTIL_FORMAT_LAYOUT_PLAIN)
+       return false;
+ 
+-   return desc->layout == UTIL_FORMAT_LAYOUT_PLAIN;
++   /* Only what the draw path can use, so the state tracker converts the rest (RGB8 textures to
++    * RGBX8, integer vertex attributes to float) instead of handing over formats it then rejects. */
++   if ((bindings & PIPE_BIND_SAMPLER_VIEW) && !util_format_is_depth_or_stencil(format) &&
++       !pvr_draw_texture_format_supported(format))
++      return false;
++   if ((bindings & (PIPE_BIND_RENDER_TARGET | PIPE_BIND_DISPLAY_TARGET | PIPE_BIND_SCANOUT |
++                    PIPE_BIND_SHARED)) &&
++       format != PIPE_FORMAT_R8G8B8A8_UNORM && format != PIPE_FORMAT_B8G8R8A8_UNORM &&
++       format != PIPE_FORMAT_R8G8B8X8_UNORM && format != PIPE_FORMAT_B8G8R8X8_UNORM)
++      return false;
++   if ((bindings & PIPE_BIND_DEPTH_STENCIL) &&
++       format != PIPE_FORMAT_Z16_UNORM && format != PIPE_FORMAT_Z24X8_UNORM &&
++       format != PIPE_FORMAT_Z24_UNORM_S8_UINT && format != PIPE_FORMAT_Z32_FLOAT &&
++       format != PIPE_FORMAT_S8_UINT)
++      return false;
++   /* The vertex fetch copies dwords that the shader reads as float. */
++   if ((bindings & PIPE_BIND_VERTEX_BUFFER) &&
++       (desc->channel[0].type != UTIL_FORMAT_TYPE_FLOAT || desc->channel[0].size != 32))
++      return false;
++   return true;
+ }
+ 
+ /* This driver never creates a fence - there is nothing to submit and so nothing to
+@@ -299,6 +319,10 @@ pvr_screen_create(int fd, const struct pipe_screen_config *config,
+       sc->max_sampler_views = 32;
+       /* NIR only: pco is a NIR compiler, so the state tracker must hand over NIR. */
+       sc->supported_irs = 1 << PIPE_SHADER_IR_NIR;
++      /* pco compiles NIR integer operations natively; without this the state tracker stores int
++       * uniforms as floats while the shader reads them as integers (a loop bounded by uniform
++       * int 1 ran 0x3f800000 times). */
++      sc->integers = true;
+ 
+       sc = (struct pipe_shader_caps *)&screen->base.shader_caps[MESA_SHADER_FRAGMENT];
+       sc->max_instructions = 4096;
+@@ -314,6 +338,10 @@ pvr_screen_create(int fd, const struct pipe_screen_config *config,
+       sc->max_texture_samplers = 32;
+       sc->max_sampler_views = 32;
+       sc->supported_irs = 1 << PIPE_SHADER_IR_NIR;
++      /* pco compiles NIR integer operations natively; without this the state tracker stores int
++       * uniforms as floats while the shader reads them as integers (a loop bounded by uniform
++       * int 1 ran 0x3f800000 times). */
++      sc->integers = true;
+    }
+ 
+    screen->base.fence_reference = pvr_fence_reference;
+diff --git a/src/gallium/drivers/pvr_native/pvr_vm.c b/src/gallium/drivers/pvr_native/pvr_vm.c
+index 9cc33178..66b6a3be 100644
+--- a/src/gallium/drivers/pvr_native/pvr_vm.c
++++ b/src/gallium/drivers/pvr_native/pvr_vm.c
+@@ -820,6 +820,22 @@ pvr_free_list_create(struct pvr_vm *vm, uint64_t gpu_addr, uint32_t initial_num_
+    return true;
+ }
+ 
++void
++pvr_free_list_destroy(struct pvr_vm *vm, uint32_t handle)
++{
++   struct drm_pvr_ioctl_destroy_free_list_args args = { .handle = handle };
++   if (handle != 0 && drmIoctl(vm->fd, DRM_IOCTL_PVR_DESTROY_FREE_LIST, &args) != 0)
++      mesa_loge("pvr: DESTROY_FREE_LIST failed: %s", strerror(errno));
++}
++
++void
++pvr_hwrt_dataset_destroy(struct pvr_vm *vm, uint32_t handle)
++{
++   struct drm_pvr_ioctl_destroy_hwrt_dataset_args args = { .handle = handle };
++   if (handle != 0 && drmIoctl(vm->fd, DRM_IOCTL_PVR_DESTROY_HWRT_DATASET, &args) != 0)
++      mesa_loge("pvr: DESTROY_HWRT_DATASET failed: %s", strerror(errno));
++}
++
+ bool
+ pvr_hwrt_dataset_create(struct pvr_vm *vm, const struct pvr_hwrt_dataset_desc *desc,
+                         uint32_t *handle_out)
+diff --git a/src/gallium/drivers/pvr_native/pvr_vm.h b/src/gallium/drivers/pvr_native/pvr_vm.h
+index a0bc5494..f1cd8a29 100644
+--- a/src/gallium/drivers/pvr_native/pvr_vm.h
++++ b/src/gallium/drivers/pvr_native/pvr_vm.h
+@@ -140,6 +140,10 @@ bool pvr_free_list_page_limits(int fd, uint32_t *min_pages_out, uint32_t *max_pa
+ bool pvr_free_list_create(struct pvr_vm *vm, uint64_t gpu_addr, uint32_t initial_num_pages,
+                           uint32_t max_num_pages, uint32_t grow_num_pages,
+                           uint32_t grow_threshold, uint32_t *handle_out);
++/* Destroy ioctls for a free list and an HWRT data set; the caller frees their buffers after. */
++void pvr_free_list_destroy(struct pvr_vm *vm, uint32_t handle);
++void pvr_hwrt_dataset_destroy(struct pvr_vm *vm, uint32_t handle);
++
+ bool pvr_hwrt_dataset_create(struct pvr_vm *vm, const struct pvr_hwrt_dataset_desc *desc,
+                              uint32_t *handle_out);
+ 
+-- 
+2.47.3
+

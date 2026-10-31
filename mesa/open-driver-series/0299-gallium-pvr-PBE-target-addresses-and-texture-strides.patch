@@ -1,0 +1,98 @@
+From cfb739cf5df4aa6953fe5c8371d144972485854c Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Tue, 27 Oct 2026 23:04:57 +0800
+Subject: [PATCH] gallium/pvr: PBE target addresses and texture strides in the
+ hardware's units
+
+pvr_csb_emit_pbe_target() refused any address with bit 32 or 33 set, on
+the assumption that the PBE splits the address into bits [0:31] and
+[34:39]. address_low is bits [31:0] with shift 2 (pbestate.xml), so the
+two words carry one contiguous dword-aligned 40-bit address, as the
+Vulkan driver packs it. The check now only refuses unaligned addresses
+and addresses at or above 1 TiB; the probe self-test that expected the
+refusal now expects the address to be accepted.
+
+pvr_tex_desc.stride went into the texture state stride field as given,
+and the only caller passed bytes, while the field counts pixels
+("Stride in pixels [0 = 1]", texstate.xml). The struct now documents
+the stride in pixels, like the Vulkan driver's info.stride, and the
+self-test passes 64 for a 64-pixel row.
+---
+ src/gallium/drivers/pvr_native/pvr_csb.c   |  8 +++++---
+ src/gallium/drivers/pvr_native/pvr_csb.h   |  2 +-
+ src/gallium/drivers/pvr_native/pvr_probe.c | 12 +++++-------
+ 3 files changed, 11 insertions(+), 11 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_csb.c b/src/gallium/drivers/pvr_native/pvr_csb.c
+index 5b0fa300..78a9d98b 100644
+--- a/src/gallium/drivers/pvr_native/pvr_csb.c
++++ b/src/gallium/drivers/pvr_native/pvr_csb.c
+@@ -889,9 +889,11 @@ pvr_csb_emit_pbe_target(struct pvr_csb *csb, const struct pvr_pbe_target *target
+ 
+    /* Bits [0:31] and [34:39] - see the header. Bits 32 and 33 have no field, so an address that
+     * sets either cannot be encoded; refuse rather than let the packer re-encode it elsewhere. */
+-   if (target->addr >= (1ULL << 40) || (target->addr & 0x300000000ULL) != 0) {
+-      mesa_loge("pvr: PBE target 0x%" PRIx64 " is outside the encodable set (bits [0:31] and "
+-                "[34:39], so 16GB-aligned below 1TB)", target->addr);
++   /* address_low packs bits [33:2] (shift 2) and address_high bits [39:34]: any dword-aligned
++    * address below 1 TiB is encodable. */
++   if (target->addr >= (1ULL << 40) || (target->addr & 3) != 0) {
++      mesa_loge("pvr: PBE target 0x%" PRIx64 " is not a dword-aligned address below 1TB",
++                target->addr);
+       return false;
+    }
+ 
+diff --git a/src/gallium/drivers/pvr_native/pvr_csb.h b/src/gallium/drivers/pvr_native/pvr_csb.h
+index 5c1aa62b..5aad5121 100644
+--- a/src/gallium/drivers/pvr_native/pvr_csb.h
++++ b/src/gallium/drivers/pvr_native/pvr_csb.h
+@@ -212,7 +212,7 @@ struct pvr_tex_desc {
+ 
+    uint32_t width;
+    uint32_t height;
+-   uint32_t stride;
++   uint32_t stride; /* in pixels, like the hardware field (texstate.xml) */
+    uint64_t addr;
+ };
+ 
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index 4bdfa56b..e72e70db 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -2775,7 +2775,7 @@ csb_check(int fd, struct pipe_screen *pscreen)
+          .swizzle = { PIPE_SWIZZLE_X, PIPE_SWIZZLE_Y, PIPE_SWIZZLE_Z, PIPE_SWIZZLE_W },
+          .width = 64,
+          .height = 32,
+-         .stride = 256,
++         .stride = 64, /* pixels */
+          .addr = 0x9ff0300000ULL,
+       };
+       struct ROGUE_TEXSTATE_IMAGE_WORD0 w0 = { 0 };
+@@ -3248,12 +3248,10 @@ csb_check(int fd, struct pipe_screen *pscreen)
+             goto out;
+          }
+ 
+-         /* An address with bit 32 set has no field to live in: it must be refused, or the packer
+-          * would re-encode it as a different address. */
+-         if (pvr_csb_emit_pbe_target(&csb, &(struct pvr_pbe_target){
++         /* Bits 32 and 33 are part of address_low (shift 2): an address using them is valid. */
++         if (!pvr_csb_emit_pbe_target(&csb, &(struct pvr_pbe_target){
+                 .addr = 0x100000000ULL, .source_format = 0, .mrt_index = 0 })) {
+-            printf("csb:           FAIL: the PBE target accepted an address using bit 32, which the "
+-                   "split has no field for\n");
++            printf("csb:           FAIL: the PBE target refused a valid address using bit 32\n");
+             goto out;
+          }
+ 
+@@ -3677,7 +3675,7 @@ csb_check(int fd, struct pipe_screen *pscreen)
+       }
+ 
+       printf("csb:           PBE target: bits [0:31]+[34:39]; a real 2^39 heap address "
+-                "round-trips, bit-32 addresses refused\n");
++                "round-trips, bit-32 addresses accepted\n");
+       }
+ 
+       printf("csb:           TA PDS bases: all five fit bits[4:31] and round-trip; a 40-bit "
+-- 
+2.47.3
+

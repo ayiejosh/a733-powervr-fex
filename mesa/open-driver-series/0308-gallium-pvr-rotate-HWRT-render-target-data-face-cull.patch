@@ -1,0 +1,137 @@
+From 04e0576f6c7af322d9e50fca8ef641faeeb25a81 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 02:02:20 +0800
+Subject: [PATCH 308/314] gallium/pvr: rotate HWRT render-target data, face
+ culling, auto-index, uploader
+
+- Each render uses the other of the data set's two render-target datas,
+  as the reference does after every fragment submit. Reusing data 0 right
+  after a 3D pass had returned its parameter pages made every second
+  render fault in the 3D parameter fetch (BIF0 IPF_CREQ read in the PM
+  address space) and lock up the GPU; glmark2 build (horse) hung on it.
+- Face culling from the rasterizer (cull_face, front_ccw), and nothing is
+  drawn for triangles with both faces culled. gltri GLTRI_CULL matches zink
+  for all four face/winding cases.
+- Non-indexed draws from vertex 0 let the VDM generate the indices instead
+  of uploading a 0..n-1 list.
+- A default stream/const uploader; u_vbuf crashed uploading client-side
+  vertex arrays without one.
+
+glmark2 build: 534 FPS (VBO), 269 FPS (client arrays), off-screen.
+---
+ src/gallium/drivers/pvr_native/pvr_context.c | 11 +++++++++
+ src/gallium/drivers/pvr_native/pvr_draw.c    | 26 +++++++++++++++++---
+ 2 files changed, 33 insertions(+), 4 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_context.c b/src/gallium/drivers/pvr_native/pvr_context.c
+index 9272f69f..c6a35197 100644
+--- a/src/gallium/drivers/pvr_native/pvr_context.c
++++ b/src/gallium/drivers/pvr_native/pvr_context.c
+@@ -7,6 +7,7 @@
+ #include "util/format/u_formats.h"
+ #include "util/log.h"
+ #include "util/u_inlines.h"
++#include "util/u_upload_mgr.h"
+ #include "util/u_memory.h"
+ 
+ #include "string.h"
+@@ -735,6 +736,8 @@ pvr_context_destroy(struct pipe_context *pctx)
+    pvr_draw_destroy(ctx);
+    pvr_compute_state_finish(ctx->compute);
+    util_unreference_framebuffer_state(&ctx->fb);
++   if (ctx->base.stream_uploader)
++      u_upload_destroy(ctx->base.stream_uploader);
+    pipe_resource_reference(&ctx->cb0[0].buffer, NULL);
+    pipe_resource_reference(&ctx->cb0[1].buffer, NULL);
+    FREE(ctx);
+@@ -820,5 +823,13 @@ pvr_context_create(struct pipe_screen *pscreen, UNUSED void *priv,
+    ctx->base.set_shader_images = pvr_set_shader_images;
+    ctx->base.set_stream_output_targets = pvr_set_stream_output_targets;
+ 
++   /* Client-side vertex arrays and other transient data (u_vbuf, the state tracker) go through
++    * the stream uploader. */
++   ctx->base.stream_uploader = u_upload_create_default(&ctx->base);
++   if (ctx->base.stream_uploader == NULL) {
++      pvr_context_destroy(&ctx->base);
++      return NULL;
++   }
++   ctx->base.const_uploader = ctx->base.stream_uploader;
+    return &ctx->base;
+ }
+diff --git a/src/gallium/drivers/pvr_native/pvr_draw.c b/src/gallium/drivers/pvr_native/pvr_draw.c
+index acc4cd1b..4c02c5ee 100644
+--- a/src/gallium/drivers/pvr_native/pvr_draw.c
++++ b/src/gallium/drivers/pvr_native/pvr_draw.c
+@@ -29,6 +29,7 @@
+ #include "util/macros.h"
+ #include "util/u_math.h"
+ #include "util/u_inlines.h"
++#include "util/u_prim.h"
+ 
+ #define ARENA_GENERAL_SIZE (1u << 20)
+ #define ARENA_PDS_SIZE (256u << 10)
+@@ -57,6 +58,9 @@ struct pvr_draw_state {
+ 
+    /* HWRT data set for the current target size: tpc, vheap, mlist0, mlist1, rgn0, rgn1. */
+    uint32_t dset, dset_w, dset_h;
++   /* Which of the data set's two render-target datas the next render uses: the reference moves to
++    * the other one after every fragment submit. */
++   uint32_t rt_data_idx;
+    struct pvr_bo hw_bo[6];
+    uint64_t hw_addr[6];
+ 
+@@ -672,6 +676,10 @@ pvr_draw_3d(struct pvr_context *ctx, const struct pipe_draw_info *info,
+       return false;
+    if (info->index_size && draws[0].index_bias != 0)
+       return false;
++   /* Both faces culled: no triangle survives (points and lines are not culled). */
++   if (ctx->rasterizer != NULL && ctx->rasterizer->cull_face == PIPE_FACE_FRONT_AND_BACK &&
++       u_reduced_prim(info->mode) == MESA_PRIM_TRIANGLES)
++      return true;
+ 
+    if (ctx->draw == NULL)
+       ctx->draw = calloc(1, sizeof(struct pvr_draw_state));
+@@ -760,10 +768,15 @@ pvr_draw_3d(struct pvr_context *ctx, const struct pipe_draw_info *info,
+       .f32_linear = vs->f32_smooth, .f32_flat = vs->f32_flat, .f32_npc = vs->f32_npc,
+    };
+    const struct ROGUE_TA_STATE_VARYING1 varying1 = { 0 };
+-   /* shortcut: no face culling yet (draws both faces; visible output is the same for closed
+-    * meshes). Map rasterizer->cull_face/front_ccw when a scene needs it. */
++   /* Face culling, as the reference maps it: the culled winding follows from which face is front
++    * and which face is culled. */
++   const struct pipe_rasterizer_state *rs = ctx->rasterizer;
++   enum ROGUE_TA_CULLMODE cullmode = ROGUE_TA_CULLMODE_NO_CULLING;
++   if (rs != NULL && (rs->cull_face == PIPE_FACE_FRONT || rs->cull_face == PIPE_FACE_BACK))
++      cullmode = (rs->front_ccw ^ (rs->cull_face == PIPE_FACE_FRONT)) ? ROGUE_TA_CULLMODE_CULL_CW
++                                                                      : ROGUE_TA_CULLMODE_CULL_CCW;
+    const struct ROGUE_TA_STATE_PPP_CTRL ppp_ctrl = {
+-      .cullmode = ROGUE_TA_CULLMODE_NO_CULLING,
++      .cullmode = cullmode,
+       .clip_mode = ROGUE_TA_CLIP_MODE_FRONT_REAR,
+       .drawclippededges = true,
+       .flatshade_vtx = ROGUE_TA_FLATSHADE_VTX_VERTEX_0,
+@@ -810,6 +823,10 @@ pvr_draw_3d(struct pvr_context *ctx, const struct pipe_draw_info *info,
+       isize = info->index_size == 1 ? ROGUE_VDMCTRL_INDEX_SIZE_B8
+             : info->index_size == 2 ? ROGUE_VDMCTRL_INDEX_SIZE_B16
+                                     : ROGUE_VDMCTRL_INDEX_SIZE_B32;
++   } else if (draws[0].start == 0) {
++      /* No index buffer: the VDM generates 0..count-1 itself, as the reference draws. */
++      idx_addr = 0;
++      isize = ROGUE_VDMCTRL_INDEX_SIZE_B32;
+    } else {
+       uint32_t *p = arena_alloc(&d->gen, draws[0].count * 4, 16, &idx_addr);
+       if (p == NULL)
+@@ -925,8 +942,9 @@ pvr_draw_flush(struct pvr_context *ctx)
+    ((uint32_t *)fstream)[2] = (uint32_t)sc_addr; /* isp_scissor_base after the 2-dword header */
+    ((uint32_t *)fstream)[3] = (uint32_t)(sc_addr >> 32);
+ 
+-   if (!pvr_job_submit_render(&scr->vm, d->gctx.handle, gstream, glen, fstream, flen, d->dset, 0))
++   if (!pvr_job_submit_render(&scr->vm, d->gctx.handle, gstream, glen, fstream, flen, d->dset, d->rt_data_idx))
+       mesa_loge("pvr: draw: the render did not complete (%u draws)", d->ndraws);
++   d->rt_data_idx ^= 1;
+ 
+ done:
+    d->clear_valid = false;
+-- 
+2.47.3
+

@@ -1,7 +1,7 @@
-From dd17f331a104ae4d9ed195af6ecd8582b520461c Mon Sep 17 00:00:00 2001
+From 89d9d4f3f7958e1147bcf76064943b96e696a949 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sun, 11 Oct 2026 08:09:31 +0800
-Subject: [PATCH 86/98] pvr: TFBC for sampled, input attachment and transfer
+Subject: [PATCH 086/294] pvr: TFBC for sampled, input attachment and transfer
  destination images
 
 Compression was limited to images used only as colour attachments and
@@ -31,7 +31,7 @@ to before.
  2 files changed, 36 insertions(+), 4 deletions(-)
 
 diff --git a/src/imagination/vulkan/pvr_image.c b/src/imagination/vulkan/pvr_image.c
-index 932531e..d57265d 100644
+index 932531ed..d57265dd 100644
 --- a/src/imagination/vulkan/pvr_image.c
 +++ b/src/imagination/vulkan/pvr_image.c
 @@ -299,6 +299,31 @@ void pvr_DestroyImage(VkDevice _device,
@@ -95,7 +95,7 @@ index 932531e..d57265d 100644
                  (pCreateInfo->usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) &&
                  !(pCreateInfo->usage & ~fbc_usage) &&
 diff --git a/src/imagination/vulkan/pvr_image.h b/src/imagination/vulkan/pvr_image.h
-index 353f36a..41a9ee2 100644
+index 353f36a2..41a9ee2d 100644
 --- a/src/imagination/vulkan/pvr_image.h
 +++ b/src/imagination/vulkan/pvr_image.h
 @@ -143,7 +143,9 @@ pvr_plane_from_aspect_const(const struct pvr_image *image,

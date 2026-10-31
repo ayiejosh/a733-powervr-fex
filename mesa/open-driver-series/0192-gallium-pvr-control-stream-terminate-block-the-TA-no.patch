@@ -1,7 +1,7 @@
-From 6f6127763bed32ab71327d28d2fb73840a318e76 Mon Sep 17 00:00:00 2001
+From 4f570b1af56dba780e74608ac17153ea38c1f1de Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sat, 24 Oct 2026 01:20:09 +0800
-Subject: [PATCH 192/269] gallium/pvr: control-stream terminate block; the TA
+Subject: [PATCH 192/294] gallium/pvr: control-stream terminate block; the TA
  now reads a real stream
 
 The TA's input is not a packet list but a BLOCK-structured stream

@@ -1,7 +1,7 @@
-From 71acaf550a3ddf4718264a6f7374d85b15963b70 Mon Sep 17 00:00:00 2001
+From a4873f6679ff443005e25ea5773ed3dfd0495ddc Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sun, 25 Oct 2026 04:04:06 +0800
-Subject: [PATCH 230/269] gallium/pvr: fragment-only submission works at the
+Subject: [PATCH 230/294] gallium/pvr: fragment-only submission works at the
  kick level; TA still silent; PDS background programs filled
 
 New experiment halves: a fragment job submitted alone (no geometry) from this context DOES get

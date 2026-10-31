@@ -1,7 +1,7 @@
-From e1e9cd26acb15f80fe58c75bdeeaf76147fccc90 Mon Sep 17 00:00:00 2001
+From c9c937514e03754dab63516b425e6de404baf194 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Mon, 26 Oct 2026 03:25:41 +0800
-Subject: [PATCH 259/269] gallium/pvr: native compute descriptor-upload program
+Subject: [PATCH 259/294] gallium/pvr: native compute descriptor-upload program
  matches the reference byte-for-byte
 
 The probe's compute check now also builds the descriptor-upload PDS program a compute submission needs:

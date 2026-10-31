@@ -1,0 +1,85 @@
+From be9cc8c48f9f7f257284954eee087e24b6a0bafc Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 30 Oct 2026 15:20:57 +0800
+Subject: [PATCH] gallium/pvr: half-float colour targets
+ (EXT_color_buffer_half_float)
+
+Add R16_FLOAT/R16G16_FLOAT to pvr_format_layout_from_pipe (TEXSTATE F16/F16F16), accept
+R16_FLOAT/R16G16_FLOAT/R16G16B16A16_FLOAT as render targets, make the PBE pack mode channel-count
+aware (F16 / F16F16 / F16F16F16F16 instead of always four channels) and allow RGBA16F targets in the
+draw path's draw_format_ok.
+
+Verified with a render/blend/sample probe: unsized GL_RGBA+GL_HALF_FLOAT_OES (=> RGBA16F) and
+GL_RGB+HALF_FLOAT_OES (=> RGB16F) targets are FBO-complete, clear, blend and sample back to the
+expected RGBA8 values exactly (delta 0 for all channels); full verify gate still passes. Mesa exposes
+GL_EXT_color_buffer_half_float (ES2 extensions 71 -> 72). The sized R16F/RG16F internal formats are
+GLES3-only in Mesa's ES validation (ES2 apps use the unsized half-float path, same as the reference
+driver stack); the driver accepts the formats for the extension's capability checks.
+---
+ src/gallium/drivers/pvr_native/pvr_csb.c    | 11 ++++++++++-
+ src/gallium/drivers/pvr_native/pvr_draw.c   |  2 +-
+ src/gallium/drivers/pvr_native/pvr_screen.c |  4 +++-
+ 3 files changed, 14 insertions(+), 3 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_csb.c b/src/gallium/drivers/pvr_native/pvr_csb.c
+index 7cba250a..09a2ddbd 100644
+--- a/src/gallium/drivers/pvr_native/pvr_csb.c
++++ b/src/gallium/drivers/pvr_native/pvr_csb.c
+@@ -617,6 +617,12 @@ pvr_format_layout_from_pipe(enum pipe_format format, struct pvr_format_layout *l
+    case PIPE_FORMAT_R16_UNORM:
+       layout_out->components = ROGUE_TEXSTATE_FORMAT_U16;
+       break;
++   case PIPE_FORMAT_R16_FLOAT:
++      layout_out->components = ROGUE_TEXSTATE_FORMAT_F16;
++      break;
++   case PIPE_FORMAT_R16G16_FLOAT:
++      layout_out->components = ROGUE_TEXSTATE_FORMAT_F16F16;
++      break;
+    case PIPE_FORMAT_R16G16B16A16_FLOAT:
+       layout_out->components = ROGUE_TEXSTATE_FORMAT_F16F16F16F16;
+       break;
+@@ -1020,9 +1026,12 @@ pvr_csb_pbe_state_words(uint64_t addr, enum pipe_format format, uint32_t mrt_ind
+    };
+ 
+    /* Pack mode from the output format's first channel. */
++   const uint32_t nr_chan = util_format_get_nr_components(format);
+    if (desc->channel[chan].type == UTIL_FORMAT_TYPE_FLOAT) {
+       sw1.packmode = desc->channel[chan].size == 16
+-                        ? ROGUE_PBESTATE_PACKMODE_F16F16F16F16
++                        ? (nr_chan <= 1 ? ROGUE_PBESTATE_PACKMODE_F16
++                           : nr_chan == 2 ? ROGUE_PBESTATE_PACKMODE_F16F16
++                                          : ROGUE_PBESTATE_PACKMODE_F16F16F16F16)
+                         : ROGUE_PBESTATE_PACKMODE_F32F32F32F32;
+    } else if (desc->channel[chan].size == 8) {
+       sw1.packmode = desc->channel[chan].type == UTIL_FORMAT_TYPE_SIGNED
+diff --git a/src/gallium/drivers/pvr_native/pvr_draw.c b/src/gallium/drivers/pvr_native/pvr_draw.c
+index 3868a829..deb4984d 100644
+--- a/src/gallium/drivers/pvr_native/pvr_draw.c
++++ b/src/gallium/drivers/pvr_native/pvr_draw.c
+@@ -1256,7 +1256,7 @@ draw_format_ok(enum pipe_format f)
+           f == PIPE_FORMAT_R8G8B8X8_UNORM || f == PIPE_FORMAT_B8G8R8X8_UNORM ||
+           f == PIPE_FORMAT_R8_UNORM || f == PIPE_FORMAT_R8G8_UNORM ||
+           f == PIPE_FORMAT_R8G8B8A8_SRGB || f == PIPE_FORMAT_B8G8R8A8_SRGB ||
+-          f == PIPE_FORMAT_A8B8G8R8_SRGB;
++          f == PIPE_FORMAT_A8B8G8R8_SRGB || f == PIPE_FORMAT_R16G16B16A16_FLOAT;
+ }
+ 
+ /* The vertex attribute fetch program and its data segment for the bound vertex elements. */
+diff --git a/src/gallium/drivers/pvr_native/pvr_screen.c b/src/gallium/drivers/pvr_native/pvr_screen.c
+index e7e0e80b..f7959679 100644
+--- a/src/gallium/drivers/pvr_native/pvr_screen.c
++++ b/src/gallium/drivers/pvr_native/pvr_screen.c
+@@ -116,7 +116,9 @@ pvr_is_format_supported(UNUSED struct pipe_screen *pscreen,
+        format != PIPE_FORMAT_R8G8B8X8_UNORM && format != PIPE_FORMAT_B8G8R8X8_UNORM &&
+        format != PIPE_FORMAT_R8_UNORM && format != PIPE_FORMAT_R8G8_UNORM &&
+        format != PIPE_FORMAT_R8G8B8A8_SRGB && format != PIPE_FORMAT_B8G8R8A8_SRGB &&
+-       format != PIPE_FORMAT_A8B8G8R8_SRGB)
++       format != PIPE_FORMAT_A8B8G8R8_SRGB &&
++       format != PIPE_FORMAT_R16_FLOAT && format != PIPE_FORMAT_R16G16_FLOAT &&
++       format != PIPE_FORMAT_R16G16B16A16_FLOAT)
+       return false;
+    if ((bindings & PIPE_BIND_DEPTH_STENCIL) &&
+        format != PIPE_FORMAT_Z16_UNORM && format != PIPE_FORMAT_Z24X8_UNORM &&
+-- 
+2.47.3
+

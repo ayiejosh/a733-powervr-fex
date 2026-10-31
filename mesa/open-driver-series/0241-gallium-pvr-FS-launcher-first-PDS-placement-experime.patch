@@ -1,7 +1,7 @@
-From de5659b1f8297539c17f6257d11bc8d907724bd1 Mon Sep 17 00:00:00 2001
+From 8f0f0557ffd7e63cdb687ac36bee549a86b389b5 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sun, 25 Oct 2026 06:31:52 +0800
-Subject: [PATCH 241/269] gallium/pvr: FS-launcher-first PDS placement
+Subject: [PATCH 241/294] gallium/pvr: FS-launcher-first PDS placement
  experiment (PVR_PROBE_FS_FIRST)
 
 Places the fragment PDS launcher first in the PDS heap (at Vulkan's NOP-program offset, PDS+0x1000)

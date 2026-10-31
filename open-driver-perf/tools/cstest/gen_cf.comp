@@ -1,0 +1,18 @@
+#version 450
+layout(local_size_x = 64) in;
+layout(std430, binding = 0) readonly buffer I { uvec4 i[]; };
+layout(std430, binding = 1) writeonly buffer O { uint o[]; };
+void main() {
+   uint id = gl_GlobalInvocationID.x; uvec4 v = i[id];
+   float f = float(v.x & 1023u) * 0.25 - 100.0, g = float(v.y & 511u) * 0.5;
+   float inv = f * g;                         /* loop-invariant product used inside the loop */
+   float s = 0.0; uint u = 0u;
+   for (uint k = 0u; k < v.w; k++) {
+      s += inv + float(k);
+      if ((v.z & (1u << (k & 31u))) != 0u) u += k * v.x; else u ^= v.y >> (k & 7u);
+      if (k == 5u) break;
+   }
+   float mx = max(f, 0.0), mn = min(g, 3.5), cl = clamp(f, -2.0, 2.0);
+   o[id * 16u + 0u] = floatBitsToUint(s); o[id * 16u + 1u] = u; o[id * 16u + 2u] = floatBitsToUint(mx);
+   o[id * 16u + 3u] = floatBitsToUint(mn); o[id * 16u + 4u] = floatBitsToUint(cl);
+}

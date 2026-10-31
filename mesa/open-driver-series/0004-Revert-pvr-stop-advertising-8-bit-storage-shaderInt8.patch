@@ -1,8 +1,8 @@
-From 43247f6f9b48458945a85dab5488cf9764adef7b Mon Sep 17 00:00:00 2001
+From 7d90e550478e18f04e8d2088dcb16a39ee2776b3 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Thu, 8 Oct 2026 02:11:35 +0800
-Subject: [PATCH 04/43] Revert 'pvr: stop advertising 8-bit storage/shaderInt8'
- - it was unjustified
+Subject: [PATCH 004/294] Revert 'pvr: stop advertising 8-bit
+ storage/shaderInt8' - it was unjustified
 
 That disable was based on static reasoning only (extract_u8/insert_u8 have no cases in
 pco_trans_nir.c and trans_conv's default is UNREACHABLE). No test failed, and the bench
@@ -30,7 +30,7 @@ settle that, and vk16 settled this one the other way.
  4 files changed, 21 insertions(+), 5 deletions(-)
 
 diff --git a/src/gallium/drivers/zink/zink_batch.c b/src/gallium/drivers/zink/zink_batch.c
-index c615d47..974e7c7 100644
+index c615d47e..974e7c7e 100644
 --- a/src/gallium/drivers/zink/zink_batch.c
 +++ b/src/gallium/drivers/zink/zink_batch.c
 @@ -1,4 +1,5 @@
@@ -62,7 +62,7 @@ index c615d47..974e7c7 100644
     if (!ctx->queries_disabled)
        zink_suspend_queries(ctx);
 diff --git a/src/gallium/drivers/zink/zink_kopper.c b/src/gallium/drivers/zink/zink_kopper.c
-index 1866a30..abe6625 100644
+index 1866a30e..abe66254 100644
 --- a/src/gallium/drivers/zink/zink_kopper.c
 +++ b/src/gallium/drivers/zink/zink_kopper.c
 @@ -22,6 +22,7 @@
@@ -84,7 +84,7 @@ index 1866a30..abe6625 100644
  #endif
  }
 diff --git a/src/gallium/drivers/zink/zink_resource.c b/src/gallium/drivers/zink/zink_resource.c
-index c37fa55..27215c7 100644
+index c37fa55f..27215c75 100644
 --- a/src/gallium/drivers/zink/zink_resource.c
 +++ b/src/gallium/drivers/zink/zink_resource.c
 @@ -1907,6 +1907,11 @@ resource_create(struct pipe_screen *pscreen,
@@ -100,7 +100,7 @@ index c37fa55..27215c7 100644
     }
  
 diff --git a/src/imagination/vulkan/pvr_physical_device.c b/src/imagination/vulkan/pvr_physical_device.c
-index eea1e61..197e461 100644
+index eea1e616..197e461c 100644
 --- a/src/imagination/vulkan/pvr_physical_device.c
 +++ b/src/imagination/vulkan/pvr_physical_device.c
 @@ -338,16 +338,16 @@ static void pvr_physical_device_get_supported_features(
@@ -124,3 +124,6 @@ index eea1e61..197e461 100644
        .descriptorIndexing = false,
        .shaderInputAttachmentArrayDynamicIndexing = true,
        .shaderUniformTexelBufferArrayDynamicIndexing = true,
+-- 
+2.47.3
+

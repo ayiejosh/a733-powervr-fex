@@ -1,8 +1,8 @@
-From 911cdbd472b5cedcd68cfc542852211ae4d7052f Mon Sep 17 00:00:00 2001
+From ebf3997891f399fbfffd6fdef9e08bd2bae1ec1e Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Thu, 8 Oct 2026 03:14:47 +0800
-Subject: [PATCH 09/43] pvr: fix maxDescriptorSetStorageBuffers spec violation
- (12 -> 48)
+Subject: [PATCH 009/294] pvr: fix maxDescriptorSetStorageBuffers spec
+ violation (12 -> 48)
 
 Vulkan requires maxDescriptorSetStorageBuffers >= maxPerStageDescriptorStorageBuffers.
 The driver reported per-stage 16 but per-set 3*4 = 12 - a stale derivation from when the
@@ -21,7 +21,7 @@ glmark2 --validate still 0 failures / 27 pass.
  1 file changed, 5 insertions(+), 1 deletion(-)
 
 diff --git a/src/imagination/vulkan/pvr_physical_device.c b/src/imagination/vulkan/pvr_physical_device.c
-index 6a49178..c0806a6 100644
+index 6a491782..c0806a62 100644
 --- a/src/imagination/vulkan/pvr_physical_device.c
 +++ b/src/imagination/vulkan/pvr_physical_device.c
 @@ -769,7 +769,11 @@ static bool pvr_physical_device_get_properties(
@@ -37,3 +37,6 @@ index 6a49178..c0806a6 100644
        .maxDescriptorSetStorageBuffersDynamic = 4U,
        .maxDescriptorSetSampledImages = 3U * 32U,
        .maxDescriptorSetStorageImages = 3U * 32U,
+-- 
+2.47.3
+

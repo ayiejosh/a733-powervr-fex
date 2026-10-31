@@ -1,7 +1,7 @@
-From e99a9e64d463d7514c16bf1dcbbef34d4f16ec69 Mon Sep 17 00:00:00 2001
+From 966ecb95f14a747ac604e182801f641638ed4214 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Fri, 16 Oct 2026 04:54:53 +0800
-Subject: [PATCH 108/269] gallium/pvr: reuse the pdsc device tables and probe
+Subject: [PATCH 108/294] gallium/pvr: reuse the pdsc device tables and probe
  the enumeration
 
 Replace the hand-rolled "B%d.%d.%d.%d" formatting with pvr_device_info_init()

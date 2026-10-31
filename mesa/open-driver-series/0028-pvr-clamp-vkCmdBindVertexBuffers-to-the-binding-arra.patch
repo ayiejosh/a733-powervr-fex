@@ -1,8 +1,8 @@
-From c41620aeb34e0eb0c07d22f8cdead0d223df45d3 Mon Sep 17 00:00:00 2001
+From 9e561f1879ee820d4fa634a98f4d3035d31c3df0 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Thu, 8 Oct 2026 13:18:25 +0800
-Subject: [PATCH 28/43] pvr: clamp vkCmdBindVertexBuffers to the binding array
- (silent OOB write)
+Subject: [PATCH 028/294] pvr: clamp vkCmdBindVertexBuffers to the binding
+ array (silent OOB write)
 
 Same pattern as the vertex-attribute crash fixed in the previous commit: maxVertexInputBindings
 is advertised as 16, cmd_buffer->state.vertex_bindings[] has PVR_MAX_VERTEX_INPUT_BINDINGS (16)
@@ -27,7 +27,7 @@ stgbuf, vattrib(16) all PASS; glmark2 --validate 27/0.
  1 file changed, 12 insertions(+), 2 deletions(-)
 
 diff --git a/src/imagination/vulkan/pvr_arch_cmd_buffer.c b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
-index 4ada520..b01039a 100644
+index 4ada5203..b01039a7 100644
 --- a/src/imagination/vulkan/pvr_arch_cmd_buffer.c
 +++ b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
 @@ -3093,7 +3093,17 @@ void PVR_PER_ARCH(CmdBindVertexBuffers2)(VkCommandBuffer commandBuffer,
@@ -58,3 +58,6 @@ index 4ada520..b01039a 100644
                                          pStrides);
     }
  
+-- 
+2.47.3
+

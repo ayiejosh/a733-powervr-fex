@@ -1,0 +1,84 @@
+From 39b94b530a1b6188e47491ac5f9fa0d146467f3d Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 30 Oct 2026 13:03:20 +0800
+Subject: [PATCH] gallium/pvr: probe copy replay uses the captured 64-byte TQ
+ copy kernel and exact texstate block
+
+Three more pieces of the captured copy job are now wired into the replay: the texture-state DMA block
+at PDS+0x2640 is byte-exact from the capture (dma-space address 0x800004b080 split into words 0/1,
+control 0x90000014), the DMA space is mapped at 0x800004b000 with the captured TEXSTATE content at
+offset 0x80, and the TQ copy kernel installed at USC+0x7340 is the captured 64-byte kernel (not the
+16-byte fill kernel). The job still submits and syncs without writing the destination, so the remaining
+gap is in the kickusc/pixel-event task binding (the captured run's kickusc program data word 0 names the
+USC task offset; a single aligned capture of stream+programs is checked in to resolve it).
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c | 18 +++++++++++-------
+ 1 file changed, 11 insertions(+), 7 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index 8d74e85d..21eb25cb 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -5772,7 +5772,7 @@ tq_fill_check(int fd, struct pipe_screen *pscreen)
+       const struct pvr_heap *usc = &vm->heaps[DRM_PVR_HEAP_USC_CODE];
+ 
+       if (!pvr_bo_create(fd, 0x2000, 4096, &uscbo) ||
+-          !pvr_vm_map(vm, usc->base + 0x5000, uscbo.handle, uscbo.size) ||
++          !pvr_vm_map(vm, usc->base + 0x7000, uscbo.handle, uscbo.size) ||
+           !pvr_bo_map(fd, &uscbo)) {
+          printf("tq:            FAIL: cannot map USC program page\n");
+          goto out_bo;
+@@ -5858,7 +5858,11 @@ tq_copy_check(int fd, struct pipe_screen *pscreen)
+     * high address/flags template, terminator. */
+    uint32_t ev_data[5] = { 0x00005d40, 0x00000000, 0x00000000, 0x00081a20, 0x90000002 };
+    static const uint32_t ev_code[2] = { 0xf0040101, 0xf4000002 };
+-   static const uint32_t usc_copy[4] = { 0xc280a048, 0x01804080, 0xff000088, 0xfffffff2 };
++   /* 64-byte TQ copy kernel captured at USC+0x7340 in the same reference run as the stream. */
++   static const uint32_t usc_copy[16] = {
++      0xd3009256, 0x83c1803f, 0x40300010, 0xd3009256, 0x83c4803f, 0x41300010, 0xe400a067, 0x60800854,
++      0x80880880, 0x800200a0, 0x8a37ff6a, 0x00408700, 0xfff32000, 0xffffffff, 0x87808a34, 0x21000041,
++   };
+    static const uint32_t texdata_code[2] = { 0xf4020000, 0xd3000000 };
+    struct drm_pvr_ioctl_create_context_args cargs = {
+       .type = DRM_PVR_CTX_TYPE_TRANSFER_FRAG,
+@@ -5942,7 +5946,7 @@ tq_copy_check(int fd, struct pipe_screen *pscreen)
+       static const uint32_t kick_data[8] = { 0x00007340, 0x00000008, 0, 0, 0, 0, 0, 0 };
+       static const uint32_t kick_code[1] = { 0xf4000002 };
+       static const uint32_t kick_data2[8] = { 0x000073c0, 0x00000008, 0, 0, 0, 0, 0, 0 };
+-      static const uint32_t texdata_dma[4] = { 0x000cf000, 0x00000080, 0x90000020, 0 };
++      static const uint32_t texdata_dma[4] = { 0x0004b080, 0x00000080, 0x90000014, 0 };
+       uint8_t *base = pdsbo2.map;
+ 
+       memcpy(base + (0x41000 - 0x40000), kick_data, sizeof(kick_data));
+@@ -5954,7 +5958,7 @@ tq_copy_check(int fd, struct pipe_screen *pscreen)
+ 
+    /* Texture-state DMA space (general heap) the kick program DMAs from. */
+    if (!pvr_bo_create(fd, 0x1000, 4096, &dmabo) ||
+-       !pvr_vm_map(vm, 0x80000cf000ULL, dmabo.handle, dmabo.size) ||
++       !pvr_vm_map(vm, 0x800004b000ULL, dmabo.handle, dmabo.size) ||
+        !pvr_bo_map(fd, &dmabo)) {
+       printf("tqcopy:        FAIL: cannot map DMA space\n");
+       goto out_bo;
+@@ -5965,16 +5969,16 @@ tq_copy_check(int fd, struct pipe_screen *pscreen)
+          0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+       };
+ 
+-      memcpy(dmabo.map, dma_state, sizeof(dma_state));
++      memcpy((uint8_t *)dmabo.map + 0x80, dma_state, sizeof(dma_state));
+    }
+ 
+    if (!pvr_bo_create(fd, 0x2000, 4096, &uscbo) ||
+-       !pvr_vm_map(vm, usc->base + 0x5000, uscbo.handle, uscbo.size) ||
++       !pvr_vm_map(vm, usc->base + 0x7000, uscbo.handle, uscbo.size) ||
+        !pvr_bo_map(fd, &uscbo)) {
+       printf("tqcopy:        FAIL: cannot map USC program page\n");
+       goto out_bo;
+    }
+-   memcpy((uint8_t *)uscbo.map + (0x5d40 - 0x5000), usc_copy, sizeof(usc_copy));
++   memcpy((uint8_t *)uscbo.map + (0x7340 - 0x7000), usc_copy, sizeof(usc_copy));
+ 
+    completed = pvr_job_submit_transfer_sync(vm, cargs.handle, stream, stream_len, 2000);
+    printf("tqcopy:        copy replay %s (stream %u B, src 0x%llx dst 0x%llx)\n",
+-- 
+2.47.3
+

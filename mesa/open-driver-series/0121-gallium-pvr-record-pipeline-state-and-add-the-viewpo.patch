@@ -1,7 +1,7 @@
-From 64250fa561bb852ce8fdb9d87f0c6214854a15df Mon Sep 17 00:00:00 2001
+From 607f81b03b860e047d34cc0637d7ed6b5a98689d Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Fri, 16 Oct 2026 14:57:05 +0800
-Subject: [PATCH 121/269] gallium/pvr: record pipeline state, and add the
+Subject: [PATCH 121/294] gallium/pvr: record pipeline state, and add the
  viewport hook
 
 Blend, depth/stencil/alpha and rasterizer state were bound into nothing: the bind

@@ -1,7 +1,7 @@
-From 9396fc1ba8e71fa380ddf908e9e999af60f97ae5 Mon Sep 17 00:00:00 2001
+From e4341cc1bc59a1b5ff838e1b50c20bed2400567e Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sat, 24 Oct 2026 09:06:30 +0800
-Subject: [PATCH 213/269] gallium/pvr: fix the const-map buffer overflow;
+Subject: [PATCH 213/294] gallium/pvr: fix the const-map buffer overflow;
  attribute loads crash pco's register allocator
 
 Two findings, one fixed and one escalated to what it actually is.
