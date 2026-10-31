@@ -4025,3 +4025,33 @@ geometry + one fragment job for the batch.
 Conclusion: the next lever is comparing pco's generated code against the vendor compiler's for the
 same GLSL - the vendor-compiled USC capture is now the highest-value investigation (it also yields
 the F16SOP encoding).  Mip generation/merge work stays valid but the ALU-heavy scene gap is larger.
+
+## Round 189 - per-stage profile: the gaps are per-draw cost and the blend path, not ALU
+
+Added an ALU mode to drawbench2 (128-step non-foldable fract chain per pixel) and ran the full mode
+matrix on vendor (bare Xorg :1), native and zink (weston/headless). fps:
+
+| mode | vendor | native | zink | native/vendor |
+|---|---|---|---|---|
+| alu (128 FMA/frag) | 129.4 | 130.8 | 128.5 | **1.01** |
+| fill | 2233.6 | 1753.9 | 2039.5 | 0.79 |
+| texture | 1411.6 | 1428.6 | 1152.5 | 1.01 |
+| vert (60k verts) | 1247.3 | 1418.7 | 1054.0 | 1.14 |
+| blend | 849.3 | 520.9 | 251.8 | **0.61** |
+| blenddepth | 848.2 | 523.1 | 252.1 | 0.62 |
+| overdraw | 2065.5 | 2473.5 | 2003.6 | 1.20 |
+| manydraws (27/frame) | 956.0 | 514.3 | 903.1 | **0.54** |
+| cube | 1971.5 | 1710.3 | 1167.4 | 0.87 |
+| mip | 1452.7 | 1584.5 | 1148.9 | 1.09 |
+| mipgen | 986.1 | 1577.5 | 549.3 | 1.60 |
+
+Conclusions:
+1. **Fragment ALU is identical on all three stacks** (130.8 / 128.5 / 129.4) - the glmark2
+   shading/cel/bump gaps are NOT shader ALU throughput.
+2. **Per-draw cost is the largest Gallium-specific gap**: manydraws native 514 vs zink 903 (same GPU
+   driver underneath) = 53 us/draw vs 24 us/draw (vendor 23 us). A per-draw state/stream cost in the
+   native driver.
+3. **Blend path**: native 0.61x vendor, zink 0.30x - the shader-blend path emits much more work than
+   the vendor driver (fixed-function blend does not exist on this silicon, round 166).
+4. Per-frame fixed cost shows in fill (0.79) - one render job set per frame ~0.12 ms.
+5. mipgen is now 1.6x FASTER than vendor (mip cache, patch 0368).

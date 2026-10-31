@@ -61,6 +61,8 @@ int main(void){
    const char *fs_fill = "precision mediump float; void main(){ gl_FragColor = vec4(0.5,0.25,0.75,1.0); }";
    const char *fs_tex  = "precision mediump float; varying vec2 v; uniform sampler2D t; void main(){ gl_FragColor = texture2D(t, v); }";
    const char *fs_cube = "precision mediump float; varying vec2 v; uniform samplerCube t; void main(){ gl_FragColor = textureCube(t, vec3(v*2.0-1.0, 1.0)); }";
+   /* Fragment ALU throughput: a dependent 128-step FMA chain per pixel (highp, so no FP16 path). */
+   const char *fs_alu = "precision highp float; varying vec2 v; void main(){ float x = v.x + v.y*0.5; for (int i=0;i<128;i++) { x = x*0.9999 + v.y*0.5; x = x - floor(x); } gl_FragColor = vec4(x, x*0.5, x*0.25, 1.0); }";
    GLuint cube=0;
    if (!strcmp(mode,"fill")||!strcmp(mode,"overdraw")) p = prog(VS_FULL, fs_fill);
    else if (!strcmp(mode,"cube")) {
@@ -69,7 +71,8 @@ int main(void){
       glTexParameteri(GL_TEXTURE_CUBE_MAP,GL_TEXTURE_MIN_FILTER,GL_NEAREST);
       glTexParameteri(GL_TEXTURE_CUBE_MAP,GL_TEXTURE_MAG_FILTER,GL_NEAREST);
       p = prog(VS_FULL, fs_cube);
-   } else if (!strcmp(mode,"vert")) { p = prog(VS_GRID, fs_fill); verts = nverts; }
+   } else if (!strcmp(mode,"alu")) { p = prog(VS_FULL, fs_alu); }
+   else if (!strcmp(mode,"vert")) { p = prog(VS_GRID, fs_fill); verts = nverts; }
    else if (!strcmp(mode,"passes") || !strcmp(mode,"manydraws") || !strcmp(mode,"clearonly") || !strcmp(mode,"alt") || !strcmp(mode,"blend") || !strcmp(mode,"blenddepth")) p = prog(VS_FULL, fs_fill);
    else p = prog(VS_FULL, fs_tex);
    glUseProgram(p);
