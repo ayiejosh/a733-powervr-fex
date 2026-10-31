@@ -4055,3 +4055,24 @@ Conclusions:
    the vendor driver (fixed-function blend does not exist on this silicon, round 166).
 4. Per-frame fixed cost shows in fill (0.79) - one render job set per frame ~0.12 ms.
 5. mipgen is now 1.6x FASTER than vendor (mip cache, patch 0368).
+
+## Round 190 - per-draw TA state dedup (patch 0369): manydraws 1.9x, blend 1.9x, fill 1.4x
+
+Round 189 localised the largest Gallium-specific gap to the per-draw cost (manydraws native 514 vs
+zink 903 / vendor 956).  Cause: `pvr_draw_3d()` rebuilt and re-pointed the entire TA state block and
+emitted a PPP_STATE_UPDATE for it on every draw, even when consecutive draws use the same shaders,
+rasterizer, viewport and PDS data.  Patch 0369 compares the freshly built TA block with the previous
+one and emits the PPP state update only when it differs (the block is memcmp'd; PDS data/shader
+offsets that change per draw make it differ, so uniforms still work).
+
+drawbench2, native pvr under weston/headless (3-run medians):
+
+| mode | before | after | vendor |
+|---|---|---|---|
+| manydraws (27/frame) | 514 | **986** | 956 |
+| blend | 521 | **985** | 849 |
+| fill | 1754 | **2465** | 2234 |
+| texture | 1429 | **1515** | 1412 |
+
+glmark2 per-scene: cel **528 -> 1243** (vendor 1153), effect2d **763 -> 1573** (vendor 1169),
+bump **413 -> 1518** (vendor 672), shading 961 -> 946 (unchanged).  17-group gate: ALL GROUPS PASS.

@@ -1,0 +1,74 @@
+From af56b02aa9ec1a82068e803474c15cb11d568591 Mon Sep 17 00:00:00 2001
+From: radxa <radxa@radxa-cubie-a7a>
+Date: Sun, 1 Nov 2026 01:31:39 +0800
+Subject: [PATCH] gallium/pvr: skip the per-draw TA state update when the
+ pipeline state is unchanged
+
+Every draw rebuilt and re-pointed the whole TA state block and emitted a PPP state
+update for it, even when consecutive draws use the same shaders, rasterizer,
+viewport and PDS data. Compare the freshly built block with the previous one and
+emit the PPP state update only when it differs.
+
+drawbench2 (native pvr, weston/headless): manydraws 27x/frame 514 -> 986 fps,
+blend 521 -> 985, fill 1754 -> 2465, texture 1429 -> 1515. glmark2 per-scene:
+cel 528 -> 1243, effect2d 763 -> 1573, bump 413 -> 1518, shading 961 -> 946.
+17-group gate: ALL GROUPS PASS.
+---
+ src/gallium/drivers/pvr_native/pvr_draw.c | 20 +++++++++++++++++++-
+ 1 file changed, 19 insertions(+), 1 deletion(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_draw.c b/src/gallium/drivers/pvr_native/pvr_draw.c
+index 4e6f1e55..7e16f327 100644
+--- a/src/gallium/drivers/pvr_native/pvr_draw.c
++++ b/src/gallium/drivers/pvr_native/pvr_draw.c
+@@ -119,6 +119,14 @@ struct pvr_draw_state {
+    } hwrt[PVR_DRAW_HWRT_CACHE], *cur_hwrt;
+    uint32_t hwrt_clock;
+ 
++   /* Per-draw TA state deduplication: consecutive draws with unchanged pipeline state (same shaders,
++    * rasterizer, viewport, PDS data) would otherwise rebuild and re-point the whole TA state block
++    * and emit a PPP state update per draw, which the GPU pays for. manydraws measured 53 us/draw
++    * against the reference's 23 us. */
++   uint32_t last_ta_block[256];
++   uint32_t last_ta_dwords;
++   bool last_draw_valid;
++
+    struct pvr_draw_arena gen; /* general heap: TA blocks, scissor, indices */
+    struct pvr_draw_arena pds; /* PDS heap: per-draw vertex programs */
+    struct pvr_bo ctrl_bo;
+@@ -1438,6 +1446,7 @@ draw_open(struct pvr_context *ctx, struct pvr_draw_state *d, struct pipe_resourc
+    d->rt_layer = 0;
+    d->load_src_layer = 0;
+    pvr_csb_init(&d->ctrl, d->ctrl_bo.map, d->ctrl_bo.size, PVR_CSB_LINK_DWORDS);
++   d->last_draw_valid = false;
+    pipe_resource_reference(&d->rt, rt);
+    d->rt_level = level;
+    d->seq++;
+@@ -1832,7 +1841,11 @@ pvr_draw_3d(struct pvr_context *ctx, const struct pipe_draw_info *info,
+    };
+    uint32_t vdm_words = 0;
+    pvr_vdm_cam_size(&scr->dev_info, vs->vtxouts, true, &vdm_vs.cam_size, &vdm_vs.max_instances);
+-   if (!pvr_csb_emit_ppp_state(&d->ctrl, ta_addr, pvr_csb_size(&block) / 4) ||
++   const uint32_t ta_dwords = pvr_csb_size(&block) / 4;
++   const bool same_ta = d->last_draw_valid && d->last_ta_dwords == ta_dwords &&
++                        ta_dwords <= ARRAY_SIZE(d->last_ta_block) &&
++                        memcmp(d->last_ta_block, ta, ta_dwords * sizeof(uint32_t)) == 0;
++   if ((!same_ta && !pvr_csb_emit_ppp_state(&d->ctrl, ta_addr, ta_dwords)) ||
+        (vu_dwords && !pvr_csb_emit_vdm_pds_state(&d->ctrl, vs->shareds, vu_data, vu_dwords,
+                                                   vu_code)) ||
+        !pvr_csb_emit_vdm_state(&d->ctrl, false, 0, &vdm_vs, &vdm_words) ||
+@@ -1840,6 +1853,11 @@ pvr_draw_3d(struct pvr_context *ctx, const struct pipe_draw_info *info,
+                                 topo) ||
+        pvr_csb_overflowed(&d->ctrl))
+       return false;
++   if (!same_ta && ta_dwords <= ARRAY_SIZE(d->last_ta_block)) {
++      memcpy(d->last_ta_block, ta, ta_dwords * sizeof(uint32_t));
++      d->last_ta_dwords = ta_dwords;
++      d->last_draw_valid = true;
++   }
+    d->ndraws++;
+    return true;
+ }
+-- 
+2.47.3
+

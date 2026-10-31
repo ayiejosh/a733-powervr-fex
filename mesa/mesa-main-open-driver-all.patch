@@ -5259,10 +5259,10 @@ index 00000000..47695cc7
 +#endif /* PVR_CSB_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_draw.c b/src/gallium/drivers/pvr_native/pvr_draw.c
 new file mode 100644
-index 00000000..4e6f1e55
+index 00000000..7e16f327
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_draw.c
-@@ -0,0 +1,2298 @@
+@@ -0,0 +1,2316 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -5383,6 +5383,14 @@ index 00000000..4e6f1e55
 +      uint64_t addr[7];
 +   } hwrt[PVR_DRAW_HWRT_CACHE], *cur_hwrt;
 +   uint32_t hwrt_clock;
++
++   /* Per-draw TA state deduplication: consecutive draws with unchanged pipeline state (same shaders,
++    * rasterizer, viewport, PDS data) would otherwise rebuild and re-point the whole TA state block
++    * and emit a PPP state update per draw, which the GPU pays for. manydraws measured 53 us/draw
++    * against the reference's 23 us. */
++   uint32_t last_ta_block[256];
++   uint32_t last_ta_dwords;
++   bool last_draw_valid;
 +
 +   struct pvr_draw_arena gen; /* general heap: TA blocks, scissor, indices */
 +   struct pvr_draw_arena pds; /* PDS heap: per-draw vertex programs */
@@ -6703,6 +6711,7 @@ index 00000000..4e6f1e55
 +   d->rt_layer = 0;
 +   d->load_src_layer = 0;
 +   pvr_csb_init(&d->ctrl, d->ctrl_bo.map, d->ctrl_bo.size, PVR_CSB_LINK_DWORDS);
++   d->last_draw_valid = false;
 +   pipe_resource_reference(&d->rt, rt);
 +   d->rt_level = level;
 +   d->seq++;
@@ -7097,7 +7106,11 @@ index 00000000..4e6f1e55
 +   };
 +   uint32_t vdm_words = 0;
 +   pvr_vdm_cam_size(&scr->dev_info, vs->vtxouts, true, &vdm_vs.cam_size, &vdm_vs.max_instances);
-+   if (!pvr_csb_emit_ppp_state(&d->ctrl, ta_addr, pvr_csb_size(&block) / 4) ||
++   const uint32_t ta_dwords = pvr_csb_size(&block) / 4;
++   const bool same_ta = d->last_draw_valid && d->last_ta_dwords == ta_dwords &&
++                        ta_dwords <= ARRAY_SIZE(d->last_ta_block) &&
++                        memcmp(d->last_ta_block, ta, ta_dwords * sizeof(uint32_t)) == 0;
++   if ((!same_ta && !pvr_csb_emit_ppp_state(&d->ctrl, ta_addr, ta_dwords)) ||
 +       (vu_dwords && !pvr_csb_emit_vdm_pds_state(&d->ctrl, vs->shareds, vu_data, vu_dwords,
 +                                                  vu_code)) ||
 +       !pvr_csb_emit_vdm_state(&d->ctrl, false, 0, &vdm_vs, &vdm_words) ||
@@ -7105,6 +7118,11 @@ index 00000000..4e6f1e55
 +                                topo) ||
 +       pvr_csb_overflowed(&d->ctrl))
 +      return false;
++   if (!same_ta && ta_dwords <= ARRAY_SIZE(d->last_ta_block)) {
++      memcpy(d->last_ta_block, ta, ta_dwords * sizeof(uint32_t));
++      d->last_ta_dwords = ta_dwords;
++      d->last_draw_valid = true;
++   }
 +   d->ndraws++;
 +   return true;
 +}
