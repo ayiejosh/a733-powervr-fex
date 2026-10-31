@@ -4355,3 +4355,22 @@ per-iteration immediates) the comparison is fair:
 So the real ILP gap is ~13%, in line with the ~20% realistic-math shader gap, not 4.8x.  The refined
 shader is the one kept in drawbench2.  (Note: the literal-heavy shape is still a real pco weakness for
 unrolled loops with distinct constants - just not representative of glmark2 shaders.)
+
+## Round 205 - official bench31 after patches 0367-0370: native 794/802, zink 776/775
+
+Ran the full bench31 on the tree with all of this session's patches (batched submission + owned
+streams 0367, mip-chain cache 0368, TA-state dedup 0369, ZLS gating 0370):
+
+| arm | score run 1 | score run 2 | previous baseline |
+|---|---|---|---|
+| native (open driver, Mesa pvr_native) | 794 | 802 | 794 / 805 |
+| zink (open driver, Vulkan underneath) | 776 | 775 | 775 / 777 |
+| vendor (IMG driver 24.2) | arm failed identity check | (1196, older run) | 1226 / 1196 |
+
+The vendor arm's first run failed its stack-identity check ("did not use the IMG driver
+(GL_VERSION)") and bench31 restored the board without continuing - so the vendor baseline in this
+run is not usable and needs a re-run.  Native/zink are unchanged within noise: the session's patches
+are real microbenchmark wins (manydraws 514->986, blend 521->985, fill 1754->2465, depth-attached
+fill 1087->2500, mipgen 986->1578) and improved terrain (20->23) and refract (37->44), but those
+benchmarks are too small a share of the glmark2 score to move it past the ~800 plateau.  Beating the
+vendor's 1226 needs the shader-codegen gap (~13-20%) closed, i.e. real pco work.
