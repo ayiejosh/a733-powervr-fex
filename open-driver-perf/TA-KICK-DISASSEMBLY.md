@@ -3714,3 +3714,24 @@ EGL surface config reports `depth=32` (bench31 logs), and FBO-rendered depth wor
 missing piece is the **surface/drawable depth buffer being exposed to the state tracker** (the
 DRI/EGL winsys integration). Fix that, then re-measure terrain and refract; a depth-tested terrain
 should both render correctly and recover the early-Z win.
+
+## Round-174 (2026-10-31): the depth formats are supported - round-173's window mixed in the shadow pass
+
+Follow-up to round-173's "native renders terrain without depth":
+
+1. **The surface depth formats are supported.** A temporary `PVR_FB_LOG` print in
+   `pvr_set_framebuffer_state` (reverted) shows the terrain scene binds
+   `FBSET 800x600 cbufs=1 zs=z16_unorm` and `zs=z24x8_unorm` (392 times each), alongside
+   `FBSET 256x256 cbufs=1 zs=NULL` (784 times - the shadow pass) and 196 depth-less 800x600 binds.
+   Both z16_unorm and z24x8_unorm are handled by `draw_zls_format()` (16BITINT / 24BITINT), so the
+   earlier "unknown depth format dropped" hypothesis is wrong.
+2. **The kernel dump window was not the main pass.** Re-dumping the fragment configuration in a
+   mid-scene window (jobs 600-639, still temporary, reverted) shows the same depth-less
+   `flags=0x8000 zlsctl=0` jobs - but that window is dominated by the 256x256 shadow-pass renders
+   (which legitimately have no depth). To settle it the dump must be correlated with the render
+   target size; the fw command does not carry width/height, so the next dump should print the HWRT
+   data-set geometry (`job->hwrt`) alongside the fragment registers.
+3. Useful side finding for future kernel instrumentation: **`drm_info()` output did not appear in
+   `dmesg` on this kernel** (whatever the loglevel), while `pr_err()` did - and the module rebuild
+   only takes effect after the GL clients (weston/Xwayland) release the device, otherwise `insmod`
+   silently leaves the old module in place.
