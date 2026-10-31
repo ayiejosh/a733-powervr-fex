@@ -3991,3 +3991,17 @@ vector workloads.
 Consequence for the roadmap: the glmark2 gap is not raw shader throughput; deprioritise F16SOP.  The
 remaining gap is render-pipeline/job overhead per pass (the hw-pass merge) and mip generation, i.e.
 where the previous rounds already point.
+
+### Round 187 - the reference fragment job stream is batch-invariant (384 bytes, 1 or 27 passes)
+
+Dumped the fragment job's static stream at submit time (`frag_state->fw_stream`) for zink `passes`:
+it is **384 bytes for both NPASSES=1 and NPASSES=27**, and the words are identical apart from the
+addresses of the per-frame state blocks (e.g. 0x000cf900/0x000cf8c0 vs 0x000d2680/0x000d2640).  So
+the fragment job carries no per-render information at all; every per-pass render-target state
+(ISP/PBE/EOT/ZLS/scissor) must be encoded in the control stream - the PPP_STATE_UPDATE blocks plus
+the PDS state programs they point at (round 185).
+
+That is the exact bar for the merge port: build one batch control stream whose per-pass PPP state
+blocks (and the PDS programs they reference) carry the state that our `pvr_draw_flush()` bakes into
+a fresh fragment static stream today, keep one fixed fragment stream per batch, and submit one
+geometry + one fragment job for the batch.
