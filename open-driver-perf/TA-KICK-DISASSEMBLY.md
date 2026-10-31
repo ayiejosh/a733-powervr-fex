@@ -4374,3 +4374,16 @@ are real microbenchmark wins (manydraws 514->986, blend 521->985, fill 1754->246
 fill 1087->2500, mipgen 986->1578) and improved terrain (20->23) and refract (37->44), but those
 benchmarks are too small a share of the glmark2 score to move it past the ~800 plateau.  Beating the
 vendor's 1226 needs the shader-codegen gap (~13-20%) closed, i.e. real pco work.
+
+### Round 206 - the failed vendor arms were caused by a stale Xorg :1, not by the driver
+
+The vendor bench31 arm failed twice with "did not use the IMG driver (GL_VERSION)" and empty
+output.  Root cause found: a **stale `Xorg :1` process from a much earlier session** (uptime ~5.5 h)
+was still holding display :1, so every new `Xorg :1` exited with "Server terminated with error (1)"
+while the script's `pgrep -x Xorg` check passed (it saw the stale server).  glmark2 then talked to a
+dead/wrong X server: empty output, failed identity check, and in the second attempt a 0 %-CPU hang.
+
+Fix for the next run: kill the stale Xorg, remove `/tmp/.X1-lock` and `/tmp/.X11-unix/X1`, and make
+the vendor arm verify a *fresh* Xorg (record its PID before starting) before running glmark2.  The
+last trusted vendor baseline therefore remains 1226/1196 (2026-10-30); native/zink for this session
+are 794/802 and 776/775.
