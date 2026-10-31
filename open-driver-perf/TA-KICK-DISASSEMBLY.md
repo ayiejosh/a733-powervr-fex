@@ -3953,3 +3953,25 @@ GPU-side completion of each level's render job set, not the host wait.  Change r
 level: a transfer/blit or compute mip generator (one job per level instead of a geometry+PR+fragment
 job set).  Transfer path is blocked on the TQ replay fault (rounds 154-166); compute (CDM) is the
 lower-risk route, one dispatch per level with no cross-job dependency.
+
+### Round 185 - the reference's per-pass encoding, decoded from its own control-stream dump
+
+Enabling the Vulkan driver's control-stream dump (`PVR_DEBUG=cs`) for zink `passes` gives the answer
+directly.  NPASSES=1 produces a 3-command control stream (PPP_STATE_UPDATE, VDM_STATE_UPDATE,
+PPP_STATE_UPDATE); NPASSES=27 produces ONE control stream with 78 top-level commands:
+
+    27 x VDM_STATE_UPDATE
+    26 x INDEX_LIST
+    25 x PPP_STATE_UPDATE
+
+i.e. one geometry job's control stream carries every render pass of the frame: each pass emits a
+PPP_STATE_UPDATE whose state block holds the per-target ISP/PPP state (pres_ispctl, pds_state_ptr0/3,
+region_clip, viewport, outselects, varying words, ppp_ctrl, stream_out_size), then the draw's
+INDEX_LIST + VDM_STATE_UPDATE.  The fragment side is one job per frame, so its static stream must be
+batch-invariant, with the per-target state living in those PPP state PDS blocks.
+
+Dumps kept in `open-driver-perf/captures/vk-multipass/` (`cs-cmds-1.txt`, `cs-cmds-27.txt`,
+`ppp-state-sample.txt`).  This is the concrete model for the merge: our `pvr_draw_flush()` must move
+the per-render state currently baked into the fragment static stream (PBE/EOT/ZLS/scissor/ISP) into
+per-pass PPP state blocks referenced by PPP_STATE_UPDATE commands in one batch control stream, with
+one geometry + one fragment job for the batch.

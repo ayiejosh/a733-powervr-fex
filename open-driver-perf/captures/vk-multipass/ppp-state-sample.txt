@@ -1,0 +1,120 @@
+======= BEGIN CONTROL STREAM DUMP =======
+Frame num                            : 0
+Job num                              : 2
+Status                               : VK_SUCCESS (0)
+Stream type                          : GRAPHICS (1)
+Nr of BOs                            : 1
+
+------- Buffer objects -------
+[0] 0x8000809000 ->     0xffff9b1ab000 (4 KiB, 0x1000 bytes)
+
+------- First buffer content -------
+[0000] 0: PPP_STATE_UPDATE
+  word_count                         : 25
+  addr                               : 0x80000cf840
+    msb                              : 0x8000000000
+    lsb                              : 0x00000cf840
+    <buffer size>                    : 100 bytes (from word_count)
+    <host addr>                      : 0xffff8cd67840
+    <content>                        : <decoded as PPP>
+    [000] 0: STATE_HEADER
+      pres_ispctl                    : yes (1)
+      pres_ispctl_fa                 : yes (1)
+      pres_ispctl_fb                 : yes (1)
+      pres_ispctl_ba                 : no (0)
+      pres_ispctl_bb                 : no (0)
+      pres_ispctl_dbsc               : yes (1)
+      pres_pds_state_ptr0            : yes (1)
+      pres_pds_state_ptr1            : no (0)
+      pres_pds_state_ptr2            : no (0)
+      pres_pds_state_ptr3            : yes (1)
+      pres_region_clip               : yes (1)
+      pres_viewport                  : yes (1)
+      view_port_count                : 1 (0 + 1)
+      pres_wclamp                    : yes (1)
+      pres_outselects                : yes (1)
+      pres_varying_word0             : yes (1)
+      pres_varying_word1             : yes (1)
+      pres_varying_word2             : yes (1)
+      pres_ppp_ctrl                  : yes (1)
+      pres_stream_out_size           : yes (1)
+      pres_stream_out_program        : no (0)
+      context_switch                 : no (0)
+      pres_terminate                 : no (0)
+      not_final_term                 : no (0)
+      <raw>                          : 4 bytes
+        [0]  670e7f..
+        [4]  <end of buffer>
+    [004] 1: STATE_ISP
+      visreg                         : 0
+      visbool                        : no (0)
+      vistest                        : no (0)
+      scenable                       : yes (1)
+      dbenable                       : yes (1)
+      bpres                          : yes (1)
+      two_sided                      : no (0)
+      ovgmtestdisable                : no (0)
+      tagwritedisable                : no (0)
+      upass                          : 0
+      validid                        : 0
+      front
+        objtype                      : TRIANGLE (0)
+        passtype                     : OPAQUE (0)
+        ovgvispassmaskop             : no (0)
+        maskval                      : no (0)
+        dwritedisable                : yes (1)
+        dfbztestenable               : no (0)
+        dcmpmode                     : ALWAYS (7)
+        linefilllastpixel            : no (0)
+        pointlinewidth               : 1.0 (0x0f + 0x01)
+        sref                         : 0
+        scmpmode                     : ALWAYS (7)
+        sop1                         : KEEP (0)
+        sop2                         : KEEP (0)
+        sop3                         : KEEP (0)
+        scmpmask                     : 0x00
+        swmask                       : 0x00
+      back                           : <not present>
+      dbindex                        : 0
+      scindex                        : 0
+      <raw>                          : 16 bytes
+        [00]  ....07.. ..0f2e.. ......0e ........
+        [10]  <end of buffer>
+    [014] 2: STATE_PDS
+      shaderbase                     : 0xda000028c0 (0xda00000000 + 0x00000028c0)
+      texunicodebase                 : 0xda00002740 (0xda00000000 + 0x0000002740)
+      pds_uniformsize                : 4 words (1 x 4 words)
+      pds_texturestatesize           : 0 words (0 x 4 words)
+      pds_varyingsize                : 0 words (0 x 4 words)
+      usc_varyingsize                : 0 words (0 x 16 words)
+      pds_tempsize                   : 0 words (0 x 4 words)
+      usc_sharedsize                 : 16 words (1 x 16 words)
+      pds_tri_merge_disable          : yes (1)
+      pds_batchnum                   : 0
+      varyingbase                    : <not present>
+      texturedatabase                : <not present>
+      uniformdatabase                : 0xda00002880 (0xda00000000 + 0x0000002880)
+      <raw>                          : 20 bytes
+        [00]  c028.... 4027.... ....80.. ..4080..  8028....
+        [14]  <end of buffer>
+    [028] 3: REGION_CLIP
+      mode                           : OUTSIDE (1)
+      left                           : 0 pixels (0 x 32 pixels)
+      right                          : 96 pixels (3 x 32 pixels)
+      top                            : 0 pixels (0 x 32 pixels)
+      bottom                         : 96 pixels (3 x 32 pixels)
+      <raw>                          : 8 bytes
+        [0]  03....80 03......
+        [8]  <end of buffer>
+    [030] 4: VIEWPORT 0
+      a0                             : 32.000000 (0x42000000)
+      m0                             : 32.000000 (0x42000000)
+      a1                             : 32.000000 (0x42000000)
+      m1                             : 32.000000 (0x42000000)
+      a2                             : 0.000000 (0x00000000)
+      m2                             : 1.000000 (0x3f800000)
+      <raw>                          : 24 bytes
+        [00]  ......42 ......42 ......42 ......42  ........ ....803f
+        [18]  <end of buffer>
+    [048] 5: WCLAMP
+      value                          : 0.000000 (0x29e12e13)
