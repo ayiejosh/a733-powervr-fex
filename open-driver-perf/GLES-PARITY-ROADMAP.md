@@ -207,3 +207,8 @@ hard resets on 2026-10-30).
    zink, one kick per render pass.  Batching the ioctls (patch 0367) is neutral; the next change is
    to merge several render passes into one geometry/PR/fragment job set (Vulkan command-buffer
    style), which is what the reference driver does.
+
+6. Reference job granularity (measured 2026-10-31, round-177 addendum): zink's whole 27-pass frame is
+   ONE geometry+PR+fragment job set (3 jobs per submit, 2 submits/frame).  Native pays one job set per
+   render pass; its serial cost is GPU/firmware completion (0.189 ms/render) not the ioctl (0.015 ms).
+   The next change must put several passes into one job set.

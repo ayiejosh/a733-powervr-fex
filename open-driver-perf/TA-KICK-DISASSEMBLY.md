@@ -3832,3 +3832,22 @@ overhead, and the Vulkan driver pays it once per command buffer, not once per pa
 one stream and submit one geometry + PR + fragment job set per batch of passes, as the Vulkan
 command buffer does.  The batching/stream-ownership change above is the infrastructure for that.
 17-group gate on 0367: ALL GROUPS PASS.
+
+### Round 177 addendum - the reference submits ONE render job set per frame; we submit one per pass
+
+Measured from userspace with a temporary counter in the Vulkan driver's submit path (zink, `passes`
+27x64x64): **every `DRM_IOCTL_PVR_SUBMIT_JOBS` carries exactly 3 jobs (geometry + PR + fragment), two
+submits per frame** - the whole frame's 27 FBO passes and the final draw are encoded in ONE
+geometry/PR/fragment job set.  Our Gallium driver submits one such job set per render pass (about
+28 per frame), which is exactly the 0.256 ms vs 0.0065 ms per-pass difference: the reference amortises
+the per-kick cost, we pay it per pass.
+
+Sub-split of the native cost (temporary timers, `passes` 27x64x64, 60 frames): submit ioctl totals
+only **0.015 ms/render** (batching already amortises it), while the slot-reuse `drmSyncobjWait`
+blocks **0.189 ms/render** - i.e. the GPU/firmware completion of each render is the serial cost, not
+the host submission path.  So making the CPU submit even deeper cannot help; the pass count per kick
+has to go down.
+
+Next: find how the reference encodes the per-pass render-target state in that single job set (the
+fragment static stream carries PBE/EOT per target in our driver, so the reference must carry it in the
+command stream or re-program PBE between passes) and mirror it for our flush path.
