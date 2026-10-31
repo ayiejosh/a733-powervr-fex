@@ -3614,3 +3614,39 @@ scene at 20 fps and zink (same pco compiler, same GPU, our Vulkan driver underne
 terrain gap is **not** the fragment shader translation; it is driver pipeline state that differs between
 the two paths - the next thing to compare is the vertex shader (terrain is vertex-heavy) and the
 per-draw pipeline registers (ISP tile config / `usc_pixel_output_ctrl` / depth setup).
+
+## Round-171 (2026-10-31): the twiddled render-target path is the terrain/refract gap
+
+### 1. Shader stages are not it
+`PCO_DEBUG_PRINT=all,stats` for terrain: native's biggest VS is **1192 bytes / 22 temps / 88
+instruction groups**; zink's is **8008 / 35 / 671** - seven times bigger, yet zink is faster (27 vs
+20 fps). Same GPU, same pco. So neither the VS nor (round-170) the FS explains the native/zink gap.
+
+### 2. Twiddled layout: mixed across scenes, and it is exactly the two gap scenes where linear wins
+`PVR_NATIVE_DEBUG=no_twiddle` (linear render targets/textures) versus the default (twiddled):
+
+| scene | default (twiddled) | no_twiddle | change |
+|---|---|---|---|
+| texture | 1466 | 1074 | -27% |
+| build | 1330 | 1012 | -24% |
+| shadow | 390 | 343 | -12% |
+| desktop | 121 | 108 | -11% |
+| effect2d | 1604 | 926 | -42% |
+| jellyfish | 384 | 393 | +2% |
+| **refract** | **37** | **45** | **+22%** |
+| **terrain** | **20** | **24** | **+20%** |
+
+Twiddled is the right layout for most scenes (as expected - it is the hardware's native layout), but
+**refract and terrain - the only two scenes where zink beats native - are exactly the two where linear
+beats twiddled in our driver**. Both scenes are render-to-texture-then-sample workloads (the scene
+renders into a twiddled target and reads it back as a texture in the next pass), unlike the static-
+texture scenes. So the native driver's *sampled twiddled render target* path is where the gap is, not
+the shaders or the job/sync structure.
+
+### 3. Next step
+Compare, for a sampled twiddled render target, the native driver's texture descriptor and layout
+arguments against the reference Vulkan driver's (`pvr_arch_tex_state.c` / `pvr_tex_state.c`):
+twiddled/physical-width-stride handling, the TFBC compression-mode bits in the tex descriptor
+(`ROGUE_TEXSTATE_COMPRESSION_MODE_FB_DIRECT_8X8` and its siblings), and the sampler state - plus the
+render-target physical extents the driver pads to. `no_fbc` alone changes nothing (terrain 20, refract
+38), so it is the twiddle layout/descriptor rather than the compression format itself.
