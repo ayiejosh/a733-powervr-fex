@@ -3940,3 +3940,16 @@ under weston/headless, native pvr driver): terrain **20 -> 23 fps**, refract **3
 Remaining terrain/refract gap: the chains that are re-uploaded every frame still pay a render pass
 per level; the transfer/blit mip generator (one job per level instead of a full geometry+PR+fragment
 job set) is the next step for those.
+
+### Round 184 - mip-level CPU wait elision is neutral; the per-level cost is GPU-side
+
+Tried eliding the CPU syncobj waits between the levels of one mip chain (the level renders are
+fragment jobs of the same context, and the kernel runs one fragment job per context at a time, so
+the consumer is ordered after the producer without a host wait).  Result: terrain 23 -> 22 fps,
+refract 43 -> 43 fps - no gain.  Consistent with the round-177 split: mip-generation cost is the
+GPU-side completion of each level's render job set, not the host wait.  Change reverted (neutral).
+
+=> The only remaining lever for the per-frame regenerated chains is fewer/cheaper GPU kicks per
+level: a transfer/blit or compute mip generator (one job per level instead of a geometry+PR+fragment
+job set).  Transfer path is blocked on the TQ replay fault (rounds 154-166); compute (CDM) is the
+lower-risk route, one dispatch per level with no cross-job dependency.
