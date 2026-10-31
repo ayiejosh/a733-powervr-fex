@@ -3524,3 +3524,36 @@ gap. `pco_isa.py` already has the instruction group (`main_op` sngl, `sngl_op` =
 the F16SOP operand bit-struct is a `# TODO`; encoding it needs a vendor-compiled USC sample, which is
 the one artefact not captured yet (a vendor-stack LD_PRELOAD shim on the IMG DRI driver that dumps USC
 uploads is the plausible next step).
+
+## Round-168 (2026-10-31): the driver CPU-waits behind every render - measured cost up to +34%
+
+### 1. Where the time goes in RTT/multi-pass scenes
+`draw_slot_idle()` is called whenever a render slot must be reused or a resource that a slot rendered is
+read again, and it blocks the CPU on that render's syncobj. Instrumenting it (temporary, reverted)
+shows how much wall time that costs in glmark2 (each scene runs ~10 s):
+
+| scene | fps | CPU time blocked waiting | waits |
+|---|---|---|---|
+| refract | 37 | 9786 ms | 5926 |
+| terrain | 20 | 9678 ms | 13917 |
+| shadow | 388 | 9118 ms | 15518 |
+| effect2d | 1610 | 9076 ms | 32203 |
+
+i.e. the CPU is blocked for ~90-98% of the scene duration - it never runs ahead, so the next render's
+geometry (TA) submission cannot overlap the current render's fragment (3D) execution across passes.
+
+### 2. Ceiling measurement
+Temporarily skipping the waits (`PVR_NO_WAIT`, unsafe, reverted) gives: **shadow 388 -> 519 fps
+(+34%)**, **desktop 121 -> 139 (+15%)**, effect2d unchanged, while refract/terrain collapse (8/3 fps)
+because ignoring the hazards makes the GPU stall on overlapping writes. So the serialisation is worth
+roughly 15-35% on multi-render scenes, and a *correct* fix (GPU-side dependency waits in the next
+submission instead of CPU waits, with enough slots in flight) is the highest-value driver optimisation
+found so far.
+
+### 3. Terrain shader (native vs zink, same GPU driver under zink)
+pco binary stats for the terrain scene's main fragment shader:
+native **10512 bytes, 47 temps, 739 instruction groups**; zink **10328 bytes, 33 temps, 694 groups**.
+Same code size but 42% more temps on native, which is a register-allocation outcome (no spills in
+either). `PCO_DEBUG=NO_DUAL_ISSUE` / `RA_SKIP_OPT` do not change terrain's 20 fps. Refract is the
+opposite: native 1104 bytes/23 temps vs zink 2592/23, i.e. native code is *smaller* and equally
+register-pressured yet 24% slower - so refract's gap is structural (pass/sync), consistent with §1.
