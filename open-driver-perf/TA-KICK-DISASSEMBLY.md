@@ -3557,3 +3557,28 @@ Same code size but 42% more temps on native, which is a register-allocation outc
 either). `PCO_DEBUG=NO_DUAL_ISSUE` / `RA_SKIP_OPT` do not change terrain's 20 fps. Refract is the
 opposite: native 1104 bytes/23 temps vs zink 2592/23, i.e. native code is *smaller* and equally
 register-pressured yet 24% slower - so refract's gap is structural (pass/sync), consistent with §1.
+
+## Round-169 (2026-10-31): CPU-wait theory disproven - the driver is GPU-work-bound
+
+Round-168 measured the CPU blocked ~9.1-9.8 s of every ~10 s scene on render syncobjs and a
+skip-all-waits ceiling of +34% on shadow / +15% on desktop. Three follow-up experiments show that
+number was an artefact and the waits are not on the critical path:
+
+1. **Wait-site accounting** (temporary, reverted): the dominant site is the HWRT data-set wait - "wait
+   for the render that previously used this RTA data index" (desktop 9326 ms/12057 calls, shadow
+   9336/7784, terrain 9682/5198, refract 6839/1119); slot-reuse waits are ~1.5 ms in desktop/shadow
+   but 2977 ms in refract (transient memory reuse, genuinely required).
+2. **Skipping only the HWRT wait changes nothing**: desktop 120, shadow 389, refract 38, terrain 20,
+   effect2d 1610 - identical to the baseline. The kernel/firmware already recycles the two RTA data
+   sets through the handoff, and the user-space wait returns only when the GPU work would have been
+   finished anyway, so it costs no GPU time.
+3. **8 draw slots instead of 4** (reverted): no change on any scene - queue depth is not the limiter.
+4. **Render-target load**: forcing the clear-background path (no target reload) changes nothing on
+   opaque scenes (texture 1544->1533 fps, build 1335->1337), so the load is either already skipped
+   for shaders that do not read the destination or is negligible.
+
+So the earlier +34% came from skipping *all* waits (rendering became invalid and scenes drew much
+less work); with correct rendering the driver is **GPU-work-bound**. The remaining levers are the ones
+already identified: FP16 ALU (F16SOP encodings, the vendor's ~2x on shading/terrain/refract), the
+native terrain fragment shader's 47 vs 33 temps, and the refract pass structure. Job/dependency
+overhead is not worth further work.
