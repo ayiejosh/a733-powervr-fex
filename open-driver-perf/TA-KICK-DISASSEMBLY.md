@@ -3907,3 +3907,19 @@ to size the per-render-pass gap; use workloads that force real render passes on 
 Next measurement: count BOTH render-pass entries (`CmdBeginRenderPass2` and `CmdBeginRendering`) plus
 render submits for zink on the terrain scene (and the same for native), so the terrain gap can be
 attributed to pass count vs per-pass cost before changing the driver.
+
+### Round 182 - attribution done: the terrain gap is mip generation, not per-pass cost
+
+Counted the reference on the real scene (zink glmark2 terrain, 11.06 s, FPS 26 -> ~287 frames):
+**2573 render passes and 2315 render submits, every submit jobs=3** = ~9.0 render passes and ~8.1
+render-job submissions per frame.  Native terrain (round 175) submits ~52 render jobs per frame of
+which ~8 are real passes (main/shadow/colour-only) and ~29 are mip-generation passes.
+
+So for the same scene the real render-pass counts match (~8-9/frame); native's extra ~29 mip-pass
+submissions per frame *are* the gap (29 x ~0.19-0.26 ms ~= 5.5-7.5 ms of a 50 ms frame, i.e. most
+of the 20 vs 26-27 fps difference).  The Vulkan path does not render mips as render passes - zink's
+mip generation goes through the transfer/blit path.
+
+Top lever for terrain/refract is therefore: generate mip chains through the transfer/blit path (or
+otherwise stop paying a full render-pass job set per mip level).  The pass-merge work remains valid
+for the many-render scenes but is not what the terrain gap is made of.
