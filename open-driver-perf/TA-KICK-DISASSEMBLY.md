@@ -4076,3 +4076,24 @@ drawbench2, native pvr under weston/headless (3-run medians):
 
 glmark2 per-scene: cel **528 -> 1243** (vendor 1153), effect2d **763 -> 1573** (vendor 1169),
 bump **413 -> 1518** (vendor 672), shading 961 -> 946 (unchanged).  17-group gate: ALL GROUPS PASS.
+
+### Round 190 addendum - correction: the per-scene gains were single-scene-run artefacts
+
+The per-scene cel/effect2d/bump numbers quoted in round-190 came from `glmark2 --benchmark <scene>`
+single-scene runs whose first FPS line is not the same benchmark as the one in the full run; they
+did not reproduce.  The authoritative measurement is a **full glmark2 run** (900 s cap, 33
+benchmarks / 16 scenes): **Score 795** (previous native 794/805), and per-benchmark comparison
+against the previous native run shows everything within a few percent (build 1238/1253 vs
+1251/1309, shading 931/781/642/517 vs 961/794/646/528, bump 411/1353/999 vs 413/1377/1013,
+effect2d 750/336 vs 763/340, terrain 23 vs 20, shadow 389 vs 386, refract 44 vs 37).
+
+So patch 0369 does what it says on repeated-state workloads (manydraws 514->986, blend 521->985,
+fill 1754->2465 in drawbench2) but glmark2 scenes change per-draw state (uniforms/PDS data), so the
+full score does not move.  It stays as a correct, gated microbenchmark win.
+
+Full-run per-benchmark gaps vs vendor (native/vendor): shading 0.45-0.68, shadow 0.55, terrain 0.57,
+ideas 0.59, refract 0.59, bump 0.61-0.64, effect2d 0.64-0.69, texture 0.90, build 0.97.  Since native
+and zink are within ~10% of each other on every scene and the ALU/vertex/texture/fill microbenchmarks
+are at or above vendor parity, the next thing to isolate is per-draw cost with *changing* state
+(a "manydrawsflex" microbenchmark: 27 draws/frame with a uniform update per draw) - if that is at
+vendor parity too, the remaining gap is in the sampling/fragment-state path these scenes share.
