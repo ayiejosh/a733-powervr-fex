@@ -3315,3 +3315,49 @@ is **kept applied** in `/home/radxa/kernel-src/powervr/pvr_ccb.c` (it only print
 `CTXRESET ...` line for firmware reset notifications the mainline handler would otherwise ignore);
 the round-162 `pvr_job.c` firmware-command dump was reverted and the module rebuilt from clean sources
 plus that decode.
+
+## Round-163 (2026-10-31): coherent single-run snapshot - the replay's inputs are now provably identical, the fault is per-context firmware state
+
+### 1. Root cause of the contradictory bisection results: mixed runs
+The PDS sub-allocator hands out offsets in allocation order, so a stream captured in one process run
+does not necessarily name the same blocks as an allocation dump from another run. Every earlier
+"replay installs byte-identical bytes" comparison mixed at least two runs; the lag in the firmware's
+context-reset notification (it is delivered when a *later* submission processes the CCB, not with the
+faulting job) then made the "what does the fault address track" bisection look consistent when it was
+not.
+
+### 2. One-run capture of the whole transfer path
+A new temporary capture hook in the reference driver (registry of every mapped GPU block: PDS/USC
+uploads, sub-allocator blocks, per-heap `pvr_bo_alloc` buffers, keyed by device address and dumped with
+the firmware streams at transfer submit; `PVR_DUMP_ARENA`) gives, for a single `vktq_copy` run, both
+firmware streams and all 97 mapped blocks. Checked in as
+`captures/tq-fault/single-run-{streams.bin,blocks.txt}`. Facts from that snapshot:
+
+* the copy stream is **byte-identical** to the bundle capture used by the replay;
+* the control stream at `0xe400000000`, both TQ shaders (USC `0x7340` 16 words, `0x73c0` 20 words), both
+  kickusc programs (`PDS 0x41000 -> 0x7340`, `0x42000 -> 0x73c0`), the pixel-event data/code at
+  `0x2680`/`0x26a0`, the texture-unicode code at `0x1e40`, the varying base program at `0x26c0`, and the
+  first texture-state DMA program at `0x2640` (`0x800004b080`) are **byte-identical** to the replay;
+* the replay was wrong in exactly two inputs, now fixed in probe 0363:
+  1. PDS `0x2700` (the control stream's `TEXTUREDATABASE`) holds a **second texture-state DMA program**
+     whose source is `0x800004b100` (not `0x4b080`);
+  2. that second texture-state DMA **space at `0x800004b100`** was never mapped by the replay;
+* the replay's fill job pixel-event program was also wrong (task is the EOT shader at USC `0x5d40`, not
+  `0x5c00`, and it names the source buffer as its write destination) - fixed.
+
+### 3. Result: still a firmware context reset, now with all inputs identical
+With both fixes the replay maps and installs every block of the coherent snapshot, and the firmware
+command is byte-identical (round-162), yet the copy still ends in
+`CTXRESET reason=1 (GUILTY_LOCKUP) dm=3 flags=0x1`: the ISP data master page-faults at
+`USC heap base + <first dword of a texture-state DMA program>` - i.e. those programs' first word is
+consumed as a USC-space address. Varying the first word moves the fault address, and pointing it into
+the mapped USC page (e.g. `0x73c0`) moves the fault to the *other* texture-state program, so both are
+consumed the same way. The reference consumes identical bytes without a fault.
+
+The only remaining difference is therefore **firmware-visible per-context state** (the job command and
+all job memory are now proven identical), or the kernel-side `rogue_fwif_fwtransfercontext`. Next probe:
+dump that firmware context object from `pvr_context.c` for the reference and the replay and diff it;
+if identical, the difference is in how the kernel's transfer queue object is set up for the first kick
+and the next step is a per-context initialisation job in the same style as the 3D static context state.
+
+Evidence: `captures/tq-fault/single-run-{streams.bin,blocks.txt}`; Mesa probe 0363.

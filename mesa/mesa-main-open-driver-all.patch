@@ -7623,10 +7623,10 @@ index 00000000..7c2fb328
 +#endif /* PVR_HWRT_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
 new file mode 100644
-index 00000000..0d1e98e6
+index 00000000..c64408eb
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_probe.c
-@@ -0,0 +1,6399 @@
+@@ -0,0 +1,6407 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -13692,8 +13692,8 @@ index 00000000..0d1e98e6
 +   /* Fill job's pixel-event program (stream 0, used for the control run): data at PDS+0x2600,
 +    * code at 0x2620, USC fill kernel at 0x5c00 (all from the same capture). */
 +   {
-+      uint32_t fill_data[5] = { 0x00005c00, 0x00000000,
-+                                (uint32_t)((dst_addr >> 2) & 0xffffffffu), 0x00081a20, 0x90000002 };
++      uint32_t fill_data[5] = { 0x00005d40, 0x00000000,
++                                (uint32_t)((src_addr >> 2) & 0xffffffffu), 0x00081a20, 0x90000002 };
 +      static const uint32_t fill_code[2] = { 0xf0040101, 0xf4000002 };
 +      static const uint32_t fill_kernel[4] = { 0xc280a048, 0x01804080, 0xff000088, 0xfffffff2 };
 +
@@ -13752,18 +13752,19 @@ index 00000000..0d1e98e6
 +            texdma1[0] = (uint32_t)strtoul(getenv("PVR_PROBE_TQ_COPY_TEXDMA1"), NULL, 0);
 +         memcpy((uint8_t *)pdsbo.map + (0x2640 - 0x1000), texdma1, sizeof(texdma1));
 +      }
-+      /* The IPF control stream's TEXTUREDATABASE field names the DMA burst program at PDS+0x2700
-+       * (state->tex_state_data_offset); the reference generates it from that pass's own texstate
-+       * data buffer, which can differ from the bgnd1 one. PVR_PROBE_TQ_COPY_TEXDMA2 sets its
-+       * first word explicitly for experiments (default: same DMA space as 0x2640). */
++      /* The IPF control stream's TEXTUREDATABASE field names the second DMA burst program at
++       * PDS+0x2700; in one same-run capture its source is 0x800004b100 (the destination-load
++       * variant), not the bgnd1 one (0x800004b080). PVR_PROBE_TQ_COPY_TEXDMA2 overrides word 0. */
 +      {
-+         uint32_t texdma2[4] = { texdata_dma[0], texdata_dma[1], texdata_dma[2], texdata_dma[3] };
++         uint32_t texdma2[4] = { 0x0004b100, 0x00000080, 0x90000014, 0x00000000 };
 +
 +         if (getenv("PVR_PROBE_TQ_COPY_TEXDMA2") != NULL)
 +            texdma2[0] = (uint32_t)strtoul(getenv("PVR_PROBE_TQ_COPY_TEXDMA2"), NULL, 0);
 +         if (getenv("PVR_PROBE_TQ_COPY_TEXDMA2H") != NULL)
 +            texdma2[1] = (uint32_t)strtoul(getenv("PVR_PROBE_TQ_COPY_TEXDMA2H"), NULL, 0);
 +         memcpy((uint8_t *)pdsbo.map + (0x2700 - 0x1000), texdma2, sizeof(texdma2));
++         printf("tqcopy:        PDS+0x2700 = %08x %08x %08x %08x\n",
++                texdma2[0], texdma2[1], texdma2[2], texdma2[3]);
 +      }
 +   }
 +
@@ -13782,8 +13783,15 @@ index 00000000..0d1e98e6
 +         0xc0002d84, 0x00011ffc, 0xec0007ff, 0x10200002, 0, 0, 0, 0, 0, 0x00022400,
 +         0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 +      };
++      /* Second texture-state DMA space (source of the PDS+0x2700 program); captured in the same
++       * run as the control stream. */
++      static const uint32_t dma_state2[20] = {
++         0xc0002d84, 0x00011ffc, 0xdc0007ff, 0x10200002, 0, 0, 0, 0, 0, 0x00002400,
++         0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
++      };
 +
 +      memcpy((uint8_t *)dmabo.map + 0x80, dma_state, sizeof(dma_state));
++      memcpy((uint8_t *)dmabo.map + 0x100, dma_state2, sizeof(dma_state2));
 +   }
 +
 +   if (!pvr_bo_create(fd, 0x4000, 4096, &uscbo) ||
