@@ -4157,3 +4157,76 @@ drawbench2, depth-attached FBO, 3-run medians (before -> after, vendor):
 17-group gate: ALL GROUPS PASS.  Full glmark2 run: **score 799** (was 795/794) - the fix removes a
 pathological case rather than the glmark2 gap, which remains unexplained by every microbenchmark
 tried so far (ALU, fill, texture, vertex, blend, manydraws, changing state, depth).
+
+### Round 194 - a realistic math shader is 25% slower than the vendor compiler
+
+Added a `math` mode to drawbench2: a Phong-style fragment shader using normalize, dot, max, pow,
+exp2, log2, sqrt and inversesqrt on highp values (the patterns glmark2's shading/bump/effect2d
+shaders use, unlike the pure-FMA `alu` chain which is at parity).
+
+| mode | vendor | native | zink | native/vendor |
+|---|---|---|---|---|
+| alu (128-step FMA chain) | 133.2 | 130.8 | 128.5 | 0.98 |
+| math (normalize/dot/pow/exp2/log2/sqrt/rsqrt) | 1292.0 | 1032.6 | 1017.0 | **0.80** |
+| fill | 2387.5 | ~2470 | 1841.0 | 1.03 |
+
+So the shader gap is real for realistic math even though a raw FMA chain is at parity: pco's code for
+the transcendental/normalisation patterns is ~25% behind IMG's compiler. That accounts for part of
+the glmark2 shading/bump/effect2d/e2d deficits (0.45-0.68); the rest must come from the same shaders'
+other work. Next: run the `math` and glmark2 shaders with PCO_DEBUG=fs,stats and inspect the
+generated instruction sequence for the normalize/pow/exp2/log2 patterns (e.g. whether pow(x,16) is
+exp2(log2(x)*16) or a longer sequence, whether normalize collapses to rsqrt+3 muls, and temps).
+
+### Round 195 - pco code for the math shader is compact; the remaining shader gap is issue efficiency
+
+Dumped pco's final IR for the `math` shader (`PCO_DEBUG_PRINT=stats,fs`; note the print env is
+PCO_DEBUG_PRINT, the behaviour flags are PCO_DEBUG): 280 bytes of code, 8 temps, no spills, 26
+instruction groups (17 main, 5 bitwise, 4 control).  The sequence is reasonable: pow(x,16) becomes
+flog -> fmul(16) -> fexp (3 instructions), sqrt via frsq+frcp+mul, hardware frsq/fexp/flog/frcp are
+used, some groups already dual-issue (p0/p1 pairs), and the output is packed with pck/u8888.
+
+So it is not instruction-count bloat.  The 0.80x on this shader is issue efficiency (dual-issue
+pairing density, bank conflicts, occupancy from temps) rather than missing optimisations.  Shader
+code size for a glmark2 shading FS is the next thing to compare directly (the scene's own shader via
+PCO_DEBUG_PRINT=fs) against the measured 0.45-0.68 scene ratios.
+
+### Round 196 - glmark2's own shaders resist PCO_DEBUG_PRINT capture (next: dedicated replayer)
+
+Tried to get pco stats for the actual glmark2 `shading` fragment shaders by running the benchmark with
+`PCO_DEBUG_PRINT=stats MESA_SHADER_CACHE_DISABLE=1` under the native driver: no stats lines are
+emitted (FPS unchanged at 924-953, so the scene used the driver normally).  The same env works for
+db2's own shaders (`math` mode printed IR+stats), so glmark2's shaders go through a path that does
+not reach the pco dump (cache/async compile or a different compile entry).  Capturing real-scene
+shader stats needs a dedicated replayer that feeds the scene's GLSL to our driver directly, or
+instrumenting pco_finalise to log unconditionally with a marker.
+
+### Round 197 - shader replayer built; glmark2 shaders are preprocessed templates
+
+Added `open-perf/shaderstat.c`: an EGL pbuffer replayer that compiles a VS/FS pair through our driver,
+links and draws one triangle, so `PCO_DEBUG_PRINT` stats can be collected per shader.  glmark2's
+shader files are *templates*: they have no precision header (composed by glmark2's ShaderSource) and
+use scene-defined names (`LightSourcePosition`, ...), so direct replay mostly fails to compile.
+Prepending `precision mediump float/int` plus the light uniforms lets `light-cel` and `desktop`
+compile, while light-advanced/bump-normals need the correct uniform types (vec3) and light-phong /
+bump-height / effect-2d-convolution use template directives with a different syntax.
+Next: replicate glmark2's ShaderSource composition for the shading shaders (or extract the composed
+strings by hooking glShaderSource in a preload) and then collect their pco stats.
+
+### Round 198 - dual-issue matters for the math shader (5-25%), not for the FMA chain
+
+Ran the math/alu benchmarks with pco's `no_dual_issue` flag (two repeats):
+
+| shader | default | no_dual_issue |
+|---|---|---|
+| math | 969.5 / 1005.8 | 726.4 / 952.4 |
+| alu (serial FMA chain) | 127.7 / 131.5 | 130.2 / 131.0 |
+
+Dual-issue pairing is contributing on the realistic math shader (the first repeat shows 25%, the
+second 5% - noisy because the flag changes the compiled shader and the machine load varies), and it
+is (as expected) irrelevant to a serial dependency chain. So pco's dual-issue scheduler is active and
+useful; the 0.80x vs vendor is likely pairing *density*/bank-conflict quality rather than absence.
+
+Next candidates for the shader gap: inspect `pco_group_instrs.c`'s `try_dual_issue`/`dual_dest_ok`
+heuristics for missed pairs (e.g. pairs only formed within a block, dest bank restrictions, predicate
+handling), and instrument the math shader's pairing count. On the scene side, count draws/renders per
+frame for the glmark2 shading benchmark to make sure the remaining 0.45-0.68 ratio is not extra passes.
