@@ -4416,3 +4416,38 @@ default median ~979 fps (978.5, 780.1, 1009.8, 952.0, 988.5), skip median ~865 f
 vendor compiler is quality/tuning (bank conflicts, pairing density) inside that machinery, not a
 missing or harmful pass.  Further work here is genuine compiler engineering (the scheduling-after-RA
 TODO), not a knob.
+
+## Round 209 - session consolidation: state of the native driver vs vendor
+
+Patches landed this session (all gate-green, pushed): 0367 batched render submission with owned
+streams; 0368 mip-chain content cache; 0369 per-draw TA state dedup; 0370 ZLS gating.
+
+Wins (drawbench2, native pvr, 3-run medians): manydraws 514 -> 986 (vendor 956), blend 521 -> 985
+(vendor 849), fill 1754 -> 2465 (vendor 2234), depth-attached fill 1087 -> 2500 (vendor 2342),
+mipgen 986 -> 1578 (vendor 986), depthover 751 -> 990 (vendor 957). Terrain 20 -> 23 fps, refract
+37 -> 44 (zink 26-27 / 47; vendor 40 / 75).
+
+Official full runs on this tree: native 794/802, zink 776/775, vendor 1170/1150 (Oct 30: 1226/1196).
+The glmark2 score plateau is therefore not from the paths fixed above.
+
+Ruled out as explanations (each measured, several with controlled interleaved repeats): fragment ALU
+throughput, fill rate, texture sampling, vertex throughput, blending, per-draw cost (same state and
+changing state), depth-attached-unused renders, harness/Xwayland present cost, FP16/mediump lowering,
+the dual-issue window, and pco pre-RA scheduling-pass toggles.   What remains, and is now narrowed:
+~13-20% realistic-shader execution efficiency in pco versus IMG's compiler (shading = 1 fragment
+pass/frame, ALU/trans/vertex microbenchmarks at parity, code size compact, dual-issue active) plus the
+multi-render scenes' per-render job-set cost.
+
+Remaining work is genuine compiler engineering on pco: the documented scheduling-after-RA TODO
+(pco_ir.c:52 - scheduling currently runs before RA, so bank/dual-issue decisions are made without
+final physical register assignments), bank-conflict-aware grouping/scheduling (the public ISA
+reference explicitly defers bank/conflict details to the NDA ISR document, so the model must be
+derived empirically or from the hardware behaviour), and instruction-selection gaps.  A worthwhile
+first milestone is an empirical bank-conflict probe: a shader whose ops read registers with controlled
+bank relationships and compare timing against the vendor driver to confirm/deny the conflict model.
+
+Measurement methodology notes (learned this session): the vendor bench arm needs a *fresh* X server -
+record the new X PID and require the /tmp/.X11-unix/X1 socket (a stale session's Xorg :1 silently
+hijacks it; the desktop X process name is "X", not "Xorg").  drawbench2 is surfaceless EGL, so it
+cannot measure Xwayland present overhead.  `glmark2 --benchmark <scene>` single-scene runs are not
+comparable to full-run per-benchmark numbers; always compare full runs.
