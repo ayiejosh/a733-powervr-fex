@@ -3650,3 +3650,36 @@ twiddled/physical-width-stride handling, the TFBC compression-mode bits in the t
 (`ROGUE_TEXSTATE_COMPRESSION_MODE_FB_DIRECT_8X8` and its siblings), and the sampler state - plus the
 render-target physical extents the driver pads to. `no_fbc` alone changes nothing (terrain 20, refract
 38), so it is the twiddle layout/descriptor rather than the compression format itself.
+
+## Round-172 (2026-10-31): the linear-mip speedup is invalid; terrain/refract gap still needs a pass-structure comparison
+
+### 1. Splitting the twiddle knob: the gain comes from (linear) mip chains - but that path is broken
+Round-171 showed `PVR_NATIVE_DEBUG=no_twiddle` helps exactly refract (+22%) and terrain (+20%). A split
+knob (`no_twiddle_rt` = render targets only, `no_twiddle_mips` = GPU-uploaded mip chains only; exact
+comma-token parsing, temporary, reverted) gives:
+
+| configuration | terrain | refract |
+|---|---|---|
+| default (twiddled) | 20 | 38 |
+| `no_twiddle_rt` | 20 | 37 |
+| `no_twiddle_mips` | **26** | **48** |
+
+So render targets are irrelevant and the whole gain is the **mip chain layout**. But
+`pvr_resource_layout()` for the linear path allocates **level 0 only** (`stride * height`) and never
+fills `level_offset[]`, so with linear mip chains every level aliases level 0 - the 26/48 fps numbers
+are invalid rendering doing less work, not a real lever (same class of artefact as the round-168/169
+wait experiment). Reverted.
+
+### 2. glmark2 validation is not an oracle for this hardware
+`glmark2 --validate`: native fails 27 of 27 scenes, zink fails 21 - both stacks fail, so the comparison
+is not a correctness test across GPUs. (Worth knowing before using it to chase rendering bugs.)
+
+### 3. What is left for terrain/refract
+Both scenes have identical shader translations in native and zink (round-170/171) and the difference
+must be in the *pass structure*: how many render passes/jobs each path generates per frame and how the
+render target is set up per pass. Next measurement: count the render submissions per frame in the
+native path (a counter in `pvr_job_submit_render`) and compare with what the Vulkan driver produces
+for the same zink frame at the same draw count; also re-check the non-POT twiddled texture descriptor
+(`draw_level_desc` passes the *logical* width/height for level 0 while the PBE words use the physical
+ones - if the TPU needs the physical extents for twiddled addressing, non-POT twiddled sampling is both
+wrong and slow, which is exactly the terrain/refract shape).
