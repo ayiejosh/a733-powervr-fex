@@ -4230,3 +4230,21 @@ Next candidates for the shader gap: inspect `pco_group_instrs.c`'s `try_dual_iss
 heuristics for missed pairs (e.g. pairs only formed within a block, dest bank restrictions, predicate
 handling), and instrument the math shader's pairing count. On the scene side, count draws/renders per
 frame for the glmark2 shading benchmark to make sure the remaining 0.45-0.68 ratio is not extra passes.
+
+### Round 199 - the bare-Xorg control for the native stack is not possible, and the gap is scene-specific
+
+Tried to rule out the bench31 harness asymmetry (native/zink run under Xwayland, vendor under bare
+Xorg) by running native glmark2 under bare Xorg :1.  Xorg cannot initialise GL with our driver
+("(EE)" during Xorg startup, the GLES binary then hangs: rc=124 after 200 s), which is exactly why
+bench31 runs native under Xwayland - so the control is not available this way.
+
+The asymmetry is nevertheless not the explanation: under the same Xwayland path the native stack is
+at vendor parity on build (1238 vs 1282), texture (1389 vs 1546), mip (1585 vs 1453) and the
+microbenchmarks, while the deficits are concentrated in shading (0.45-0.68), shadow (0.55), ideas
+(0.59), refract (0.59), bump (0.61), effect2d (0.64) - a uniform per-frame harness cost would show up
+everywhere.  So the remaining gap is scene-specific GPU work plus the measured 0.80x realistic-math
+shader codegen gap.
+
+Next candidates, in order of expected value: (1) count draws/renders per frame for the shading and
+shadow glmark2 scenes to look for extra passes; (2) pco dual-issue density; (3) the per-render job-set
+cost for scenes with several passes (drawn from the Vulkan-driver hw-pass model).
