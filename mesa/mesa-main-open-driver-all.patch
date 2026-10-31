@@ -5259,10 +5259,10 @@ index 00000000..47695cc7
 +#endif /* PVR_CSB_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_draw.c b/src/gallium/drivers/pvr_native/pvr_draw.c
 new file mode 100644
-index 00000000..7e16f327
+index 00000000..efcb2bcd
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_draw.c
-@@ -0,0 +1,2316 @@
+@@ -0,0 +1,2327 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -6731,7 +6731,9 @@ index 00000000..7e16f327
 +   if (d->zs && pvr_resource(d->zs)->zclear_pending) {
 +      d->zclear_valid = true;
 +      d->zclear = pvr_resource(d->zs)->zclear;
-+      pvr_resource(d->zs)->zclear_pending = false;
++      /* The pending clear is consumed by pvr_draw_flush() only when a render actually uses the
++       * depth buffer: a depth-attached render with depth test off must not pay for a depth
++       * load/store, nor swallow a clear a later depth-using render or reader needs. */
 +   }
 +   d->rt_w = w;
 +   d->rt_h = h;
@@ -7500,7 +7502,13 @@ index 00000000..7e16f327
 +   pvr_frag_static_stream_set_isp(fstream, sizeof(fstream), usc_pixel_output_ctrl, isp_ctl,
 +                                  0x00000201u);
 +   uint32_t frag_flags = 0;
-+   if (d->zs != NULL) {
++   /* The depth buffer is only touched when the render uses it: depth test on, a depth-only render,
++    * or a materialized clear (deferred depth clear that has to be realized now). A depth-attached
++    * target with depth test off used to load and store the whole depth buffer per render (2.2x on
++    * drawbench2's depth-attached fill). */
++   const bool depth_used =
++      d->zs != NULL && ((ctx->dsa != NULL && ctx->dsa->depth_enabled) || zonly || d->no_defer);
++   if (depth_used) {
 +      const struct pvr_resource *zr = pvr_resource(d->zs);
 +      const int zf = draw_zls_format(d->zs->format);
 +      const float zc = d->zclear_valid ? d->zclear : 1.0f;
@@ -7514,11 +7522,14 @@ index 00000000..7e16f327
 +      const uint32_t zheight = zr->twiddled ? zr->phys_height : d->zs->height0;
 +      const uint32_t zstride = zr->twiddled ? (uint32_t)((uint64_t)zr->stride * zr->phys_height)
 +                                            : (uint32_t)zr->dev_size;
++      const bool zstore = zonly || d->no_defer || (ctx->dsa != NULL && ctx->dsa->depth_writemask);
 +      if (!pvr_frag_static_stream_set_zls(fstream, flen, &scr->dev_info, zf, zr->dev_addr,
-+                                          zwidth, zheight, !d->zclear_valid, true,
++                                          zwidth, zheight, !d->zclear_valid, zstore,
 +                                          bgdepth, zstride, zr->twiddled, zonly))
 +         goto done;
 +      frag_flags |= DRM_PVR_SUBMIT_JOB_FRAG_CMD_DEPTHBUFFER;
++      /* The deferred clear is realized by this render. */
++      pvr_resource(d->zs)->zclear_pending = false;
 +   }
 +   ((uint32_t *)fstream)[2] = (uint32_t)sc_addr; /* isp_scissor_base after the 2-dword header */
 +   ((uint32_t *)fstream)[3] = (uint32_t)(sc_addr >> 32);

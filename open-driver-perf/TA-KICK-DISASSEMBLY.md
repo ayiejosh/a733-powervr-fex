@@ -4116,3 +4116,44 @@ shadow 0.55, ideas/refract 0.59, bump 0.61, effect2d 0.64) must come from someth
 that the microbenchmarks do not: depth testing/early-Z, mipmapped texture sampling in shaders,
 program switches, or the off-screen FBO path. Next: add a depth-tested fill/draw microbenchmark (FBO
 with a depth attachment) and split a shading-scene run into CPU vs wall with /usr/bin/time.
+
+### Round 192 - depth-attached FBO exposes a real native-driver inefficiency
+
+Added depth-attached FBO modes to drawbench2 (`depthfill`: 1 quad with depth test; `depthover`: the
+same quad at the same depth 27x, so early-Z must reject 26 of them).  Measurements:
+
+| mode | vendor | native | note |
+|---|---|---|---|
+| fill (no depth attachment) | 2341-2427 | ~2386-2465 | parity |
+| fill, FBO now has a depth attachment, depth test OFF | 2341.7 | **1087.5** | native 2.2x slower |
+| depthfill (depth test ON, depth cleared) | 1432.2 | 2210.9 | native faster |
+| depthover (27 same-depth draws) | 956.8 | 750.9 | native 0.78x |
+
+The 2.2x regression with a depth buffer *bound but unused* points at `pvr_draw_flush()`: it
+configures the ZLS load/store whenever `d->zs != NULL` (pvr_draw.c:2238) regardless of whether the
+render uses depth, while the TA state only enables depth when `dsa->depth_enabled` (pvr_draw.c:1706).
+So a depth-attached target with depth test off pays a full depth load + store per render, and the
+ZLS stream may also be disabling the fast path.
+
+Next: gate the ZLS configuration on depth/stencil actually being used (and depth_writemask for the
+store), keeping a pending zclear for a later depth-using render - then re-measure `fill` with the
+depth attachment and the glmark2 2D scenes (effect2d), plus the depthover early-Z case (0.78x).
+
+## Round 193 - ZLS gating (patch 0370): depth-attached-unused renders 2.3x faster
+
+Fixed the round-192 finding: `pvr_draw_flush()` now configures the ZLS load/store (and the
+DEPTHBUFFER fragment flag) only when the render uses depth - `dsa->depth_enabled`, a depth-only
+render, or a materialized clear - stores only when `depth_writemask` allows writes, and leaves a
+deferred depth clear pending until a render that actually touches depth consumes it.
+
+drawbench2, depth-attached FBO, 3-run medians (before -> after, vendor):
+
+| mode | before | after | vendor |
+|---|---|---|---|
+| fill (depth attached, test off) | 1087.5 | **2500** | 2341.7 |
+| depthfill (test on, cleared) | 2210.9 | 2230 | 1432.2 |
+| depthover (27 same-depth draws) | 750.9 | **990** | 956.8 |
+
+17-group gate: ALL GROUPS PASS.  Full glmark2 run: **score 799** (was 795/794) - the fix removes a
+pathological case rather than the glmark2 gap, which remains unexplained by every microbenchmark
+tried so far (ALU, fill, texture, vertex, blend, manydraws, changing state, depth).

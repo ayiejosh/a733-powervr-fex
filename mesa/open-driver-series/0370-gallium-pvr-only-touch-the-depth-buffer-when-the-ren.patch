@@ -1,0 +1,69 @@
+From 6e9baf84b6b947dd583b22d262617844cdaa685d Mon Sep 17 00:00:00 2001
+From: radxa <radxa@radxa-cubie-a7a>
+Date: Sun, 1 Nov 2026 02:18:42 +0800
+Subject: [PATCH] gallium/pvr: only touch the depth buffer when the render uses
+ it
+
+pvr_draw_flush() configured the ZLS load/store and set the DEPTHBUFFER fragment flag
+whenever a depth buffer was bound, even when depth testing was disabled; the TA state
+only enables depth for dsa->depth_enabled. A depth-attached target rendered with
+depth test off therefore loaded and stored the whole depth buffer every render
+(drawbench2 fill with a depth attachment: 1087 -> 2500 fps, vendor 2341). Also only
+store depth when depth writes can happen (depth_writemask), and leave a deferred
+depth clear pending until a render that actually uses the depth buffer consumes it
+(a materialized clear still realizes it).
+
+17-group gate: ALL GROUPS PASS. glmark2 full-run score 799 (was 795/794).
+---
+ src/gallium/drivers/pvr_native/pvr_draw.c | 17 ++++++++++++++---
+ 1 file changed, 14 insertions(+), 3 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_draw.c b/src/gallium/drivers/pvr_native/pvr_draw.c
+index 7e16f327..efcb2bcd 100644
+--- a/src/gallium/drivers/pvr_native/pvr_draw.c
++++ b/src/gallium/drivers/pvr_native/pvr_draw.c
+@@ -1466,7 +1466,9 @@ draw_open(struct pvr_context *ctx, struct pvr_draw_state *d, struct pipe_resourc
+    if (d->zs && pvr_resource(d->zs)->zclear_pending) {
+       d->zclear_valid = true;
+       d->zclear = pvr_resource(d->zs)->zclear;
+-      pvr_resource(d->zs)->zclear_pending = false;
++      /* The pending clear is consumed by pvr_draw_flush() only when a render actually uses the
++       * depth buffer: a depth-attached render with depth test off must not pay for a depth
++       * load/store, nor swallow a clear a later depth-using render or reader needs. */
+    }
+    d->rt_w = w;
+    d->rt_h = h;
+@@ -2235,7 +2237,13 @@ pvr_draw_flush(struct pvr_context *ctx)
+    pvr_frag_static_stream_set_isp(fstream, sizeof(fstream), usc_pixel_output_ctrl, isp_ctl,
+                                   0x00000201u);
+    uint32_t frag_flags = 0;
+-   if (d->zs != NULL) {
++   /* The depth buffer is only touched when the render uses it: depth test on, a depth-only render,
++    * or a materialized clear (deferred depth clear that has to be realized now). A depth-attached
++    * target with depth test off used to load and store the whole depth buffer per render (2.2x on
++    * drawbench2's depth-attached fill). */
++   const bool depth_used =
++      d->zs != NULL && ((ctx->dsa != NULL && ctx->dsa->depth_enabled) || zonly || d->no_defer);
++   if (depth_used) {
+       const struct pvr_resource *zr = pvr_resource(d->zs);
+       const int zf = draw_zls_format(d->zs->format);
+       const float zc = d->zclear_valid ? d->zclear : 1.0f;
+@@ -2249,11 +2257,14 @@ pvr_draw_flush(struct pvr_context *ctx)
+       const uint32_t zheight = zr->twiddled ? zr->phys_height : d->zs->height0;
+       const uint32_t zstride = zr->twiddled ? (uint32_t)((uint64_t)zr->stride * zr->phys_height)
+                                             : (uint32_t)zr->dev_size;
++      const bool zstore = zonly || d->no_defer || (ctx->dsa != NULL && ctx->dsa->depth_writemask);
+       if (!pvr_frag_static_stream_set_zls(fstream, flen, &scr->dev_info, zf, zr->dev_addr,
+-                                          zwidth, zheight, !d->zclear_valid, true,
++                                          zwidth, zheight, !d->zclear_valid, zstore,
+                                           bgdepth, zstride, zr->twiddled, zonly))
+          goto done;
+       frag_flags |= DRM_PVR_SUBMIT_JOB_FRAG_CMD_DEPTHBUFFER;
++      /* The deferred clear is realized by this render. */
++      pvr_resource(d->zs)->zclear_pending = false;
+    }
+    ((uint32_t *)fstream)[2] = (uint32_t)sc_addr; /* isp_scissor_base after the 2-dword header */
+    ((uint32_t *)fstream)[3] = (uint32_t)(sc_addr >> 32);
+-- 
+2.47.3
+
