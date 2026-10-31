@@ -3582,3 +3582,35 @@ less work); with correct rendering the driver is **GPU-work-bound**. The remaini
 already identified: FP16 ALU (F16SOP encodings, the vendor's ~2x on shading/terrain/refract), the
 native terrain fragment shader's 47 vs 33 temps, and the refract pass structure. Job/dependency
 overhead is not worth further work.
+
+## Round-170 (2026-10-31): F16SOP is publicly documented (semantics only); terrain gap is not the shader code
+
+### 1. F16SOP: public ISA documentation found
+IMG publishes the **PowerVR Instruction Set Reference** at
+<https://docs.imgtec.com/reference-manuals/powervr-instruction-set-reference/html/> - the F16SOP page
+(<https://docs.imgtec.com/reference-manuals/powervr-instruction-set-reference/html/topics/floating-point-instructions/F16SOP.html>)
+documents the full instruction family:
+
+* `F16SOP W0{.E0|.E1}.jOut, (W0|W1){.E0|.E1}.kOut, (W1|_), Sn{...}{.NEG}, (Sn|0){...}{.ONEMINUS}, jOp,
+  Sn... , kOp, Sn..., (S3|_)` with `jOp` in {add, sub, min, max, rsub, mad}, `kOp` in
+  {add, sub, min, max, rsub}: two half-precision sums of products packed into W0[31:16]/[15:0]
+  (or converted to F32 when rfmt(1)=1), plus the `F16SOP.MAD`, `F16SOP.U8`, `F16SOP.U8MAD` variants and
+  `SOPMOV`.
+* The `sngl_op` code 0b0100 for F16SOP matches `pco_isa.py`/upstream `rogue_isa.h`, so the main-op and
+  sub-op bits are already known; what is still missing is the **bit-level operand layout**, which the
+  HTML reference does not include (the PDF at `cdn.imgtec.com/sdk-documentation/PowerVR+Instruction+
+  Set+Reference.pdf` is access-denied from this host).
+* Next step for F16SOP: get one vendor-compiled shader that uses it (IMG DRI driver on the vendor
+  kernel stack - an `LD_PRELOAD` shim dumping its USC uploads) and diff the instruction words against
+  a known `sop` sequence from the ISA reference; the main-op (3 bits), sngl_op (4 bits), destination
+  and source maps are all known from `pco_isa.py`, so the search space is only the F16SOP-specific
+  modifier/op-select fields.
+
+### 2. Terrain: the shader code is the same in both stacks
+NIR for the biggest terrain fragment shader (`PCO_DEBUG_PRINT=fs,nir`, cache disabled):
+native 1904 SSA instructions, zink 1902 - nearly identical opcode mix (native 608 load_const /
+397 ffma / 284 fmul / 195 fadd / 136 ffloor; zink 597 / 401 / 280 / 190 / 152). Yet native runs the
+scene at 20 fps and zink (same pco compiler, same GPU, our Vulkan driver underneath) at 27 fps. So the
+terrain gap is **not** the fragment shader translation; it is driver pipeline state that differs between
+the two paths - the next thing to compare is the vertex shader (terrain is vertex-heavy) and the
+per-draw pipeline registers (ISP tile config / `usc_pixel_output_ctrl` / depth setup).
