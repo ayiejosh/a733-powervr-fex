@@ -3432,3 +3432,40 @@ the hardware does treat it as a DMA descriptor there.
 Note: the round-163/164 fault-address bisection is partly confounded - the probe's static firmware
 areas were unmapped then (fixed in round-164), so some of those faults were "firmware executed from
 unmapped static memory" rather than the transfer job itself.
+
+## Round-166 (2026-10-31): transfer-state selector sweep (negative), performance re-baseline and a ruled-out perf lever
+
+### 1. TQ selector sweep: no selector among the remaining registers
+With all job data byte-identical (round-163) and the static firmware programs now in place
+(round-164), the candidate state that could make the firmware consume the texture-state program as a
+DMA descriptor rather than a kick was swept through new probe overrides: stream `isp_ctl`, `isp_aa`,
+background size info (`pds_bgnd3_sizeinfo`, both halves), and the control stream's primitive-block
+`SIZEINFO1` (word 56) and `SIZEINFO2` (word 60). Result:
+
+| override | firmware fault |
+|---|---|
+| `isp_ctl` = 0x1f000 / `isp_aa` = 0x2500 | unchanged `0xe00004b080` |
+| control stream SIZEINFO1 = 0 / SIZEINFO2 = 0 / both | unchanged `0xe00004b080` |
+| background size info = 0 | `0x10000` (decode changes, still a fault) |
+
+So the size info participates in address decoding but is not the DMA-vs-kick selector. The TQ path
+stays blocked; the honest conclusion after rounds 161-166 is that the remaining difference is outside
+the userspace-visible job state (command, all mapped memory, static programs and kernel context object
+all verified identical or structurally identical), i.e. firmware behaviour we cannot reach from the
+userspace side with these probes.
+
+### 2. Performance re-baseline (bench31, native + zink)
+`bench31.sh` on the current driver (patches 0361-0365): **native 794 / 805** (previous baseline
+806/806), **zink 759** (previous 775/777). The native delta is within run-to-run noise (~1.5%); the
+static-memory move from draw-context creation to screen creation is perf-neutral for glmark2 (one
+context per process). The run hit the 20-minute cap during the vendor arm, so only the two open-stack
+arms are recorded; future runs need a longer cap or per-arm invocation.
+
+### 3. Ruled out: fixed-function blending
+The largest scene gaps are blend-heavy (desktop blur/shadow 0.37x/0.41x, cel/refract/terrain ~0.5x)
+while opaque scenes are near vendor (0.76-0.95x), which suggested our shader-lowered blending
+(`nir_lower_blend` + destination load) was leaving a fixed-function PBE blend unit unused. The
+generated csbgen headers for this GPU contain **no blend-function registers at all** (no `blend`
+symbol in any rogue packet header) - on this hardware blending is a shader operation, which is what the
+driver already does. That lever does not exist; the remaining perf levers are the known FP16 ALU gap
+(F16SOP encodings missing in pco) and per-job fixed cost for many-small-draw scenes (to be measured).

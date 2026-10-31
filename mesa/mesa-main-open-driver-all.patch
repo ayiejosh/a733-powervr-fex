@@ -7623,10 +7623,10 @@ index 00000000..7c2fb328
 +#endif /* PVR_HWRT_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
 new file mode 100644
-index 00000000..c89d141c
+index 00000000..72f28844
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_probe.c
-@@ -0,0 +1,6431 @@
+@@ -0,0 +1,6447 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -13659,6 +13659,14 @@ index 00000000..c89d141c
 +      ((uint32_t *)stream)[3] = (uint32_t)strtoul(getenv("PVR_PROBE_TQ_COPY_BGND0U"), NULL, 0);
 +   if (getenv("PVR_PROBE_TQ_COPY_BGND1") != NULL)
 +      ((uint32_t *)stream)[5] = (uint32_t)strtoul(getenv("PVR_PROBE_TQ_COPY_BGND1"), NULL, 0);
++   if (getenv("PVR_PROBE_TQ_COPY_BGND3") != NULL) {
++      ((uint32_t *)stream)[6] = (uint32_t)strtoul(getenv("PVR_PROBE_TQ_COPY_BGND3"), NULL, 0);
++      ((uint32_t *)stream)[7] = (uint32_t)strtoul(getenv("PVR_PROBE_TQ_COPY_BGND3"), NULL, 0);
++   }
++   if (getenv("PVR_PROBE_TQ_COPY_ISPCTL") != NULL)
++      ((uint32_t *)stream)[36] = (uint32_t)strtoul(getenv("PVR_PROBE_TQ_COPY_ISPCTL"), NULL, 0);
++   if (getenv("PVR_PROBE_TQ_COPY_ISPAA") != NULL)
++      ((uint32_t *)stream)[37] = (uint32_t)strtoul(getenv("PVR_PROBE_TQ_COPY_ISPAA"), NULL, 0);
 +
 +   /* The clear register (stream dword 30) is patched in both tag-on and tag-off cases so a PBE
 +    * clear-store is distinguishable from a copy (PVR_PROBE_TQ_COPY_RAWCLR keeps the stream value). */
@@ -13863,6 +13871,14 @@ index 00000000..c89d141c
 +            /* Override the primitive block's TA_STATE_PDS_TEXTUREDATABASE field (word 58). */
 +            ((uint32_t *)csbo.map)[58] =
 +               (uint32_t)strtoul(getenv("PVR_PROBE_TQ_COPY_CSDB"), NULL, 0);
++         }
++         if (getenv("PVR_PROBE_TQ_COPY_CS56") != NULL) {
++            ((uint32_t *)csbo.map)[56] =
++               (uint32_t)strtoul(getenv("PVR_PROBE_TQ_COPY_CS56"), NULL, 0);
++         }
++         if (getenv("PVR_PROBE_TQ_COPY_CS60") != NULL) {
++            ((uint32_t *)csbo.map)[60] =
++               (uint32_t)strtoul(getenv("PVR_PROBE_TQ_COPY_CS60"), NULL, 0);
 +         }
 +         if (getenv("PVR_PROBE_TQ_COPY_CSVAR") != NULL) {
 +            /* Override TA_STATE_PDS_VARYINGBASE (word 57). */
