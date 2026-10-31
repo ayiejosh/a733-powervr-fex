@@ -3975,3 +3975,19 @@ Dumps kept in `open-driver-perf/captures/vk-multipass/` (`cs-cmds-1.txt`, `cs-cm
 the per-render state currently baked into the fragment static stream (PBE/EOT/ZLS/scissor/ISP) into
 per-pass PPP state blocks referenced by PPP_STATE_UPDATE commands in one batch control stream, with
 one geometry + one fragment job for the batch.
+
+### Round 186 - external data point on the same GPU: F16SOP is not the missing shader lever
+
+An independent Mesa developer working on the same PowerVR BXM-4-64 (BVNC 36.56.104.183) reports on
+Mesa 26.3-devel: the F16SOP path is still unimplemented upstream ("still a bunch of TODOs"), and
+their FP16/INT16/INT8 support reuses the 32-bit ALU paths instead
+(https://blog.mxpkx.com/index.php/archives/346/, MR
+https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/44801).  Their vkpeak numbers on this GPU:
+FP16 scalar 8.85 GFLOPS vs vendor 10.07 (-12%), FP16 vec4 6.49 vs vendor 5.40 (+20% faster than
+vendor), and FP32 vec4 6.04 vs vendor 2.34 (+158%).  So this silicon's FP16 rate is ~the FP32 rate -
+F16SOP would not halve ALU time - and Mesa's ALU throughput already beats the vendor driver on
+vector workloads.
+
+Consequence for the roadmap: the glmark2 gap is not raw shader throughput; deprioritise F16SOP.  The
+remaining gap is render-pipeline/job overhead per pass (the hw-pass merge) and mip generation, i.e.
+where the previous rounds already point.
