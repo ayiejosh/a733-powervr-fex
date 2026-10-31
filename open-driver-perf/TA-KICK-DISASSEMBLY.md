@@ -3868,3 +3868,12 @@ Next reading points: `pvr_arch_cmd_buffer.c` around the sub-command/hw-pass setu
 target state (PBE/EOT/RT address) into the control stream instead of building a new geometry/fragment
 static stream.  That is the piece our `pvr_draw_flush()` has to learn: build the static streams once
 per batch, append one hw pass per render, submit one job set.
+
+### Round 179 addendum - corrected submission count: zink really does submit 2 job sets per frame
+
+The round-177 addendum's count was taken from truncated output.  Re-measured with the submit counter
+and the whole log: zink `passes 27x64x64`, 5 frames -> **10 submits, every one `jobs=3`, i.e. 2
+geometry+PR+fragment job sets per frame for all 27 FBO passes plus the final draw**.  (Native: about
+28 job sets per frame.)  So the reference genuinely packs many render passes into one render job -
+the merge plan in the roadmap is the right target, and our 0.189 ms/render serial completion is what
+it removes.  Counter reverted, Vulkan .so rebuilt from the clean tree.
