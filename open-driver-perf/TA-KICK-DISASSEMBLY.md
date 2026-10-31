@@ -3309,3 +3309,9 @@ firmware state and the TQ path needs the vendor-style "transfer context init" jo
 
 Evidence: `captures/tq-fault/tqcmd-{ref,probe3}.txt` (firmware commands, dword-indexed) and
 `tools/verify/kernel-tqcmd-dump.patch`. Mesa probe 0362, board restored to vendor+desktop.
+
+Note on the local module tree: the context-reset decode from round-161 (`tools/verify/kernel-ctxreset-decode.patch`)
+is **kept applied** in `/home/radxa/kernel-src/powervr/pvr_ccb.c` (it only prints a decoded
+`CTXRESET ...` line for firmware reset notifications the mainline handler would otherwise ignore);
+the round-162 `pvr_job.c` firmware-command dump was reverted and the module rebuilt from clean sources
+plus that decode.
