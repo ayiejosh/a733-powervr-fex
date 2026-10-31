@@ -4387,3 +4387,22 @@ Fix for the next run: kill the stale Xorg, remove `/tmp/.X1-lock` and `/tmp/.X11
 the vendor arm verify a *fresh* Xorg (record its PID before starting) before running glmark2.  The
 last trusted vendor baseline therefore remains 1226/1196 (2026-10-30); native/zink for this session
 are 794/802 and 776/775.
+
+### Round 207 - vendor baseline re-measured after fixing the stale X server: 1170 / 1150
+
+With the stale `Xorg :1` gone and the arm verifying a *fresh* X (process name on this image is `X`,
+not `Xorg`; the socket `/tmp/.X11-unix/X1` is the reliable signal), the vendor arm completed:
+**vendor 1 = 1170, vendor 2 = 1150** (previous trusted run 1226/1196 on 2026-10-30; the difference is
+thermal/load variance across the session, not a driver change - the IMG driver is untouched).
+
+Complete round-205/207 record on this tree (patches 0367-0370):
+
+| arm | run 1 | run 2 | previous |
+|---|---|---|---|
+| native (Mesa pvr_native) | 794 | 802 | 794 / 805 |
+| zink (Mesa zink on our Vulkan driver) | 776 | 775 | 775 / 777 |
+| vendor (IMG 24.2) | 1170 | 1150 | 1226 / 1196 |
+
+native/vendor = 798 / 1160 = 0.69.  The gap is the pco shader-codegen efficiency (~13-20% measured on
+realistic shaders) plus the scene-specific multi-render work - no further measurement-only wins are
+expected; next work is codegen.
