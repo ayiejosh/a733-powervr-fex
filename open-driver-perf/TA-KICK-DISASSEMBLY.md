@@ -3395,3 +3395,40 @@ selection for the transfer path, not the static programs.
 Next (unchanged from round-163, now with the static areas ruled out): dump the kernel's
 `rogue_fwif_fwtransfercontext` for both paths and diff; if identical, compare the two processes'
 first-kick timing (the reference submits its clear pass first on the same context).
+
+## Round-165 (2026-10-31): the firmware transfer-context object is identical, and the texture-data slot is consumed as a *kick* in the replay
+
+### 1. Kernel-side context comparison: no difference
+A temporary kernel print of the firmware context object for `DRM_PVR_CTX_TYPE_TRANSFER_FRAG`
+(`pvr_context.c`, `FWCTX` lines, reverted) shows both paths use the same 152-byte
+`rogue_fwif_fwtransfercontext` with identical values except the per-process fields: the two internal
+device addresses (CCCB control/CCCB, context state) and the PID (`0xe442f` vs `0xe4513`). Every
+firmware-visible field the job depends on (DM, priority, ccb addresses, mem-context address,
+context-state address, server context id) is structurally identical. So the kernel-side context is not
+the difference.
+
+### 2. The pre-job really runs - the copy still faults
+With the corrected fill pixel-event program a pre-job (the reference's clear pass, stream 0) now
+verifiably executes: its clear value lands in the source buffer (4096/4096 dwords, made
+distinguishable with `PVR_PROBE_TQ_COPY_PRECTL`). Submitting the copy stream after it still ends in a
+firmware context reset. So job ordering/preceding-kick state is not the difference either.
+
+### 3. The texture-data slots are consumed as USC kicks in the replay
+Setting both texture-state DMA programs' first word to a valid USC task address
+(`PVR_PROBE_TQ_COPY_TEXDMA1/2 = 0x73c0`, the 20-word copy shader) **removes the page fault** and turns
+it into a lockup reset (`flags=0x0 pc=0x0 fault=0x0`) - i.e. the firmware does launch the USC task at
+that word, the shader starts and hangs because the texture-state DMA never happened. With the captured
+DMA-burst content the same word is instead used as an address (`fault = USC heap base + word0`).
+
+So the hardware *can* consume those slots as kicks, while the reference - with byte-identical program
+bytes - consumes them as DMA descriptors. The selector is therefore in a register whose value we have
+not varied: the candidates are the background-object size info (`pds_bgnd3_sizeinfo`:
+usc_sharedsize / pds_texturestatesize / pds_tempsize), `isp_ctl`/`isp_aa`, and the control stream's
+`TA_STATE_PDS_SIZEINFO1/2`. Next experiment: sweep those three fields (they are already overridable for
+the stream; the control-stream words 56 and 60 need small additions), using the *3D draw path's*
+values as the reference for "DOUTD mode works" - the draws set the same kind of texturedata program and
+the hardware does treat it as a DMA descriptor there.
+
+Note: the round-163/164 fault-address bisection is partly confounded - the probe's static firmware
+areas were unmapped then (fixed in round-164), so some of those faults were "firmware executed from
+unmapped static memory" rather than the transfer job itself.

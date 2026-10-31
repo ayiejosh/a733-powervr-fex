@@ -7623,10 +7623,10 @@ index 00000000..7c2fb328
 +#endif /* PVR_HWRT_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
 new file mode 100644
-index 00000000..392f2c47
+index 00000000..c89d141c
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_probe.c
-@@ -0,0 +1,6414 @@
+@@ -0,0 +1,6431 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -13879,6 +13879,23 @@ index 00000000..392f2c47
 +         pvr_job_submit_transfer_sync(vm, cargs.handle, pre_stream, pre_len, 2000);
 +
 +      printf("tqcopy:        pre-job %s\n", pre_ok ? "COMPLETED" : "sync did not signal");
++      {
++         const uint32_t *sp = srcbo.map;
++         uint32_t ns = 0, ncle = 0, npoi = 0, noth = 0;
++
++         for (uint32_t i = 0; i < buf_size / 4; i++) {
++            if (sp[i] == TQ_FILL_PATTERN)
++               ns++;
++            else if (sp[i] == clearval)
++               ncle++;
++            else if (sp[i] == poison)
++               npoi++;
++            else
++               noth++;
++         }
++         printf("tqcopy:        pre-job src: pattern=%u clear=%u poison=%u other=%u\n",
++                ns, ncle, npoi, noth);
++      }
 +   }
 +
 +   completed = pvr_job_submit_transfer_sync(vm, cargs.handle, stream, stream_len, 2000);
