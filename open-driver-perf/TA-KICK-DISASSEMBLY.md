@@ -4282,3 +4282,24 @@ Mediump vs highp on the same math shader (2 repeats):
 Mediump is neutral for us and ~6% faster for the vendor, so precision/FP16 lowering is not the
 remaining 20-25%: it is fragment-shader issue efficiency (scheduling/dual-issue density/bank
 conflicts) versus IMG's compiler.  That is a compiler-quality gap, not a driver-state one.
+
+### Round 202 - the Xwayland/present hypothesis is ruled out by the build scene
+
+Reminder of the harness asymmetry: bench31 runs native/zink under Xwayland but vendor under bare
+Xorg, while drawbench2 runs surfaceless, so present/Xwayland cost could in principle inflate the
+glmark2 gap.  It cannot be the explanation: a constant per-frame present cost would depress every
+scene, yet under the same Xwayland path native matches the vendor on build (1238 vs 1282, 0.97) and
+texture (1389 vs 1546, 0.90) - scenes with plenty of frames.  The deficits stay concentrated in
+shading (0.68), bump (0.61), effect2d (0.64), shadow (0.55), ideas/refract (0.59).
+
+Combined with round-195/198/201: shading is one fragment-heavy pass per frame, pco's code is compact
+with dual-issue active, mediump is neutral, and the realistic-math shader is 0.80x vendor.  So the
+residual glmark2 gap is fragment-shader execution efficiency in pco versus IMG's compiler (plus the
+scene-specific extra work in shadow/ideas/refract, which are multi-render scenes).
+
+Next: this is now a compiler task.  Concrete pco starting points: the scheduling-after-RA TODO
+(pco_ir.c:52 - scheduling currently runs before RA, so register-bank/dual-issue decisions are made
+without final register assignments), instruction-selection gaps in pco_nir_alu/pco_opt, and the
+recorded `pco_scissor`/bank-conflict heuristics in pco_group_instrs.c.  A useful first milestone is a
+microbenchmark that isolates bank conflicts (e.g. many independent FMULs with different register
+pairs) to see if pco schedules them into conflicts.
