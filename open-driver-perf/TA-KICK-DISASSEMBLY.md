@@ -4248,3 +4248,18 @@ shader codegen gap.
 Next candidates, in order of expected value: (1) count draws/renders per frame for the shading and
 shadow glmark2 scenes to look for extra passes; (2) pco dual-issue density; (3) the per-render job-set
 cost for scenes with several passes (drawn from the Vulkan-driver hw-pass model).
+
+### Round 200 - dual-issue window tuning: widening hurts, narrowing is neutral on real scenes
+
+Tuned pco's `DUAL_ISSUE_WINDOW` (the look-ahead distance for phase-1 pairing in pco_group_instrs.c):
+
+| window | math | alu | glmark2 shading / bump / effect2d (single-scene) |
+|---|---|---|---|
+| 8 (default) | 969-1006 | ~130 | 946-953 / 1518 / 1556 |
+| 16 | 758-760 | ~124-128 | not measured (math clearly worse) |
+| 4 | 1017-1022 | ~131 | 957 / 1517 / 1569 |
+
+Widening to 16 loses ~25% on the math shader (more pairing opportunities but worse register
+pressure/scheduling quality), narrowing to 4 is within noise on real scenes (+0.4-1%).  Reverted to
+the default 8: the dual-issue scheduler's default window is fine, and its remaining 0.80x vs vendor
+is not tunable by this knob.
