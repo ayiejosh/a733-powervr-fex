@@ -4487,3 +4487,25 @@ The move is a clear ~25% regression on the math shader: the pre-RA scheduler's p
 with RA in a way the post-RA order does not reproduce.  Reverted (tree clean at 6e9baf84).  The
 remaining ranked candidates are #2 (let the dual-issue scan cross single-instruction bitwise groups)
 and #1 (enable the pco literal pool for native Gallium graphics).
+
+### Round 212 - vendor USC shader-code oracle captured (open-perf/vendor-usc/)
+
+The missing oracle now exists: the IMG GL driver compiles shaders in userspace and writes the USC HW
+code into CPU-mapped GPU heaps (`MemHeap:USC_CODE`) rather than via ioctls, so an LD_PRELOAD shim
+that dumps the /dev/dri/renderD128 mappings at glFinish captures it (plus GL_OES_get_program_binary
+for the Uniflex blob).  Real glmark2 shaders were composed and captured through gdb-break capture of
+glShaderSource, then each stage isolated with differential captures (trivial/trivial,
+sceneVS/trivialFS, sceneVS/sceneFS):
+
+- shading: VS 800 B, FS 56 B (the shading FS really is gl_FragColor=Color)
+- bump: VS 736 B, FS 264 B (real Blinn-Phong: normalize/dot/pow)
+- effect2d: VS 312 B, FS 64 B (glmark2's constant kernel leaves 8/9 taps dead) + a conv9 variant with
+  all 9 taps live (FS 608 B)
+VS code at offset 0x100 of a 512 KiB heap, FS at 0x1c0 of another; encoding is the USC
+instruction-group byte format, so pco's ISA tables apply.  Also notable: the proprietary compiler is
+split into /lib/libglslcompiler.so and /lib/libusc.so, both dlopen'd by the GLES driver and callable
+directly (exported PVRUniFlexCompileToHw / PVRUniflexWriteHWBinary / PVRUniFlexSymbolicDebug).
+
+Next: disassemble the captured FS blobs (vendor's own symbolic-debug entry preferred, pco-ISA decoder
+as fallback), diff against pco's output for the same GLSL, then implement the ranked pco candidates
+(#2 cross-bitwise-group pairing; #1 literal pool for native graphics).
