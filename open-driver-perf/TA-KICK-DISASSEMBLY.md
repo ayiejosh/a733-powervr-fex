@@ -4509,3 +4509,17 @@ directly (exported PVRUniFlexCompileToHw / PVRUniflexWriteHWBinary / PVRUniFlexS
 Next: disassemble the captured FS blobs (vendor's own symbolic-debug entry preferred, pco-ISA decoder
 as fallback), diff against pco's output for the same GLSL, then implement the ranked pco candidates
 (#2 cross-bitwise-group pairing; #1 literal pool for native graphics).
+
+### Round 213 - candidate #2 (pairing across bitwise groups) breaks the compiler: reverted
+
+Implemented the static analysis's candidate #2 (is_simple_bitwise_op crosses bbyp0bm_imm32 / msk_* /
+logical.* / pck / mov / movc / tst in try_dual_issue's forward scan) and measured with the candidate
+harness.  Result: math/alu/ilp/glmark2-shading produced **no fps at all** (shader compile/link
+failures or GPU faults), fill ran but slower (1426-1618 vs ~2400), and the 17-group gate failed the
+"half-float colour targets" group.  So hoisting a phase-1 ALU op above a bitwise group does not
+preserve the hardware's semantics (the literal/bypass results are consumed through the bitwise
+phase/bypass path, and the grouping order is load-bearing).  Reverted; tree clean at 6e9baf84.
+
+Both small compiler candidates are now measured negatives: #4 schedule-after-RA -25%, #2 pairing
+across bitwise groups incorrect.  The remaining work needs the vendor-code oracle (disassembly of
+captures/vendor-usc) to see what IMG actually does differently, rather than more blind edits.
