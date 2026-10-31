@@ -1,0 +1,19 @@
+# Firmware context-reset notification captured 2026-10-31 (open powervr driver, patched kernel
+# pvr_ccb.c decode only: tools/verify/kernel-ctxreset-decode.patch, reverted after the session).
+
+# 1) Copy replay (captured reference job, all buffers/stream/programs byte-identical): FAULTS.
+#    dmesg after: PVR_PROBE_TQ_COPY=<tq-ref/copystream2.bin> PVR_PROBE_TQ_COPY_CS=1 ./pvr-probe
+powervr 1800000.gpu: [drm] *ERROR* CTXRESET ctx=0 reason=1 dm=3 job=1 flags=0x1 pc=0x112310000 fault=0xe00004b080
+
+# 2) Fill replay (same capture, stream 0, hardware-clear path): no notification, destination written.
+# 3) Reference Vulkan vktq_copy (same firmware, same kernel): no notification, copy PASS.
+#
+# Decode:
+#   reason=1  ROGUE_CONTEXT_RESET_REASON_GUILTY_LOCKUP   (ISP data master locked up)
+#   dm=3      ISP/3D data master
+#   flags=1   ROGUE_FWIF_FWCCB_CMD_CONTEXT_RESET_FLAG_PF (page-fault)
+#   fault     0xe00004b080 = USC heap base 0xe000000000 + 0x4b080
+#            0x4b080 is the low dword of the texture-state DMA source 0x800004b080 (general heap)
+#
+# Raw notification id 0x2abc0069 = ROGUE_CMD_MAGIC_DWORD (0x2ABC) << 16 | 105
+#                              = ROGUE_FWIF_FWCCB_CMD_CONTEXT_RESET_NOTIFICATION

@@ -3190,3 +3190,72 @@ CPU is ~10% (user 0.51 s + sys 0.50 s over 10.2 s wall) - **GPU-bound**, and the
 are low. So temps do **not** explain the two largest gaps; the perf plan needs another lead. The
 pattern (4 windows x multi-pass desktop effects) points at per-small-render-pass GPU cost again
 (load/store passes, framebuffer/target switches), not ALU.
+
+## Round-161 (2026-10-31): the copy replay *hard-faults* in firmware - the missing state is the DMA/texture address base
+
+### 1. The replay was launching the wrong TQ shader (fixed in the probe)
+PDS/USC dumps from one reference `vktq_copy` run (temporary hooks in `src/imagination/vulkan`, reverted)
+show the reference compiles **two** TQ fragment shaders per run:
+
+| USC offset | size | temps | launched by |
+|---|---|---|---|
+| `0x7340` | 16 words | 2 | background-object kickusc program at PDS `0x41000` (stream `pds_bgnd0_base`) |
+| `0x73c0` | 20 words | 4 | IPF-control-stream kickusc program at PDS `0x42000` (`state->pds_shader_task_offset`) |
+
+The captured stream's `pds_bgnd0_base` is `[0x41000, 0x1e40]` but the IPF control stream's primitive
+block names `0x42000`, whose captured data word is `0x73c0` - and the probe had been forcing **both**
+kickusc programs to `0x7340`, i.e. it always launched the 16-word background variant with the wrong
+temps. Also captured byte-exact and now installed:
+
+* the **IPF control stream** (region array + primitive block, 78 dwords) at the transfer-fragment heap
+  base `0xe400000000` (the stream's `isp_mtile_base` is its heap offset, 0); the replay never mapped it;
+* the reference's texture-unicode program at PDS `0x1e40`: two **zero** words (the probe had guessed a
+  DMA program there);
+* the texture-state DMA program at PDS `0x2700` (`state->tex_state_data_offset`, named by the control
+  stream's TEXTUREDATABASE field) - `[0x0004b080, 0x00000080, 0x90000014, 0]`;
+* the PDS block named at `0x26c0` (`pvr_isp_prim_block_pds_state`'s varying base) and both kickusc
+  program buffers (`data = [task, 8]` + `f4000002` code, 0x24-byte BOs).
+
+Probe patch 0361: `PVR_PROBE_TQ_COPY_CS` installs the control stream + `0x26c0`, the 20-word shader is
+installed at `0x73c0`, kickusc `0x42000` names `0x73c0`, and `PVR_PROBE_TQ_COPY_PRE`/`PRECTL` replay a
+second captured stream through the same context with a distinguishable clear value to test whether an
+earlier kick establishes firmware context state.
+
+### 2. Result: still no store, but now we know *why* - the job faults
+With every captured buffer, the stream and all programs byte-identical the copy still writes nothing
+(tag ON: destination stays poison). A second experiment ruled out firmware per-context state: replaying
+the fill stream first (which does write its clear value, verified distinguishable via `PRECTL`) and the
+copy stream second still leaves the destination at the pre-job's value.
+
+What changed: the kernel logged `Received unknown FWCCB command 2abc0069` for **copy** replays only
+(never for the fill replay, never for reference runs). `0x2abc0069` is `ROGUE_CMD_MAGIC_DWORD (0x2ABC)
+<< 16 | 105` = `ROGUE_FWIF_FWCCB_CMD_CONTEXT_RESET_NOTIFICATION`: the firmware was reporting a context
+reset that this kernel version does not decode (it only handles freelist commands), so the failure was
+silent. A temporary kernel patch (`tools/verify/kernel-ctxreset-decode.patch`, decode only - no
+behaviour change) turns it into:
+
+```
+CTXRESET ctx=0 reason=1 dm=3 job=1 flags=0x1 pc=0x112310000 fault=0xe00004b080
+```
+
+* `reason=1` = `ROGUE_CONTEXT_RESET_REASON_GUILTY_LOCKUP` (the ISP data master locked up),
+* `dm=3` = the ISP/3D data master, `flags=0x1` = page-fault flag,
+* **`fault=0xe00004b080` = USC heap base (`0xe000000000`) + `0x4b080`** - and `0x4b080` is the low
+  dword of the shader's texture-state DMA source address `0x800004b080` (general heap).
+
+So under the tag-enabled/shader path the ISP's PDS DMA resolves the captured DMA source address with
+the **USC-heap base as its upper part** instead of the captured address-high word (`0x80` for
+`0x8000000000`). The fill/clear path never executes that DMA, which is why it works.
+
+### 3. Next step (precise)
+Find the state that selects the PDS-DMA address base: the transfer job's DMA burst program is generated
+by `pvr_pds_encode_dma_burst()` and encodes the full 64-bit address as two dwords, so either the
+program is entered at a different offset, or the ISP/PDS DMA uses a base register that the reference
+sets up and the replay does not (the native 3D draw path never has to DMA from the general heap into USC
+shared registers, so this is untested state in our driver too). Practical order: (1) dump the fw-visible
+`rogue_fwif_cmd_transfer` from both paths with a temporary kernel print and diff; (2) if identical,
+inspect how the transfer context's PDS/DMA base is programmed (fw trace mask is available on the module);
+(3) only then decide TQ vs the CPU-twiddle upload fallback.
+
+Evidence: `captures/tq-fault/{fw-context-reset.txt,ref-alloc-dump.log}`, `tools/verify/kernel-ctxreset-decode.patch`.
+Board restored to vendor+desktop after the session; 0 faults, 0 PVR_K errors.

@@ -137,12 +137,21 @@ Completed on the ES2 axis: 72 extensions, all backed by verification probes; one
 withdrawals, border/mirror clamp, anisotropy, emulated polygon offset, half-float colour targets
 (`EXT_color_buffer_half_float`). glmark2: native 806/806 vs zink 775/777 vs vendor 1226/1196.
 
+End-of-session status 2026-10-31 (patch series 0361, head 51b209dc) supersedes block 1 below: the
+copy replay was launching the wrong TQ shader (16-word 0x7340 instead of the 20-word 0x73c0 the IPF
+control stream's kickusc program at PDS 0x42000 names) and never installed the IPF control stream
+itself; both are fixed in probe 0361 and every input is now byte-exact. The replay still stores
+nothing, but a kernel-side decode of the firmware's CCB shows it is a **hard fault**, not silence:
+`CTXRESET reason=1 (GUILTY_LOCKUP) dm=3 flags=0x1 fault=0xe00004b080` - the ISP data master page-faults
+on the texture-state DMA source `0x800004b080` resolved with the USC-heap base (`0xe000000000`) as its
+upper part. Next step: diff the fw `rogue_fwif_cmd_transfer` for the reference vs the replay with a
+temporary kernel print, then find the PDS/ISP DMA address-base state the reference sets up. See
+TA-KICK-DISASSEMBLY.md round-161 and captures/tq-fault/.
+
 Open blocks, each with its precise next step:
-1. **Transfer-job copy replay (probe 0348-0357)**: the job submits and syncs, and the captured inputs
-   are byte-identical to the replay installs; the blocker is the background-tag execution context
-   (`isp_bgobjvals` enablebgtag; native driver comparison: bgobjdepth=1.0 + bgobjvals=0x3ff, transfer
-   stream 0x300 with no bgobjdepth packet). Next: instrument every general-heap BO written during
-   transfer submit (the copy job's DMA space branch was not the one hooked) and mirror the tag context.
+1. **Transfer-job copy replay**: blocked on the PDS/ISP DMA address-base state (round-161); the job
+   hard-faults in the ISP DM at the shader's texture-state DMA address. Next: kernel print of
+   `rogue_fwif_cmd_transfer` for both paths, then the DMA base register/fw trace.
 2. **Performance**: remaining gap is FP16 ALU; pco has an lp-fmad bit but it gives only ~2%, and the
    vendor's ~2x on shading/terrain/refract needs F16SOP single-op FP16 encodings that pco lacks entirely.
 3. **ES3 core**: needs the transfer/twiddle work (1) for 3D/array/compressed/depth uploads.
