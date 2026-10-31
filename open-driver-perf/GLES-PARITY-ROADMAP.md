@@ -148,10 +148,19 @@ upper part. Next step: diff the fw `rogue_fwif_cmd_transfer` for the reference v
 temporary kernel print, then find the PDS/ISP DMA address-base state the reference sets up. See
 TA-KICK-DISASSEMBLY.md round-161 and captures/tq-fault/.
 
+End-of-session status 2026-10-31 round-162 (patch series 0362, head 41f0d30d): the firmware command
+is now **byte-identical** to the reference's (only the deliberately patched clear register differs);
+the last job-description difference was `ROGUE_TRANSFER_FLAGS_SINGLE_CORE` (the reference always sets
+it; the probe now does too). The replay still faults in the ISP data master, and the fault address
+tracks the **first dword of the PDS program named by the IPF control stream's texture-database field**,
+resolved against the USC/PDS heap base - i.e. that program's first word is consumed as an address. Next:
+same-run capture of both texture-data programs *and* both control streams with per-pass tags (the copy
+blit builds two passes), then replay the matching pass; if it still faults, the remainder is per-context
+firmware state and the TQ path needs a transfer-context init job.
+
 Open blocks, each with its precise next step:
-1. **Transfer-job copy replay**: blocked on the PDS/ISP DMA address-base state (round-161); the job
-   hard-faults in the ISP DM at the shader's texture-state DMA address. Next: kernel print of
-   `rogue_fwif_cmd_transfer` for both paths, then the DMA base register/fw trace.
+1. **Transfer-job copy replay**: see round-162 above - job description proven identical; remaining
+   question is which control-stream/texture-data pair the reference executes per pass.
 2. **Performance**: remaining gap is FP16 ALU; pco has an lp-fmad bit but it gives only ~2%, and the
    vendor's ~2x on shading/terrain/refract needs F16SOP single-op FP16 encodings that pco lacks entirely.
 3. **ES3 core**: needs the transfer/twiddle work (1) for 3D/array/compressed/depth uploads.

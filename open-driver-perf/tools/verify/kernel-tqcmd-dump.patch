@@ -1,0 +1,29 @@
+--- /tmp/pvr_job.c.bak	2026-10-31 10:14:10.982086721 +0800
++++ pvr_job.c	2026-10-31 10:16:40.318827952 +0800
+@@ -270,6 +270,26 @@
+ 	cmd = job->cmd;
+ 	cmd->common.frame_num = 0;
+ 	cmd->flags = convert_transfer_flags(args->flags);
++
++	/* TEMP debug (never upstream): dump the fw-visible TQ command for diffing the
++	 * reference Vulkan path against the native replay. First four jobs per boot only. */
++	{
++		static int dump_count;
++		const u32 *w = (const u32 *)job->cmd;
++		const unsigned int n = sizeof(struct rogue_fwif_cmd_transfer) / 4;
++		unsigned int i;
++
++		if (dump_count < 40) {
++			dump_count++;
++			drm_info(from_pvr_device(job->pvr_dev),
++				 "TQCMD job=%d n=%u type=0x%x\n", dump_count, n,
++				 job->fw_ccb_cmd_type);
++			for (i = 0; i < n; i++)
++				drm_info(from_pvr_device(job->pvr_dev),
++					 "TQCMD %03u %08x\n", i, w[i]);
++		}
++	}
++
+ 	return 0;
+ }
+ 

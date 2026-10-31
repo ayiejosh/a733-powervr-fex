@@ -3259,3 +3259,53 @@ inspect how the transfer context's PDS/DMA base is programmed (fw trace mask is 
 
 Evidence: `captures/tq-fault/{fw-context-reset.txt,ref-alloc-dump.log}`, `tools/verify/kernel-ctxreset-decode.patch`.
 Board restored to vendor+desktop after the session; 0 faults, 0 PVR_K errors.
+
+## Round-162 (2026-10-31): the replay's firmware command is byte-identical - the fault is in how a PDS program's first word is consumed
+
+### 1. The last job-description difference was the single-core flag (fixed)
+A temporary kernel print of the firmware-visible `rogue_fwif_cmd_transfer` (patch
+`tools/verify/kernel-tqcmd-dump.patch`, decode only) for the reference `vktq_copy` run and the native
+replay shows both commands are **byte-identical except two dwords**: the clear register (deliberately
+patched by the probe) and `cmd->flags`. The reference submits `cmd->flags = 2` =
+`ROGUE_TRANSFER_FLAGS_SINGLE_CORE` (userspace sets `use_single_core` because the device has the
+multicore feature - BXM-4-64 reports multicore support and the transfer stream's last dword is the
+`frag_screen` field, not `isp_xtp_pipe_enable`), while the probe passed 0. After the probe started
+passing `DRM_PVR_SUBMIT_JOB_TRANSFER_CMD_SINGLE_CORE` (probe 0362) the commands are identical modulo
+the clear value - and the replay still faults in the ISP data master. So the job *description* is not
+the problem; something the firmware/hardware reads from memory or from per-context state is.
+
+### 2. The fault address tracks one PDS program's first dword
+Varying the content of the two texture-DMA programs (new probe envs `PVR_PROBE_TQ_COPY_TEXDMA1/2/2H`
+for PDS `0x2640`/`0x2700`, and `PVR_PROBE_TQ_COPY_CSDB/CSVAR` for the IPF control stream's
+texture-database / varying fields) gives:
+
+| experiment | firmware fault address |
+|---|---|
+| baseline (0x2700 word0 = `0x4b080`) | `0xe00004b080` |
+| 0x2700 word0 = `0x4b100` | `0xe00004b100` |
+| 0x2700 word0 = `0x0` | `0xe000000000` |
+| 0x2640 word0 = `0x4b300`, 0x2700 = `0x4b200` | `0xe00004b200` |
+| control-stream texture-database field = `0` | `0xda00000000` |
+| control-stream texture-database field = `0x73c0` | `0xda000073c0` |
+
+(`0xe000000000` = USC heap base, `0xda00000000` = PDS heap base.)
+
+So the PDS program named by the control stream's texture-database field is consumed with its **first
+dword taken as an address in the USC (or, for the control stream field, PDS) heap**. The reference's
+control stream names PDS `0x2700`, whose captured content is a DMA-burst program
+`[0x4b100, 0x80, 0x90000014, 0]` (address `0x800004b100` + control); if the reference consumed it the
+same way it would fault at `0xe00004b100` too, which it does not.
+
+### 3. What that means for the next attempt
+Either (a) the reference's per-context state makes the hardware consume that program as a **DMA
+descriptor** rather than as a kick/address word - the state that selects it is not in the job command -
+or (b) the captured control stream/content pair is not the exact one the reference job executes (the
+copy blit builds two texture-data programs in one prep, `0x2640` and `0x2700`, and only one control
+stream dump was seen; a same-run capture of *both* control streams with per-pass tags would settle
+it). Cheapest decisive next probe: make the userspace driver log the exact (pass index, control-stream
+device address, texture-data offset) tuple at submit for the reference, and replay the *matching*
+pass's control stream; if the replay then still faults, the remaining difference is per-context
+firmware state and the TQ path needs the vendor-style "transfer context init" job.
+
+Evidence: `captures/tq-fault/tqcmd-{ref,probe3}.txt` (firmware commands, dword-indexed) and
+`tools/verify/kernel-tqcmd-dump.patch`. Mesa probe 0362, board restored to vendor+desktop.
