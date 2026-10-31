@@ -4451,3 +4451,24 @@ record the new X PID and require the /tmp/.X11-unix/X1 socket (a stale session's
 hijacks it; the desktop X process name is "X", not "Xorg").  drawbench2 is surfaceless EGL, so it
 cannot measure Xwayland present overhead.  `glmark2 --benchmark <scene>` single-scene runs are not
 comparable to full-run per-benchmark numbers; always compare full runs.
+
+### Round 210 - static pco analysis: ranked candidate improvements (report in pco-analysis/REPORT.md)
+
+A static analysis pass (no board runs) over the saved IR dumps and the pco sources produced a ranked
+list of candidate improvements for the measured ~13-20% realistic-shader gap:
+
+1. **Enable pco's existing literal pool for the native Gallium FS/VS** (driver-side plumbing, ~50-100
+   lines). The literal pool exists in pco (pco_const_imms.c:264-331, enabled for Vulkan via
+   pvr_arch_pipeline.c:2943 and for native compute) but not for native graphics. The math FS has 4
+   literal groups and 8 temps; estimate 26 -> 22 groups and temps 8 -> ~5, plus pairing windows no
+   longer killed by literal materialisation.
+2. **Let the dual-issue scan cross pure single-instruction bitwise groups** (small pco change in
+   pco_group_instrs.c): literal materialisation is a bitwise-class group and is a hard barrier in
+   try_dual_issue (pco_group_instrs.c:210-234, 425-427), so every literal kills a pairing window; the
+   literal-heavy ILP shader has 59 literal groups and ZERO pairs. depends_on() is complete post-RA.
+3. **Post-RA pairing placement pass** (the pco_ir.c:52 TODO applied to grouping) - recovers pairs
+   broken by RA/legalize MOVs and can use final p1 encodability.
+4. Move pco_schedule (WDF/IDF) after RA (one-line move, same TODO).
+5/6. clamp->sat folding, pow(const int)->squaring (small).
+Rejected with reasons: RA bank-bias for p1 (temps are bank TEMP=1 so p1 limits never reject them),
+dual-issue window tuning (measured neutral/harmful), min/max re-encode (already single-group), F16SOP.
