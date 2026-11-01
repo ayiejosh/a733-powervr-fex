@@ -1,4 +1,4 @@
-From 0f4838b6b9baa8ea7d25dca0dbea047dd5fdb08d Mon Sep 17 00:00:00 2001
+From fe34d38c1905356d7bff0eb3dc5d26d196092961 Mon Sep 17 00:00:00 2001
 From: radxa <radxa@radxa-cubie-a7a>
 Date: Sun, 1 Nov 2026 22:57:48 +0800
 Subject: [PATCH] gallium/pvr: harden the vertex element format variants
@@ -8,8 +8,7 @@ Fixes from an independent review of the vertex element format variant change:
 - Past PVR_SHADER_MAX_VARIANTS the variant slot was hardcoded to 0 while the
   comment claimed a round robin; seven or more element-format signatures would
   recompile the vertex shader on every draw.  Hash to a slot instead and free
-  the evicted variant (nothing else keeps an evicted VS variant alive), as the
-  fragment path does for its own cache.
+  the evicted variant, as the fragment path does for its own cache.
 - Select the variant after the draw's drop paths (no target, bad topology,
   culled, empty scissor box, truncated draw) instead of before them: a fully
   scissored-out draw no longer pays a first compile and can no longer evict a
@@ -19,21 +18,24 @@ Fixes from an independent review of the vertex element format variant change:
   handing pco formats no probe covers would reach untested code paths.
 - Free the cloned NIR when the variant fails to compile and log the fallback
   instead of leaking it silently while drawing with the stale base shader.
-- Skip elements whose vertex element state is absent, so that case no longer
-  creates a no-op variant.
 - Update the stale format-derivation comment in pvr_shader.c.
 
-These are review fixes on top of c981a2df; the behaviour they exercise (the
-probes' element formats) is unchanged - verified below.
+These are review fixes on top of the vertex element format variant change; the
+behaviour the probes exercise is unchanged.
 
-Verification (identity-tagged): build snapshot libs-final (libgallium md5
-2bc17f1972bb028548ea805e837822ec), probes run through
-/home/radxa/open-perf/withlibs.sh which prints snapshot rev + md5, each probe
-prints R=PowerVR B-Series BXM-4-64 and V=OpenGL ES 2.0 Mesa 26.3.0-devel:
-- clear_diag: 21 ok, 0 bad   (task dir runs/006-final-verified/clear_diag-final.txt)
-- scissor_probe: 63 pass, 0 fail, RESULT: PASS   (runs/006-final-verified/scissor-final.txt)
-- full gate: 20 groups, 0 failures, "ALL GROUPS PASS"
-  (task dir T-2026-11-01-round233/runs/006-final-verified/gate-final.log)
+Verification (identity-tagged).  Evidence was produced from this tree content
+with runtime libs snapshot /home/radxa/open-perf/libs-r2 (REV 0f4838b6,
+libgallium md5 21a052c0f2bebc8daf9991fbc0caef75); message-only rewrites of this
+commit do not change the tree (`git diff` against the pre-rewrite commit is
+empty).  Every probe command ran through /home/radxa/open-perf/withlibs.sh,
+which prints the snapshot rev and md5, and printed R=PowerVR B-Series BXM-4-64,
+V=OpenGL ES 2.0 Mesa 26.3.0-devel (git-0f4838b6b9):
+- clear_diag: 21 ok, 0 bad
+  (tasks/T-2026-11-01-round233/runs/008-r2-verified/clear_diag-r2.txt)
+- scissor_probe: 63 pass, 0 fail, RESULT: PASS
+  (runs/008-r2-verified/scissor-r2.txt)
+- full gate: 20 groups, 0 failures, ALL GROUPS PASS
+  (runs/008-r2-verified/gate-r2.log)
 ---
  src/gallium/drivers/pvr_native/pvr_draw.c   | 60 ++++++++++++++++-----
  src/gallium/drivers/pvr_native/pvr_shader.c |  8 +--

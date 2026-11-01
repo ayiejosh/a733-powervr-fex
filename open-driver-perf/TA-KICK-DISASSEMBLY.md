@@ -4879,5 +4879,12 @@ md5 21a052c0f2bebc8daf9991fbc0caef75, V=OpenGL ES 2.0 Mesa 26.3.0-devel (git-0f4
 - clear_diag: 21 ok, 0 bad (runs/008-r2-verified/clear_diag-r2.txt)
 - scissor_probe: 63 pass, 0 fail, RESULT: PASS (runs/008-r2-verified/scissor-r2.txt)
 - full gate: 20 groups, 0 failures, ALL GROUPS PASS (runs/008-r2-verified/gate-r2.log)
-Control runs and their exact failing sets are unchanged (task runs/000, /004, /005).  Reviewer
-sign-off on the delta is pending; nothing is pushed.
+Control runs and their exact failing sets are unchanged (task runs/000, /004, /005).  Reviewer delta review outcome (HEAD fe34d38c): all six findings addressed; deltas D1 (0382 message
+cited the pre-rewrite evidence: now points at runs/008-r2-verified, libs-r2, libgallium md5 21a052c0)
+and D2 (a bullet described no diff change: removed) fixed in the amended 0382 message; D3 (freeing an
+evicted variant can leave fsv->coeff_vs a stale pointer - parked follow-up: content-key or clear the
+coefficient cache, or keep the leak), D4 (duplicated fragment-variant comment above the vertex
+selection) and D5 (a failed variant compile is not negatively cached) are non-blocking follow-ups.
+Conditional sign-off satisfied: code and evidence sound, outbound text fixed.  Patches 0381/0382
+regenerated from 6681058a / fe34d38c (trees empty-diff against the pre-rewrite commits).  Nothing is
+pushed; the push needs the human go.
