@@ -4801,3 +4801,55 @@ undefined registers.
 **Commit messages corrected** (patch files only; text, no code): 0368 (the terrain/refract gains were
 stale mips, retracted), 0369 (retracted per-scene numbers removed, drawbench2 kept with its caveat),
 0373 (offline only; no gate group runs fp16 shader arithmetic).
+
+## Round 233 - the clear quad is fixed: vertex element formats make the GL default w = 1
+
+Two commits close the open clear bug from round 231 (mesa 58f07283 and bd29bc00 = patches 0380, 0381):
+
+1. **Vertex inputs below VERT_ATTRIB_GENERIC0 move to generic slots** (0380): pco lowers vertex inputs
+   only at GENERIC0..15; the state tracker's built-in clear vertex shader reads VERT_ATTRIB_POS, which
+   pco left unlowered (garbage position). Before pco runs, such inputs move to a free generic location
+   (the fetch follows driver_location, so the data mapping is unchanged).
+2. **The vertex shader variant follows the bound vertex element formats** (0381): the base shader
+   derived each attribute's fetch format from its declared type, so a vec4 attribute fed by a
+   three-component vertex element was fetched as four dwords and the missing w came from the previous
+   draw's fourth vertex-input register instead of GL's default 1. The vertex shader now keeps its
+   source NIR and build variants keyed on the bound pipe_vertex_element formats, exactly like the
+   fragment variants keyed on render target formats; pco's unpack_from_format already fills the
+   missing w with 1 from the format's swizzle. This is a general GL bug, not a clear-only one.
+
+Evidence on the board (open driver, pvr override, before/after):
+- clear_diag before 0381 (with 0380): D1-D4 scissored/colour-masked clears BAD, D9 scissored clear
+  after a draw BAD, D17 3-component attribute after a w = 2 draw BAD, D18/D19 scissored clears after
+  draws BAD.
+- clear_diag after 0381: **21 ok, 0 BAD** - every D1-D19 case passes.
+- scissor_probe after 0381: **S1-S8 all PASS** (S5 scissored clear and S7 colour-masked clear, open
+  since round 231, now pass).
+- Gate: the scissor group now requires S1-S8 and a new **"clear quad (D1-D19)"** group runs clear_diag;
+  **ALL GROUPS PASS** (21 groups) on the final tree. No performance claim: not measured.
+
+### Round 233 verification (control first, per the review's rules)
+
+Three runtime-lib snapshots were built from explicit checkouts and each probe run printed its identity:
+the renderer/version line (R=PowerVR B-Series BXM-4-64, V=OpenGL ES 2.0 Mesa 26.3.0-devel) through a
+wrapper that also prints snapshot name, recorded revision and libgallium md5 (three different md5s).
+
+| snapshot | clear_diag bad cases | scissor_probe |
+|---|---|---|
+| 5323b619 (no 0380/0381) | 8: D1 D2 D3 D4 D9 D17 D18 D19 | FAIL S7 |
+| 58f07283 (0380 only) | 4: D9 D17 D18 D19 | FAIL S7 |
+| c981a2df (0380+0381) | 0 (21 ok) | 63 pass, 0 fail, RESULT: PASS |
+
+S5 passed on both control snapshots, so it is not evidence for this change (the review's round-231
+note that S5/S7 results change between runs applies to S5).  An instrumented run (temporary env-gated
+log, not committed) proved the path fires: the state tracker's clear VS logged
+`base clear VS differs, bound formats: [0] el=0 shader_fmt=24 bound_fmt=23` then
+`created variant slot=0` - RGBA32F derived versus RGB32F bound - and the GLSL1 test shaders logged
+24 versus 22.  The committed build re-ran the probes (21 ok / RESULT: PASS) and the full gate:
+ALL GROUPS PASS on 21 groups, including the scissor group required as S1-S8 and the new clear-quad
+group (D1-D19).
+
+Caveat: Mesa's GL_VERSION embeds the repository HEAD sha (vcs_tag), so all three snapshots print
+git-c981a2df; what each run loaded is identified by the snapshot md5, the checkout/build record and a
+local symbol present only in the 0381 build.  No performance claim is made (not measured).  Per rule
+10, an independent reviewer gets the diff and the evidence paths before any push.

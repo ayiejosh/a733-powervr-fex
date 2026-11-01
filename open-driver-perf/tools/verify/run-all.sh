@@ -12,7 +12,7 @@ ok() { printf 'PASS %s\n' "$*"; }
 bad() { printf 'FAIL %s\n' "$*"; fail=1; }
 
 # Compile the probes from source so the gate is self-contained.
-for p in cube_probe cube_mip border_probe mirror_probe aniso_probe polygon_offset_probe rg_probe f16rt_probe zls_mip_probe scissor_probe; do
+for p in cube_probe cube_mip border_probe mirror_probe aniso_probe polygon_offset_probe rg_probe f16rt_probe zls_mip_probe scissor_probe clear_diag; do
    [ -f "$V/$p.c" ] || continue
    gcc -O2 "$V/$p.c" -o "$OUT/$p" -lEGL -lGLESv2 || bad "compile $p"
 done
@@ -60,16 +60,24 @@ fi
 
 # Draw scissor (0379): S1 box edges off the tile grid, S2 scissor off after on, S3 per-draw index in one
 # tile, S4 empty boxes, S6 boxes st clamped, S8 more boxes than the 64-entry table; S1 S3 S4 S6 S8 fail
-# without 0379.  S5 (scissored glClear) and S7 (colour-masked glClear) go through st's clear quad, which
-# does not draw reliably (round 231: its vertex shader reads VERT_ATTRIB_POS, which pco does not lower,
-# a vec4 fed 3 components gets no w = 1, and a further cause remains).  They are reported, not failed.
+# without 0379.  S5 (scissored glClear) and S7 (colour-masked glClear) go through st's clear quad; they
+# failed until the vertex shader learned the bound vertex element formats (a vec4 attribute fed 3
+# components must get w = 1, not the stale fourth register).  All cases must pass now.
 sr=$(timeout 60 $OUT/scissor_probe 2>&1)
-other=$(echo "$sr" | grep '^FAIL' | grep -v '^FAIL S[57] ')
-if echo "$sr" | grep -q '^RESULT:' && [ -z "$other" ]; then
-   open=$(echo "$sr" | grep '^FAIL' | awk '{print $2}' | sort -u | tr '\n' ' ')
-   ok "draw scissor (S1-S4 S6 S8)${open:+; open bug, still failing: $open}"
+if echo "$sr" | grep -q '^RESULT: PASS'; then
+   ok "draw scissor (S1-S8)"
 else
-   bad "draw scissor: $(echo "$other" | head -5 | tr '\n' ' ')"
+   bad "draw scissor: $(echo "$sr" | grep '^FAIL' | head -5 | tr '\n' ' ')"
+fi
+
+# The clear quad itself (st draws a scissored or colour-masked glClear with a quad): D1-D4 scissored and
+# colour-masked clears, D9 scissored clear after a draw, D17 a 3-component attribute right after a
+# w = 2 draw, D18/D19 scissored clear right after a draw.
+cr=$(timeout 120 $OUT/clear_diag 2>&1)
+if echo "$cr" | grep -q '^DIAG-END' && ! echo "$cr" | grep -q '^DIAG BAD'; then
+   ok "clear quad (D1-D19)"
+else
+   bad "clear quad: $(echo "$cr" | grep '^DIAG BAD' | head -5 | tr '\n' ' ')"
 fi
 
 if [ $fail = 0 ]; then echo "ALL GROUPS PASS"; else echo "SOME GROUPS FAILED"; fi

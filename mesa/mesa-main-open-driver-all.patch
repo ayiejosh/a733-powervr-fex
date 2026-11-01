@@ -1373,7 +1373,7 @@ index 00000000..0c679b3f
 +#endif /* PVR_COMPUTE_TRIANGLE_SPV_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_context.c b/src/gallium/drivers/pvr_native/pvr_context.c
 new file mode 100644
-index 00000000..579af1ab
+index 00000000..54645949
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_context.c
 @@ -0,0 +1,1029 @@
@@ -2092,9 +2092,9 @@ index 00000000..579af1ab
 +      return NULL;
 +   }
 +
-+   struct nir_shader *src = state->ir.nir->info.stage == MESA_SHADER_FRAGMENT
-+                               ? nir_shader_clone(NULL, state->ir.nir)
-+                               : NULL;
++   /* Both stages keep their source NIR: the fragment shader builds per-format variants from it and
++    * the vertex shader builds per-vertex-element-format variants from it. */
++   struct nir_shader *src = nir_shader_clone(NULL, state->ir.nir);
 +   struct pvr_shader *shader = pvr_shader_create(state->ir.nir, screen->pco_ctx);
 +   if (shader != NULL)
 +      shader->src_nir = src;
@@ -5281,10 +5281,10 @@ index 00000000..47695cc7
 +#endif /* PVR_CSB_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_draw.c b/src/gallium/drivers/pvr_native/pvr_draw.c
 new file mode 100644
-index 00000000..bfde46c1
+index 00000000..8633d892
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_draw.c
-@@ -0,0 +1,2400 @@
+@@ -0,0 +1,2448 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -6856,6 +6856,51 @@ index 00000000..bfde46c1
 +   return ctx->fb.nr_cbufs && ctx->fb.cbufs[0].texture ? ctx->fb.cbufs[0].level : 0;
 +}
 +
++/* The vertex shader derives each attribute's fetch format from the declared type. GL lets the bound
++ * vertex element supply fewer components (a vec4 attribute fed three floats gets w = 1) and pco's
++ * unpack fills the missing components from the format's swizzle, so pick a variant compiled against
++ * the bound element formats, like the fragment variants keyed on the render target format. */
++static struct pvr_shader *
++draw_vs_variant(struct pvr_context *ctx, struct pvr_screen *scr, struct pvr_shader *vs)
++{
++   const struct pvr_vertex_elements *ve = ctx->velements_state;
++   enum pipe_format formats[16] = { PIPE_FORMAT_NONE };
++   bool differ = false;
++
++   if (ve == NULL || vs->src_nir == NULL || vs->nr_inputs == 0)
++      return vs;
++
++   for (unsigned i = 0; i < vs->nr_inputs; i++) {
++      const unsigned element = vs->inputs[i].element;
++
++      if (element >= ARRAY_SIZE(formats) || element >= ve->count)
++         continue;
++
++      formats[element] = ve->elements[element].src_format;
++      if (vs->vs_element_formats[element] != formats[element])
++         differ = true;
++   }
++   if (!differ)
++      return vs;
++
++   for (unsigned i = 0; i < vs->nr_vs_variants; i++) {
++      if (!memcmp(vs->vs_variants[i].element_formats, formats, sizeof(formats)))
++         return vs->vs_variants[i].sh;
++   }
++
++   struct pvr_shader *variant =
++      pvr_shader_create_vs_with_formats(nir_shader_clone(NULL, vs->src_nir), scr->pco_ctx, formats);
++   if (variant == NULL)
++      return vs;
++
++   /* Shortcut: round robin past PVR_SHADER_MAX_VARIANTS; the evicted variant stays allocated, as
++    * the fragment variants' shortcuts do. */
++   const unsigned slot = vs->nr_vs_variants < PVR_SHADER_MAX_VARIANTS ? vs->nr_vs_variants++ : 0;
++   memcpy(vs->vs_variants[slot].element_formats, formats, sizeof(formats));
++   vs->vs_variants[slot].sh = variant;
++   return variant;
++}
++
 +/* The open render is the framebuffer's (target rt): same target, level, size and depth buffer. */
 +static bool
 +draw_open_is_fb(struct pvr_context *ctx, struct pvr_draw_state *d, struct pipe_resource *rt)
@@ -6877,6 +6922,9 @@ index 00000000..bfde46c1
 +   const enum pipe_format rt_format = rt ? rt->format : PIPE_FORMAT_NONE;
 +   struct pvr_shader *vs = ctx->vs, *fs = ctx->fs;
 +   enum ROGUE_VDMCTRL_PRIMITIVE_TOPOLOGY topo;
++
++   if (vs != NULL)
++      vs = draw_vs_variant(ctx, scr, vs);
 +
 +   if (num_draws != 1 || rt == NULL || vs == NULL ||
 +       fs == NULL || fs->src_nir == NULL || !draw_format_ok(rt_format) ||
@@ -15475,10 +15523,10 @@ index 00000000..f0282d81
 +#endif /* PVR_SCREEN_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_shader.c b/src/gallium/drivers/pvr_native/pvr_shader.c
 new file mode 100644
-index 00000000..c7c942e7
+index 00000000..379140af
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_shader.c
-@@ -0,0 +1,1015 @@
+@@ -0,0 +1,1087 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + */
@@ -15497,6 +15545,13 @@ index 00000000..c7c942e7
 +bool pvr_shader_compile_data(pco_ctx *ctx, struct nir_shader *nir,
 +                                    pco_data *data, pco_shader **shader_out,
 +                                    const void **data_out, unsigned *size_out);
++
++/* The same pipeline with the bound vertex element formats supplied (NULL: derive each attribute's
++ * format from the shader's declared type). */
++static bool pvr_shader_compile_data_with(pco_ctx *ctx, struct nir_shader *nir, pco_data *data,
++                                         const enum pipe_format *vs_element_formats,
++                                         pco_shader **shader_out, const void **data_out,
++                                         unsigned *size_out);
 +
 +/* Fills the driver half of pco's vertex-input interface. pco cannot discover either fact from the
 + * NIR alone: pco_nir_pvi() synthesises the fetch/convert instructions only for attribute locations
@@ -15537,18 +15592,53 @@ index 00000000..c7c942e7
 +   *counter += slots * dwords_each;
 +}
 +
++/* pco lowers vertex inputs only at VERT_ATTRIB_GENERIC0..15 (the Vulkan locations) and leaves any
++ * other load unlowered, so the shader reads garbage. GLES programs only use generic locations, but
++ * the state tracker's built-in vertex shaders (the clear quad of a scissored or colour-masked
++ * glClear) read VERT_ATTRIB_POS. Move such inputs to free generic locations. The attribute fetch
++ * follows driver_location, so it is unchanged. */
++static void
++pvr_shader_vs_inputs_to_generic(struct nir_shader *nir)
++{
++   uint32_t used = 0;
++   nir_foreach_shader_in_variable (var, nir) {
++      if (var->data.location >= VERT_ATTRIB_GENERIC0 && var->data.location <= VERT_ATTRIB_GENERIC15)
++         used |= BITFIELD_BIT(var->data.location - VERT_ATTRIB_GENERIC0);
++   }
++   nir_foreach_shader_in_variable (var, nir) {
++      if (var->data.location < 0 || var->data.location >= VERT_ATTRIB_GENERIC0 ||
++          used == BITFIELD_MASK(16))
++         continue;
++      const unsigned slot = ffs(~used) - 1;
++      used |= BITFIELD_BIT(slot);
++      var->data.location = VERT_ATTRIB_GENERIC0 + slot;
++   }
++}
++
 +/* Before pco_preprocess/lower: only the formats. pco_nir_pvi() runs inside lowering and decides
 + * which attributes to synthesise from attrib_formats[]; a location with no format is skipped and
 + * its loads stay unlowered, which is the silent failure this project paid two rounds for. */
 +static void
-+pvr_shader_init_vs_formats(struct nir_shader *nir, pco_data *data)
++pvr_shader_init_vs_formats(struct nir_shader *nir, pco_data *data,
++                           const enum pipe_format *element_formats)
 +{
 +   nir_foreach_shader_in_variable (var, nir) {
++      enum pipe_format format;
++
 +      if (var->data.location < 0 || var->data.location >= VERT_ATTRIB_MAX)
 +         continue;
 +
-+      data->vs.attrib_formats[var->data.location] =
-+         pvr_shader_attr_format(var->type);
++      format = pvr_shader_attr_format(var->type);
++      /* The bound vertex element's own format wins: its component count and type are what the
++       * fetch must follow (GL fills a missing w with 1, which pco's unpack does from the format's
++       * swizzle). element_formats is indexed by the input's driver_location, the pipe_vertex_element
++       * index the fetch uses. */
++      if (element_formats != NULL && var->data.driver_location >= 0 &&
++          var->data.driver_location < 16 &&
++          element_formats[var->data.driver_location] != PIPE_FORMAT_NONE)
++         format = element_formats[var->data.driver_location];
++
++      data->vs.attrib_formats[var->data.location] = format;
 +   }
 +}
 +
@@ -15766,9 +15856,11 @@ index 00000000..c7c942e7
 +
 +static struct pvr_shader *
 +pvr_shader_create_with(struct nir_shader *nir, pco_ctx *ctx, const enum pipe_format *color_formats,
-+                       unsigned nr_formats, const nir_lower_blend_options *blend)
++                       unsigned nr_formats, const nir_lower_blend_options *blend,
++                       const enum pipe_format *vs_element_formats)
 +{
 +   struct pvr_shader *shader = calloc(1, sizeof(*shader));
++   enum pipe_format used_element_formats[16] = { PIPE_FORMAT_NONE };
 +   pco_data data = { 0 };
 +   if (shader == NULL)
 +      return NULL;
@@ -15800,8 +15892,8 @@ index 00000000..c7c942e7
 +      data.fs.no_alpha_to_coverage = true;
 +      data.fs.skip_sample_check = true;
 +   }
-+   if (!pvr_shader_compile_data(ctx, nir, &data, &shader->pco, &shader->binary,
-+                                &shader->binary_size)) {
++   if (!pvr_shader_compile_data_with(ctx, nir, &data, vs_element_formats, &shader->pco,
++                                     &shader->binary, &shader->binary_size)) {
 +      free(shader);
 +      return NULL;
 +   }
@@ -15888,6 +15980,14 @@ index 00000000..c7c942e7
 +         shader->inputs[shader->nr_inputs].dwords = r->count;
 +         shader->nr_inputs++;
 +      }
++      nir_foreach_shader_in_variable (var, nir) {
++         const int element = var->data.driver_location;
++         if (element >= 0 && element < 16 && var->data.location >= 0 &&
++             var->data.location < VERT_ATTRIB_MAX)
++            used_element_formats[element] = data.vs.attrib_formats[var->data.location];
++      }
++      memcpy(shader->vs_element_formats, used_element_formats,
++             sizeof(shader->vs_element_formats));
 +   }
 +
 +   return shader;
@@ -15896,14 +15996,21 @@ index 00000000..c7c942e7
 +struct pvr_shader *
 +pvr_shader_create(struct nir_shader *nir, pco_ctx *ctx)
 +{
-+   return pvr_shader_create_with(nir, ctx, NULL, 0, NULL);
++   return pvr_shader_create_with(nir, ctx, NULL, 0, NULL, NULL);
 +}
 +
 +struct pvr_shader *
 +pvr_shader_create_fs(struct nir_shader *nir, pco_ctx *ctx, const enum pipe_format *color_formats,
 +                     unsigned nr_formats, const nir_lower_blend_options *blend)
 +{
-+   return pvr_shader_create_with(nir, ctx, color_formats, nr_formats, blend);
++   return pvr_shader_create_with(nir, ctx, color_formats, nr_formats, blend, NULL);
++}
++
++struct pvr_shader *
++pvr_shader_create_vs_with_formats(struct nir_shader *nir, pco_ctx *ctx,
++                                  const enum pipe_format *element_formats)
++{
++   return pvr_shader_create_with(nir, ctx, NULL, 0, NULL, element_formats);
 +}
 +
 +/* The one-attribute vertex DMA both builders are generated from. Shared so the code and its data
@@ -16144,15 +16251,18 @@ index 00000000..c7c942e7
 +
 +   for (unsigned i = 0; i < shader->nr_variants; i++)
 +      pvr_shader_destroy(shader->variants[i].sh);
++   for (unsigned i = 0; i < ARRAY_SIZE(shader->vs_variants); i++)
++      pvr_shader_destroy(shader->vs_variants[i].sh);
 +   ralloc_free(shader->src_nir);
 +   ralloc_free(shader->pco);
 +   free(shader);
 +}
 +
-+bool
-+pvr_shader_compile_data(pco_ctx *ctx, struct nir_shader *nir, pco_data *data,
-+                        pco_shader **shader_out, const void **data_out,
-+                        unsigned *size_out)
++static bool
++pvr_shader_compile_data_with(pco_ctx *ctx, struct nir_shader *nir, pco_data *data,
++                             const enum pipe_format *vs_element_formats,
++                             pco_shader **shader_out, const void **data_out,
++                             unsigned *size_out)
 +{
 +   pco_shader *shader;
 +   unsigned size;
@@ -16165,8 +16275,10 @@ index 00000000..c7c942e7
 +   /* Order matters and is copied from the Vulkan driver's pipeline creation. Getting it
 +    * wrong yields a plausible binary rather than an error. The vertex maps are split around
 +    * lowering because pco's lowering both consumes the formats and adds outputs. */
-+   if (nir->info.stage == MESA_SHADER_VERTEX)
-+      pvr_shader_init_vs_formats(nir, data);
++   if (nir->info.stage == MESA_SHADER_VERTEX) {
++      pvr_shader_vs_inputs_to_generic(nir);
++      pvr_shader_init_vs_formats(nir, data, vs_element_formats);
++   }
 +
 +   /* GL's single colour output arrives as FRAG_RESULT_COLOR; pco and the output map work on
 +    * DATA0..7, as the Vulkan driver's shaders do. */
@@ -16459,6 +16571,14 @@ index 00000000..c7c942e7
 +}
 +
 +bool
++pvr_shader_compile_data(pco_ctx *ctx, struct nir_shader *nir, pco_data *data,
++                        pco_shader **shader_out, const void **data_out,
++                        unsigned *size_out)
++{
++   return pvr_shader_compile_data_with(ctx, nir, data, NULL, shader_out, data_out, size_out);
++}
++
++bool
 +pvr_shader_compile(pco_ctx *ctx, struct nir_shader *nir, pco_shader **shader_out,
 +                   const void **data_out, unsigned *size_out)
 +{
@@ -16496,10 +16616,10 @@ index 00000000..c7c942e7
 +}
 diff --git a/src/gallium/drivers/pvr_native/pvr_shader.h b/src/gallium/drivers/pvr_native/pvr_shader.h
 new file mode 100644
-index 00000000..0748a4e3
+index 00000000..7f8c348c
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_shader.h
-@@ -0,0 +1,251 @@
+@@ -0,0 +1,268 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -16600,6 +16720,19 @@ index 00000000..0748a4e3
 +   } variants[PVR_SHADER_MAX_VARIANTS];
 +   unsigned nr_variants;
 +
++   /* Vertex shader variants keyed on the bound vertex element formats, like the fragment variants
++    * are keyed on the render target formats. The base shader derives each attribute's format from
++    * the declared type; GL lets the bound element supply fewer components (a vec4 attribute fed
++    * three floats gets w = 1), so a variant compiled with the element's own format is what makes
++    * the fetch correct. element_formats is indexed by pipe_vertex_element index (the input's
++    * driver_location). */
++   enum pipe_format vs_element_formats[16];
++   struct {
++      enum pipe_format element_formats[16];
++      struct pvr_shader *sh;
++   } vs_variants[PVR_SHADER_MAX_VARIANTS];
++   unsigned nr_vs_variants;
++
 +   /* Fragment variant: what the ISP pass type follows from (discard, framebuffer fetch from
 +    * blending, a masked colour output), and its blend constants in shared registers. */
 +   bool discard, fbfetch, masked;
@@ -16653,6 +16786,10 @@ index 00000000..0748a4e3
 +                                        const enum pipe_format *color_formats,
 +                                        unsigned nr_formats,
 +                                        const nir_lower_blend_options *blend);
++/* A vertex shader built for the bound vertex element formats: attrib_formats[] come from the
++ * element formats instead of the declared types (see vs_element_formats above). */
++struct pvr_shader *pvr_shader_create_vs_with_formats(struct nir_shader *nir, pco_ctx *ctx,
++                                                     const enum pipe_format *element_formats);
 +
 +/* Compile any stage and hand back pco's data section as well (the compute path needs it). */
 +bool pvr_shader_compile_data(pco_ctx *ctx, struct nir_shader *nir, pco_data *data,
