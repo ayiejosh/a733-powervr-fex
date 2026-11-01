@@ -10,8 +10,12 @@ resource, bumped by every GPU render into it and by every CPU write through a
 transfer map, and remember which version the chain was generated for: a
 generation call whose base contents are unchanged returns at once.
 
-glmark2: terrain 20 -> 23 fps, refract 37 -> 43 fps (initial native/zink baselines
-20/38). 17-group gate: ALL GROUPS PASS (mip 14 levels included).
+Correction: the version missed writes from a render still open at generation
+time, from clear-only renders and from compute-fallback draws, so terrain and
+refract sampled mips one frame old every second frame. The terrain 20 -> 23 and
+refract 37 -> 43 fps first given here came from that skipped work and are
+retracted. With the misses fixed (0376) both scenes are back at 20 and 37 fps.
+17-group gate: ALL GROUPS PASS (no group covered this; the zls/mip group does now).
 ---
  src/gallium/drivers/pvr_native/pvr_context.c  | 9 ++++++++-
  src/gallium/drivers/pvr_native/pvr_draw.c     | 6 ++++++

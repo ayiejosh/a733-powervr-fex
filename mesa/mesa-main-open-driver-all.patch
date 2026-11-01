@@ -1373,10 +1373,10 @@ index 00000000..0c679b3f
 +#endif /* PVR_COMPUTE_TRIANGLE_SPV_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_context.c b/src/gallium/drivers/pvr_native/pvr_context.c
 new file mode 100644
-index 00000000..1e9766cb
+index 00000000..579af1ab
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_context.c
-@@ -0,0 +1,1010 @@
+@@ -0,0 +1,1029 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + */
@@ -1548,10 +1548,14 @@ index 00000000..1e9766cb
 + * created. There is no command stream to submit yet, so there is genuinely nothing to
 + * do, and no fence is produced - which is the correct answer for "nothing pending". */
 +static void
-+pvr_flush(struct pipe_context *pctx, struct pipe_fence_handle **fence, UNUSED unsigned flags)
++pvr_flush(struct pipe_context *pctx, struct pipe_fence_handle **fence, unsigned flags)
 +{
 +   struct pvr_context *ctx = pvr_context(pctx);
 +   pvr_draw_flush(ctx);
++   /* glFlush promises the work reaches the GPU: submit the batched renders (that is a side effect
++    * of pvr_draw_last_sync) unless this is a deferred flush without a fence. */
++   if (fence == NULL && !(flags & PIPE_FLUSH_DEFERRED))
++      pvr_draw_last_sync(ctx);
 +   if (fence != NULL) {
 +      struct pipe_fence_handle *f =
 +         pvr_fence_create(pvr_screen(pctx->screen), pvr_draw_last_sync(ctx));
@@ -1817,6 +1821,7 @@ index 00000000..1e9766cb
 +
 +      pvr_collect_draw_vertices(ctx, vertices);
 +      if (pvr_compute_render_triangle(ctx, rt, vertices)) {
++         rt->write_seq++; /* mip generation compares it */
 +         ctx->draws_executed++;
 +         return;
 +      }
@@ -2172,9 +2177,17 @@ index 00000000..1e9766cb
 +   return view;
 +}
 +
++/* Recorded only: a scissor change between draws does not end the render (each draw indexes the
++ * render's scissor table, pvr_draw_3d). */
++static void
++pvr_set_scissor_states(struct pipe_context *p, unsigned start_slot, unsigned num_scissors,
++                       const struct pipe_scissor_state *scissors)
++{
++   if (start_slot == 0 && num_scissors > 0)
++      pvr_context(p)->scissor = scissors[0];
++}
++
 +/* State the draw path does not consume yet: accepted so the state tracker can set it. */
-+static void pvr_set_scissor_states(UNUSED struct pipe_context *p, UNUSED unsigned s, UNUSED unsigned n,
-+                                   UNUSED const struct pipe_scissor_state *st) {}
 +static void pvr_set_blend_color(struct pipe_context *p, const struct pipe_blend_color *c)
 +{
 +   pvr_context(p)->blend_color = *c;
@@ -2281,11 +2294,15 @@ index 00000000..1e9766cb
 +   if (format != pres->format)
 +      return false;
 +   struct pvr_resource *res = pvr_resource(pres);
++   const unsigned last = MIN2(last_level, pres->last_level);
++   /* An open render into the texture bumps write_seq only when it is flushed. */
++   pvr_draw_flush_writer(pvr_context(pctx), pres);
 +   if (getenv("PVR_NO_MIP_CACHE") == NULL && res->mips_valid &&
-+       res->mips_write_seq == res->write_seq)
++       res->mips_write_seq == res->write_seq && base_level >= res->mips_base &&
++       last <= res->mips_last)
 +      return true;
 +   const unsigned faces = res->cube ? 6 : 1;
-+   for (unsigned l = base_level + 1; l <= MIN2(last_level, pres->last_level); l++) {
++   for (unsigned l = base_level + 1; l <= last; l++) {
 +      for (unsigned f = 0; f < faces; f++) {
 +         if (!pvr_draw_blit(pvr_context(pctx), pres, l, f, pres, l - 1, f, true))
 +            return false;
@@ -2293,6 +2310,8 @@ index 00000000..1e9766cb
 +   }
 +   res->mips_valid = true;
 +   res->mips_write_seq = res->write_seq;
++   res->mips_base = base_level;
++   res->mips_last = last;
 +   return true;
 +}
 +
@@ -2389,10 +2408,10 @@ index 00000000..1e9766cb
 +}
 diff --git a/src/gallium/drivers/pvr_native/pvr_context.h b/src/gallium/drivers/pvr_native/pvr_context.h
 new file mode 100644
-index 00000000..df847132
+index 00000000..2eddcdd5
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_context.h
-@@ -0,0 +1,111 @@
+@@ -0,0 +1,114 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -2464,6 +2483,9 @@ index 00000000..df847132
 +
 +   unsigned nr_viewports;
 +   struct pipe_viewport_state viewports[PIPE_MAX_VIEWPORTS];
++   /* Scissor box of viewport 0 (the only one); pvr_draw_3d applies it when the rasterizer
++    * enables the scissor test. */
++   struct pipe_scissor_state scissor;
 +
 +   unsigned nr_vertex_buffers;
 +   struct pipe_vertex_buffer vertex_buffers[PIPE_MAX_ATTRIBS];
@@ -5259,10 +5281,10 @@ index 00000000..47695cc7
 +#endif /* PVR_CSB_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_draw.c b/src/gallium/drivers/pvr_native/pvr_draw.c
 new file mode 100644
-index 00000000..efcb2bcd
+index 00000000..bfde46c1
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_draw.c
-@@ -0,0 +1,2327 @@
+@@ -0,0 +1,2400 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -5439,6 +5461,13 @@ index 00000000..efcb2bcd
 +   struct pipe_resource *rt;
 +   unsigned rt_level;
 +   uint32_t rt_w, rt_h;
++   /* The open render's scissor table, the IPF SCISSOR_WORD_0/1 pair per entry (minimum in the high
++    * half, exclusive maximum in the low half), indexed by each draw's ISPDBSC scindex. Entry 0 is
++    * the whole target, for draws without the scissor test. The flush copies it into the render's
++    * general arena, which is not rewritten before the render completes. */
++#define PVR_DRAW_SCISSORS 64
++   uint32_t sc[PVR_DRAW_SCISSORS][2];
++   unsigned nsc;
 +
 +   bool clear_valid;
 +   uint32_t clear_color;
@@ -5447,6 +5476,9 @@ index 00000000..efcb2bcd
 +   struct pipe_resource *zs;
 +   bool zclear_valid;
 +   float zclear;
++   /* Some draw of the render tests / writes depth: the ZLS decision is per render, and the DSA
++    * bound when it is flushed may be another one (3D scene, then a depth-off overlay). */
++   bool depth_tested, depth_written;
 +
 +   /* Caches. */
 +   /* End-of-tile programs, per target set (addresses and formats). Each entry is a compiled USC
@@ -5650,7 +5682,7 @@ index 00000000..efcb2bcd
 +draw_render_pending(struct pvr_draw_state *d, uint32_t seq)
 +{
 +   for (unsigned i = 0; seq != 0 && i < PVR_DRAW_SLOTS; i++) {
-+      if (d->slots[i].sync != 0 && d->slots[i].seq == seq)
++      if ((d->slots[i].sync != 0 || d->slots[i].pending) && d->slots[i].seq == seq)
 +         return true;
 +   }
 +   return false;
@@ -6691,7 +6723,8 @@ index 00000000..efcb2bcd
 +      struct pvr_draw_hwrt *e = d->cur_hwrt;
 +      const uint32_t prev = e->data_seq[e->rt_data_idx];
 +      for (unsigned i = 0; prev != 0 && i < PVR_DRAW_SLOTS; i++) {
-+         if (d->slots[i].sync != 0 && d->slots[i].seq == prev)
++         /* A render still in the pending batch holds this RT data too (draw_slot_idle submits). */
++         if ((d->slots[i].sync != 0 || d->slots[i].pending) && d->slots[i].seq == prev)
 +            draw_slot_idle(ctx, &d->slots[i]);
 +      }
 +   }
@@ -6720,6 +6753,7 @@ index 00000000..efcb2bcd
 +   if (d->zs)
 +      draw_use(d, d->zs);
 +   d->zclear_valid = false;
++   d->depth_tested = d->depth_written = false;
 +   /* A deferred clear of the target or depth buffer is where this render starts. */
 +   struct pvr_resource *rres = pvr_resource(rt);
 +   if (rres->clear_pending && level == 0) {
@@ -6737,9 +6771,22 @@ index 00000000..efcb2bcd
 +   }
 +   d->rt_w = w;
 +   d->rt_h = h;
++   d->sc[0][0] = w;
++   d->sc[0][1] = h;
++   d->nsc = 1;
 +   d->ndraws = 0;
 +   d->open = true;
 +   return true;
++}
++
++/* The index of a scissor table entry of the open render (d->nsc: not in the table). */
++static unsigned
++draw_scissor_find(const struct pvr_draw_state *d, const uint32_t *words)
++{
++   unsigned i = 0;
++   while (i < d->nsc && (d->sc[i][0] != words[0] || d->sc[i][1] != words[1]))
++      i++;
++   return i;
 +}
 +
 +/* The colour target the framebuffer renders into: colour buffer 0, or for a depth-only framebuffer
@@ -6843,6 +6890,20 @@ index 00000000..efcb2bcd
 +   if (ctx->rasterizer != NULL && ctx->rasterizer->cull_face == PIPE_FACE_FRONT_AND_BACK &&
 +       u_reduced_prim(info->mode) == MESA_PRIM_TRIANGLES)
 +      return true;
++   /* The scissor box, clamped to the target (the render's size), or the whole target without the
++    * scissor test. An empty box passes no pixel: the draw is dropped before it opens a render (the
++    * reference packs a zero rectangle instead). */
++   const bool scissor = ctx->rasterizer != NULL && ctx->rasterizer->scissor;
++   uint32_t sx0 = 0, sy0 = 0, sx1 = ctx->fb.width, sy1 = ctx->fb.height;
++   if (scissor) {
++      sx0 = MIN2(ctx->scissor.minx, sx1);
++      sy0 = MIN2(ctx->scissor.miny, sy1);
++      sx1 = MIN2(ctx->scissor.maxx, sx1);
++      sy1 = MIN2(ctx->scissor.maxy, sy1);
++      if (sx0 >= sx1 || sy0 >= sy1)
++         return true;
++   }
++   const uint32_t sc_words[2] = { sx0 << 16 | sx1, sy0 << 16 | sy1 };
 +
 +   if (ctx->draw == NULL)
 +      ctx->draw = calloc(1, sizeof(struct pvr_draw_state));
@@ -6932,11 +6993,20 @@ index 00000000..efcb2bcd
 +      return false;
 +
 +   const unsigned level = draw_fb_level(ctx);
-+   if (d->open && !draw_open_is_fb(ctx, d, rt))
++   /* A new scissor box when the render's scissor table is full ends the render too. */
++   if (d->open && (!draw_open_is_fb(ctx, d, rt) ||
++                   (scissor && d->nsc == PVR_DRAW_SCISSORS &&
++                    draw_scissor_find(d, sc_words) == d->nsc)))
 +      pvr_draw_flush(ctx);
 +   if (!d->open && !draw_open(ctx, d, rt, level, ctx->fb.width, ctx->fb.height,
 +                                    ctx->fb.zsbuf.texture))
 +      return false;
++   unsigned scindex = 0;
++   if (scissor && (scindex = draw_scissor_find(d, sc_words)) == d->nsc) {
++      d->sc[d->nsc][0] = sc_words[0];
++      d->sc[d->nsc][1] = sc_words[1];
++      d->nsc++;
++   }
 +
 +   /* Vertex fetch program. */
 +   uint64_t vcode, vdata;
@@ -6971,6 +7041,8 @@ index 00000000..efcb2bcd
 +   /* Depth test and write from the depth/stencil state; the PIPE_FUNC_* order is the TA's. */
 +   const struct pipe_depth_stencil_alpha_state *dsa = ctx->dsa;
 +   const bool depth = d->zs != NULL && dsa != NULL && dsa->depth_enabled;
++   d->depth_tested |= depth;
++   d->depth_written |= depth && dsa->depth_writemask;
 +   const struct ROGUE_TA_STATE_ISPA ispa = {
 +      .objtype = ROGUE_TA_OBJTYPE_TRIANGLE,
 +      /* As the reference picks it: discard is punch-through, a shader that reads the target
@@ -6988,7 +7060,8 @@ index 00000000..efcb2bcd
 +      .sop2 = ROGUE_TA_ISPB_STENCILOP_KEEP,
 +      .sop3 = ROGUE_TA_ISPB_STENCILOP_KEEP,
 +   };
-+   const struct ROGUE_TA_STATE_ISPDBSC dbsc = { 0 };
++   /* ISPCTL scenable is set, so the ISP rejects the pixels outside this table entry. */
++   const struct ROGUE_TA_STATE_ISPDBSC dbsc = { .scindex = scindex };
 +   const struct pvr_pds_sizes pds_sizes = {
 +      .varying_dwords = coeff ? fsv->coeff_data_dwords : 0,
 +      .usc_varying_dwords = fsv->coeffs,
@@ -7044,8 +7117,10 @@ index 00000000..efcb2bcd
 +      .vtxsize = vs->vtxouts, .rhw_pres = fsv->uses_w, .tsp_unclamped_z_pres = fsv->uses_z,
 +      .psprite_size_pres = true,
 +   };
++   /* As the reference: the TA keeps the draw out of the region-clip tiles outside the scissor box
++    * (the whole target without the scissor test, as d->rt_w/rt_h are the framebuffer's here). */
 +   struct pvr_region_clip clip;
-+   pvr_region_clip_from_rect(0, 0, d->rt_w, d->rt_h, 16, &clip);
++   pvr_region_clip_from_rect(sx0, sy0, sx1 - sx0, sy1 - sy0, scr->region_clip_align, &clip);
 +   pvr_csb_init(&block, ta, 256, 0);
 +   if (!pvr_csb_emit_ta_state_header(&block, &pres) ||
 +       !pvr_csb_emit_ta_ispctl(&block, NULL, true, &ispctl) ||
@@ -7257,6 +7332,19 @@ index 00000000..efcb2bcd
 +   }
 +}
 +
++void
++pvr_draw_flush_writer(struct pvr_context *ctx, struct pipe_resource *pres)
++{
++   struct pvr_draw_state *d = ctx->draw;
++   if (d == NULL || !d->open)
++      return;
++   bool writes = d->rt == pres || d->zs == pres;
++   for (unsigned i = 0; i < ctx->fb.nr_cbufs; i++)
++      writes |= ctx->fb.cbufs[i].texture == pres;
++   if (writes)
++      pvr_draw_flush(ctx);
++}
++
 +uint32_t
 +pvr_draw_last_sync(struct pvr_context *ctx)
 +{
@@ -7341,6 +7429,7 @@ index 00000000..efcb2bcd
 +      if (d->ndraws == 0 && d->load_src == NULL && !d->no_defer && d->rt_level == 0 &&
 +          ctx->fb.nr_cbufs <= 1 && !(d->rt->bind & shared)) {
 +         if (d->clear_valid) {
++            pvr_resource(d->rt)->write_seq++;
 +            pvr_resource(d->rt)->clear_pending = true;
 +            pvr_resource(d->rt)->clear_color = d->clear_color;
 +            pvr_resource(d->rt)->clear_value = d->clear_value;
@@ -7363,7 +7452,7 @@ index 00000000..efcb2bcd
 +      pvr_resource(ctx->fb.zsbuf.texture)->write_seq++;
 +   uint64_t term_addr = 0, sc_addr = 0;
 +   uint32_t *term = arena_alloc(&d->gen, 64, 64, &term_addr);
-+   uint32_t *sc = arena_alloc(&d->gen, 16, 16, &sc_addr);
++   uint32_t *sc = arena_alloc(&d->gen, d->nsc * sizeof(d->sc[0]), 16, &sc_addr);
 +   if (term == NULL || sc == NULL)
 +      goto done;
 +
@@ -7383,13 +7472,14 @@ index 00000000..efcb2bcd
 +          !pvr_csb_emit_stream_terminate(&d->ctrl) || pvr_csb_overflowed(&d->ctrl))
 +         goto done;
 +   }
-+   /* One full-target scissor rectangle (IPF SCISSOR_WORD_0/1). */
-+   sc[0] = d->rt_w;
-+   sc[1] = d->rt_h;
++   /* The scissor table the draws index (CR_ISP_SCISSOR_BASE, below). */
++   memcpy(sc, d->sc, d->nsc * sizeof(d->sc[0]));
 +
 +   /* Depth-only framebuffer (shadow's depth pass): the colour target is a scratch one, so the
-+    * PBE must drop all colour writes instead of clearing/storing a full extra target. */
-+   const bool zonly = ctx->fb.nr_cbufs == 0 && ctx->fb.zsbuf.texture != NULL;
++    * PBE must drop all colour writes instead of clearing/storing a full extra target. Only for the
++    * framebuffer's own render: a blit or a materialize can run while it is bound. */
++   const bool zonly = ctx->fb.nr_cbufs == 0 && ctx->fb.zsbuf.texture != NULL &&
++                      d->zs == ctx->fb.zsbuf.texture;
 +   /* MRT: every colour attachment of the framebuffer is written by its own PBE emit words in the
 +    * EOT program. v1 requires them to share the first attachment's format (the background program
 +    * emits a single pixel value); a mixed set falls back to attachment 0 with a warning. */
@@ -7506,8 +7596,7 @@ index 00000000..efcb2bcd
 +    * or a materialized clear (deferred depth clear that has to be realized now). A depth-attached
 +    * target with depth test off used to load and store the whole depth buffer per render (2.2x on
 +    * drawbench2's depth-attached fill). */
-+   const bool depth_used =
-+      d->zs != NULL && ((ctx->dsa != NULL && ctx->dsa->depth_enabled) || zonly || d->no_defer);
++   const bool depth_used = d->zs != NULL && (d->depth_tested || zonly || d->no_defer);
 +   if (depth_used) {
 +      const struct pvr_resource *zr = pvr_resource(d->zs);
 +      const int zf = draw_zls_format(d->zs->format);
@@ -7522,7 +7611,8 @@ index 00000000..efcb2bcd
 +      const uint32_t zheight = zr->twiddled ? zr->phys_height : d->zs->height0;
 +      const uint32_t zstride = zr->twiddled ? (uint32_t)((uint64_t)zr->stride * zr->phys_height)
 +                                            : (uint32_t)zr->dev_size;
-+      const bool zstore = zonly || d->no_defer || (ctx->dsa != NULL && ctx->dsa->depth_writemask);
++      /* A clear this render realizes is stored too: the buffer in memory is its only copy after. */
++      const bool zstore = zonly || d->no_defer || d->depth_written || d->zclear_valid;
 +      if (!pvr_frag_static_stream_set_zls(fstream, flen, &scr->dev_info, zf, zr->dev_addr,
 +                                          zwidth, zheight, !d->zclear_valid, zstore,
 +                                          bgdepth, zstride, zr->twiddled, zonly))
@@ -7530,6 +7620,11 @@ index 00000000..efcb2bcd
 +      frag_flags |= DRM_PVR_SUBMIT_JOB_FRAG_CMD_DEPTHBUFFER;
 +      /* The deferred clear is realized by this render. */
 +      pvr_resource(d->zs)->zclear_pending = false;
++   } else if (d->zclear_valid && d->zs) {
++      /* A render that clears depth but never tests it leaves the clear to the next render or reader
++       * of the buffer, as a clear-only render does. */
++      pvr_resource(d->zs)->zclear_pending = true;
++      pvr_resource(d->zs)->zclear = d->zclear;
 +   }
 +   ((uint32_t *)fstream)[2] = (uint32_t)sc_addr; /* isp_scissor_base after the 2-dword header */
 +   ((uint32_t *)fstream)[3] = (uint32_t)(sc_addr >> 32);
@@ -7592,10 +7687,10 @@ index 00000000..efcb2bcd
 +}
 diff --git a/src/gallium/drivers/pvr_native/pvr_draw.h b/src/gallium/drivers/pvr_native/pvr_draw.h
 new file mode 100644
-index 00000000..e33a12e7
+index 00000000..a94c4c67
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_draw.h
-@@ -0,0 +1,57 @@
+@@ -0,0 +1,59 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -7643,6 +7738,8 @@ index 00000000..e33a12e7
 + * last render that used it. */
 +struct pvr_resource;
 +void pvr_draw_resource_sync(struct pvr_context *ctx, struct pvr_resource *res);
++/* Closes the open render if it writes the resource (no wait), so its writes count. */
++void pvr_draw_flush_writer(struct pvr_context *ctx, struct pipe_resource *pres);
 +/* Submits a deferred clear of the resource, if it has one (see draw_materialize). */
 +void pvr_draw_resource_materialize(struct pvr_context *ctx, struct pvr_resource *res);
 +
@@ -14635,10 +14732,10 @@ index 00000000..bb79c92c
 +}
 diff --git a/src/gallium/drivers/pvr_native/pvr_resource.h b/src/gallium/drivers/pvr_native/pvr_resource.h
 new file mode 100644
-index 00000000..0d0f62cb
+index 00000000..3f8798ac
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_resource.h
-@@ -0,0 +1,140 @@
+@@ -0,0 +1,141 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -14721,6 +14818,7 @@ index 00000000..0d0f62cb
 +   uint32_t write_seq;
 +   bool mips_valid;
 +   uint32_t mips_write_seq;
++   unsigned mips_base, mips_last; /* the level range that generation covered */
 +};
 +
 +struct pipe_resource *pvr_resource_create(struct pipe_screen *pscreen,
@@ -22149,10 +22247,10 @@ index 8935c460..f4a9422d 100644
           break;
  
 diff --git a/src/imagination/pco/pco_map.py b/src/imagination/pco/pco_map.py
-index cca59f85..3b11c278 100644
+index cca59f85..14a962d2 100644
 --- a/src/imagination/pco/pco_map.py
 +++ b/src/imagination/pco/pco_map.py
-@@ -1115,6 +1115,36 @@ encode_map(O_FDSYF,
+@@ -1115,6 +1115,51 @@ encode_map(O_FDSYF,
     ]
  )
  
@@ -22186,10 +22284,25 @@ index cca59f85..3b11c278 100644
 +   op_ref_maps=[('0', ['w0'], ['s0', 's1', 's2'])]
 +)
 +
++encode_map(O_F16SOP_MUL,
++   encodings=[
++      (I_F16SOP_MUL, [
++         ('src0_reg', ('pco_ref_get_reg_index', SRC(0))),
++         ('src1_desc', 0x44),
++         ('src1_flag', 0x81),
++         ('src1_present', False),
++         ('src1_reg', 0),
++         ('src2_reg', ('pco_ref_get_reg_index', SRC(1))),
++         ('dst', ('pco_ref_get_reg_index', DEST(0))),
++      ])
++   ],
++   op_ref_maps=[('0', ['w0'], ['s0', 's1'])]
++)
++
  encode_map(O_PCK,
     encodings=[
        (I_PCK, [
-@@ -2100,6 +2130,23 @@ group_map(O_MBYP,
+@@ -2100,6 +2145,40 @@ group_map(O_MBYP,
     dests=[('w[0]', ('0', DEST(0)), 'ft0')]
  )
  
@@ -22210,10 +22323,27 @@ index cca59f85..3b11c278 100644
 +   dests=[]
 +)
 +
++group_map(O_F16SOP_MUL,
++   hdr=(I_IGRP_HDR_MAIN, [
++      ('oporg', 'p0'),
++      ('olchk', OM_OLCHK),
++      ('w1p', False),
++      ('w0p', True),
++      ('cc', OM_EXEC_CND),
++      ('end', OM_END),
++      ('atom', OM_ATOM),
++      ('rpt', OM_RPT)
++   ]),
++   enc_ops=[('0', O_F16SOP_MUL)],
++   srcs=[],
++   iss=[],
++   dests=[]
++)
++
  group_map(O_FDSX,
     hdr=(I_IGRP_HDR_MAIN, [
        ('oporg', 'p0'),
-@@ -2870,6 +2917,40 @@ group_map(O_TSTZ,
+@@ -2870,6 +2949,40 @@ group_map(O_TSTZ,
     ]
  )
  
@@ -22254,7 +22384,7 @@ index cca59f85..3b11c278 100644
  group_map(O_ST32,
     hdr=(I_IGRP_HDR_MAIN, [
        ('oporg', 'be'),
-@@ -3610,6 +3691,32 @@ group_map(O_LOGICAL,
+@@ -3610,6 +3723,32 @@ group_map(O_LOGICAL,
     dests=[('w[0]', ('1', DEST(0)), 'ft4')]
  )
  
@@ -24280,7 +24410,7 @@ index 71efda9f..2a8ccc99 100644
 +                                     NULL);
 +}
 diff --git a/src/imagination/pco/pco_ops.py b/src/imagination/pco/pco_ops.py
-index ca868c79..7297c3d3 100644
+index ca868c79..5ffeefd7 100644
 --- a/src/imagination/pco/pco_ops.py
 +++ b/src/imagination/pco/pco_ops.py
 @@ -221,6 +221,7 @@ OM_SCHEDSWAP = op_mod_enum('schedswap', [
@@ -24291,7 +24421,7 @@ index ca868c79..7297c3d3 100644
  OM_TILED = op_mod('tiled', BaseType.bool)
  OM_FREEP = op_mod('freep', BaseType.bool)
  OM_SM = op_mod('sm', BaseType.bool)
-@@ -387,6 +388,13 @@ O_IMADD64 = hw_op('imadd64', OM_ALU + [OM_S], 2, 5, [], [[RM_ABS, RM_NEG], [RM_A
+@@ -387,6 +388,16 @@ O_IMADD64 = hw_op('imadd64', OM_ALU + [OM_S], 2, 5, [], [[RM_ABS, RM_NEG], [RM_A
  O_IMADD32 = hw_op('imadd32', OM_ALU + [OM_S], 1, 4, [], [[RM_ABS, RM_NEG], [RM_ABS, RM_NEG], [RM_ABS, RM_NEG]])
  O_UNPCK = hw_op('unpck', OM_ALU + [OM_PCK_FMT, OM_ROUNDZERO, OM_SCALE], 1, 1, [], [[RM_ELEM]])
  
@@ -24302,10 +24432,13 @@ index ca868c79..7297c3d3 100644
 +O_F16SOP = hw_op('f16sop', OM_ALU + [OM_SOP_OP], 1, 3, [],
 +                 [[RM_ABS, RM_NEG], [RM_ABS, RM_NEG], [RM_ABS, RM_NEG]])
 +
++O_F16SOP_MUL = hw_op('f16sop_mul', OM_ALU, 1, 2, [],
++                     [[RM_ABS, RM_NEG], [RM_ABS, RM_NEG]])
++
  O_TST = hw_direct_op('tst', [OM_TST_OP_MAIN, OM_PHASE2END, OM_TST_TYPE_MAIN], 2, 2, [], [[RM_ELEM], [RM_ELEM]])
  O_MOVC = hw_direct_op('movc', [OM_PHASE2END], 2, 5, [[RM_ELEM]])
  
-@@ -448,6 +456,7 @@ O_FTB = hw_op('ftb', OM_ALU, 1, 1)
+@@ -448,6 +459,7 @@ O_FTB = hw_op('ftb', OM_ALU, 1, 1)
  O_REV = hw_op('rev', OM_ALU, 1, 1)
  O_SHUFFLE = hw_op('shuffle', OM_ALU, 1, 2)
  O_LOGICAL = hw_op('logical', OM_ALU + [OM_LOGIOP], 1, 4)
@@ -24313,7 +24446,7 @@ index ca868c79..7297c3d3 100644
  O_SHIFT = hw_op('shift', OM_ALU + [OM_SHIFTOP], 1, 3)
  
  O_COPYSIGN = hw_op('copysign', OM_ALU, 1, 2)
-@@ -508,6 +517,7 @@ O_UADD_CARRY = hw_op('uadd_carry', OM_ALU, 2, 2)
+@@ -508,6 +520,7 @@ O_UADD_CARRY = hw_op('uadd_carry', OM_ALU, 2, 2)
  O_UADD_SAT = hw_op('uadd_sat', OM_ALU, 1, 3)
  
  O_TSTZ = hw_op('tstz', OM_ALU + [OM_TST_TYPE_MAIN], 2, 1, [], [[RM_ELEM]])
@@ -24511,7 +24644,7 @@ index 1a8354f2..bb1b790e 100644
     }
  
 diff --git a/src/imagination/pco/pco_trans_nir.c b/src/imagination/pco/pco_trans_nir.c
-index 6dde9d20..623e8946 100644
+index 6dde9d20..cb9b6211 100644
 --- a/src/imagination/pco/pco_trans_nir.c
 +++ b/src/imagination/pco/pco_trans_nir.c
 @@ -15,6 +15,8 @@
@@ -24995,7 +25128,7 @@ index 6dde9d20..623e8946 100644
  /**
   * \brief Translates a NIR alu instruction into PCO.
   *
-@@ -3721,6 +3910,20 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
+@@ -3721,6 +3910,25 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
     for (unsigned s = 0; s < num_srcs; ++s)
        src[s] = pco_ref_nir_alu_src_t(alu, s, tctx);
  
@@ -25013,10 +25146,15 @@ index 6dde9d20..623e8946 100644
 +                        .sop_op = sop_op);
 +   }
 +
++   if (alu->def.bit_size == 16 && alu->op == nir_op_fmul &&
++       pco_ref_get_chans(dest) == 1 && pco_ref_get_chans(src[0]) == 1 &&
++       pco_ref_get_chans(src[1]) == 1)
++      return pco_f16sop_mul(&tctx->b, dest, src[0], src[1]);
++
     pco_instr *instr;
     switch (alu->op) {
     case nir_op_fneg:
-@@ -3735,6 +3938,15 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
+@@ -3735,6 +3943,15 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
        instr = pco_fflr(&tctx->b, dest, src[0]);
        break;
  
@@ -25032,7 +25170,7 @@ index 6dde9d20..623e8946 100644
     case nir_op_fceil:
        instr = pco_fceil(&tctx->b, dest, src[0]);
        break;
-@@ -3775,9 +3987,33 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
+@@ -3775,9 +3992,33 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
        instr = pco_fsign(&tctx->b, dest, src[0]);
        break;
  
@@ -25068,7 +25206,7 @@ index 6dde9d20..623e8946 100644
  
     case nir_op_fsin:
     case nir_op_fcos:
-@@ -3810,9 +4046,53 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
+@@ -3810,9 +4051,53 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
                           .s = true);
        break;
  
@@ -25124,7 +25262,7 @@ index 6dde9d20..623e8946 100644
  
     /* TODO: PCO pass to combine u{add,sub}{carry,borrow}s with the same srcs. */
     case nir_op_uadd_carry:
-@@ -3967,7 +4247,36 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
+@@ -3967,7 +4252,36 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
  
     case nir_op_iand:
     case nir_op_ior:
@@ -25162,7 +25300,7 @@ index 6dde9d20..623e8946 100644
     case nir_op_inot:
        instr = trans_logical(tctx, alu->op, dest, src[0], src[1]);
        break;
-@@ -3987,6 +4296,10 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
+@@ -3987,6 +4301,10 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
        break;
  
     case nir_op_ibitfield_extract: {
@@ -25173,7 +25311,7 @@ index 6dde9d20..623e8946 100644
        pco_ref bfe = pco_ref_new_ssa32(tctx->func);
        pco_ibfe(&tctx->b, bfe, src[0], src[1], src[2]);
        instr = pco_bcsel(&tctx->b, dest, src[2], bfe, pco_zero);
-@@ -3994,6 +4307,10 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
+@@ -3994,6 +4312,10 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
     }
  
     case nir_op_ubitfield_extract: {
@@ -25184,7 +25322,7 @@ index 6dde9d20..623e8946 100644
        pco_ref bfe = pco_ref_new_ssa32(tctx->func);
        pco_ubfe(&tctx->b, bfe, src[0], src[1], src[2]);
        instr = pco_bcsel(&tctx->b, dest, src[2], bfe, pco_zero);
-@@ -4001,6 +4318,10 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
+@@ -4001,6 +4323,10 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
     }
  
     case nir_op_bitfield_insert: {
@@ -25195,7 +25333,7 @@ index 6dde9d20..623e8946 100644
        pco_ref bfi = pco_ref_new_ssa32(tctx->func);
        pco_bfi(&tctx->b, bfi, src[0], src[1], src[2], src[3]);
        instr = pco_bcsel(&tctx->b, dest, src[3], bfi, src[0]);
-@@ -4015,6 +4336,7 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
+@@ -4015,6 +4341,7 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
        instr = pco_shuffle(&tctx->b, dest, src[0], src[1]);
        break;
  
@@ -25203,7 +25341,7 @@ index 6dde9d20..623e8946 100644
     case nir_op_b2f32:
     case nir_op_b2i32:
     case nir_op_f2f16:
-@@ -4024,9 +4346,11 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
+@@ -4024,9 +4351,11 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
     case nir_op_f2i32:
     case nir_op_f2i32_rtne:
     case nir_op_f2u32:
@@ -25215,7 +25353,7 @@ index 6dde9d20..623e8946 100644
     case nir_op_u2f32:
     case nir_op_u2u16:
     case nir_op_u2u32:
-@@ -4041,6 +4365,16 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
+@@ -4041,6 +4370,16 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
  
     case nir_op_umin:
     case nir_op_umax:
@@ -25232,7 +25370,7 @@ index 6dde9d20..623e8946 100644
        instr = trans_min_max(tctx, alu->op, dest, src[0], src[1]);
        break;
  
-@@ -4145,6 +4479,81 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
+@@ -4145,6 +4484,81 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
        instr = pco_mov(&tctx->b, dest, src[0]);
        break;
  

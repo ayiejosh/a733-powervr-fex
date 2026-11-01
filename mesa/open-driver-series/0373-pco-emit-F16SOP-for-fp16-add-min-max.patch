@@ -3,8 +3,9 @@ From: radxa <radxa@radxa-cubie-a7a>
 Date: Sun, 1 Nov 2026 10:42:02 +0800
 Subject: [PATCH] pco: emit F16SOP for fp16 add/min/max
 
-First working F16SOP emission, the packed-half form the vendor GLES compiler
-uses for mediump arithmetic (one instruction per half register pair):
+First F16SOP emission, the packed-half form the vendor GLES compiler uses for
+mediump arithmetic (one instruction per half register pair). Offline only: no
+F16SOP has run on the GPU yet. Changes:
 
 - pco_ref_nir_def() maps an f16 value to a packed pair (bits 16->32,
   chans=ceil(chans/2)), the same device the backend already uses for 64-bit
@@ -19,7 +20,7 @@ Verified offline with the CPU harness: --nir-test f16add (f16 add on
 frag-coord-derived values) now emits the vendor F16SOP prefix
 94 99 99 af 00 c0 32 24 00 00 0e in the 272B shader binary, while math.frag
 stays at 280B / 26 groups and --nir-test basic at 264B / 20 groups (no fp32
-regression).  The 17-group board gate passes on this tree.  src1_desc/src1_flag
+regression).  The 17-group board gate passes (no group runs fp16 arithmetic).  src1_desc/src1_flag
 are still zero (vendor uses lane-pair descriptors 0x44/0x62) and multi-channel
 rpt lane-pair emission, the MUL/MAD forms and the mediump enable path are the
 next steps.

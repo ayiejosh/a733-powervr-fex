@@ -4689,3 +4689,115 @@ emission for f16vec4 (two F16SOPs), MUL/MAD SOP forms, then the mediump enable
 Incident note: a crash-looping offline run was once redirected to /tmp (tmpfs) and grew to 2.3 GB,
 filling /tmp and breaking the shell; recovered via the REA process tool. Crash-prone harness runs
 now need `timeout` plus bounded output.
+
+## Round 229 - external review fixes integrated (0375-0378) + the gate probe that makes them count
+
+An external review GPU-tested the tree and found the 17-group gate was blind to per-render state: it
+passed on fa880179, which fails 6 of 6 targeted
+probe cases. Four fix commits were applied on top of 0374 (commits 80e00891, 50eb114f, e6224d3e,
+279e5984 = patches 0375-0378):
+
+1. Depth load/store decided from the *render's draws* (any draw tests/writes depth), not from the DSA
+   bound at flush: an overlay that disables depth last, or a render ended by binding a target without
+   depth, no longer loses its depth store; depth clears are stored (test-only) or handed to the next
+   render (never used).
+2. Mip regeneration after writes the content version missed: an open render into the texture, a
+   deferred clear-only render and the compute fallback now bump write_seq, so glGenerateMipmap after
+   drawing into a texture regenerates instead of returning the old chain.
+3. Pending renders hold their RT data and glFlush submits the batch (RT-data reuse wait sees deferred
+   renders).
+4. zonly decided from the render, not the framebuffer: blits/clear materialisation runs while a
+   depth-only FBO is bound write their output.
+
+Gate probe: `zls_mip_probe.c` is now part of tools/verify and run-all.sh (group "zls/mip per-render
+state").  Cases A B F C D G are per-render state; E passes on every build so it proves nothing about
+RT-data reuse.  A case only counts once it fails without its fix.  Verified on the board:
+- probe with the fa880179 runtime libs (pvr override): **FAIL A B F C D G, RESULT: FAIL**
+- probe with the fix build: **RESULT: PASS**
+- full gate on 0374+fixes: **ALL GROUPS PASS** (18 groups, including the new one).
+Trap worth recording: the probe must run with `MESA_LOADER_DRIVER_OVERRIDE=pvr`; without it the open
+stack loads zink and every case passes trivially (a first run did exactly that).
+
+Honest numbers after the fixes (external measurement, reproduced by the review): the total is flat
+(glmark2 800/802 -> 801/802), but refract 44/43 -> 37/37 and terrain 23/23 -> 20/20, because
+fa880179 with PVR_NO_MIP_CACHE=1 also gives 37/20: 0368's refract/terrain "gains" were stale mips
+every second frame, and that claim is retracted.  Win them back by making mip generation cheaper
+(one blit render per level today), not rarer.  0373/0374 are offline-only scalar fp16 emission; no
+F16SOP instruction has executed on the GPU, vector halves are unimplemented, and the GLES2 mediump
+path stays off.  Also open: the draw scissor is ignored (pvr_set_scissor_states is empty) - add a
+scissored-draw gate case before implementing it.
+
+## Round 230 - vendor mediump->highp A/B (VOID: the method changed no shader)
+
+The first attempt copied the data dir and ran `sed s/mediump/highp/g` over the shader files. In those
+files `mediump` appears only in 5 comment lines; glmark2 adds `precision mediump float;` to every
+fragment shader in code. Both arms therefore ran identical shaders, and 1156/1160 vs 1175/1123 was
+run-to-run noise. That run used the schedutil governor and no CPU pinning; with identical shaders the
+arm means of single scenes differed by up to 12-15% (conditionals vertex-steps=5 0.88, build use-vbo=true
+1.15), single runs of one scene by up to 45%, and the total by 4.6% (1123 vs 1175). The conclusion first
+written here ("F16SOP is not the score lever") had no evidence; round 231
+redoes the experiment.
+
+## Round 231 - precision A/B redone, draw scissor (0379), review follow-up
+
+**Vendor fp16 A/B, redone.** glmark2's own scene option `fragment-precision=int,float,sampler2d,samplercube`
+sets the default precision it adds. Two benchmark files with the bench31 list (33 lines): A ends every
+line with `:fragment-precision=default,default,default,default` (stock), B with
+`:fragment-precision=default,high,default,default`. Vendor 24.2, bare X :1, performance governor,
+system.slice on cpu0-5, glmark2 on cpu6-7, blocks A B A B.
+
+Captures of the composed fragment shader and of the vendor's USC code (vendor-usc tools) first prove
+that B took effect (FS header `precision highp float`, F16SOP arithmetic gone):
+
+| benchmark | A: F16SOP arith / groups | B: F16SOP arith / groups |
+|---|---|---|
+| shading cel | 12 / 33 | 0 / 39 |
+| bump height | 12 / 25 | 0 / 27 |
+| loop (uniform) | 1 / 11 | 0 / 11 |
+| conditionals fs5 | 5 / 31 | 0 / 31 |
+
+Scores: A 1195 / 1197, B 1193 / 1196. Per benchmark, median B/A 1.000 (n=33; same-arm spread of the
+worse arm per benchmark: median 2%, max 5%). The largest losses at highp: effect2d conv 0.952, bump
+height 0.962, effect2d 5x3 kernel 0.963, ideas 0.971, shading cel 0.979. Loop 0.99-1.02, conditionals
+0.99-1.02.
+
+So fp16 is worth at most ~5% to the vendor, on the convolution and bump-height scenes, and little or
+nothing on the scenes with the largest native/vendor gaps (shading cel 0.45: -2% at highp; loop 0.48
+and conditionals fs5 0.53: none). On loop and conditionals the vendor's code has the same group count
+with and without fp16. F16SOP is low priority; control-flow codegen is the lever. mediump stays off.
+
+**0374 fp32 check.** The offline pco harness built at fa880179 and at 279e5984 (0378 head; its pco
+files are 0374's) gives
+byte-identical output for math, bump, the NIR-builder test and the fp16 io/pack shaders. The f16mul
+NIR test differs (256 -> 272 B), so the comparison does see 0374.
+
+**0379 - draw scissor.** pvr_set_scissor_states() was empty, so glScissor did not restrict draws. Each
+render now keeps an ISP scissor table, as the Vulkan driver's pvr_setup_isp_depth_bias_scissor_state
+does; a scissored draw indexes its box and narrows its TA region clip to the box's tiles; an empty box
+drops the draw. New gate probe `scissor_probe.c` (run-all.sh group "draw scissor"):
+- S1 box edges off the tile grid, S3 per-draw index inside one tile, S4 empty boxes, S6 boxes st
+  clamped, S8 more boxes than the 64-entry table: fail without 0379 (tested on 0375-0378 over 0373;
+  0374 changes no reachable shader), pass with 0379. S2 (scissor off after on) passes on both.
+- Gate ALL GROUPS PASS. glmark2 803/804 with 0379 vs 804 without (one more run without read 795
+  while a build ran). No scene moved more than 4%; drawbench2 modes within noise.
+- The committed 19-group gate passes on the final tree (5323b619), 0 GPU faults.
+
+**Found, not fixed: a scissored or colour-masked glClear does not draw reliably** (probe S5, S7; the gate group
+reports them as an open bug and does not fail on them). The driver sets neither clear_scissored nor
+clear_masked, so st clears with a quad draw. Two causes found so far, but not the whole story:
+1. st's clear vertex shader reads VERT_ATTRIB_POS. pco lowers vertex inputs only at
+   VERT_ATTRIB_GENERIC0..15 and leaves that load unlowered (garbage position). Moving such inputs to a
+   free generic slot fixes the lowering (seen in the NIR dump) but not the clear on its own.
+2. A vec4 attribute fed fewer components does not get GL's default w = 1: after a draw that leaves
+   w = 2, a 3-component draw comes out at the wrong size. This is a general GL bug, not only a clear
+   bug: any app with `attribute vec4` fed by `glVertexAttribPointer(size 3)` can draw garbage. Fix:
+   give pco the bound vertex element formats (attrib_formats) through vertex shader variants keyed on
+   them, as the FS variants are keyed on the RT formats; pco_nir_pvi then fills the missing components.
+With cause 1 fixed in a test build, a clear right after a draw still failed, even after a draw that
+leaves w = 1, so a further cause remains; the attrib_formats fix for cause 2 is untested. The S5 and S7
+results change between runs (S5 passed in one session, S7 in the final gate run), as expected from
+undefined registers.
+
+**Commit messages corrected** (patch files only; text, no code): 0368 (the terrain/refract gains were
+stale mips, retracted), 0369 (retracted per-scene numbers removed, drawbench2 kept with its caveat),
+0373 (offline only; no gate group runs fp16 shader arithmetic).

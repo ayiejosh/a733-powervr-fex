@@ -1,0 +1,74 @@
+From e6224d3e451a9fdfff54b81c1b18d3ddb037e571 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sun, 1 Nov 2026 11:54:37 +0800
+Subject: [PATCH 377/378] gallium/pvr: pending renders hold their RT data;
+ submit the batch at flush
+
+With batched submission a built render waits in the pending queue
+without a syncobj. draw_open() and draw_render_pending() only looked at
+slots with a syncobj, so the rule this file states for HWRT data sets
+(at most one render in flight per RT data) did not hold for pending
+renders: the third same-size render reused the RT data of a render that
+was still pending. The kernel orders only a render's own geometry and
+fragment jobs (paired jobs and explicit sync ops, pvr_queue.c), so in one
+SUBMIT_JOBS call the later geometry job may start while the earlier
+fragment job still reads that RT data; whether the firmware blocks this
+is not verified. Count pending slots as in flight; draw_slot_idle()
+already submits the batch before it waits.
+
+pvr_flush() submitted the batch only when a fence was requested, so
+glFlush could leave renders unsubmitted. Submit it on every flush that
+is not deferred.
+
+Fixes: 83f066ff ("gallium/pvr: submit render passes in batches and own the pending streams")
+---
+ src/gallium/drivers/pvr_native/pvr_context.c | 6 +++++-
+ src/gallium/drivers/pvr_native/pvr_draw.c    | 5 +++--
+ 2 files changed, 8 insertions(+), 3 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_context.c b/src/gallium/drivers/pvr_native/pvr_context.c
+index 1e7327a1..681d7d8c 100644
+--- a/src/gallium/drivers/pvr_native/pvr_context.c
++++ b/src/gallium/drivers/pvr_native/pvr_context.c
+@@ -169,10 +169,14 @@ pvr_transfer_flush_region(UNUSED struct pipe_context *pctx,
+  * created. There is no command stream to submit yet, so there is genuinely nothing to
+  * do, and no fence is produced - which is the correct answer for "nothing pending". */
+ static void
+-pvr_flush(struct pipe_context *pctx, struct pipe_fence_handle **fence, UNUSED unsigned flags)
++pvr_flush(struct pipe_context *pctx, struct pipe_fence_handle **fence, unsigned flags)
+ {
+    struct pvr_context *ctx = pvr_context(pctx);
+    pvr_draw_flush(ctx);
++   /* glFlush promises the work reaches the GPU: submit the batched renders (that is a side effect
++    * of pvr_draw_last_sync) unless this is a deferred flush without a fence. */
++   if (fence == NULL && !(flags & PIPE_FLUSH_DEFERRED))
++      pvr_draw_last_sync(ctx);
+    if (fence != NULL) {
+       struct pipe_fence_handle *f =
+          pvr_fence_create(pvr_screen(pctx->screen), pvr_draw_last_sync(ctx));
+diff --git a/src/gallium/drivers/pvr_native/pvr_draw.c b/src/gallium/drivers/pvr_native/pvr_draw.c
+index df921c0a..80152736 100644
+--- a/src/gallium/drivers/pvr_native/pvr_draw.c
++++ b/src/gallium/drivers/pvr_native/pvr_draw.c
+@@ -388,7 +388,7 @@ static bool
+ draw_render_pending(struct pvr_draw_state *d, uint32_t seq)
+ {
+    for (unsigned i = 0; seq != 0 && i < PVR_DRAW_SLOTS; i++) {
+-      if (d->slots[i].sync != 0 && d->slots[i].seq == seq)
++      if ((d->slots[i].sync != 0 || d->slots[i].pending) && d->slots[i].seq == seq)
+          return true;
+    }
+    return false;
+@@ -1429,7 +1429,8 @@ draw_open(struct pvr_context *ctx, struct pvr_draw_state *d, struct pipe_resourc
+       struct pvr_draw_hwrt *e = d->cur_hwrt;
+       const uint32_t prev = e->data_seq[e->rt_data_idx];
+       for (unsigned i = 0; prev != 0 && i < PVR_DRAW_SLOTS; i++) {
+-         if (d->slots[i].sync != 0 && d->slots[i].seq == prev)
++         /* A render still in the pending batch holds this RT data too (draw_slot_idle submits). */
++         if ((d->slots[i].sync != 0 || d->slots[i].pending) && d->slots[i].seq == prev)
+             draw_slot_idle(ctx, &d->slots[i]);
+       }
+    }
+-- 
+2.47.3
+

@@ -7,11 +7,17 @@ Subject: [PATCH] gallium/pvr: skip the per-draw TA state update when the
 Every draw rebuilt and re-pointed the whole TA state block and emitted a PPP state
 update for it, even when consecutive draws use the same shaders, rasterizer,
 viewport and PDS data. Compare the freshly built block with the previous one and
-emit the PPP state update only when it differs.
+emit the PPP state update only when it differs. The comparison restarts at the
+first draw of every render, so it only helps renders with several draws in the
+same state.
 
-drawbench2 (native pvr, weston/headless): manydraws 27x/frame 514 -> 986 fps,
-blend 521 -> 985, fill 1754 -> 2465, texture 1429 -> 1515. glmark2 per-scene:
-cel 528 -> 1243, effect2d 763 -> 1573, bump 413 -> 1518, shading 961 -> 946.
+No isolated glmark2 measurement of this patch exists. The per-scene numbers first
+given here (cel, effect2d, bump, shading) came from single-scene runs and were
+retracted (round-190). drawbench2 (surfaceless EGL, native pvr, 27 same-state
+draws per frame), separate runs before and after: manydraws 514 -> 864..986 fps,
+blend 521 -> 985 fps. This benchmark moves about 10% between sessions, so read
+these as roughly 1.7x to 1.9x on those two cases only. A full glmark2 run on this
+patch scored 795 (earlier runs 794 and 805).
 17-group gate: ALL GROUPS PASS.
 ---
  src/gallium/drivers/pvr_native/pvr_draw.c | 20 +++++++++++++++++++-

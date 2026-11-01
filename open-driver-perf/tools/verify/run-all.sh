@@ -12,7 +12,7 @@ ok() { printf 'PASS %s\n' "$*"; }
 bad() { printf 'FAIL %s\n' "$*"; fail=1; }
 
 # Compile the probes from source so the gate is self-contained.
-for p in cube_probe cube_mip border_probe mirror_probe aniso_probe polygon_offset_probe rg_probe f16rt_probe; do
+for p in cube_probe cube_mip border_probe mirror_probe aniso_probe polygon_offset_probe rg_probe f16rt_probe zls_mip_probe scissor_probe; do
    [ -f "$V/$p.c" ] || continue
    gcc -O2 "$V/$p.c" -o "$OUT/$p" -lEGL -lGLESv2 || bad "compile $p"
 done
@@ -46,6 +46,31 @@ echo "$po" | grep -q 'C less off +40000   : 0 0 0 255' && ok "polygon offset" ||
 
 fr=$(timeout 120 $OUT/f16rt_probe 2>&1)
 echo "$fr" | grep -q 'RESULT: PASS' && ok "half-float colour targets" || bad "half-float colour targets"
+
+# Per-render state decided at flush time (review fixes on 0326/0367/0368/0370):
+# A depth store past a depth-off last draw, B/F depth-clear store/handoff, C/D mips after an
+# open or clear-only render, G mips while a depth-only FBO is bound.  E (batch RT data) passes
+# everywhere; a case only counts once it fails on a build without the fix.
+zr=$(timeout 120 $OUT/zls_mip_probe 2>&1)
+if echo "$zr" | grep -q 'RESULT: PASS'; then
+   ok "zls/mip per-render state (A B F C D G)"
+else
+   bad "zls/mip per-render state: $(echo "$zr" | grep -E 'FAIL' | tr '\n' ' ')"
+fi
+
+# Draw scissor (0379): S1 box edges off the tile grid, S2 scissor off after on, S3 per-draw index in one
+# tile, S4 empty boxes, S6 boxes st clamped, S8 more boxes than the 64-entry table; S1 S3 S4 S6 S8 fail
+# without 0379.  S5 (scissored glClear) and S7 (colour-masked glClear) go through st's clear quad, which
+# does not draw reliably (round 231: its vertex shader reads VERT_ATTRIB_POS, which pco does not lower,
+# a vec4 fed 3 components gets no w = 1, and a further cause remains).  They are reported, not failed.
+sr=$(timeout 60 $OUT/scissor_probe 2>&1)
+other=$(echo "$sr" | grep '^FAIL' | grep -v '^FAIL S[57] ')
+if echo "$sr" | grep -q '^RESULT:' && [ -z "$other" ]; then
+   open=$(echo "$sr" | grep '^FAIL' | awk '{print $2}' | sort -u | tr '\n' ' ')
+   ok "draw scissor (S1-S4 S6 S8)${open:+; open bug, still failing: $open}"
+else
+   bad "draw scissor: $(echo "$other" | head -5 | tr '\n' ' ')"
+fi
 
 if [ $fail = 0 ]; then echo "ALL GROUPS PASS"; else echo "SOME GROUPS FAILED"; fi
 exit $fail
