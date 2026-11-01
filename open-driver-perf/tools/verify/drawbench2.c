@@ -18,6 +18,18 @@ static GLuint prog(const char*vs,const char*fs){GLuint p=glCreateProgram();glAtt
 #define H 600
 static const char *VS_FULL = "attribute vec2 p; varying vec2 v; void main(){ v = p*0.5+0.5; gl_Position = vec4(p,0.0,1.0); }";
 static const char *VS_GRID = "attribute vec2 p; uniform float s; void main(){ gl_Position = vec4(p*s, 0.0, 1.0); }";
+static char *read_src(const char *path)
+{
+   FILE *f = fopen(path, "rb");
+   long n; char *buf;
+   if (!f) return NULL;
+   fseek(f, 0, SEEK_END); n = ftell(f); fseek(f, 0, SEEK_SET);
+   buf = malloc(n + 1);
+   if (buf && fread(buf, 1, n, f) == (size_t)n) buf[n] = 0; else { free(buf); buf = NULL; }
+   fclose(f);
+   return buf;
+}
+
 int main(void){
    const char *mode = getenv("MODE") ? getenv("MODE") : "fill";
    const int frames = getenv("FRAMES") ? atoi(getenv("FRAMES")) : 200;
@@ -79,7 +91,12 @@ int main(void){
    /* Special-function throughput: only frsq/frcp/fexp/flog chains. */
    const char *fs_trans = "precision highp float; varying vec2 v; void main(){ float x=v.x+1.5, y=v.y+1.5; for(int i=0;i<8;i++){ x=sqrt(x); y=inversesqrt(y); x=exp2(x); y=log2(y); } gl_FragColor=vec4(x,y,x*y,1.0); }";
    GLuint cube=0;
-   if (!strcmp(mode,"fill")||!strcmp(mode,"overdraw")||depthmode) p = prog(VS_FULL, fs_fill);
+   const char *vs_file = getenv("VS_FILE"), *fs_file = getenv("FS_FILE");
+   if (vs_file && fs_file) {
+      char *vsrc = read_src(vs_file), *fsrc = read_src(fs_file);
+      if (!vsrc || !fsrc) { fprintf(stderr, "cannot read shader files\n"); return 1; }
+      p = prog(vsrc, fsrc);
+   } else if (!strcmp(mode,"fill")||!strcmp(mode,"overdraw")||depthmode) p = prog(VS_FULL, fs_fill);
    else if (!strcmp(mode,"cube")) {
       glGenTextures(1,&cube); glBindTexture(GL_TEXTURE_CUBE_MAP,cube);
       for(int f=0;f<6;f++) glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X+f,0,GL_RGBA,64,64,0,GL_RGBA,GL_UNSIGNED_BYTE,px);
@@ -110,6 +127,19 @@ int main(void){
    } else {
       glVertexAttribPointer(0,2,GL_FLOAT,GL_FALSE,0,quad); glEnableVertexAttribArray(0);
       glBindAttribLocation(p,0,"p");
+   }
+   if (vs_file && fs_file) {
+      GLint natt = 0;
+      glGetProgramiv(p, GL_ACTIVE_ATTRIBUTES, &natt);
+      for (GLint i = 0; i < natt; i++) {
+         char name[128]; GLint sz = 0; GLenum ty = 0;
+         glGetActiveAttrib(p, (GLuint)i, sizeof(name), NULL, &sz, &ty, name);
+         GLint loc = glGetAttribLocation(p, name);
+         if (loc >= 0) {
+            glVertexAttribPointer((GLuint)loc, 2, GL_FLOAT, GL_FALSE, 0, quad);
+            glEnableVertexAttribArray((GLuint)loc);
+         }
+      }
    }
    glUseProgram(p);
    GLint flex_u = glGetUniformLocation(p, "u");

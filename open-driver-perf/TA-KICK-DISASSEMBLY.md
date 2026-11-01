@@ -4545,3 +4545,27 @@ correctly ABORTED ("GPU device still open: /dev/dri/card0 root 546798 kmscon"). 
 open`.  The pco comparison harness (shaderstat) was also fixed this round: render to an FBO (pbuffer
 default-framebuffer draws never trigger the native 3D path) and bind a dummy buffer to every active
 vertex attribute, both of which pco compilation needs.
+
+### Round 215 - ATTRIBUTION: pco emits ~2x the instruction groups of the vendor compiler on real shaders
+
+Fixed the pco-side comparison harness (db2 gained VS_FILE/FS_FILE replay with generic attribute
+binding; PCO_DEBUG_PRINT must be "stats,fs", plain "stats" prints nothing) and compiled the exact
+composed GLSL that the vendor capture used.  Results (pco stats vs vendor disassembly groups/bytes):
+
+| shader | pco groups / bytes | vendor groups / bytes | ratio |
+|---|---|---|---|
+| bump FS (Blinn-Phong normalize/dot/pow) | 33 / 376 B (7 temps) | 17 / 264 B | **1.94x groups** |
+| effect2d-conv9 FS (9 live taps) | 58 / 624 B (16 temps) | 31 / 488 B | **1.87x groups** |
+| effect2d FS (8/9 taps folded) | 39 / 376 B | 3 / 64 B (different variant) | n/a |
+
+So the ~20-50% real-scene fragment gap is explained: pco executes roughly **twice as many instruction
+groups** as IMG's compiler for the same GLSL (and 40-60% more code bytes), even though raw
+instruction selection/microbenchmarks are at parity.  The vendor compiler packs far more work per
+group (p0+p1+p2 slots) - pco's pairing is restricted: single-unit ops (FRCP/FRSQ/FLOG/FEXP) are
+excluded from co-issue on BXM-4-64 (comment in is_p0_pairable: co-issuing with them "produced wrong
+results on BXM-4-64"), and these dominate the bump/normalize/pow shaders.
+
+Next: investigate that exclusion - which exact pairing produced wrong results (maybe only a specific
+combination is unsafe), by testing narrower pairings (e.g. transcendental in phase 1 with an integer
+p0 only, or with predication disabled) under the 17-group gate and the bump/conv9 FS group-count
+metric.  This is now a measurement-driven target rather than a blind edit.
