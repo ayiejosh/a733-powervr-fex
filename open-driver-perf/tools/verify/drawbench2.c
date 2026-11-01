@@ -78,6 +78,8 @@ int main(void){
    GLuint p; int verts = 0;
    GLuint idx_vbo = 0; int file_nidx = 0;
    const int depthmode = !strcmp(mode,"depthfill") ? 1 : !strcmp(mode,"depthover") ? 2 : 0;
+   const int filedepth = getenv("DB2_DEPTH") ? 1 : 0;
+   const int filecull = getenv("DB2_CULL") ? 1 : 0;
    const char *fs_fill = "precision mediump float; void main(){ gl_FragColor = vec4(0.5,0.25,0.75,1.0); }";
    const char *fs_tex  = "precision mediump float; varying vec2 v; uniform sampler2D t; void main(){ gl_FragColor = texture2D(t, v); }";
    const char *fs_cube = "precision mediump float; varying vec2 v; uniform samplerCube t; void main(){ gl_FragColor = textureCube(t, vec3(v*2.0-1.0, 1.0)); }";
@@ -212,6 +214,8 @@ int main(void){
    if (cube) { glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_CUBE_MAP,cube); glUniform1i(glGetUniformLocation(p,"t"),0); }
    else if (!verts && strcmp(mode,"fill") && strcmp(mode,"overdraw")) { glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D,ctex); glUniform1i(glGetUniformLocation(p,"t"),0); }
    if (depthmode) { glEnable(GL_DEPTH_TEST); glDepthFunc(GL_LESS); glClearDepthf(1.0f); }
+   if (filedepth) { glEnable(GL_DEPTH_TEST); glDepthFunc(GL_LEQUAL); glDepthMask(GL_TRUE); glClearDepthf(1.0f); }
+   if (filecull) { glEnable(GL_CULL_FACE); glCullFace(GL_BACK); glFrontFace(GL_CCW); }
    glClearColor(0,0,0,1);
    double t0=now();
    for(int f=0; f<frames; f++){
@@ -262,7 +266,7 @@ int main(void){
             if (g_vl_loc >= 0) glUniform1i(g_vl_loc, 5);
             if (g_fl_loc >= 0) glUniform1i(g_fl_loc, 5);
          }
-         glClear(GL_COLOR_BUFFER_BIT | (depthmode ? GL_DEPTH_BUFFER_BIT : 0));
+         glClear(GL_COLOR_BUFFER_BIT | ((depthmode || filedepth) ? GL_DEPTH_BUFFER_BIT : 0));
          if (depthmode == 2) {
             /* Same quad, same depth, 27 times: early-Z must reject all but the first. */
             for (int k = 0; k < npasses; k++)
