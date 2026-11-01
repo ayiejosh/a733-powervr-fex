@@ -1,36 +1,55 @@
-From bd29bc00a730a96514f4102cf5338c09082f6ebc Mon Sep 17 00:00:00 2001
+From 6681058a5756341fdedbb523977d0cff4ac43a93 Mon Sep 17 00:00:00 2001
 From: radxa <radxa@radxa-cubie-a7a>
 Date: Sun, 1 Nov 2026 21:38:05 +0800
 Subject: [PATCH] gallium/pvr: pick the vertex shader variant from the bound
  vertex element formats
 
-The vertex shader derived each attribute's fetch format from the shader's
-declared type, so a vec4 attribute fed by a vertex element with three
-components was fetched as four dwords: the missing w came from whatever the
-previous draw left in the fourth vertex-input register instead of GL's
-default 1.  That broke every draw whose position attribute is fed three
-floats, most visibly the state tracker's clear quad (a scissored or
-colour-masked glClear draws one), and it is a general GL bug, not a clear
-one: any app with attribute vec4 fed by glVertexAttribPointer(size 3) drew
-garbage.
+The vertex shader derived each attribute's fetch format from the shader's declared
+type, so a vec4 attribute fed by a vertex element with three components was fetched
+as four dwords: the missing w came from whatever the previous draw left in the
+fourth vertex-input register instead of GL's default 1.  That broke any draw whose
+position attribute is fed three floats, most visibly the state tracker's clear quad
+(a scissored or colour-masked glClear draws one).  It is a general GL bug, not a
+clear-only one.
 
-Keep the vertex shader's source NIR (the fragment stage already did) and
-build vertex variants keyed on the bound pipe_vertex_element formats, the
-same way fragment variants are keyed on the render target formats.  The
-variant's attrib_formats[] come from the element formats, and pco's
-attribute synthesizer fills a missing w with 1 from the format's swizzle
-(pco_nir_pvfio.c unpack_from_format already does that).  Selection happens
-at draw time in pvr_draw_3d() before the vertex fetch program is built; the
-fetch program's DMA already uses the bound element's size, so only the
-shader side was wrong.
+Keep the vertex shader's source NIR (the fragment stage already did) and build
+vertex variants keyed on the bound pipe_vertex_element formats, the same way
+fragment variants are keyed on the render target formats.  The variant's
+attrib_formats[] come from the element formats, and pco's attribute synthesizer
+fills a missing w with 1 from the format's swizzle (pco_nir_pvfio.c
+unpack_from_format already does that).  Selection happens at draw time in
+pvr_draw_3d() before the vertex fetch program is built; the fetch program's DMA
+already used the bound element's size, so only the shader side was wrong.
 
-Verified on the board (pvr override): clear_diag now passes every case -
-D1-D4 scissored/colour-masked clears at all depths, D9 scissored clear
-after a draw, D17 a 3-component attribute right after a w = 2 draw, D18/D19
-scissored clears right after draws (all failed before); scissor_probe S5/S7
-pass, which had been open.  The gate gains a 'clear quad (D1-D19)' group and
-the scissor group now requires S1-S8; ALL GROUPS PASS.  No performance claim
-is made here (not measured).
+Evidence, control first.  Runtime-lib snapshots were built from explicit
+checkouts: 5323b619 (neither this change nor the parent vertex-input move),
+58f07283 (the parent only) and the commit this message describes (both).  Probe
+runs print the renderer and version (R=PowerVR B-Series BXM-4-64, V=OpenGL ES 2.0
+Mesa 26.3.0-devel) and go through /home/radxa/open-perf/withlibs.sh, which prints
+the snapshot name, its recorded revision and the libgallium md5.
+
+clear_diag, failing cases only:
+  5323b619: 8 bad - D1 D2 D3 D4 D9 D17 D18 D19
+  58f07283: 4 bad - D9 D17 D18 D19      (the parent fixes D1-D4)
+  this commit: 0 bad - 21 ok
+scissor_probe:
+  5323b619 and 58f07283: FAIL S7; this commit: 63 pass, 0 fail, RESULT: PASS.
+  S5 passed on the control snapshots as well, so it is not evidence for this change.
+
+An instrumented run (temporary env-gated log, not part of this commit) showed the
+path firing: "base clear VS differs, bound formats: [0] el=0 shader_fmt=24
+bound_fmt=23" then "created variant slot=0" - RGBA32F derived versus RGB32F bound,
+and 24 versus 22 for the GLSL1 test shaders.
+
+Full gate on this commit and its follow-up: 20 groups, 0 failures, ALL GROUPS PASS,
+including the scissor group required as S1-S8 and the clear-quad group (D1-D19).
+
+Identity note: Mesa's GL_VERSION embeds the repository HEAD commit when the tree is
+built (vcs_tag), so the control snapshots print git-bd29bc00a7 (the tree HEAD at
+their build time, which is later than their content) while a snapshot built at this
+commit prints its own sha.  What each run loaded is identified by the wrapper line
+(snapshot rev + libgallium md5), not by that string.  No performance claim is made
+here (not measured).
 ---
  src/gallium/drivers/pvr_native/pvr_context.c |  6 +-
  src/gallium/drivers/pvr_native/pvr_draw.c    | 48 +++++++++++++

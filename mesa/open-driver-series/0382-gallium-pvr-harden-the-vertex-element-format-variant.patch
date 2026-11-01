@@ -1,0 +1,168 @@
+From 0f4838b6b9baa8ea7d25dca0dbea047dd5fdb08d Mon Sep 17 00:00:00 2001
+From: radxa <radxa@radxa-cubie-a7a>
+Date: Sun, 1 Nov 2026 22:57:48 +0800
+Subject: [PATCH] gallium/pvr: harden the vertex element format variants
+
+Fixes from an independent review of the vertex element format variant change:
+
+- Past PVR_SHADER_MAX_VARIANTS the variant slot was hardcoded to 0 while the
+  comment claimed a round robin; seven or more element-format signatures would
+  recompile the vertex shader on every draw.  Hash to a slot instead and free
+  the evicted variant (nothing else keeps an evicted VS variant alive), as the
+  fragment path does for its own cache.
+- Select the variant after the draw's drop paths (no target, bad topology,
+  culled, empty scissor box, truncated draw) instead of before them: a fully
+  scissored-out draw no longer pays a first compile and can no longer evict a
+  live variant.
+- Only pass formats the vertex fetch itself accepts into attrib_formats: the
+  DMA rejects a non-float or non-dword-multiple format and drops the draw, and
+  handing pco formats no probe covers would reach untested code paths.
+- Free the cloned NIR when the variant fails to compile and log the fallback
+  instead of leaking it silently while drawing with the stale base shader.
+- Skip elements whose vertex element state is absent, so that case no longer
+  creates a no-op variant.
+- Update the stale format-derivation comment in pvr_shader.c.
+
+These are review fixes on top of c981a2df; the behaviour they exercise (the
+probes' element formats) is unchanged - verified below.
+
+Verification (identity-tagged): build snapshot libs-final (libgallium md5
+2bc17f1972bb028548ea805e837822ec), probes run through
+/home/radxa/open-perf/withlibs.sh which prints snapshot rev + md5, each probe
+prints R=PowerVR B-Series BXM-4-64 and V=OpenGL ES 2.0 Mesa 26.3.0-devel:
+- clear_diag: 21 ok, 0 bad   (task dir runs/006-final-verified/clear_diag-final.txt)
+- scissor_probe: 63 pass, 0 fail, RESULT: PASS   (runs/006-final-verified/scissor-final.txt)
+- full gate: 20 groups, 0 failures, "ALL GROUPS PASS"
+  (task dir T-2026-11-01-round233/runs/006-final-verified/gate-final.log)
+---
+ src/gallium/drivers/pvr_native/pvr_draw.c   | 60 ++++++++++++++++-----
+ src/gallium/drivers/pvr_native/pvr_shader.c |  8 +--
+ 2 files changed, 50 insertions(+), 18 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_draw.c b/src/gallium/drivers/pvr_native/pvr_draw.c
+index 8633d892..e8abbc80 100644
+--- a/src/gallium/drivers/pvr_native/pvr_draw.c
++++ b/src/gallium/drivers/pvr_native/pvr_draw.c
+@@ -1569,10 +1569,22 @@ draw_fb_level(struct pvr_context *ctx)
+    return ctx->fb.nr_cbufs && ctx->fb.cbufs[0].texture ? ctx->fb.cbufs[0].level : 0;
+ }
+ 
+-/* The vertex shader derives each attribute's fetch format from the declared type. GL lets the bound
+- * vertex element supply fewer components (a vec4 attribute fed three floats gets w = 1) and pco's
+- * unpack fills the missing components from the format's swizzle, so pick a variant compiled against
+- * the bound element formats, like the fragment variants keyed on the render target format. */
++/* The vertex shader derives each attribute's fetch format from the declared type.  GL lets the
++ * bound vertex element supply fewer components (a vec4 attribute fed three floats gets w = 1) and
++ * pco's unpack fills the missing components from the format's swizzle, so pick a variant compiled
++ * against the bound element formats, like the fragment variants keyed on the render target format.
++ *
++ * Only formats the vertex fetch itself accepts are passed through: a format the DMA rejects already
++ * drops the draw, and handing it to pco would reach code paths no probe covers. */
++static bool
++draw_vs_attr_format_ok(enum pipe_format format)
++{
++   const struct util_format_description *desc = util_format_description(format);
++
++   return desc->channel[0].type == UTIL_FORMAT_TYPE_FLOAT &&
++          util_format_get_blocksize(format) % 4 == 0;
++}
++
+ static struct pvr_shader *
+ draw_vs_variant(struct pvr_context *ctx, struct pvr_screen *scr, struct pvr_shader *vs)
+ {
+@@ -1585,12 +1597,17 @@ draw_vs_variant(struct pvr_context *ctx, struct pvr_screen *scr, struct pvr_shad
+ 
+    for (unsigned i = 0; i < vs->nr_inputs; i++) {
+       const unsigned element = vs->inputs[i].element;
++      enum pipe_format format;
+ 
+       if (element >= ARRAY_SIZE(formats) || element >= ve->count)
+          continue;
+ 
+-      formats[element] = ve->elements[element].src_format;
+-      if (vs->vs_element_formats[element] != formats[element])
++      format = ve->elements[element].src_format;
++      if (!draw_vs_attr_format_ok(format))
++         continue;
++
++      formats[element] = format;
++      if (vs->vs_element_formats[element] != format)
+          differ = true;
+    }
+    if (!differ)
+@@ -1601,14 +1618,26 @@ draw_vs_variant(struct pvr_context *ctx, struct pvr_screen *scr, struct pvr_shad
+          return vs->vs_variants[i].sh;
+    }
+ 
+-   struct pvr_shader *variant =
+-      pvr_shader_create_vs_with_formats(nir_shader_clone(NULL, vs->src_nir), scr->pco_ctx, formats);
+-   if (variant == NULL)
++   struct nir_shader *clone = nir_shader_clone(NULL, vs->src_nir);
++   struct pvr_shader *variant = pvr_shader_create_vs_with_formats(clone, scr->pco_ctx, formats);
++   if (variant == NULL) {
++      ralloc_free(clone);
++      mesa_logw("pvr: vertex element format variant failed to compile; using the base shader");
+       return vs;
++   }
+ 
+-   /* Shortcut: round robin past PVR_SHADER_MAX_VARIANTS; the evicted variant stays allocated, as
+-    * the fragment variants' shortcuts do. */
+-   const unsigned slot = vs->nr_vs_variants < PVR_SHADER_MAX_VARIANTS ? vs->nr_vs_variants++ : 0;
++   /* Past PVR_SHADER_MAX_VARIANTS hash to a slot (the fragment path does the same) and free the
++    * evicted variant: unlike the fragment path's shortcut, nothing keeps an evicted VS variant alive. */
++   unsigned slot;
++   if (vs->nr_vs_variants < PVR_SHADER_MAX_VARIANTS) {
++      slot = vs->nr_vs_variants++;
++   } else {
++      unsigned hash = 0;
++      for (unsigned i = 0; i < ARRAY_SIZE(formats); i++)
++         hash = hash * 31u + (unsigned)formats[i];
++      slot = hash % PVR_SHADER_MAX_VARIANTS;
++      pvr_shader_destroy(vs->vs_variants[slot].sh);
++   }
+    memcpy(vs->vs_variants[slot].element_formats, formats, sizeof(formats));
+    vs->vs_variants[slot].sh = variant;
+    return variant;
+@@ -1636,8 +1665,6 @@ pvr_draw_3d(struct pvr_context *ctx, const struct pipe_draw_info *info,
+    struct pvr_shader *vs = ctx->vs, *fs = ctx->fs;
+    enum ROGUE_VDMCTRL_PRIMITIVE_TOPOLOGY topo;
+ 
+-   if (vs != NULL)
+-      vs = draw_vs_variant(ctx, scr, vs);
+ 
+    if (num_draws != 1 || rt == NULL || vs == NULL ||
+        fs == NULL || fs->src_nir == NULL || !draw_format_ok(rt_format) ||
+@@ -1666,6 +1693,11 @@ pvr_draw_3d(struct pvr_context *ctx, const struct pipe_draw_info *info,
+    }
+    const uint32_t sc_words[2] = { sx0 << 16 | sx1, sy0 << 16 | sy1 };
+ 
++   /* The fragment shader variant for this framebuffer's colour format(s) and blend state. MRT v1:
++    * every attachment shares the first one's format (the background program emits one value). */
++   if (vs != NULL)
++      vs = draw_vs_variant(ctx, scr, vs);
++
+    if (ctx->draw == NULL)
+       ctx->draw = calloc(1, sizeof(struct pvr_draw_state));
+    d = ctx->draw;
+diff --git a/src/gallium/drivers/pvr_native/pvr_shader.c b/src/gallium/drivers/pvr_native/pvr_shader.c
+index 379140af..83f62d26 100644
+--- a/src/gallium/drivers/pvr_native/pvr_shader.c
++++ b/src/gallium/drivers/pvr_native/pvr_shader.c
+@@ -30,10 +30,10 @@ static bool pvr_shader_compile_data_with(pco_ctx *ctx, struct nir_shader *nir, p
+  * vtxin registers through attribs[]. The Vulkan driver fills both from pipeline state; this is the
+  * same data from the same source, the shader's declared inputs.
+  *
+- * ponytail: the format is derived from the declared type instead of taken from vertex element
+- * state, so only 32-bit float attributes are described. A GL vertex element can disagree (half,
+- * int, normalised), which is a different format, not a different count - when the frontend feeds
+- * real vertex elements, pass their pipe_format in here instead of deriving it. */
++ * When no element formats are supplied (the base shader), the format is derived from the declared
++ * type, so only 32-bit float attributes are described.  The draw path supplies the bound vertex
++ * element formats instead (pvr_draw.c draw_vs_variant) so a vec4 attribute fed fewer components
++ * gets GL's default w = 1 from pco's unpack. */
+ static enum pipe_format
+ pvr_shader_attr_format(const struct glsl_type *type)
+ {
+-- 
+2.47.3
+

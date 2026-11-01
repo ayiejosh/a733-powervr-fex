@@ -4823,10 +4823,11 @@ Evidence on the board (open driver, pvr override, before/after):
   after a draw BAD, D17 3-component attribute after a w = 2 draw BAD, D18/D19 scissored clears after
   draws BAD.
 - clear_diag after 0381: **21 ok, 0 BAD** - every D1-D19 case passes.
-- scissor_probe after 0381: **S1-S8 all PASS** (S5 scissored clear and S7 colour-masked clear, open
-  since round 231, now pass).
+- scissor_probe after 0381: **S1-S8 all PASS**.  S7 (colour-masked clear) failed on both control
+  snapshots and passes here; S5 (scissored clear) also passed on the controls, so S5 is not evidence
+  for this change (round 231 already noted its results move between runs).
 - Gate: the scissor group now requires S1-S8 and a new **"clear quad (D1-D19)"** group runs clear_diag;
-  **ALL GROUPS PASS** (21 groups) on the final tree. No performance claim: not measured.
+  **ALL GROUPS PASS** (20 groups) on the final tree. No performance claim: not measured.
 
 ### Round 233 verification (control first, per the review's rules)
 
@@ -4846,10 +4847,37 @@ log, not committed) proved the path fires: the state tracker's clear VS logged
 `base clear VS differs, bound formats: [0] el=0 shader_fmt=24 bound_fmt=23` then
 `created variant slot=0` - RGBA32F derived versus RGB32F bound - and the GLSL1 test shaders logged
 24 versus 22.  The committed build re-ran the probes (21 ok / RESULT: PASS) and the full gate:
-ALL GROUPS PASS on 21 groups, including the scissor group required as S1-S8 and the new clear-quad
+ALL GROUPS PASS on 20 groups, including the scissor group required as S1-S8 and the new clear-quad
 group (D1-D19).
 
-Caveat: Mesa's GL_VERSION embeds the repository HEAD sha (vcs_tag), so all three snapshots print
-git-c981a2df; what each run loaded is identified by the snapshot md5, the checkout/build record and a
-local symbol present only in the 0381 build.  No performance claim is made (not measured).  Per rule
-10, an independent reviewer gets the diff and the evidence paths before any push.
+Caveat: Mesa's GL_VERSION embeds the repository HEAD commit when the tree is built (vcs_tag),
+so the control snapshots print git-bd29bc00a7 (the tree HEAD at their build time, later than their
+content) while a snapshot built at the fix commit prints its own sha.  What each run loaded is
+identified by the wrapper line (snapshot rev + libgallium md5), not by that string.  No performance
+claim is made (not measured).  Per rule 10, an independent reviewer gets the diff and the evidence
+paths before any push.
+
+### Round 234 - independent review findings fixed (0382), text corrected
+
+The fresh reviewer checked the diff and the raw evidence against this text and found: claim 5 unbacked
+(no gate artifact existed; the group count was 20, not 21); the GL_VERSION caveat named the wrong sha
+(the control snapshots print the tree HEAD at build time, git-bd29bc00a7); the commit text claimed S5
+as fixed when S5 passes on the controls; the 0381 patch file carried the pre-amend `From:` sha; and
+five code findings in the variant path.  All were addressed:
+
+- 0382 (mesa 0f4838b6) hardens the variant path: hashed slot instead of hardcoded 0 past the cache
+  size (and the evicted variant is freed), variant selection moved after the draw's drop paths, only
+  fetch-accepted float/dword formats reach attrib_formats, the NIR clone is freed and the fallback
+  logged when a variant fails to compile, absent vertex element state no longer creates a no-op
+  variant, stale comment updated.
+- Text corrected here and in the commit messages (S5 no longer claimed; 20 groups; sha caveat fixed);
+  0381/0382 patches regenerated from the rewritten commits (content unchanged: `git diff` against the
+  pre-rewrite tree is empty).
+
+Verification, identity-tagged, on the rewritten head (0f4838b6), build snapshot libs-r2, libgallium
+md5 21a052c0f2bebc8daf9991fbc0caef75, V=OpenGL ES 2.0 Mesa 26.3.0-devel (git-0f4838b6b9):
+- clear_diag: 21 ok, 0 bad (runs/008-r2-verified/clear_diag-r2.txt)
+- scissor_probe: 63 pass, 0 fail, RESULT: PASS (runs/008-r2-verified/scissor-r2.txt)
+- full gate: 20 groups, 0 failures, ALL GROUPS PASS (runs/008-r2-verified/gate-r2.log)
+Control runs and their exact failing sets are unchanged (task runs/000, /004, /005).  Reviewer
+sign-off on the delta is pending; nothing is pushed.
