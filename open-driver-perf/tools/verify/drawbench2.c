@@ -19,6 +19,7 @@ static GLuint prog(const char*vs,const char*fs){GLuint p=glCreateProgram();glAtt
 static const char *VS_FULL = "attribute vec2 p; varying vec2 v; void main(){ v = p*0.5+0.5; gl_Position = vec4(p,0.0,1.0); }";
 static const char *VS_GRID = "attribute vec2 p; uniform float s; void main(){ gl_Position = vec4(p*s, 0.0, 1.0); }";
 static GLint g_mvp_loc = -1, g_vl_loc = -1, g_fl_loc = -1;
+static int g_vl_val = 5, g_fl_val = 5;
 
 static char *read_src(const char *path)
 {
@@ -77,6 +78,7 @@ int main(void){
    }
    GLuint p; int verts = 0;
    GLuint idx_vbo = 0; int file_nidx = 0;
+   int readback_black = 0;
    const int depthmode = !strcmp(mode,"depthfill") ? 1 : !strcmp(mode,"depthover") ? 2 : 0;
    const int filedepth = getenv("DB2_DEPTH") ? 1 : 0;
    const int filecull = getenv("DB2_CULL") ? 1 : 0;
@@ -137,7 +139,7 @@ int main(void){
    if (vs_file && fs_file) {
       GLint natt = 0;
       glGetProgramiv(p, GL_ACTIVE_ATTRIBUTES, &natt);
-      const int file_verts = getenv("FILE_VERTS") ? atoi(getenv("FILE_VERTS")) : 0;
+      int file_verts = getenv("FILE_VERTS") ? atoi(getenv("FILE_VERTS")) : 0;
    GLuint vbo = 0;
    if (file_verts > 0) {
       float *pbuf = malloc((size_t)file_verts * 3 * sizeof(float));
@@ -154,6 +156,10 @@ int main(void){
       }
       verts = file_verts;
       if (getenv("FILE_INDEXED")) {
+         if (file_verts > 65535) {
+            fprintf(stderr, "FILE_VERTS capped to 65535 for 16-bit indices\n");
+            file_verts = verts = 65535;
+         }
          const int nidx = (file_verts / 3) * 3;
          unsigned short *ibuf = malloc((size_t)nidx * sizeof(unsigned short));
          for (int i = 0; i < nidx; i++) ibuf[i] = (unsigned short)((i * 7 + (i / 3)) % file_verts);
@@ -169,7 +175,7 @@ int main(void){
          glGetActiveAttrib(p, (GLuint)i, sizeof(name), NULL, &sz, &ty, name);
          GLint loc = glGetAttribLocation(p, name);
          if (loc >= 0) {
-            glVertexAttribPointer((GLuint)loc, 3, GL_FLOAT, GL_FALSE, 0,
+            glVertexAttribPointer((GLuint)loc, file_verts > 0 ? 3 : 2, GL_FLOAT, GL_FALSE, 0,
                                   file_verts > 0 ? (const void *)0 : (const void *)quad);
             glEnableVertexAttribArray((GLuint)loc);
          }
@@ -203,11 +209,15 @@ int main(void){
          if (sscanf(c, "%63[^=]=%d%n", name, &val, &used) >= 2) {
             GLint loc = glGetUniformLocation(p, name);
             if (loc >= 0) glUniform1i(loc, val);
-            if (!strcmp(name, "VertexLoops")) g_vl_loc = loc;
-            if (!strcmp(name, "FragmentLoops")) g_fl_loc = loc;
+            else fprintf(stderr, "DB2_SET_INT: unknown uniform '%s' ignored\n", name);
+            if (!strcmp(name, "VertexLoops")) { g_vl_loc = loc; g_vl_val = val; }
+            if (!strcmp(name, "FragmentLoops")) { g_fl_loc = loc; g_fl_val = val; }
             c += used;
             if (*c == ',') c++;
-         } else break;
+         } else {
+            fprintf(stderr, "DB2_SET_INT: cannot parse '%s'\n", c);
+            break;
+         }
       }
    }
    GLint flex_u = glGetUniformLocation(p, "u");
@@ -263,8 +273,8 @@ int main(void){
          if (getenv("DB2_UNIFORM_PER_FRAME")) {
             GLfloat m[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0.01f*(float)(f & 1),0,0,1 };
             if (g_mvp_loc >= 0) glUniformMatrix4fv(g_mvp_loc, 1, GL_FALSE, m);
-            if (g_vl_loc >= 0) glUniform1i(g_vl_loc, 5);
-            if (g_fl_loc >= 0) glUniform1i(g_fl_loc, 5);
+            if (g_vl_loc >= 0) glUniform1i(g_vl_loc, g_vl_val);
+            if (g_fl_loc >= 0) glUniform1i(g_fl_loc, g_fl_val);
          }
          glClear(GL_COLOR_BUFFER_BIT | ((depthmode || filedepth) ? GL_DEPTH_BUFFER_BIT : 0));
          if (depthmode == 2) {
@@ -280,6 +290,15 @@ int main(void){
       }
       if (!getenv("NOFINISH")) glFinish();
    }
+   if (getenv("DB2_READBACK")) {
+      unsigned char px[4] = { 0, 0, 0, 0 };
+      glReadPixels(W / 2, H / 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+      fprintf(stderr, "readback centre pixel: %u %u %u %u\n", px[0], px[1], px[2], px[3]);
+      if (px[0] == 0 && px[1] == 0 && px[2] == 0) {
+         fprintf(stderr, "readback centre pixel is black - no fragments reached the target\n");
+         readback_black = 1;
+      }
+   }
    glFinish();
    double dt=now()-t0;
    struct rusage ru; getrusage(RUSAGE_SELF,&ru);
@@ -287,5 +306,5 @@ int main(void){
    printf("mode=%-8s frames=%d fps=%.1f wall=%.1fms cpu=%.1fms verts=%d texture=%s\n", mode, frames,
           frames/dt, dt*1000, cpu*1000, verts,
           strstr(mode,"tex")||strstr(mode,"mip")||strstr(mode,"cube") ? "yes" : "no");
-   return 0;
+   return readback_black ? 3 : 0;
 }

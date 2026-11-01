@@ -4900,14 +4900,59 @@ db2 header (vendor arm must print "build 24.2"; open arm the pvr native renderer
 |---|---|---|
 | 012 | 3-vertex draw, FS loop only (matches the earlier microbenchmark shape) | 1.20x (open arm noisy) |
 | 013 | 20k vertices, per-vertex loops 5, but no mat4 uniform set (all vertices collapse to the origin) | ~1.00x - vertex work only |
-| 014 | 20k vertices, identity MVP, VertexLoops 5 and 0, FragmentLoops 5 | 0.99-1.01x |
-| 015 | same but glDrawElements with 16-bit indices, random overdraw | 0.94-1.0x |
+| 014 | 20k vertices, identity MVP, VertexLoops 5 and 0, FragmentLoops 5 | 0.95-1.02x |
+| 015 | same but glDrawElements with 16-bit indices, random overdraw | 0.92-0.99x |
 | 016 | same as 014 plus per-frame MVP + loop-uniform updates (the way glmark2 drives it) | ~1.00x |
 
-Predictions were written before each run (runs/NNN/card.md); the shader-codegen hypothesis predicted a
-1.5-2x ratio and was refuted by 014-016.  So the loop/conditionals scene gap is NOT the compiled
-shader, the per-vertex or per-fragment loop work, the indexed draw path, or per-frame uniform updates
-under these replicated shapes.  Remaining candidates (H11): a state mix not yet replicated (depth
-test/cull with a real mesh), the scene's exact attribute layout, or per-frame driver CPU cost at the
-scene's high frame rates.  Harness additions used by these runs (identity print, DB2_SET_INT list,
-FILE_VERTS, FILE_INDEXED, DB2_UNIFORM_PER_FRAME, mat4 identity) are in tools/verify/drawbench2.c.
+The predictions for each cell are in runs/NNN/card.md; the shader-codegen hypothesis predicted a 1.5-2x
+ratio and was refuted by 014-016 *in those bandwidth/overdraw-bound shapes*.  So the loop/conditionals
+scene gap is not explained by the indexed draw path, per-frame uniform updates, depth test or culling
+under the replicated shapes (runs 017-018 extended this).  Runs 020-025 then found where it does live:
+the real scenes still gap (0.78/0.83 at 64x64, 0.66/0.61 at 800x600), the size sweep splits that into
+a fixed term (1.23x) and a per-pixel term (1.91x, 82% of the 800x600 gap), and a fragment-ALU-bound
+replay of the same shader with verified fragment coverage reproduces the per-pixel gap exactly
+(0.78/0.58/0.53 at FragmentLoops 0/16/64).  The per-pixel term is pco's instruction-group density on
+real shaders (loop FS: 19 groups vs vendor 11 - see round 236).  Then: the earlier bandwidth-bound
+replays were the reason the first five hypotheses looked like parity.
+
+### Round 235b / 236 - where the loop and conditionals scene gaps actually live
+
+Continuing the attribution with control-first runs (all identity-checked, cards and raw outputs in
+open-perf/tasks/T-2026-11-01-round233/runs/012-025):
+
+- 017: 20k-vertex mesh with depth test + depth clear and with back-face culling, per-frame uniforms,
+  loops 5/5: pco/vendor 0.98-1.05 in both cells - the depth/ZLS and cull paths are NOT the gap.
+- 018: per-frame CPU (getrusage) at a 3-vertex draw: vendor 0.216/0.171 ms, pco 0.273/0.256 ms
+  (1.26x/1.50x more CPU per frame) - real but only 0.06-0.09 ms absolute.
+- 020: the REAL glmark2 single scenes do gap: loop pco/vendor 0.78 (64x64) -> 0.66 (800x600),
+  conditionals 0.83 -> 0.61 (identity in each output header).
+- 021: with --frame-end=none the vendor's CPU loop reaches 26-29k fps while pco stays at its
+  default-mode rate (3172 / 1195), i.e. pco serialises per frame by its own submission/waits and the
+  per-frame swap/finish is not the gap (H13 refuted).
+- 022: size sweep (64,128,256,384,512,800) fits frame time = fixed + slope*area: pco fixed 0.297 ms vs
+  vendor 0.242 ms (1.23x); pco slope 1.065e-6 ms/px vs vendor 5.57e-7 (1.91x).  At 800x600 the
+  per-pixel term is 82% of the 0.30 ms gap.
+- 023 was INVALID: the file-mode binding fed 3 components from the 2-component quad, so the triangles
+  were clipped and no fragments ran (fps independent of FragmentLoops).  Fixed in the harness (2-comp
+  binding for the 3-vertex path) and now every replay run prints a centre-pixel readback so coverage
+  cannot silently disappear again.
+- 024 (fragment-ALU-bound replay, readback-verified): the same composed loop FS on a fullscreen quad
+  with FragmentLoops 0/16/64: pco/vendor 0.78 / 0.58 / 0.53; conditionals at 16: 0.66.  The gap grows
+  with per-pixel loop work and reaches 1.88x, matching the instruction-group density (19 vs 11) and the
+  scene's per-pixel slope ratio (1.91x).  H16 CONFIRMED: the loop/conditionals scene gaps are per-pixel
+  fragment ALU efficiency - i.e. pco's codegen density on real shaders - and H17 (fixed per-pixel
+  path) is refuted.
+- 025 (IR diff): pco's loop FS needs 19 instruction groups where the vendor needs 11 (both totals are
+  in the dump/capture).  In pco's dump, groups 0000-0008 (9) run before the loop and are dominated by
+  constant materialisation (bbyp imm32 groups); the loop body plus control is 6-9 groups depending on
+  where the prologue/epilogue control groups are counted (test+movc, br, fmul, fmad flr-neg, imadd,
+  br, nop); the vendor's 11-group loop uses f16sop for the mediump arithmetic and predicated control,
+  though its p0/p1 mnemonics are best-effort in our decoder.  The stable, fully-backed number is the
+  group total: 19 vs 11.  The compiler lever is therefore codegen
+  density (prologue constants, loop control, instruction packing), measured by the fragment-ALU-bound
+  replay and the real loop scene; F16SOP is not the lever (the vendor highp A/B read ~1.000 and the
+  loop scene loses nothing at highp).
+
+Conclusion: the same-shader "parity" in rounds 012-016 was an artefact of bandwidth/overdraw-bound
+shapes; at realistic per-pixel ALU load pco is 1.6-1.9x behind the vendor, and that is the compiler
+codegen density the earlier F16SOP work was circling.
