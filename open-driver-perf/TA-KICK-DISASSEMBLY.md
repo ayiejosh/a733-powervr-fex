@@ -4651,3 +4651,21 @@ Remaining TODOs marked in the patch: argument/register encoding in bytes 11-21 (
 form/source-class selection for MUL/MUL_TEMP/MAD/LIT, op_ref_maps placeholders, and the 0x62
 constant-pool literal form.  Next: those fields, then trans_alu_f16 + the mediump demotion pass
 (target bump FS 17 groups, conv9 31).
+
+## Round 223 - F16SOP ISA encodings v2 land (patch 0372); work paused here as requested
+
+Applied the round-222 model corrections to the committed F16SOP encodings (mesa 3b7fa13d, patch
+0372): one instruction per half-register pair (vec4 = two instructions, xy then zw); real operand
+fields instead of raw placeholders - src_present(1)|src_reg(7) at payload[11]/[14]/[16] (0x80|reg,
+lane-pair step +2), dest at [19] (ADD/MUL) and [21] (MAD), MAD's extra source at [17]/[18]; the
+earlier uniform/temp "bank bit" removed (it was an artefact of low register numbers); the 0x62
+non-power-of-two literal form removed (its value lives in a driver constant bank pco does not
+produce, so non-PoT constants stay fp32); inline PoT codes 0x40+k / 0x4a-k kept.
+
+Verified: isa-scratch validation 12/12 byte checks + hunter's 54/54 round-trip; the real-tree
+generated headers reproduce the captured ADD (22B), MUL (24B) and t20 MAD (reg>b15) bytes exactly;
+pco builds; the offline harness still reports math FS 280B / 26 groups (definitions only - no
+emission change yet, so the last on-board 17-group gate result on the parent commit still applies).
+Remaining TODOs, recorded in the patch: payload[12]/[13] source descriptors stay raw, byte-14 bit-7
+convention needs a forced-temp capture, the 0x93 92 20B form is unclassified, pco_map wires only
+SOPEXPR until trans_alu_f16 selects forms.
