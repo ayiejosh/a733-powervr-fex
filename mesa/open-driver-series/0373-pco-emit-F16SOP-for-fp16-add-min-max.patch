@@ -1,0 +1,145 @@
+From fa8801792ae22b8c0be870f0add22cf3097ec278 Mon Sep 17 00:00:00 2001
+From: radxa <radxa@radxa-cubie-a7a>
+Date: Sun, 1 Nov 2026 10:42:02 +0800
+Subject: [PATCH] pco: emit F16SOP for fp16 add/min/max
+
+First working F16SOP emission, the packed-half form the vendor GLES compiler
+uses for mediump arithmetic (one instruction per half register pair):
+
+- pco_ref_nir_def() maps an f16 value to a packed pair (bits 16->32,
+  chans=ceil(chans/2)), the same device the backend already uses for 64-bit
+  values, so RA/legalize/grouping see ordinary 32-bit channels.
+- nir_lower_alu_to_scalar skips 16-bit ALU (pco_nir_keep_f16_alu_filter), so
+  f16 vectors survive to translation instead of being shredded into scalars.
+- trans_alu emits pco_f16sop() for fp16 fadd/fmin/fmax (SOPEXPR forms) with the
+  new group_map(O_F16SOP) wiring in pco_map.py; multiply/MAD forms still use the
+  generic path until the MUL/MAD SOP forms are wired.
+
+Verified offline with the CPU harness: --nir-test f16add (f16 add on
+frag-coord-derived values) now emits the vendor F16SOP prefix
+94 99 99 af 00 c0 32 24 00 00 0e in the 272B shader binary, while math.frag
+stays at 280B / 26 groups and --nir-test basic at 264B / 20 groups (no fp32
+regression).  The 17-group board gate passes on this tree.  src1_desc/src1_flag
+are still zero (vendor uses lane-pair descriptors 0x44/0x62) and multi-channel
+rpt lane-pair emission, the MUL/MAD forms and the mediump enable path are the
+next steps.
+---
+ src/imagination/pco/pco_map.py      | 17 +++++++++++++++++
+ src/imagination/pco/pco_nir.c       | 19 ++++++++++++++++++-
+ src/imagination/pco/pco_trans_nir.c | 23 +++++++++++++++++++++++
+ 3 files changed, 58 insertions(+), 1 deletion(-)
+
+diff --git a/src/imagination/pco/pco_map.py b/src/imagination/pco/pco_map.py
+index 0960a731..3b11c278 100644
+--- a/src/imagination/pco/pco_map.py
++++ b/src/imagination/pco/pco_map.py
+@@ -2130,6 +2130,23 @@ group_map(O_MBYP,
+    dests=[('w[0]', ('0', DEST(0)), 'ft0')]
+ )
+ 
++group_map(O_F16SOP,
++   hdr=(I_IGRP_HDR_MAIN, [
++      ('oporg', 'p0'),
++      ('olchk', OM_OLCHK),
++      ('w1p', False),
++      ('w0p', True),
++      ('cc', OM_EXEC_CND),
++      ('end', OM_END),
++      ('atom', OM_ATOM),
++      ('rpt', OM_RPT)
++   ]),
++   enc_ops=[('0', O_F16SOP)],
++   srcs=[],
++   iss=[],
++   dests=[]
++)
++
+ group_map(O_FDSX,
+    hdr=(I_IGRP_HDR_MAIN, [
+       ('oporg', 'p0'),
+diff --git a/src/imagination/pco/pco_nir.c b/src/imagination/pco/pco_nir.c
+index 609f8073..796a5d08 100644
+--- a/src/imagination/pco/pco_nir.c
++++ b/src/imagination/pco/pco_nir.c
+@@ -520,6 +520,8 @@ static bool should_vectorize_mem_cb(unsigned align_mul,
+    return true;
+ }
+ 
++static bool pco_nir_keep_f16_alu_filter(const nir_instr *instr, const void *cb_data);
++
+ static void pco_nir_opt(pco_ctx *ctx, nir_shader *nir, pco_data *data, bool algebraic)
+ {
+    bool progress;
+@@ -591,12 +593,27 @@ static void pco_nir_opt(pco_ctx *ctx, nir_shader *nir, pco_data *data, bool alge
+       NIR_PASS(progress, nir, nir_opt_shrink_vectors, true);
+ 
+       NIR_PASS(progress, nir, nir_opt_loop);
+-      NIR_PASS(progress, nir, nir_lower_alu_to_scalar, NULL, NULL);
++      /* Keep 16-bit ALU vectors alive: they become packed half pairs and are
++       * emitted as F16SOP (one instruction per pair). */
++      NIR_PASS(progress, nir, nir_lower_alu_to_scalar,
++               pco_nir_keep_f16_alu_filter, NULL);
+       NIR_PASS(progress, nir, nir_opt_undef);
+       NIR_PASS(progress, nir, nir_opt_loop_unroll);
+    } while (progress);
+ }
+ 
++/* Keep f16 ALU instructions vectorised so nir_lower_alu_to_scalar does not
++ * split them into half scalars before the packed-pair conversion. */
++static bool
++pco_nir_keep_f16_alu_filter(const nir_instr *instr, UNUSED const void *cb_data)
++{
++   if (instr->type != nir_instr_type_alu)
++      return true;
++
++   /* Do not scalarise 16-bit ALU: those become packed half pairs (F16SOP). */
++   return nir_instr_as_alu(instr)->def.bit_size != 16;
++}
++
+ static bool check_mem_writes(nir_builder *b,
+                              nir_intrinsic_instr *intr,
+                              UNUSED void *cb_data)
+diff --git a/src/imagination/pco/pco_trans_nir.c b/src/imagination/pco/pco_trans_nir.c
+index 67b0aec8..623e8946 100644
+--- a/src/imagination/pco/pco_trans_nir.c
++++ b/src/imagination/pco/pco_trans_nir.c
+@@ -97,6 +97,15 @@ static inline pco_ref pco_ref_nir_def(const nir_def *def)
+       chans *= 2;
+    }
+ 
++   /* An fp16 value is a packed pair of half values in one 32-bit channel, the
++    * same device used above for 64-bit values: a 2-component f16 becomes one
++    * 32-bit channel (two halves), a 4-component f16 two channels.  This is the
++    * representation F16SOP consumes (one instruction per packed pair). */
++   if (bits == 16) {
++      bits = 32;
++      chans = DIV_ROUND_UP(chans, 2);
++   }
++
+    return pco_ref_ssa(def->index, bits, chans);
+ }
+ 
+@@ -3901,6 +3910,20 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
+    for (unsigned s = 0; s < num_srcs; ++s)
+       src[s] = pco_ref_nir_alu_src_t(alu, s, tctx);
+ 
++   /* fp16 ALU: one F16SOP instruction per packed half pair.  Only the SOPEXPR
++    * forms (add/min/max) are wired so far; multiply/MAD use other SOP forms and
++    * stay on the generic path for now. */
++   if (alu->def.bit_size == 16 && pco_ref_get_chans(dest) == 1 &&
++       (alu->op == nir_op_fadd || alu->op == nir_op_fmin ||
++        alu->op == nir_op_fmax) &&
++       pco_ref_get_chans(src[0]) == 1 && pco_ref_get_chans(src[1]) == 1) {
++      enum pco_sop_op sop_op = alu->op == nir_op_fadd ? PCO_SOP_OP_ADD
++                               : alu->op == nir_op_fmin ? PCO_SOP_OP_MIN
++                                                        : PCO_SOP_OP_MAX;
++      return pco_f16sop(&tctx->b, dest, src[0], src[1], pco_ref_null(),
++                        .sop_op = sop_op);
++   }
++
+    pco_instr *instr;
+    switch (alu->op) {
+    case nir_op_fneg:
+-- 
+2.47.3
+

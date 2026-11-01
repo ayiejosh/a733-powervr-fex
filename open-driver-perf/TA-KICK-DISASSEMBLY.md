@@ -4669,3 +4669,23 @@ emission change yet, so the last on-board 17-group gate result on the parent com
 Remaining TODOs, recorded in the patch: payload[12]/[13] source descriptors stay raw, byte-14 bit-7
 convention needs a forced-temp capture, the 0x93 92 20B form is unclassified, pco_map wires only
 SOPEXPR until trans_alu_f16 selects forms.
+
+## Round 227 - first pco-emitted F16SOP instruction (patch 0373)
+
+The packed-half path now works end to end in the compiler (mesa fa880179, patch 0373):
+pco_ref_nir_def() maps f16 values to packed pairs (bits 16->32, chans=ceil(chans/2)); the pco
+scalariser skips 16-bit ALU so f16 vectors survive; trans_alu emits pco_f16sop() for fp16
+fadd/fmin/fmax (SOPEXPR forms); pco_map gained the group_map(O_F16SOP) that the encoder needs
+(without it: "Instruction group mapping not defined for pseudo op").
+
+Evidence, all offline: --nir-test f16add emits the vendor F16SOP prefix
+94 99 99 af 00 c0 32 24 00 00 0e inside the 272 B binary (19 groups); math.frag stays 280 B / 26
+groups and --nir-test basic 264 B / 20 groups (no fp32 regression); the 17-group board gate passes.
+
+Next: src1_desc/src1_flag lane-pair descriptors (vendor 0x44/0x62), multi-channel rpt lane-pair
+emission for f16vec4 (two F16SOPs), MUL/MAD SOP forms, then the mediump enable
+(pvr_screen fp16/int16 caps behind an env) and real-scene measurement (bump FS 33->17 target).
+
+Incident note: a crash-looping offline run was once redirected to /tmp (tmpfs) and grew to 2.3 GB,
+filling /tmp and breaking the shell; recovered via the REA process tool. Crash-prone harness runs
+now need `timeout` plus bounded output.
