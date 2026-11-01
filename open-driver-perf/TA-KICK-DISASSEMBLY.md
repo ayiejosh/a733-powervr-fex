@@ -4635,3 +4635,19 @@ Parallel state: hunter derived the pure-temp ADD/MUL/MAD byte layouts and the po
 rule (39/39 round-trip), dest lanes and uniform slots confirmed to be driver metadata; the analyst is
 turning that layout into a ready-to-apply pco ISA patch validated against the vendor captures in the
 offline scratch tree; hunter is pinning the remaining register-number field widths.
+
+## Round 220 - F16SOP ISA encodings land (patch 0371): first concrete step of the mediump work
+
+The vendor-capture-derived F16SOP encoding is now in the pco tree (commit 95e740ef, patch 0371):
+F_SOP_SEL / F_SOP_LIT enums, the I_MAIN payload pieces and fields for instruction bytes 1-23, and
+five multi-byte instruction structs (I_F16SOP_EXPR / _MUL / _MUL_TEMP / _MAD / _LIT), with O_F16SOP +
+OM_SOP_OP in pco_ops.py and the F_SOP_SEL mapping + SOPEXPR encode map in pco_map.py.
+
+Validation: 32/32 offline byte checks against the vendor captures (instruction lengths, every
+non-TODO byte for ADD/SUB/ABS/MIN/MAX/MUL/MUL_TEMP/MAD and literals 1.0/2.0/0.5/-1.0, plus the
+op/neg/abs semantic deltas); pco builds; the offline harness still reports math FS 280 B / 26 groups
+(no behaviour change yet); the 17-group gate passes on this tree.
+Remaining TODOs marked in the patch: argument/register encoding in bytes 11-21 (raw argNN fields),
+form/source-class selection for MUL/MUL_TEMP/MAD/LIT, op_ref_maps placeholders, and the 0x62
+constant-pool literal form.  Next: those fields, then trans_alu_f16 + the mediump demotion pass
+(target bump FS 17 groups, conv9 31).
