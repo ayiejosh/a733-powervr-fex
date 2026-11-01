@@ -4888,3 +4888,26 @@ selection) and D5 (a failed variant compile is not negatively cached) are non-bl
 Conditional sign-off satisfied: code and evidence sound, outbound text fixed.  Patches 0381/0382
 regenerated from 6681058a / fe34d38c (trees empty-diff against the pre-rewrite commits).  Nothing is
 pushed; the push needs the human go.
+
+## Round 235 - perf attribution: same-shader A/B shows parity across the replicated draw shapes
+
+Five controlled A/B runs tested whether the glmark2 loop/conditionals scene gaps (0.48/0.53) live in
+the compiled shader or in the draw path.  Same composed VS/FS pair (captured from the vendor run),
+same db2 binary, same target size (800x600), performance governor, cpu pinning, identity from each
+db2 header (vendor arm must print "build 24.2"; open arm the pvr native renderer):
+
+| run | workload | vendor/pco fps ratio |
+|---|---|---|
+| 012 | 3-vertex draw, FS loop only (matches the earlier microbenchmark shape) | 1.20x (open arm noisy) |
+| 013 | 20k vertices, per-vertex loops 5, but no mat4 uniform set (all vertices collapse to the origin) | ~1.00x - vertex work only |
+| 014 | 20k vertices, identity MVP, VertexLoops 5 and 0, FragmentLoops 5 | 0.99-1.01x |
+| 015 | same but glDrawElements with 16-bit indices, random overdraw | 0.94-1.0x |
+| 016 | same as 014 plus per-frame MVP + loop-uniform updates (the way glmark2 drives it) | ~1.00x |
+
+Predictions were written before each run (runs/NNN/card.md); the shader-codegen hypothesis predicted a
+1.5-2x ratio and was refuted by 014-016.  So the loop/conditionals scene gap is NOT the compiled
+shader, the per-vertex or per-fragment loop work, the indexed draw path, or per-frame uniform updates
+under these replicated shapes.  Remaining candidates (H11): a state mix not yet replicated (depth
+test/cull with a real mesh), the scene's exact attribute layout, or per-frame driver CPU cost at the
+scene's high frame rates.  Harness additions used by these runs (identity print, DB2_SET_INT list,
+FILE_VERTS, FILE_INDEXED, DB2_UNIFORM_PER_FRAME, mat4 identity) are in tools/verify/drawbench2.c.

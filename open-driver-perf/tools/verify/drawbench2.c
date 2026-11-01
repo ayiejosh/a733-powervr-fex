@@ -18,6 +18,8 @@ static GLuint prog(const char*vs,const char*fs){GLuint p=glCreateProgram();glAtt
 #define H 600
 static const char *VS_FULL = "attribute vec2 p; varying vec2 v; void main(){ v = p*0.5+0.5; gl_Position = vec4(p,0.0,1.0); }";
 static const char *VS_GRID = "attribute vec2 p; uniform float s; void main(){ gl_Position = vec4(p*s, 0.0, 1.0); }";
+static GLint g_mvp_loc = -1, g_vl_loc = -1, g_fl_loc = -1;
+
 static char *read_src(const char *path)
 {
    FILE *f = fopen(path, "rb");
@@ -44,6 +46,7 @@ int main(void){
    EGLint xa[]={EGL_CONTEXT_CLIENT_VERSION,2,EGL_NONE};
    EGLContext ctx=eglCreateContext(dpy,cfg,EGL_NO_CONTEXT,xa);
    if(ctx==EGL_NO_CONTEXT || !eglMakeCurrent(dpy,EGL_NO_SURFACE,EGL_NO_SURFACE,ctx)){fprintf(stderr,"ctx\n");return 2;}
+   fprintf(stderr,"R=%s\nV=%s\n",(const char*)glGetString(GL_RENDERER),(const char*)glGetString(GL_VERSION));
    GLuint fbo,ctex,rdtex;
    glGenTextures(1,&ctex); glBindTexture(GL_TEXTURE_2D,ctex);
    unsigned char px[512*512*4]; for(int i=0;i<512*512;i++){px[4*i]= (i*7)&255; px[4*i+1]=(i*13)&255; px[4*i+2]=(i*29)&255; px[4*i+3]=255;}
@@ -73,6 +76,7 @@ int main(void){
       glGenFramebuffers(1,&small_fbo);
    }
    GLuint p; int verts = 0;
+   GLuint idx_vbo = 0; int file_nidx = 0;
    const int depthmode = !strcmp(mode,"depthfill") ? 1 : !strcmp(mode,"depthover") ? 2 : 0;
    const char *fs_fill = "precision mediump float; void main(){ gl_FragColor = vec4(0.5,0.25,0.75,1.0); }";
    const char *fs_tex  = "precision mediump float; varying vec2 v; uniform sampler2D t; void main(){ gl_FragColor = texture2D(t, v); }";
@@ -131,17 +135,79 @@ int main(void){
    if (vs_file && fs_file) {
       GLint natt = 0;
       glGetProgramiv(p, GL_ACTIVE_ATTRIBUTES, &natt);
-      for (GLint i = 0; i < natt; i++) {
+      const int file_verts = getenv("FILE_VERTS") ? atoi(getenv("FILE_VERTS")) : 0;
+   GLuint vbo = 0;
+   if (file_verts > 0) {
+      float *pbuf = malloc((size_t)file_verts * 3 * sizeof(float));
+      if (pbuf) {
+         for (int i = 0; i < file_verts; i++) {
+            pbuf[i * 3 + 0] = (float)((i * 37) % 1000) / 500.0f - 1.0f;
+            pbuf[i * 3 + 1] = (float)((i * 91) % 1000) / 500.0f - 1.0f;
+            pbuf[i * 3 + 2] = (float)((i * 13) % 100) / 200.0f;
+         }
+         glGenBuffers(1, &vbo);
+         glBindBuffer(GL_ARRAY_BUFFER, vbo);
+         glBufferData(GL_ARRAY_BUFFER, (size_t)file_verts * 3 * sizeof(float), pbuf, GL_STATIC_DRAW);
+         free(pbuf);
+      }
+      verts = file_verts;
+      if (getenv("FILE_INDEXED")) {
+         const int nidx = (file_verts / 3) * 3;
+         unsigned short *ibuf = malloc((size_t)nidx * sizeof(unsigned short));
+         for (int i = 0; i < nidx; i++) ibuf[i] = (unsigned short)((i * 7 + (i / 3)) % file_verts);
+         glGenBuffers(1, &idx_vbo);
+         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, idx_vbo);
+         glBufferData(GL_ELEMENT_ARRAY_BUFFER, (size_t)nidx * sizeof(unsigned short), ibuf, GL_STATIC_DRAW);
+         free(ibuf);
+         file_nidx = nidx;
+      }
+   }
+   for (GLint i = 0; i < natt; i++) {
          char name[128]; GLint sz = 0; GLenum ty = 0;
          glGetActiveAttrib(p, (GLuint)i, sizeof(name), NULL, &sz, &ty, name);
          GLint loc = glGetAttribLocation(p, name);
          if (loc >= 0) {
-            glVertexAttribPointer((GLuint)loc, 2, GL_FLOAT, GL_FALSE, 0, quad);
+            glVertexAttribPointer((GLuint)loc, 3, GL_FLOAT, GL_FALSE, 0,
+                                  file_verts > 0 ? (const void *)0 : (const void *)quad);
             glEnableVertexAttribArray((GLuint)loc);
          }
       }
    }
    glUseProgram(p);
+   if (getenv("VS_FILE")) {
+      /* The composed scene vertex shaders transform with a mat4 uniform; set every mat4 to identity
+       * so the vertices spread over the target instead of collapsing to the origin (which would
+       * skip all fragment work). */
+      GLint nu = 0, maxlen = 0;
+      glGetProgramiv(p, GL_ACTIVE_UNIFORMS, &nu);
+      glGetProgramiv(p, GL_ACTIVE_UNIFORM_MAX_LENGTH, &maxlen);
+      char *un = malloc((size_t)maxlen + 1);
+      for (GLint i = 0; i < nu && un; i++) {
+         GLsizei len = 0; GLint sz = 0; GLenum ty = 0;
+         glGetActiveUniform(p, (GLuint)i, maxlen + 1, &len, &sz, &ty, un);
+         if (ty == GL_FLOAT_MAT4) {
+            GLint loc = glGetUniformLocation(p, un);
+            const GLfloat ident[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+            if (loc >= 0) { glUniformMatrix4fv(loc, 1, GL_FALSE, ident); g_mvp_loc = loc; }
+         }
+      }
+      free(un);
+   }
+   const char *set_int = getenv("DB2_SET_INT");
+   if (set_int) {
+      const char *c = set_int;
+      while (*c) {
+         char name[64]; int val = 0, used = 0;
+         if (sscanf(c, "%63[^=]=%d%n", name, &val, &used) >= 2) {
+            GLint loc = glGetUniformLocation(p, name);
+            if (loc >= 0) glUniform1i(loc, val);
+            if (!strcmp(name, "VertexLoops")) g_vl_loc = loc;
+            if (!strcmp(name, "FragmentLoops")) g_fl_loc = loc;
+            c += used;
+            if (*c == ',') c++;
+         } else break;
+      }
+   }
    GLint flex_u = glGetUniformLocation(p, "u");
    if (cube) { glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_CUBE_MAP,cube); glUniform1i(glGetUniformLocation(p,"t"),0); }
    else if (!verts && strcmp(mode,"fill") && strcmp(mode,"overdraw")) { glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D,ctex); glUniform1i(glGetUniformLocation(p,"t"),0); }
@@ -190,13 +256,22 @@ int main(void){
             glDrawArrays(GL_TRIANGLES, 0, 3);
          }
       } else {
+         if (getenv("DB2_UNIFORM_PER_FRAME")) {
+            GLfloat m[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0.01f*(float)(f & 1),0,0,1 };
+            if (g_mvp_loc >= 0) glUniformMatrix4fv(g_mvp_loc, 1, GL_FALSE, m);
+            if (g_vl_loc >= 0) glUniform1i(g_vl_loc, 5);
+            if (g_fl_loc >= 0) glUniform1i(g_fl_loc, 5);
+         }
          glClear(GL_COLOR_BUFFER_BIT | (depthmode ? GL_DEPTH_BUFFER_BIT : 0));
          if (depthmode == 2) {
             /* Same quad, same depth, 27 times: early-Z must reject all but the first. */
             for (int k = 0; k < npasses; k++)
                glDrawArrays(GL_TRIANGLES, 0, 3);
          } else {
-            glDrawArrays(GL_TRIANGLES, 0, verts ? verts : 3);
+            if (file_nidx > 0)
+               glDrawElements(GL_TRIANGLES, file_nidx, GL_UNSIGNED_SHORT, (const void *)0);
+            else
+               glDrawArrays(GL_TRIANGLES, 0, verts ? verts : 3);
          }
       }
       if (!getenv("NOFINISH")) glFinish();
