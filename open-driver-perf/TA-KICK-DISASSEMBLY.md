@@ -4612,3 +4612,12 @@ Two workstreams advanced:
    pco_ops.py / pco_map.py with the new bit structs/ops/maps; gate behind PVR_ENABLE_MEDIUMP_F16
    during bring-up, FS first; targets bump FS 33->17 groups, conv9 58->31, then glmark2 bump/shading.
    Offline pco compile harness is being built so the ISA/round-trip work does not need the GPU.
+
+### Round 218 - F16SOP scope confirmed: the affected shaders really are mediump
+
+Checked the captured composed GLSL for the scenes with the largest deficits: glmark2's bump and
+shading fragment shaders declare `precision mediump float;` (their VS files have no precision
+statements, so vertex math stays default-highp).  That matches the vendor disassembly (9/17 bump-FS
+groups are f16sop, no f16sop in the bump VS) and confirms the FS-first staging in the F16SOP plan:
+pco's mediump->packed-half demotion applies exactly where we are 1.5-2x behind, and the VS path can
+stay fp32 for now.
