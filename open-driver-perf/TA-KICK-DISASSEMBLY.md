@@ -4592,3 +4592,23 @@ Plan (compiler project, now measurement-driven):
    allows for mediump.
 3. Validate: bump/conv9 FS group counts (target ~17/31), math/ilp fps, 17-group gate, then glmark2 bump
    and shading scenes.
+
+### Round 217 - F16SOP: layout partially derived, implementation plan written
+
+Two workstreams advanced:
+
+1. Vendor-side layout (vendor-usc/f16sop-layout.md): from 82 captured f16sop instructions plus 19
+   purpose-built differential mediump samples, the core encoding is derived and round-trips 7/7:
+   byte0 = 0x94 (main_op SNGL, ext0=1, sngl_op=F16SOP=4); bytes1-2 = SOP variant word (99 99 SOPEXPR,
+   33 22 multiply, 92 93 SOPMAD); byte4 = op selector (add/sub 0x00, min 0x12, max 0x1b); byte8 bits
+   0,2 = negate arg1; byte9 bits 1,3 = abs; bytes 11/14 = arg0 swizzle, byte16 = arg1 swizzle.
+   Also extracted the vendor USE-assembler table g_psInstDesc (23 SOP mnemonics) from libusc.so.
+   Still missing (the blocker): inline operand register/format and destination encoding; next round
+   forces coefficient slots / formats / immediates to close it.
+2. pco-side plan (pco-analysis/F16SOP-PLAN.md): represent NIR f16 values as 32-bit packed-half-pair
+   refs (same device as the existing 64->2x32 mapping), so RA/legalize/grouping/encoder stay
+   unchanged; emit F16SOP from a new mediump-ALU demotion NIR pass + trans_alu_f16(); stop
+   pco_nir.c:594 scalarising 16-bit ALU so vectors survive to packing; extend pco_isa.py /
+   pco_ops.py / pco_map.py with the new bit structs/ops/maps; gate behind PVR_ENABLE_MEDIUMP_F16
+   during bring-up, FS first; targets bump FS 33->17 groups, conv9 58->31, then glmark2 bump/shading.
+   Offline pco compile harness is being built so the ISA/round-trip work does not need the GPU.
