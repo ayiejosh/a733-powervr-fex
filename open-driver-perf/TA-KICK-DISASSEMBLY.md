@@ -4621,3 +4621,17 @@ statements, so vertex math stays default-highp).  That matches the vendor disass
 groups are f16sop, no f16sop in the bump VS) and confirms the FS-first staging in the F16SOP plan:
 pco's mediump->packed-half demotion applies exactly where we are 1.5-2x behind, and the VS path can
 stay fp32 for now.
+
+### Round 219 - offline pco compile harness verified (no GPU needed for compiler iteration)
+
+The analyst's offline harness works and matches the board exactly: `/home/radxa/open-perf/pco-analysis/
+offline-pco/run.sh shaders/math.frag` compiles GLSL -> SPIR-V (glslang) -> NIR -> pco and prints
+pco IR/stats/binary without touching the GPU.  The math FS reports **280 code size / 8 temps / 26
+groups (17 main, 5 bitwise, 4 control)**, byte-identical to the board measurement from round 195.
+This means the F16SOP ISA work, the mediump demotion pass and group-count target checks (bump 17,
+conv9 31) can be iterated entirely offline; the board is only needed for fps/gate validation.
+
+Parallel state: hunter derived the pure-temp ADD/MUL/MAD byte layouts and the power-of-two literal
+rule (39/39 round-trip), dest lanes and uniform slots confirmed to be driver metadata; the analyst is
+turning that layout into a ready-to-apply pco ISA patch validated against the vendor captures in the
+offline scratch tree; hunter is pinning the remaining register-number field widths.
