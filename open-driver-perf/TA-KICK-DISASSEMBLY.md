@@ -4523,3 +4523,25 @@ phase/bypass path, and the grouping order is load-bearing).  Reverted; tree clea
 Both small compiler candidates are now measured negatives: #4 schedule-after-RA -25%, #2 pairing
 across bitwise groups incorrect.  The remaining work needs the vendor-code oracle (disassembly of
 captures/vendor-usc) to see what IMG actually does differently, rather than more blind edits.
+
+### Round 214 - vendor USC disassembly delivered; pco-side comparison harness needs a kmscon-free switch
+
+The vendor shader-code oracle is complete: /home/radxa/open-perf/vendor-usc/ now has `disasm.py` (a
+USC instruction-group decoder built on pco's ISA tables), per-scene disassembly under
+captures/<scene>/disasm/{vs,fs}.txt, and validated group counts.  The IMG assembler inside libusc.so
+is statically linked/unexported, so pco's tables decode the vendor output; header decode-assist
+validation passes for bump FS 16/16 and conv9 FS 25/25 groups.
+
+Vendor FS group counts to compare against pco (the lead candidate shaders):
+- shading FS 3 groups / 56 B
+- **bump FS 17 groups / 264 B** (real Blinn-Phong: normalize/dot/pow)
+- effect2d FS 3 groups / 64 B (8/9 taps constant-folded)
+- **effect2d-conv9 FS 31 groups / 488 B** (all 9 taps live)
+
+Compiling those same composed GLSL with pco needs the open driver, but this round the switch hit a new
+blocker: `kmscon` (pid holding /dev/dri/card0) survived switch-safe's client teardown and the script
+correctly ABORTED ("GPU device still open: /dev/dri/card0 root 546798 kmscon").  Fix for the next run:
+`systemctl stop kmscon; pkill -x kmscon` (or extend switch-safe's stop list) before `switch-safe.sh
+open`.  The pco comparison harness (shaderstat) was also fixed this round: render to an FBO (pbuffer
+default-framebuffer draws never trigger the native 3D path) and bind a dummy buffer to every active
+vertex attribute, both of which pco compilation needs.
