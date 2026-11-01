@@ -4569,3 +4569,26 @@ Next: investigate that exclusion - which exact pairing produced wrong results (m
 combination is unsafe), by testing narrower pairings (e.g. transcendental in phase 1 with an integer
 p0 only, or with predication disabled) under the 17-group gate and the bump/conv9 FS group-count
 metric.  This is now a measurement-driven target rather than a blind edit.
+
+### Round 216 - ROOT CAUSE FOUND: the vendor compiler uses F16SOP (packed half math) in real shaders
+
+Reading the vendor bump-FS disassembly (captures/bump/disasm/fs.txt) shows why IMG's compiler needs ~half
+the instruction groups: the Blinn-Phong shader's math is emitted as **F16SOP** instructions
+(`p0: f16sop s0neg/s0abs` etc. - 9 of the 17 groups), i.e. the vendor GLES compiler lowers mediump
+math to packed FP16 and gets two half-precision operations per instruction.  pco has NO F16SOP
+emission (pco_isa.py: "# F16SOP / # TODO") and keeps everything in FP32, which is exactly the 1.9x
+group-count ratio measured in round 215 (bump 33 vs 17 groups, conv9 58 vs 31).
+
+This corrects the earlier external-data conclusion ("F16SOP is not the shader lever"): that vkpeak
+measurement exercised FP16 through FP32 paths, not the hardware packed instruction.  The oracle
+capture proves the vendor driver uses F16SOP for real mediump GLSL in glmark2's bump/shading scenes,
+and those are precisely the scenes where we are 1.5-2x behind.
+
+Plan (compiler project, now measurement-driven):
+1. From the captures, catalogue F16SOP variant classes and derive the operand bit layout by correlating
+   the raw bytes with the GLSL semantics (mul/add/mad, neg/abs modifiers, .x/.y component pairing).
+2. Implement F16SOP in pco_isa.py (bit_struct + operand fields) and a NIR lowering that turns
+   mediump fadd/fmul/fmad (and paired components) into F16SOP, with the same precision rules GLES2
+   allows for mediump.
+3. Validate: bump/conv9 FS group counts (target ~17/31), math/ilp fps, 17-group gate, then glmark2 bump
+   and shading scenes.
