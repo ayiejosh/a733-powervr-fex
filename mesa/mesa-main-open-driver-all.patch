@@ -5281,10 +5281,10 @@ index 00000000..47695cc7
 +#endif /* PVR_CSB_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_draw.c b/src/gallium/drivers/pvr_native/pvr_draw.c
 new file mode 100644
-index 00000000..e8abbc80
+index 00000000..b9cecf1b
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_draw.c
-@@ -0,0 +1,2480 @@
+@@ -0,0 +1,2488 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -6329,6 +6329,11 @@ index 00000000..e8abbc80
 +                            (uint32_t *)(u + (sh->tex_dst[t] - sh->shared_dma_start) * 4)))
 +         return false;
 +   }
++   /* pco's literal pool: 32-bit literals the compiler put in the shared block after the registers
++    * the driver allocated (pvr_shader.h). The same DMA carries them to the shader. */
++   if (sh->literal_count)
++      memcpy(&((uint32_t *)u)[sh->literal_start - sh->shared_dma_start], sh->literal_vals,
++             sh->literal_count * sizeof(sh->literal_vals[0]));
 +
 +   /* The descriptor program and its data segment. */
 +   din.buffer_count = 1;
@@ -6487,6 +6492,9 @@ index 00000000..e8abbc80
 +   pvr_csb_init(&csb, binding + 2 * ROGUE_NUM_TEXSTATE_DWORDS, ROGUE_NUM_TEXSTATE_DWORDS * 4, 0);
 +   if (!pvr_csb_emit_sampler_desc(&csb, &smp) || csb.overflowed)
 +      return false;
++   if (fs->literal_count)
++      memcpy(&u[fs->literal_start - fs->shared_dma_start], fs->literal_vals,
++             fs->literal_count * sizeof(fs->literal_vals[0]));
 +
 +   struct pvr_pds_descriptor_program_input din = { .buffer_count = 1 };
 +   din.buffers[0] = (struct pvr_pds_buffer){
@@ -15555,10 +15563,10 @@ index 00000000..f0282d81
 +#endif /* PVR_SCREEN_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_shader.c b/src/gallium/drivers/pvr_native/pvr_shader.c
 new file mode 100644
-index 00000000..83f62d26
+index 00000000..250087fb
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_shader.c
-@@ -0,0 +1,1087 @@
+@@ -0,0 +1,1112 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + */
@@ -15570,9 +15578,14 @@ index 00000000..83f62d26
 +#include "pvr_pds.h"
 +
 +#include "stdlib.h"
++#include <string.h>
 +
 +#include "util/log.h"
 +#include "util/format/u_format.h"
++
++/* The literal pool copied into struct pvr_shader must stay in sync with the compiler's array. */
++static_assert(PVR_SHADER_MAX_LITERALS == ARRAY_SIZE(((pco_common_data *)0)->literal_vals),
++              "PVR_SHADER_MAX_LITERALS must match pco_data.literal_vals[]");
 +
 +bool pvr_shader_compile_data(pco_ctx *ctx, struct nir_shader *nir,
 +                                    pco_data *data, pco_shader **shader_out,
@@ -15924,11 +15937,21 @@ index 00000000..83f62d26
 +      data.fs.no_alpha_to_coverage = true;
 +      data.fs.skip_sample_check = true;
 +   }
++   /* Let pco pool the 32-bit immediates that are not hardware constant-register values into
++    * shared registers (pco_const_imms.c): each one would otherwise cost a whole instruction group
++    * to materialise per use. The pool is allocated after the shared registers pco allocated above,
++    * so the draw path's shared-block DMA can fill it (see shared_dma_start/dwords below). */
++   data.common.literal_pool = true;
 +   if (!pvr_shader_compile_data_with(ctx, nir, &data, vs_element_formats, &shader->pco,
 +                                     &shader->binary, &shader->binary_size)) {
 +      free(shader);
 +      return NULL;
 +   }
++
++   /* pco_trans_nir copies the caller's pco_data before the compiler passes run, so the final
++    * shared-register count and the literal pool only exist in the shader's own data. */
++   const pco_data *compiled = shader->pco != NULL ? pco_shader_data(shader->pco) : &data;
++   const pco_common_data *common = &compiled->common;
 +
 +   /* The entry function is the first in the list; its temps are what the PDS kick program is built
 +    * from. The vtxin count is the driver-side attribute allocation: pco's register allocator
@@ -15939,17 +15962,17 @@ index 00000000..83f62d26
 +      struct _pco_func *entry = list_first_entry(&shader->pco->funcs, struct _pco_func, link);
 +
 +      shader->temps = entry->temps;
-+      shader->vtxins = data.common.vtxins;
++      shader->vtxins = common->vtxins;
 +   }
 +   shader->vtxouts = data.vs.vtxouts;
-+   shader->uniform_dwords = data.common.push_consts.range.count;
-+   shader->uniform_dst = data.common.push_consts.range.start;
++   shader->uniform_dwords = common->push_consts.range.count;
++   shader->uniform_dst = common->push_consts.range.start;
 +   shader->tex_mask = 0;
-+   shader->shared_dma_start = data.common.shareds;
++   shader->shared_dma_start = common->shareds;
 +   if (shader->uniform_dwords)
 +      shader->shared_dma_start = shader->uniform_dst;
-+   if (data.common.desc_sets[0].used) {
-+      const pco_descriptor_set_data *set = &data.common.desc_sets[0];
++   if (common->desc_sets[0].used) {
++      const pco_descriptor_set_data *set = &common->desc_sets[0];
 +      for (unsigned u = 0; u < set->binding_count; u++) {
 +         if (!set->bindings[u].used)
 +            continue;
@@ -15968,8 +15991,18 @@ index 00000000..83f62d26
 +         shader->shared_dma_start = MIN2(shader->shared_dma_start, shader->blend_dst);
 +      }
 +   }
-+   shader->shared_dma_dwords = data.common.shareds - shader->shared_dma_start;
-+   shader->shareds = data.common.shareds;
++   /* The literal pool sits inside the DMA'd shared block: its values travel with the uniforms. */
++   if (common->literals.count) {
++      assert(common->literals.count <= ARRAY_SIZE(shader->literal_vals));
++      shader->literal_start = common->literals.start;
++      shader->literal_count = common->literals.count;
++      memcpy(shader->literal_vals, common->literal_vals,
++             common->literals.count * sizeof(shader->literal_vals[0]));
++      shader->shared_dma_start = MIN2(shader->shared_dma_start, shader->literal_start);
++   }
++
++   shader->shared_dma_dwords = common->shareds - shader->shared_dma_start;
++   shader->shareds = common->shareds;
 +   if (nir->info.stage == MESA_SHADER_VERTEX) {
 +      for (unsigned l = 0; l < ARRAY_SIZE(shader->varyings); l++) {
 +         shader->varyings[l].start = data.vs.varyings[l].start;
@@ -15995,8 +16028,8 @@ index 00000000..83f62d26
 +   }
 +
 +   if (nir->info.stage == MESA_SHADER_FRAGMENT) {
-+      shader->shareds = data.common.shareds;
-+      shader->coeffs = data.common.coeffs;
++      shader->shareds = common->shareds;
++      shader->coeffs = common->coeffs;
 +      shader->phase_change = data.fs.uses.phase_change;
 +   }
 +
@@ -16648,10 +16681,10 @@ index 00000000..83f62d26
 +}
 diff --git a/src/gallium/drivers/pvr_native/pvr_shader.h b/src/gallium/drivers/pvr_native/pvr_shader.h
 new file mode 100644
-index 00000000..7f8c348c
+index 00000000..776e9376
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_shader.h
-@@ -0,0 +1,268 @@
+@@ -0,0 +1,280 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -16706,6 +16739,9 @@ index 00000000..7f8c348c
 +#define PVR_TEX_BINDING_DWORDS 16
 +#define PVR_SHADER_MAX_TEX 16
 +#define PVR_SHADER_MAX_VARIANTS 6
++/* Matches pco_data's literal_vals[] (pco_const_imms.c / pco_data.h): the compiler's literal pool
++ * holds at most 32 distinct 32-bit values. */
++#define PVR_SHADER_MAX_LITERALS 32
 +
 +struct pvr_shader {
 +   pco_shader *pco;
@@ -16802,6 +16838,15 @@ index 00000000..7f8c348c
 +   unsigned tex_dst[PVR_SHADER_MAX_TEX];
 +   unsigned shared_dma_start;
 +   unsigned shared_dma_dwords;
++
++   /* 32-bit literals pco pooled into shared registers (pco_const_imms.c): the draw path writes
++    * literal_vals into the shared block at (literal_start - shared_dma_start) alongside the
++    * uniforms, and the block's DMA and usc_shared_count cover them. The pool is only used when the
++    * driver's upload program can fill it, and it lives at the end of the shared registers pco
++    * allocated for this shader, so the range is always inside [shared_dma_start, shareds). */
++   unsigned literal_start;
++   unsigned literal_count;
++   uint32_t literal_vals[PVR_SHADER_MAX_LITERALS];
 +
 +   /* Draw-path coefficient program of this fragment variant, for the vertex shader it was built
 +    * against (pvr_draw.c). */

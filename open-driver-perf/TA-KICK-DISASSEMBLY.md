@@ -4956,3 +4956,82 @@ open-perf/tasks/T-2026-11-01-round233/runs/012-025):
 Conclusion: the same-shader "parity" in rounds 012-016 was an artefact of bandwidth/overdraw-bound
 shapes; at realistic per-pixel ALU load pco is 1.6-1.9x behind the vendor, and that is the compiler
 codegen density the earlier F16SOP work was circling.
+
+## Round 237 - pco's literal pool on the native GL path: real codegen-density win (patch 0383)
+
+Round 235b/236 established the remaining loop/conditionals/shading gap as per-pixel fragment ALU
+efficiency, i.e. pco's instruction-group density on the real fragment shaders (loop FS 19 groups vs
+the vendor compiler's 11). This round takes the first item off the ranked codegen list
+(open-perf/pco-analysis/REPORT.md, candidate 1) with a driver-only change and measures it end to end.
+
+The lever: a 32-bit immediate that is not a hardware constant-register value is materialised by the
+shader itself. pco lowers each distinct one to a `bbyp0bm_imm32` bitwise group - one whole issue slot
+per literal - and those groups also act as pairing barriers. pco already has a literal pool
+(`pco_const_imms.c`): up to 32 such values go into shared registers after the driver-allocated ones,
+but only for uses that can read a shared register. The Vulkan driver and the native *compute* path
+enable it; the native graphics path did not.
+
+Root cause of the earlier failed attempt (kept in open-perf/tasks: run 027): `pco_trans_nir()` copies
+the caller's `pco_data` before the compiler passes run, so the pool only exists in
+`pco_shader_data(shader->pco)`. Reading the caller's struct gave `literals.count == 0`, so the driver
+uploaded nothing while the shader read shared registers - black output. That is why the diagnostic
+never fired; the compiler side had worked all along.
+
+Patch 0383 (gallium/pvr, 3 files, +55 -10):
+- `pvr_shader_create_with()`: `data.common.literal_pool = true`; after compilation take the final
+  shared-register count from `pco_shader_data(shader->pco)` - the literal pool is the only compiler
+  pass that grows it after translation - and record `literals.start/count/vals` in `pvr_shader`.
+  The pool sits at the end of the shared registers pco allocated, so it is inside
+  `[shared_dma_start, shareds)` and the existing per-draw `PVR_BUFFER_TYPE_PUSH_CONSTS` DMA plus
+  `usc_shared_count` already cover it.
+- `pvr_draw.c`: copy `literal_vals[]` into the shared block in both builders (`draw_uniform_program`
+  and the load-program one), next to the uniforms/blend constants/texture descriptors.
+
+Verification (control-first: same-session A/B against the clean `fe34d38c` build, snapshot identity
+in every raw file; every replay cell prints a centre-pixel readback, and all readbacks are
+byte-identical to the pre-change values). Raw outputs: open-perf/tasks/T-2026-11-02-codegen/runs/
+001-literal-pool-graphics/ (final-artifact session, snapshot `libs-final3` REV a29800a4).
+
+- codegen (same compiler, same shader): loop FS 19 -> 14 groups (224 -> 176 B, temps 5 -> 4;
+  main 12 -> 10, bitwise 4 -> 1); conditionals FS 18 -> 12 groups (14/4 -> 11/1); bump FS
+  34 -> 25 groups offline (6 literals pooled); math FS 26 -> 23 groups offline (3 pooled). The extra
+  main-group drop beyond the pooled literal groups is consistent with the removed literal groups no
+  longer blocking dual-issue candidates (inference from the group mix, not separately instrumented).
+- db2 fragment-ALU replay (composed glmark2 shaders, fullscreen quad, 800x600, readback-verified):
+  loop FragmentLoops=0 1117/813 -> 1188/1283 fps (this cell is too noisy at two reps to quote a
+  ratio from - the pair alone spans 1.06-1.58x, so the stable evidence is the fl=16/fl=64 cells and
+  the real-scene loop A/B below), fl=16 375/380 -> 403/402, fl=64 125/125 -> 129/127;
+  conditionals 996/1019/1019 -> 1211/1200/1229 (+19%). The gain shrinks with loop count as the
+  pooled prologue becomes a smaller share of the per-pixel work - roughly the prologue-share term
+  of 14+3n vs 19+3n groups per fragment (approximate: the real body/control mix is 7 groups per
+  loop iteration).
+- real glmark2 scenes (glmark2-es2 --off-screen under weston/Xwayland, 2 interleaved A/B rounds):
+  loop 1225/1231 -> 1325/1354 fps, conditionals 1203/1206 -> 1377/1331, bump 1504/1500 ->
+  1571/1601. The default `shading` variant (gouraud: vertex-lit, FS a passthrough) is flat
+  946/924 -> 933/944, but the fragment-lit shading variants move: blinn-phong-inf 794/798 -> 847/845
+  (+6.6%), cel 537/540 -> 568/566 (+5.5%), phong 657/660 -> 668/663, gouraud 950/947 -> 957/946.
+- regression controls: db2 math 952 -> 1045 fps (+10%, matching 26 -> 23 groups offline);
+  ilp/alu/trans within +-2% (medians -1.4% / +0.6% / +1.0%) and fill -1.4%, all inside the
+  run-to-run spread; native correctness gate ALL GROUPS PASS (20/20 groups:
+  gltri/mip/rttest/mrt/instancing/sRGB/extended textures/half-float/zls+mip/draw scissor/clear quad),
+  with the build identity recorded in the gate log.
+
+Known limitations: (1) the PVR_DEBUG *graphics* probes build their own TA/PDS state and shared block
+(`pvr_probe.c`, the path that says "No uniform/coefficient/texture-state programs yet") and do not
+fill a literal pool; their shaders are tiny constant-colour/passthrough probes today (their
+immediates lower to the MOV pseudo-op, so nothing pools), but a literal-heavy probe shader would
+read unfilled shared registers. The *compute* probe (`cdmn`) does copy `literal_vals`, so it is
+unaffected. The shipped draw paths are the ones verified above. (2) A shader with pooled literals
+and no uniforms/textures/blend constants previously had no shared DMA block at all; it now gets one
+just for the pool. That path is covered by construction in `pvr_draw.c` (zeroed block + descriptor
+program + `usc_shared_count`), and the loop replay cells exercise it (loop FS has exactly one
+uniform, so it is not a pure-pool case); a dedicated gate shader with a non-constant-table literal
+and no uniforms would close this fully.
+
+What this says about the remaining gap: the same loop FS is still 14 groups vs the vendor's 11, and
+the loop body is unchanged. The next items on the ranked list are loop control (the pco loop needs a
+test+movc group, a conditional br, a back-edge br and a nop where the vendor uses predicated control)
+and instruction packing/placement (10 main + 3 control groups left in the loop FS, with pairing
+still blocked by real dependencies). The literal pool also removes the earlier "pair across bitwise
+groups" experiment's (round 213) main barrier; that needs a fresh attempt now that the barriers are
+mostly gone.
