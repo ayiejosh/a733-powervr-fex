@@ -5035,3 +5035,75 @@ and instruction packing/placement (10 main + 3 control groups left in the loop F
 still blocked by real dependencies). The literal pool also removes the earlier "pair across bitwise
 groups" experiment's (round 213) main barrier; that needs a fresh attempt now that the barriers are
 mostly gone.
+
+## Round 238 - where the shading scene gap lives, and one DITR for all varyings (patch 0384)
+
+Round 237 closed the literal-materialisation part of the codegen-density gap. The next scene the
+full run scores badly on is `shading`; the full run has four variants and the earlier attribution
+treated them as one number, so this round first established what they actually are, then removed
+the largest identified per-fragment overhead.
+
+Vendor side (captured with the vendor USC hunter, artifact identity GL_VERSION build 24.2@6603887;
+`open-perf/vendor-usc/captures/shading-{gouraud,blinn-phong-inf,phong,cel}/`): every variant is ONE
+`glDrawArrays(GL_TRIANGLES)` of 43044 vertices per frame. gouraud (vertex-lit) does the lighting in
+the VS (368 B / 23 groups) and its FS is a 56 B / 3-group passthrough; blinn-phong-inf, phong and
+cel move the lighting into the FS (FS 224/464/568 B = 15/27/33 groups) with correspondingly smaller
+VSs; phong and cel share a byte-identical VS. Every vendor FS uses packed-half f16sop (2/7/16/16
+instructions). Native pco for the same gouraud VS is 288 B / 21 groups, i.e. the VS side is not the
+gap; the gap is the fragment shaders of the three fragment-lit variants (full-run native/vendor
+ratio 0.59 / 0.54 / 0.44).
+
+pco group accounting for the cel FS (offline pco on the committed tree, our Vulkanised light-cel
+approximation; 63 groups with the round-237 literal pool, 72 without) - every group classified:
+- 10 groups of interpolation machinery: two DITRPs plus, per DITRP, a flush/predicate group, two
+  `br.next` and a `wdf` (5 groups per smooth varying read);
+- 2 literal materialisations the pool still leaves (uses where the legalizer cannot place a shared
+  register), 4 bitwise (2 of them those literals, the boolean-AND mask and the output mask);
+- 0 control-flow groups: the three GLSL `if`s are lowered to 12 main groups of compare/select
+  emulation, not branches;
+- 51 main groups: 26 carry a p1 op (14 true ALU pairs + 12 select two-phase), 25 are single-phase
+  (17 pairable but blocked - 13 of them by the semantic `tst`/`movc` select groups, 4 by dependency
+  chains), 6 unpairable (frsq/flog/fexp/pck);
+- 3 main groups for the output tail (two mbyp copies, pck.scale repeat-3) + the final mask group.
+
+The interpolation part is not a hardware requirement: the vendor cel FS contains exactly ONE
+control group in its 568 B - a single `DITRP` with `count=6`, destination r0..r5, coefficient base
+cf4..27 and `sched_ctrl = wdf` - and no flush/branch/wdf groups at all. A DITR can iterate all
+coefficients of one interpolation mode in one instruction; pco was emitting one instruction and one
+full fence sequence per NIR varying load.
+
+Patch 0384 (`pco`, one file, +326) batches consecutive `load_interpolated_input` instructions in a
+block that share interpolation and iteration mode and whose driver-allocated coefficient ranges are
+adjacent: one DITR/DITRP with `count = total components`, each original load becoming a `pco_vec` of
+components of the merged destination (the translator's normal vec/comp shape, so RA's coalescing
+keeps it free; a scalar member is assigned its component with a mov). Runs are greedily split into
+adjacent chunks of at most 16 components (the iteration count is a 4-bit field that wraps 16 to 0),
+so 4 x vec4 is one instruction and 5 x vec4 is 16+4. Flat, 64-bit, nonzero-offset, location-frac and
+POS loads and mixed interpolation modes keep the old path; 16-bit I/O is widened to 32-bit before
+translation, so those loads batch like any 32-bit load.
+
+Measured on the board against the round-237 build (same session; raw outputs in
+open-perf/tasks/T-2026-11-02-codegen/runs/004-ditr-board/ for the first pass and
+005-review-fixes/ for the final build, which re-captured everything after the review fixes):
+- cel FS 62 -> 57 groups (768 -> 728 B, control 8 -> 4); phong FS 42 -> 37 groups (488 -> 448 B);
+  gouraud/blinn FS unchanged (0-1 varying reads); one DITRP count=6 + one fence sequence instead of
+  two count=3 DITRPs + two sequences; no added mbyp groups (temps 17 -> 19, no spills).
+- offline edge cases: a 16-component batch (4 x vec4) goes 35 -> 14 groups, two scalar varyings
+  14 -> 8, a 20-component run chunks 16+4 without spills; smoke test still PASS.
+- glmark2-es2 --off-screen, final build, 2 interleaved rounds: shading phong 648/664 -> 680/680 fps
+  (+3.6%), cel 554/565 -> 576/575 (+3.0%); an earlier 3-round run of the same code measured +2.7% /
+  +1.9%. loop and conditionals within noise.
+- correctness: native gate ALL GROUPS PASS (20/20, build identity in the gate log); loop/conditionals
+  readbacks identical (18/217/167, 54); a two-varying test shader is pixel-identical across the
+  change (64 64 255 255). An assert-trap probe of the compiler (same NDEBUG ABI) reproduces a real
+  assert-build bug in the first version of this patch - a 1-component varying member reached
+  split_dest_comps()'s vector assert - and shows the fixed version clean; that is why scalar members
+  take the mov path above.
+
+Remaining in this scene (from the same accounting, ranked): f16sop emission for mediump arithmetic
+(counted: 43 f32 arithmetic ops in 30 groups -> ~22 single-phase F16SOP instructions, net -5..8
+groups on cel/phong; the win is issue density, not half-precision throughput, consistent with the
+earlier FP16-rate-parity finding); then the `sched_ctrl = wdf` form of the DITR (vendor proof says
+the explicit post-fence sequence can go with it, a further -4 groups per interpolation batch, but
+hardware semantics need board validation); pairing placement is worth at most ~2 groups here because
+the `tst`/`movc` select groups are semantic barriers.

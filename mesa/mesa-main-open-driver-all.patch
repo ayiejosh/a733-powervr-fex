@@ -24858,10 +24858,10 @@ index 1a8354f2..bb1b790e 100644
     }
  
 diff --git a/src/imagination/pco/pco_trans_nir.c b/src/imagination/pco/pco_trans_nir.c
-index 6dde9d20..cb9b6211 100644
+index 6dde9d20..526312cf 100644
 --- a/src/imagination/pco/pco_trans_nir.c
 +++ b/src/imagination/pco/pco_trans_nir.c
-@@ -15,6 +15,8 @@
+@@ -15,8 +15,11 @@
  #include "pco.h"
  #include "pco_builder.h"
  #include "pco_internal.h"
@@ -24869,8 +24869,21 @@ index 6dde9d20..cb9b6211 100644
 +#include <math.h>
  #include "pvr_iface.h"
  #include "util/bitset.h"
++#include "util/hash_table.h"
  #include "util/list.h"
-@@ -80,7 +82,31 @@ static void split_dest_comps(trans_ctx *tctx, pco_instr *instr, pco_ref dest)
+ #include "util/macros.h"
+ #include "util/ralloc.h"
+@@ -37,6 +40,9 @@ typedef struct _trans_ctx {
+ 
+    BITSET_WORD *float_types; /** NIR SSA float vars. */
+    BITSET_WORD *int_types; /** NIR SSA int vars. */
++
++   /* Batched smooth/noperspective varying loads keyed by NIR instruction. */
++   struct hash_table_u64 *interp_batches;
+ } trans_ctx;
+ 
+ /* Forward declarations. */
+@@ -80,7 +86,31 @@ static void split_dest_comps(trans_ctx *tctx, pco_instr *instr, pco_ref dest)
   */
  static inline pco_ref pco_ref_nir_def(const nir_def *def)
  {
@@ -24903,7 +24916,7 @@ index 6dde9d20..cb9b6211 100644
  }
  
  /**
-@@ -451,6 +477,18 @@ static pco_ref fs_is_single_sampled(trans_ctx *tctx)
+@@ -451,6 +481,18 @@ static pco_ref fs_is_single_sampled(trans_ctx *tctx)
                                      : fs_is_single_sampled_meta(tctx);
  }
  
@@ -24922,7 +24935,7 @@ index 6dde9d20..cb9b6211 100644
  /**
   * \brief Translates a NIR fs load_input intrinsic into PCO.
   *
-@@ -534,6 +572,9 @@ static pco_instr *trans_load_input_fs(trans_ctx *tctx,
+@@ -534,6 +576,9 @@ static pco_instr *trans_load_input_fs(trans_ctx *tctx,
           pco_ref xy_p[] = { pco_ref_hwreg(PCO_SR_X_P, PCO_REG_CLASS_SPEC),
                              pco_ref_hwreg(PCO_SR_Y_P, PCO_REG_CLASS_SPEC) };
  
@@ -24932,7 +24945,322 @@ index 6dde9d20..cb9b6211 100644
           return pco_csel(&tctx->b,
                           dest,
                           fs_is_single_sampled(tctx),
-@@ -747,14 +788,17 @@ trans_store_output_fs(trans_ctx *tctx, nir_intrinsic_instr *intr, pco_ref src)
+@@ -617,6 +662,314 @@ static pco_instr *trans_load_input_fs(trans_ctx *tctx,
+    }
+ }
+ 
++/**
++ * \brief One batched varying-load run: several consecutive load_interpolated_input
++ *        instructions that one DITR/DITRP can produce.
++ *
++ * A DITR/DITRP iterates `count` coefficient sets, writing `count` consecutive
++ * destination registers. pco used to emit one instruction per NIR load, paying
++ * the 4-group DITR fence sequence per varying read; the vendor compiler emits a
++ * single DITRP for the whole fragment shader (count = all varying components),
++ * which is what this batching reproduces.
++ *
++ * This is pre-RA only: the loads themselves and the consumer refs are unchanged
++ * (each load's SSA becomes a pco_vec of comps of the merged DITRP), so RA's
++ * vec/comp coalescing keeps it free.
++ */
++#define MAX_INTERP_BATCH 8
++/* The hardware iteration count is a 4-bit field that wraps 16 to 0, so the legal
++ * values are 1..16; batches over this are split into chunks. */
++#define MAX_INTERP_COUNT 16
++
++struct interp_load_info {
++   unsigned coeffs_index; /** First coefficient register. */
++   unsigned chans; /** Destination components. */
++   enum pco_itr_mode itr_mode;
++   enum glsl_interp_mode interp_mode;
++};
++
++struct interp_batch {
++   unsigned n_loads;
++   nir_instr *loads[MAX_INTERP_BATCH];
++   struct interp_load_info info[MAX_INTERP_BATCH];
++   unsigned total_chans;
++   enum pco_itr_mode itr_mode;
++   enum glsl_interp_mode interp_mode;
++   bool emitted;
++};
++
++/**
++ * \brief Whether one NIR load can be part of an interpolation batch.
++ *
++ * Mirrors the checks trans_load_input_fs() makes before emitting DITR/DITRP;
++ * anything unusual (VARYING_SLOT_POS z/w, flat, 16-bit, non-zero offsets) is
++ * left to the normal single-load path.
++ */
++static bool
++get_interp_load_info(trans_ctx *tctx, nir_intrinsic_instr *intr,
++                     struct interp_load_info *info)
++{
++   if (intr->intrinsic != nir_intrinsic_load_interpolated_input)
++      return false;
++
++   pco_fs_data *fs_data = &tctx->shader->data.fs;
++   unsigned component = nir_intrinsic_component(intr);
++   unsigned chans = intr->def.num_components;
++
++   if (intr->def.bit_size != 32 || chans == 0 || chans > 4)
++      return false;
++
++   struct nir_io_semantics io_semantics = nir_intrinsic_io_semantics(intr);
++   gl_varying_slot location = io_semantics.location;
++
++   if (location == VARYING_SLOT_POS || location >= VARYING_SLOT_MAX)
++      return false;
++
++   if (!nir_src_is_const(intr->src[1]) || nir_src_as_uint(intr->src[1]) != 0)
++      return false;
++
++   nir_variable *var = nir_find_variable_with_location(tctx->shader->nir,
++                                                       nir_var_shader_in,
++                                                       location);
++   if (!var || var->data.location_frac)
++      return false;
++
++   assert(!(var->data.sample && var->data.centroid));
++
++   /* Same authority as trans_load_input_fs(): the interpolation mode of the
++    * barycentric load, not the variable (Vulkan/NIR may leave both NONE). */
++   nir_intrinsic_instr *bary = nir_src_as_intrinsic(intr->src[0]);
++   if (!bary || !nir_intrinsic_has_interp_mode(bary))
++      return false;
++
++   enum glsl_interp_mode interp_mode = nir_intrinsic_interp_mode(bary);
++   if (interp_mode != INTERP_MODE_SMOOTH &&
++       interp_mode != INTERP_MODE_NOPERSPECTIVE)
++      return false;
++
++   enum pco_itr_mode itr_mode = PCO_ITR_MODE_PIXEL;
++
++   switch (bary->intrinsic) {
++   case nir_intrinsic_load_barycentric_pixel:
++      itr_mode = PCO_ITR_MODE_PIXEL;
++      break;
++   case nir_intrinsic_load_barycentric_sample:
++      itr_mode = PCO_ITR_MODE_SAMPLE;
++      break;
++   case nir_intrinsic_load_barycentric_centroid:
++      itr_mode = PCO_ITR_MODE_CENTROID;
++      break;
++   default:
++      return false;
++   }
++
++   const pco_range *range = &fs_data->varyings[location];
++   if (component + ROGUE_USC_COEFFICIENT_SET_SIZE * chans > range->count)
++      return false;
++
++   info->coeffs_index =
++      range->start + ROGUE_USC_COEFFICIENT_SET_SIZE * component;
++   info->chans = chans;
++   info->itr_mode = itr_mode;
++   info->interp_mode = interp_mode;
++   return true;
++}
++
++/**
++ * \brief Emits one merged DITR/DITRP plus a pco_vec per original load.
++ *
++ * The merged instruction writes total_chans consecutive registers; each load's
++ * NIR def becomes a vector of the matching comps of that destination, which is
++ * the same vec/comp shape the translator produces for any other vector value
++ * (RA coalesces comps back to the parent register).
++ */
++static void
++trans_emit_interp_batch(trans_ctx *tctx, struct interp_batch *batch)
++{
++   pco_fs_data *fs_data = &tctx->shader->data.fs;
++
++   batch->emitted = true;
++
++   pco_ref coeffs = pco_ref_hwreg_vec(batch->info[0].coeffs_index,
++                                      PCO_REG_CLASS_COEFF,
++                                      ROGUE_USC_COEFFICIENT_SET_SIZE *
++                                         batch->total_chans);
++
++   pco_ref wcoeffs = pco_ref_null();
++   if (batch->interp_mode == INTERP_MODE_SMOOTH) {
++      /* Same authority as the single-load path: smooth interpolation reads the
++       * w coefficients the driver's coefficient program fills. */
++      assert(fs_data->uses.w);
++      unsigned wcoeffs_index = fs_data->uses.z ? ROGUE_USC_COEFFICIENT_SET_SIZE
++                                               : 0;
++      wcoeffs = pco_ref_hwreg_vec(wcoeffs_index, PCO_REG_CLASS_COEFF,
++                                  ROGUE_USC_COEFFICIENT_SET_SIZE);
++   }
++
++   bool usc_itrsmp_enhanced =
++      PVR_HAS_FEATURE(tctx->pco_ctx->dev_info, usc_itrsmp_enhanced);
++
++   pco_ref dest = pco_ref_new_ssa(tctx->func, 32, batch->total_chans);
++   pco_instr *itr = build_itr(&tctx->b, dest, PCO_DRC_0, coeffs, wcoeffs,
++                              batch->total_chans, batch->itr_mode,
++                              usc_itrsmp_enhanced);
++   split_dest_comps(tctx, itr, dest);
++
++   pco_vec_info *vec_info =
++      _mesa_hash_table_u64_search(tctx->func->vec_infos, dest.val);
++   assert(vec_info);
++
++   unsigned offset = 0;
++   for (unsigned u = 0; u < batch->n_loads; ++u) {
++      nir_intrinsic_instr *intr = nir_instr_as_intrinsic(batch->loads[u]);
++      pco_ref load_dest = pco_ref_nir_def_t(&intr->def, tctx);
++      unsigned chans = batch->info[u].chans;
++
++      pco_ref comps[NIR_MAX_VEC_COMPONENTS] = { 0 };
++      for (unsigned c = 0; c < chans; ++c)
++         comps[c] = vec_info->comps[offset + c]->dest[0];
++
++      if (chans == 1) {
++         /* split_dest_comps() only handles vectors; a scalar load's def is the
++          * comp itself (the move folds in RA/opt). */
++         pco_mov(&tctx->b, load_dest, comps[0]);
++      } else {
++         pco_instr *vec = pco_vec(&tctx->b, load_dest, chans, comps);
++         split_dest_comps(tctx, vec, load_dest);
++      }
++
++      offset += chans;
++   }
++}
++
++/**
++ * Whether an instruction between two varying loads does not break a batch:
++ * barycentric loads emit nothing, and the load-offset constants are pure and
++ * position-independent (NIR hoists one zero constant before each load).
++ */
++static bool is_transparent_between_loads(const nir_instr *instr)
++{
++   if (instr->type == nir_instr_type_load_const)
++      return true;
++
++   if (instr->type != nir_instr_type_intrinsic)
++      return false;
++
++   switch (nir_instr_as_intrinsic(instr)->intrinsic) {
++   case nir_intrinsic_load_barycentric_pixel:
++   case nir_intrinsic_load_barycentric_sample:
++   case nir_intrinsic_load_barycentric_centroid:
++      return true;
++   default:
++      return false;
++   }
++}
++
++static void
++trans_finish_interp_batch(trans_ctx *tctx, nir_instr **loads,
++                          struct interp_load_info *infos, unsigned n)
++{
++   if (n < 2)
++      return;
++
++   /* Sort by coefficient register: the merged DITR iterates ascending. */
++   unsigned order[MAX_INTERP_BATCH];
++   for (unsigned u = 0; u < n; ++u)
++      order[u] = u;
++
++   for (unsigned u = 1; u < n; ++u) {
++      unsigned cur = order[u], v = u;
++      while (v > 0 && infos[order[v - 1]].coeffs_index > infos[cur].coeffs_index) {
++         order[v] = order[v - 1];
++         --v;
++      }
++      order[v] = cur;
++   }
++
++   /* One instruction can iterate at most MAX_INTERP_COUNT coefficients, and the
++    * run can contain gaps where the driver's coefficient allocation is not
++    * adjacent: emit one merged instruction per adjacent, under-the-limit chunk
++    * of at least two loads. */
++   for (unsigned u = 0; u < n;) {
++      unsigned end = u, chunk_chans = 0;
++
++      while (end < n) {
++         const struct interp_load_info *info = &infos[order[end]];
++         if (end > u) {
++            const struct interp_load_info *prev = &infos[order[end - 1]];
++            if (info->coeffs_index !=
++                prev->coeffs_index + ROGUE_USC_COEFFICIENT_SET_SIZE * prev->chans)
++               break;
++         }
++         if (chunk_chans + info->chans > MAX_INTERP_COUNT)
++            break;
++         chunk_chans += info->chans;
++         ++end;
++      }
++
++      if (end - u >= 2) {
++         struct interp_batch *batch = rzalloc_size(tctx->func, sizeof(*batch));
++         batch->n_loads = end - u;
++         batch->total_chans = chunk_chans;
++         batch->itr_mode = infos[order[u]].itr_mode;
++         batch->interp_mode = infos[order[u]].interp_mode;
++
++         for (unsigned k = 0; k < batch->n_loads; ++k) {
++            batch->loads[k] = loads[order[u + k]];
++            batch->info[k] = infos[order[u + k]];
++         }
++
++         /* Keyed by the NIR intrinsic, which is the first member of nir_instr;
++          * trans_intr() looks up &intr->instr. */
++         for (unsigned k = 0; k < batch->n_loads; ++k)
++            _mesa_hash_table_u64_insert(tctx->interp_batches,
++                                        (uintptr_t)batch->loads[k], batch);
++      }
++
++      u = end;
++   }
++}
++
++/** Finds and registers interpolation batches for one NIR block. */
++static void trans_scan_interp_batches(trans_ctx *tctx, nir_block *nblock)
++{
++   if (tctx->interp_batches != NULL)
++      _mesa_hash_table_u64_destroy(tctx->interp_batches);
++   tctx->interp_batches = _mesa_hash_table_u64_create(tctx->func);
++
++   nir_instr *loads[MAX_INTERP_BATCH];
++   struct interp_load_info infos[MAX_INTERP_BATCH];
++   unsigned n = 0;
++
++   nir_foreach_instr (instr, nblock) {
++      struct interp_load_info info;
++      bool ok = instr->type == nir_instr_type_intrinsic &&
++                get_interp_load_info(tctx, nir_instr_as_intrinsic(instr),
++                                     &info);
++
++      if (!ok && is_transparent_between_loads(instr))
++         continue;
++
++      if (!ok || (n > 0 && (infos[0].itr_mode != info.itr_mode ||
++                            infos[0].interp_mode != info.interp_mode))) {
++         trans_finish_interp_batch(tctx, loads, infos, n);
++         n = 0;
++         if (!ok)
++            continue;
++      }
++
++      loads[n] = instr;
++      infos[n] = info;
++      ++n;
++      if (n == MAX_INTERP_BATCH) {
++         trans_finish_interp_batch(tctx, loads, infos, n);
++         n = 0;
++      }
++   }
++
++   trans_finish_interp_batch(tctx, loads, infos, n);
++}
++
+ static pco_instr *
+ trans_load_fs_coeffs(trans_ctx *tctx, nir_intrinsic_instr *intr, pco_ref dest)
+ {
+@@ -747,14 +1100,17 @@ trans_store_output_fs(trans_ctx *tctx, nir_intrinsic_instr *intr, pco_ref src)
                pco_ref_null(),
                .savmsk_mode = PCO_SAVMSK_MODE_ICM);
  
@@ -24958,7 +25286,7 @@ index 6dde9d20..cb9b6211 100644
  
     return pco_st_tiled(&tctx->b,
                         data_comp,
-@@ -1003,6 +1047,13 @@ static pco_instr *trans_load_common_store(trans_ctx *tctx,
+@@ -1003,6 +1359,13 @@ static pco_instr *trans_load_common_store(trans_ctx *tctx,
        assert(offset < range->count);
  
        pco_ref src = pco_ref_hwreg_vec(range->start + offset, reg_class, chans);
@@ -24972,7 +25300,7 @@ index 6dde9d20..cb9b6211 100644
        return pco_mbyp(&tctx->b, dest, src, .rpt = chans);
     }
  
-@@ -1244,6 +1295,27 @@ static pco_instr *trans_atomic_shared(trans_ctx *tctx,
+@@ -1244,6 +1607,27 @@ static pco_instr *trans_atomic_shared(trans_ctx *tctx,
     return instr;
  }
  
@@ -25000,7 +25328,7 @@ index 6dde9d20..cb9b6211 100644
  static pco_instr *trans_load_buffer(trans_ctx *tctx,
                                      nir_intrinsic_instr *intr,
                                      pco_ref dest,
-@@ -1299,6 +1371,30 @@ static pco_instr *trans_load_buffer(trans_ctx *tctx,
+@@ -1299,6 +1683,30 @@ static pco_instr *trans_load_buffer(trans_ctx *tctx,
                                       });
     }
  
@@ -25031,7 +25359,7 @@ index 6dde9d20..cb9b6211 100644
     pco_ref base_addr[2];
     pco_ref_hwreg_addr_comps(sh_index, PCO_REG_CLASS_SHARED, base_addr);
  
-@@ -1336,30 +1432,35 @@ static pco_instr *trans_load_buffer(trans_ctx *tctx,
+@@ -1336,30 +1744,35 @@ static pco_instr *trans_load_buffer(trans_ctx *tctx,
     pco_ref addr_comps_dyn_off[2];
     pco_ref_new_ssa_addr_comps(tctx->func, addr_comps_dyn_off);
  
@@ -25088,7 +25416,7 @@ index 6dde9d20..cb9b6211 100644
  
     pco_ref addr = pco_ref_new_ssa_addr(tctx->func);
     pco_vec(&tctx->b, addr, ARRAY_SIZE(addr_comps_dyn_off), addr_comps_dyn_off);
-@@ -1566,30 +1667,35 @@ static pco_instr *trans_store_buffer(trans_ctx *tctx,
+@@ -1566,30 +1979,35 @@ static pco_instr *trans_store_buffer(trans_ctx *tctx,
     };
     pco_ref_new_ssa_addr_comps(tctx->func, addr_data_comps_dyn_off);
  
@@ -25145,7 +25473,7 @@ index 6dde9d20..cb9b6211 100644
  
     pco_ref addr_data = pco_ref_new_ssa_addr_data(tctx->func, chans);
     pco_vec(&tctx->b,
-@@ -1700,30 +1806,35 @@ static pco_instr *trans_atomic_buffer(trans_ctx *tctx,
+@@ -1700,30 +2118,35 @@ static pco_instr *trans_atomic_buffer(trans_ctx *tctx,
     };
     pco_ref_new_ssa_addr_comps(tctx->func, addr_data_comps_dyn_off);
  
@@ -25202,7 +25530,7 @@ index 6dde9d20..cb9b6211 100644
  
     pco_ref addr_data = pco_ref_new_ssa_addr_data(tctx->func, chans);
     pco_vec(&tctx->b,
-@@ -2333,7 +2444,7 @@ static pco_instr *trans_reg_intr(trans_ctx *tctx,
+@@ -2333,7 +2756,7 @@ static pco_instr *trans_reg_intr(trans_ctx *tctx,
        assert(!nir_intrinsic_legacy_fabs(intr));
        assert(!nir_intrinsic_legacy_fneg(intr));
  
@@ -25211,7 +25539,7 @@ index 6dde9d20..cb9b6211 100644
  
     case nir_intrinsic_store_reg:
        assert(!nir_intrinsic_base(intr));
-@@ -2457,7 +2568,11 @@ static pco_instr *trans_is_null_desc(trans_ctx *tctx,
+@@ -2457,7 +2880,11 @@ static pco_instr *trans_is_null_desc(trans_ctx *tctx,
     unsigned sh_index =
        fetch_resource_base_reg_packed(common, packed_desc, elem, &stride, NULL, &is_img_smp, NULL);
  
@@ -25224,7 +25552,7 @@ index 6dde9d20..cb9b6211 100644
  
     if (is_dynidx) {
        dynidx_stride = pco_ref_new_ssa32(tctx->func);
-@@ -2469,7 +2584,8 @@ static pco_instr *trans_is_null_desc(trans_ctx *tctx,
+@@ -2469,7 +2896,8 @@ static pco_instr *trans_is_null_desc(trans_ctx *tctx,
        pco_ref dword_is_zero =
           pco_ref_new_ssa(tctx->func, pco_ref_get_bits(dest), 1);
  
@@ -25234,7 +25562,26 @@ index 6dde9d20..cb9b6211 100644
        if (is_dynidx) {
           pco_ref dynidx_dword_reg = pco_ref_new_ssa32(tctx->func);
           pco_dynidx(&tctx->b,
-@@ -2866,6 +2982,13 @@ static pco_instr *trans_intr(trans_ctx *tctx, nir_intrinsic_instr *intr)
+@@ -2519,6 +2947,18 @@ static pco_instr *trans_is_null_desc(trans_ctx *tctx,
+  */
+ static pco_instr *trans_intr(trans_ctx *tctx, nir_intrinsic_instr *intr)
+ {
++   if (tctx->interp_batches &&
++       intr->intrinsic == nir_intrinsic_load_interpolated_input) {
++      struct interp_batch *batch = _mesa_hash_table_u64_search(
++         tctx->interp_batches, (uintptr_t)&intr->instr);
++
++      if (batch) {
++         if (!batch->emitted)
++            trans_emit_interp_batch(tctx, batch);
++         return NULL;
++      }
++   }
++
+    const nir_intrinsic_info *info = &nir_intrinsic_infos[intr->intrinsic];
+ 
+    pco_ref dest = info->has_dest ? pco_ref_nir_def_t(&intr->def, tctx)
+@@ -2866,6 +3306,13 @@ static pco_instr *trans_intr(trans_ctx *tctx, nir_intrinsic_instr *intr)
        instr = trans_load_sysval(tctx, intr, dest);
        break;
  
@@ -25248,7 +25595,7 @@ index 6dde9d20..cb9b6211 100644
     case nir_intrinsic_load_fs_meta_pco:
        assert(tctx->stage == MESA_SHADER_FRAGMENT);
        assert(tctx->shader->data.fs.meta.count > 0);
-@@ -3523,6 +3646,14 @@ static inline bool is_min(nir_op op)
+@@ -3523,6 +3970,14 @@ static inline bool is_min(nir_op op)
     UNREACHABLE("");
  }
  
@@ -25263,7 +25610,7 @@ index 6dde9d20..cb9b6211 100644
  /**
   * \brief Translates a NIR min/max op into PCO.
   *
-@@ -3638,6 +3769,19 @@ trans_conv(trans_ctx *tctx, nir_op op, pco_ref dest, pco_ref src)
+@@ -3638,6 +4093,19 @@ trans_conv(trans_ctx *tctx, nir_op op, pco_ref dest, pco_ref src)
                         op == nir_op_b2f32 ? pco_fone : pco_one,
                         pco_zero);
  
@@ -25283,7 +25630,7 @@ index 6dde9d20..cb9b6211 100644
     case nir_op_f2f16:
     case nir_op_f2f16_rtne:
     case nir_op_f2f16_rtz:
-@@ -3687,6 +3831,24 @@ trans_conv(trans_ctx *tctx, nir_op op, pco_ref dest, pco_ref src)
+@@ -3687,6 +4155,24 @@ trans_conv(trans_ctx *tctx, nir_op op, pco_ref dest, pco_ref src)
        unpck = true;
        break;
  
@@ -25308,7 +25655,7 @@ index 6dde9d20..cb9b6211 100644
     default:
        UNREACHABLE("Unsupported conversion op.");
     }
-@@ -3703,6 +3865,33 @@ trans_conv(trans_ctx *tctx, nir_op op, pco_ref dest, pco_ref src)
+@@ -3703,6 +4189,33 @@ trans_conv(trans_ctx *tctx, nir_op op, pco_ref dest, pco_ref src)
                            .roundzero = roundzero);
  }
  
@@ -25342,7 +25689,7 @@ index 6dde9d20..cb9b6211 100644
  /**
   * \brief Translates a NIR alu instruction into PCO.
   *
-@@ -3721,6 +3910,25 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
+@@ -3721,6 +4234,25 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
     for (unsigned s = 0; s < num_srcs; ++s)
        src[s] = pco_ref_nir_alu_src_t(alu, s, tctx);
  
@@ -25368,7 +25715,7 @@ index 6dde9d20..cb9b6211 100644
     pco_instr *instr;
     switch (alu->op) {
     case nir_op_fneg:
-@@ -3735,6 +3943,15 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
+@@ -3735,6 +4267,15 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
        instr = pco_fflr(&tctx->b, dest, src[0]);
        break;
  
@@ -25384,7 +25731,7 @@ index 6dde9d20..cb9b6211 100644
     case nir_op_fceil:
        instr = pco_fceil(&tctx->b, dest, src[0]);
        break;
-@@ -3775,9 +3992,33 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
+@@ -3775,9 +4316,33 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
        instr = pco_fsign(&tctx->b, dest, src[0]);
        break;
  
@@ -25420,7 +25767,7 @@ index 6dde9d20..cb9b6211 100644
  
     case nir_op_fsin:
     case nir_op_fcos:
-@@ -3810,9 +4051,53 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
+@@ -3810,9 +4375,53 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
                           .s = true);
        break;
  
@@ -25476,7 +25823,7 @@ index 6dde9d20..cb9b6211 100644
  
     /* TODO: PCO pass to combine u{add,sub}{carry,borrow}s with the same srcs. */
     case nir_op_uadd_carry:
-@@ -3967,7 +4252,36 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
+@@ -3967,7 +4576,36 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
  
     case nir_op_iand:
     case nir_op_ior:
@@ -25514,7 +25861,7 @@ index 6dde9d20..cb9b6211 100644
     case nir_op_inot:
        instr = trans_logical(tctx, alu->op, dest, src[0], src[1]);
        break;
-@@ -3987,6 +4301,10 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
+@@ -3987,6 +4625,10 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
        break;
  
     case nir_op_ibitfield_extract: {
@@ -25525,7 +25872,7 @@ index 6dde9d20..cb9b6211 100644
        pco_ref bfe = pco_ref_new_ssa32(tctx->func);
        pco_ibfe(&tctx->b, bfe, src[0], src[1], src[2]);
        instr = pco_bcsel(&tctx->b, dest, src[2], bfe, pco_zero);
-@@ -3994,6 +4312,10 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
+@@ -3994,6 +4636,10 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
     }
  
     case nir_op_ubitfield_extract: {
@@ -25536,7 +25883,7 @@ index 6dde9d20..cb9b6211 100644
        pco_ref bfe = pco_ref_new_ssa32(tctx->func);
        pco_ubfe(&tctx->b, bfe, src[0], src[1], src[2]);
        instr = pco_bcsel(&tctx->b, dest, src[2], bfe, pco_zero);
-@@ -4001,6 +4323,10 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
+@@ -4001,6 +4647,10 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
     }
  
     case nir_op_bitfield_insert: {
@@ -25547,7 +25894,7 @@ index 6dde9d20..cb9b6211 100644
        pco_ref bfi = pco_ref_new_ssa32(tctx->func);
        pco_bfi(&tctx->b, bfi, src[0], src[1], src[2], src[3]);
        instr = pco_bcsel(&tctx->b, dest, src[3], bfi, src[0]);
-@@ -4015,6 +4341,7 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
+@@ -4015,6 +4665,7 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
        instr = pco_shuffle(&tctx->b, dest, src[0], src[1]);
        break;
  
@@ -25555,7 +25902,7 @@ index 6dde9d20..cb9b6211 100644
     case nir_op_b2f32:
     case nir_op_b2i32:
     case nir_op_f2f16:
-@@ -4024,9 +4351,11 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
+@@ -4024,9 +4675,11 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
     case nir_op_f2i32:
     case nir_op_f2i32_rtne:
     case nir_op_f2u32:
@@ -25567,7 +25914,7 @@ index 6dde9d20..cb9b6211 100644
     case nir_op_u2f32:
     case nir_op_u2u16:
     case nir_op_u2u32:
-@@ -4041,6 +4370,16 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
+@@ -4041,6 +4694,16 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
  
     case nir_op_umin:
     case nir_op_umax:
@@ -25584,7 +25931,7 @@ index 6dde9d20..cb9b6211 100644
        instr = trans_min_max(tctx, alu->op, dest, src[0], src[1]);
        break;
  
-@@ -4145,6 +4484,81 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
+@@ -4145,6 +4808,81 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
        instr = pco_mov(&tctx->b, dest, src[0]);
        break;
  
@@ -25666,6 +26013,15 @@ index 6dde9d20..cb9b6211 100644
     default:
        printf("Unsupported alu instruction: \"");
        nir_print_instr(&alu->instr, stdout);
+@@ -4326,6 +5064,8 @@ static pco_block *trans_block(trans_ctx *tctx,
+ 
+    tctx->b = pco_builder_create(tctx->func, pco_cursor_after_block(block));
+ 
++   trans_scan_interp_batches(tctx, nblock);
++
+    nir_foreach_instr (ninstr, nblock) {
+       trans_instr(tctx, ninstr);
+    }
 diff --git a/src/imagination/pco/usclib/common.cl b/src/imagination/pco/usclib/common.cl
 index 344f6ae9..33173aa3 100644
 --- a/src/imagination/pco/usclib/common.cl
