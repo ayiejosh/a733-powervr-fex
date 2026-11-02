@@ -21295,7 +21295,7 @@ index 7e5f9ca9..e36cd08b 100644
  };
  
 diff --git a/src/imagination/pco/pco_group_instrs.c b/src/imagination/pco/pco_group_instrs.c
-index b46a2b16..4d1fa306 100644
+index b46a2b16..a122a1a2 100644
 --- a/src/imagination/pco/pco_group_instrs.c
 +++ b/src/imagination/pco/pco_group_instrs.c
 @@ -15,6 +15,7 @@
@@ -21306,7 +21306,7 @@ index b46a2b16..4d1fa306 100644
  
  #include <stdbool.h>
  
-@@ -171,21 +172,509 @@ static inline void calc_align_padding(pco_igrp *last_igrp,
+@@ -171,22 +172,543 @@ static inline void calc_align_padding(pco_igrp *last_igrp,
     }
  }
  
@@ -21583,15 +21583,22 @@ index b46a2b16..4d1fa306 100644
 +
 +/**
 + * \brief Folds a phase 0-only group into the next group when that group's
-+ *        phase 0 only moves the first group's result (e.g. min/max after an
-+ *        ALU op): the op then runs in phase 0 and phase 2 reads its ft0.
++ *        phase 0 only moves the first group's result (e.g. min/max or a
++ *        select after an ALU op): the op then runs in phase 0 and phase 2
++ *        reads its ft0.  For a select the condition is kept in the group and
++ *        moved to a free source slot, with the phase 2 mux pointing at it.
 + *
 + * \param[in,out] prev Previous instruction group (removed on success).
 + * \param[in,out] igrp Current instruction group.
++ * \param[in] next_op PCO op the current group was mapped from.
 + * \return True if prev was folded into igrp.
 + */
-+static bool try_fold_into_next(pco_igrp *prev, pco_igrp *igrp)
++static bool try_fold_into_next(pco_igrp *prev, pco_igrp *igrp,
++                               enum pco_op next_op)
 +{
++   bool is_select = next_op == PCO_OP_BCSEL;
++   pco_ref cond = is_select ? igrp->srcs.s[1] : pco_ref_null();
++
 +   if (PCO_DEBUG(NO_DUAL_ISSUE))
 +      return false;
 +
@@ -21615,10 +21622,21 @@ index b46a2b16..4d1fa306 100644
 +       pco_ref_get_reg_index(igrp->srcs.s[0]) !=
 +          pco_ref_get_reg_index(result) ||
 +       pco_ref_get_chans(igrp->srcs.s[0]) != pco_ref_get_chans(result) ||
-+       !pco_ref_is_null(igrp->srcs.s[1]) ||
-+       !pco_ref_is_null(igrp->srcs.s[2]) ||
-+       !pco_ref_is_null(igrp->iss.is[0]))
++       !pco_ref_is_null(igrp->srcs.s[2]))
 +      return false;
++
++   if (is_select) {
++      /* The condition stays in the group: it must be a plain register and
++       * the phase 2 mux must already read it from a source slot.
++       */
++      if (pco_ref_is_null(cond) || !pco_ref_is_reg(cond) ||
++          pco_ref_has_mods_set(cond) || pco_ref_is_null(igrp->iss.is[0]) ||
++          !upper_src_ok(cond, 1))
++         return false;
++   } else if (!pco_ref_is_null(igrp->srcs.s[1]) ||
++              !pco_ref_is_null(igrp->iss.is[0])) {
++      return false;
++   }
 +
 +   if (igrp->hdr.olchk != prev->hdr.olchk || igrp->hdr.cc != prev->hdr.cc ||
 +       igrp->hdr.end != prev->hdr.end || igrp->hdr.atom != prev->hdr.atom ||
@@ -21626,8 +21644,9 @@ index b46a2b16..4d1fa306 100644
 +      return false;
 +
 +   /* The other sources are read before the folded op writes back. */
-+   for (unsigned s = 3; s < ARRAY_SIZE(igrp->srcs.s); ++s)
-+      if (refs_overlap(igrp->srcs.s[s], result))
++   for (unsigned s = is_select ? 1 : 3; s < ARRAY_SIZE(igrp->srcs.s); ++s)
++      if (!pco_ref_is_null(igrp->srcs.s[s]) &&
++          refs_overlap(igrp->srcs.s[s], result))
 +         return false;
 +
 +   /* Keep the folded op's own write unless igrp overwrites it anyway. */
@@ -21643,8 +21662,18 @@ index b46a2b16..4d1fa306 100644
 +   ralloc_steal(igrp, op);
 +   ralloc_free(mov);
 +
-+   for (unsigned s = 0; s < 3; ++s)
-+      igrp->srcs.s[s] = prev->srcs.s[s];
++   igrp->srcs.s[0] = prev->srcs.s[0];
++   igrp->srcs.s[1] = prev->srcs.s[1];
++   igrp->srcs.s[2] = prev->srcs.s[2];
++
++   if (is_select) {
++      /* The folded op needs the lower source slots; keep the condition in a
++       * free upper slot and point the phase 2 mux at it.
++       */
++      igrp->srcs.s[4] = cond;
++      igrp->iss.is[0] = pco_ref_io(PCO_IO_S4);
++   }
++
 +   igrp->variant.instr[PCO_OP_PHASE_0] = prev->variant.instr[PCO_OP_PHASE_0];
 +
 +   if (keep_result) {
@@ -21655,6 +21684,8 @@ index b46a2b16..4d1fa306 100644
 +
 +   igrp->variant.hdr = pco_igrp_hdr_variant(igrp);
 +   igrp->variant.lower_src = pco_igrp_src_variant(igrp, false);
++   if (is_select)
++      igrp->variant.upper_src = pco_igrp_src_variant(igrp, true);
 +   igrp->variant.dest = pco_igrp_dest_variant(igrp);
 +
 +   list_del(&prev->link);
@@ -21811,18 +21842,21 @@ index b46a2b16..4d1fa306 100644
 -                              pco_instr *instr,
 -                              pco_igrp *igrp,
 -                              unsigned *offset_bytes)
-+static void
++static enum pco_op
 +pco_instr_to_igrp(pco_builder *b, pco_instr *instr, pco_igrp *igrp)
  {
 +   struct list_head *next = instr->link.next;
 +   struct list_head *end = &pco_cursor_block(b->cursor)->instrs;
++   enum pco_op op = instr->op;
     pco_map_igrp(igrp, instr);
 -   calc_lengths(igrp, offset_bytes);
 +   try_dual_issue(igrp, next, end);
     pco_builder_insert_igrp(b, igrp);
++   return op;
  }
  
-@@ -209,12 +698,29 @@ bool pco_group_instrs(pco_shader *shader)
+ /**
+@@ -209,12 +731,30 @@ bool pco_group_instrs(pco_shader *shader)
         */
        pco_foreach_block_in_func (block, func) {
           b = pco_builder_create(func, pco_cursor_before_block(block));
@@ -21837,9 +21871,10 @@ index b46a2b16..4d1fa306 100644
 +               break;
              igrp = pco_igrp_create(func);
 -            pco_instr_to_igrp(&b, instr, igrp, &offset_bytes);
-+            pco_instr_to_igrp(&b, list_entry(n, pco_instr, link), igrp);
++            enum pco_op op =
++               pco_instr_to_igrp(&b, list_entry(n, pco_instr, link), igrp);
 +            if (last)
-+               try_fold_into_next(last, igrp);
++               try_fold_into_next(last, igrp, op);
 +            last = igrp;
           }
        }
@@ -24714,7 +24749,7 @@ index ca868c79..5ffeefd7 100644
  O_ST32_REGBL = hw_op('st32.regbl', OM_ALU_RPT1 + [OM_MCU_CACHE_MODE_ST, OM_IDF], 0, 5)
  
 diff --git a/src/imagination/pco/pco_opt.c b/src/imagination/pco/pco_opt.c
-index b9aedeae..7977c1bb 100644
+index b9aedeae..89010786 100644
 --- a/src/imagination/pco/pco_opt.c
 +++ b/src/imagination/pco/pco_opt.c
 @@ -145,6 +145,7 @@ static inline bool pco_opt_prep_mods(pco_shader *shader,
@@ -24803,7 +24838,98 @@ index b9aedeae..7977c1bb 100644
        /* Propagate the source. */
        pco_ref repl = parent_instr->src[0];
        if (psrc->flr)
-@@ -704,9 +730,7 @@ bool pco_shrink_vecs(pco_shader *shader)
+@@ -466,6 +492,82 @@ static inline bool pco_opt_fwd_prop(pco_shader *shader)
+    return progress;
+ }
+ 
++/**
++ * \brief Resolves a source through movs inserted by the select folding pass.
++ *
++ * \param[in] writes SSA definition lookup.
++ * \param[in] ref Source reference.
++ * \return The resolved reference.
++ */
++static inline pco_ref fold_resolve_mov(pco_instr **writes, pco_ref ref)
++{
++   while (pco_ref_is_ssa(ref)) {
++      pco_instr *writer = writes[ref.val];
++      if (!writer || writer->op != PCO_OP_MOV || writer->num_srcs != 1)
++         break;
++
++      ref = writer->src[0];
++   }
++
++   return ref;
++}
++
++/**
++ * \brief Folds selects whose two arms are the same value.
++ *
++ * A bcsel picking between the same value on both arms is a copy of that
++ * value, whatever the condition (conditions are pure).  The arms often only
++ * become visibly identical after forward propagation of constants (e.g. two
++ * separate zero literals), so this runs after pco_opt_fwd_prop().  Folds can
++ * enable further folds through the movs inserted here, which is why arms are
++ * resolved through single-source movs while walking the block.
++ *
++ * \param[in,out] shader PCO shader.
++ * \return True if the pass made progress.
++ */
++static inline bool pco_opt_fold_selects(pco_shader *shader)
++{
++   bool progress = false;
++   pco_instr **writes;
++
++   pco_foreach_func_in_shader (func, shader) {
++      writes = rzalloc_array_size(NULL, sizeof(*writes), func->next_ssa);
++
++      pco_foreach_instr_in_func_safe (instr, func) {
++         if (instr->op != PCO_OP_BCSEL)
++            continue;
++
++         pco_ref arm0 = fold_resolve_mov(writes, instr->src[1]);
++         pco_ref arm1 = fold_resolve_mov(writes, instr->src[2]);
++         if (!pco_refs_are_equal(arm0, arm1, true) ||
++             pco_ref_has_mods_set(arm0) || pco_ref_has_mods_set(arm1))
++            continue;
++
++         pco_builder b =
++            pco_builder_create(func, pco_cursor_before_instr(instr));
++         pco_instr *mov = pco_mov(&b, instr->dest[0], arm0);
++         pco_instr_copy_exec_cnd(mov, instr);
++         /* Carry every other ALU mod so a later pass ordering can not lose
++          * them; they are all defaults at pco_opt time today.
++          */
++         pco_instr_set_olchk(mov, pco_instr_get_olchk(instr));
++         pco_instr_set_end(mov, pco_instr_get_end(instr));
++         pco_instr_set_atom(mov, pco_instr_get_atom(instr));
++         pco_instr_set_rpt(mov, pco_instr_get_rpt(instr));
++         pco_instr_delete(instr);
++
++         pco_foreach_instr_dest_ssa (pdest, mov)
++            writes[pdest->val] = mov;
++
++         progress = true;
++      }
++
++      ralloc_free(writes);
++   }
++
++   return progress;
++}
++
+ /**
+  * \brief Tries to propagate a comp instruction referencing hw registers.
+  *
+@@ -553,6 +655,7 @@ bool pco_opt(pco_shader *shader)
+    PCO_PASS(progress, shader, pco_opt_prep_mods, &ctx);
+    PCO_PASS(progress, shader, pco_opt_back_prop);
+    PCO_PASS(progress, shader, pco_opt_fwd_prop);
++   PCO_PASS(progress, shader, pco_opt_fold_selects);
+    /* TODO: Track whether there are any comp instructions referencing hw
+     * registers resulting from the previous passes, and only run
+     * pco_opt_prop_hw_comps if this is the case.
+@@ -704,9 +807,7 @@ bool pco_shrink_vecs(pco_shader *shader)
           if (vec->op != PCO_OP_VEC)
              continue;
  
@@ -24814,7 +24940,7 @@ index b9aedeae..7977c1bb 100644
  
           pco_ref *pdest = &vec->dest[0];
           unsigned chans_used = 0;
-@@ -740,10 +764,27 @@ bool pco_shrink_vecs(pco_shader *shader)
+@@ -740,10 +841,27 @@ bool pco_shrink_vecs(pco_shader *shader)
           if (chans_used == chans)
              continue;
  
@@ -24843,7 +24969,7 @@ index b9aedeae..7977c1bb 100644
           progress = true;
        }
     }
-@@ -792,7 +833,8 @@ bool pco_opt_comp_only_vecs(pco_shader *shader)
+@@ -792,7 +910,8 @@ bool pco_opt_comp_only_vecs(pco_shader *shader)
  
           /* Has collated vec, skip. */
           /* TODO: support this. */
@@ -24853,7 +24979,7 @@ index b9aedeae..7977c1bb 100644
              util_dynarray_fini(&comps);
              continue;
           }
-@@ -807,8 +849,8 @@ bool pco_opt_comp_only_vecs(pco_shader *shader)
+@@ -807,8 +926,8 @@ bool pco_opt_comp_only_vecs(pco_shader *shader)
  
              pco_builder b =
                 pco_builder_create(func, pco_cursor_before_instr(comp));

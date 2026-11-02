@@ -5160,3 +5160,50 @@ scene: loop 0.60 / 0.66 / 0.51 (its three variants), conditionals 0.78 / 0.55 / 
 the ranked next item is f16sop for mediump arithmetic (counted -5..8 groups on cel/phong; the win is
 issue density, 2 ops per instruction, not half-precision throughput) - and terrain/refract
 (0.54 / 0.49), which are scene-specific bandwidth/geometry gaps outside this codegen series.
+
+## Round 240 - folding selects (patch 0386): +3.6% mean on the cel shading variant
+
+With the interpolation work done, the next ranked item was the select/compare machinery around GLSL
+`if`s. A group accounting of the cel fragment shader (53 groups after round 239) put 11 groups /
+184 B - 26% of its bytes - in select shape: the three `if`s lower to per-component `bcsel` and pco
+gives every `O_BCMP` and every `O_BCSEL` a whole group (p0 `mbyp` + p1 `mbyp` + p2 `tst` + p2
+`movc`), one per if in the conditionals scene plus two/three per if in cel. The two existing
+`max.f32` are already free (`try_fold_into_next()`), and the conditionals shader is already at
+vendor parity (11 groups vs the vendor's 11/168 B there), so the scene to attack is cel.
+
+What the vendor does is not a different mechanism: its cel FS has 2 `tst` + 5 `movc` and almost all
+of them ride the phase-2 slot of groups the ALU needs anyway (~2 groups / 40 B in total). The gap is
+group packing: one pco op = one group. Two cheap pieces of that were taken (patch 0386):
+
+- same-arm select folding (`bcsel(cond, x, x) -> x`) in `pco_opt.c`, run after forward propagation
+  so the two constant arms are visibly the same register; the cel shader carries two such selects
+  (`bcsel(cond, 0, 0)` twice), each a whole 16 B group;
+- extending `try_fold_into_next()` from min/max to `O_BCSEL`: when the previous group is a
+  phase-0-only ALU op whose result is one select arm, the ALU runs in phase 0, the other arm stays in
+  the phase-1 slot, and the condition moves to the free upper source slot s4 with the phase-2 mux
+  pointing at it (variants recomputed; same guards as the min/max fold, and it fails closed unless
+  the condition maps legally to that upper source slot). The both-arms-in-w0/w1 case is not folded -
+  a group has no liveness to drop an arm write.
+
+Measured (raw outputs in open-perf/tasks/T-2026-11-02-codegen/runs/009-opt-select/ and
+010-select-fold/):
+- cel FS 53 -> 49 groups (696 -> 648 B; 48 -> 44 main); R1 alone 53 -> 51 / 664 B. Conditionals FS
+  and the rest of the offline corpus byte-identical; `PCO_DEBUG=no_dual_issue` shows the fold is
+  pairing-neutral.
+- The folded groups have a new source-slot layout, so the board check is a pixel test, not just a
+  group count: the captured cel FS replay on a fullscreen quad renders **0 77 0 255** - the cel
+  BaseColor.y (0.3 x 255 = 77) - identically on both builds, i.e. no visible regression on a render
+  that exercises the folded groups (one centre sample; the gates and the other readbacks make up the
+  rest of the coverage). The earlier 43044-vertex replay had been covering nothing at the centre,
+  which is why it read black; that is fixed in this test. phong
+  5 5 5, loop 18/167, conditionals 54, two-varying 64 64 255 and bump 26 are all identical too.
+- Native gate ALL GROUPS PASS (20/20); Vulkan gate 44/44 pass (shared compiler).
+- glmark2: **shading cel 577/578/583 -> 604/599/598 fps (+3.6% mean, +4.7/+3.6/+2.6% per round)**
+  over 3 interleaved rounds; loop,
+  conditionals, bump, phong and effect2d within run-to-run noise.
+
+Remaining in this area: the rest of the select machinery (8-9 cel groups) can only be recovered by
+packing it into phase-2 slots of groups that exist anyway, like the vendor does - that needs a
+phase-2 slot occupancy/`p2end` model and predicate liveness in the scheduler, i.e. it is the next
+scheduler project rather than a small fold. f16sop for mediump remains the other ranked item (-5..8
+groups on cel/phong), and the fractal scene is unchanged by both.
