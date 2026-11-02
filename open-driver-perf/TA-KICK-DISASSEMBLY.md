@@ -5473,3 +5473,72 @@ group into payload vs group source/dest stream, plus two targeted captures (an S
 later group, and an SOP result written straight to `gl_FragColor`) and the 4 missing samples; or
 (B) decode the SOP framing from the vendor's `libusc.so` `g_psInstDesc` descriptor table, which is
 authoritative and static. Until one lands, the mediump/f16 item stays parked.
+
+## Round 246 - per-render-pass fixed cost measured across all three stacks: non-batchable passes cost native 13 % more than vendor, and the 9.5x gap is only same-target batching, which bench31 does not exercise
+
+Rounds 176/177 measured the native path's per-pass fixed cost (~0.256 ms/pass) against zink and put
+the cost down to one GPU kick per render job set; round 182 separately attributed the terrain gap to
+per-level mip generation. The vendor number was missing, so this round ran the same `drawbench2`
+microbenchmark on all three stacks in one session (surfaceless EGL, same binary, 27 small passes +
+one 800x600 pass, NPASSES=1/27, FRAMES=300, governor performance, taskset 6-7, reps: vendor n=2,
+native n=3, zink n=3; identities checked from the same env: vendor `build 24.2@6603887`, native
+`OpenGL ES 2.0 Mesa 26.3.0-devel (git-bfcee2c932)` + `(36.56.104.183)`, zink `zink Vulkan 1.3(...)`).
+
+Two pass shapes. `passes`: every small pass writes the **same** 64x64 render target - a multi-pass
+job could absorb them (the round-242 erratum's legal case: a new hardware pass only breaks the
+sub-command when the render-target set changes). `alt`: the small passes alternate between two
+targets - no driver can merge them, so this measures the inherent per-job-set cost.
+
+| stack  | 1 pass | 27 same-target | marginal/pass | 27 alternating | marginal/pass |
+|--------|-------:|---------------:|--------------:|---------------:|--------------:|
+| vendor | 0.742 ms | 1.446 ms | **0.027 ms** | 7.662 ms | **0.267 ms** |
+| native | 0.720 ms | 7.435 ms | **0.258 ms** | 8.571 ms | **0.302 ms** |
+| zink   | 0.800 ms | 1.023 ms | **0.009 ms** | 17.623 ms | **0.639 ms** |
+
+What it means:
+
+- **Single-pass frame cost is at parity** (vendor 0.742, native 0.720 ms). The per-frame overhead of
+  the native path is not a gap.
+- **Non-batchable passes cost native a modest 13 % more than vendor, not 9.5x** (mean 0.302 vs
+  0.267 ms/pass; the per-rep marginals are vendor 0.252-0.281 and native 0.292-0.309, so the ranges
+  do not overlap: +3.6 % in the closest pairing (exact marginals) and +22.6 % in the worst). The bulk of the
+  ~0.25-0.30 ms per render job set is what the vendor driver pays too, so it is inherent to this
+  GPU/firmware on this board and cannot be attributed to the open kernel path; the residual 4-23 %
+  is a real but small native-path overhead left uninvestigated here.
+- **The 9.5x gap is same-target repeat passes only**: vendor 0.027 and zink 0.009 ms/pass because
+  both merge consecutive same-target passes into one job / render pass; the native driver emits a
+  full geometry+PR+fragment job set per pass (0.258 ms). That is the only userspace-side per-pass
+  deficit, and it is the reference's multi-pass model (per-pass `PPP_STATE_UPDATE`, one target set in
+  the fragment stream).
+- **zink is the worst stack when passes cannot be merged** (0.639 ms/pass, 7.7 ms/frame of CPU in
+  the np=27 alternating case): its advantage is pass merging, not a low per-pass cost.
+
+Whether multi-pass batching would move bench31 was measured with a diagnostic counter in
+`pvr_draw_flush()` (`PVR_RENDERS_PROF`, not shipped): render job sets emitted per scene and how many
+share the previous render's target set. Across the whole glmark2 scene set the driver emitted **0-1**
+same-target-adjacent pairs (desktop: 1 in 2522), and **9 of the 13** scenes submit exactly one render
+job set per frame; the other four are
+
+    terrain 53/frame, refract 12/frame, desktop 10/frame, shadow 2/frame
+
+(job sets per frame = renders / (fps x duration), rounded; raw per-scene logs in
+`open-perf/runs-246/prof-<scene>.txt`). So same-target multi-pass batching is not a bench31 lever (it
+would fix the microbenchmark and future apps only). Of the four multi-job-set scenes, terrain and
+refract are mip generation - where the vendor uses the TQ transfer path that round 244 showed is
+blocked below userspace for us - while desktop and shadow are non-batchable app passes that cost
+native 13 % more per pass than vendor. The other nine scenes are one job set per frame, i.e.
+per-frame pixel/shader work, not job overhead.
+
+The "per-render-pass fixed cost" item is therefore closed as far as Mesa can take it now: rounds
+176/177 reduced submission/ioctl overhead (~0.015 ms/render) and landed the batching infrastructure,
+but same-target pass merging is not implemented - the table shows native still pays 0.258 ms/pass
+for that pattern - and bench31 does not exercise it (0-1 pairs per scene). Non-batchable passes cost
+native 13 % more than vendor, not 9.5x. The residue is therefore either not exercised by the
+benchmark (same-target merging) or kernel/firmware (mipgen transfer). The next lever the data points
+at is the per-frame work in the scenes that are one job set per frame - the shading and loop families
+(codegen/fill; the f16 route is parked at round 245) - plus desktop (0.39/0.59 native/vendor; it has
+10 non-batchable passes per frame at a 13 % per-pass premium, so most of its gap is per-frame work as
+well).
+
+Evidence: `open-perf/tasks/T-2026-11-02-codegen/runs/021-per-pass-cost/card.md` (tables, raw log
+paths, instrumentation patch, per-scene counter table); raw microbench logs in `open-perf/runs-246/`.
