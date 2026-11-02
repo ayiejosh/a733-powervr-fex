@@ -22335,7 +22335,7 @@ index d8e90778..fa89c2d4 100644
  # GCMP
  I_GCMP = bit_struct(
 diff --git a/src/imagination/pco/pco_legalize.c b/src/imagination/pco/pco_legalize.c
-index 8935c460..f4a9422d 100644
+index 8935c460..ca254ccf 100644
 --- a/src/imagination/pco/pco_legalize.c
 +++ b/src/imagination/pco/pco_legalize.c
 @@ -86,6 +86,55 @@ static void insert_mov_ref(pco_instr *instr, pco_ref *ref, bool needs_s124)
@@ -22460,6 +22460,51 @@ index 8935c460..f4a9422d 100644
        if (prev->op == PCO_OP_FENCE)
           break;
  
+@@ -871,7 +965,8 @@ static bool ditr_needs_pre_fence(pco_instr *instr)
+  *
+  * The pre-fence is only inserted when necessary and
+  * ensures no registers are shared with the DITR/DITRP destination.
+- * A post-fence is always inserted.
++ * A post-fence is inserted unless the instruction carries
++ * sched_ctrl = wdf, in which case the hardware performs the wait itself.
+  *
+  * \param[in,out] instr PCO instr.
+  * \return True if progress was made.
+@@ -881,18 +976,28 @@ static bool try_legalize_ditr_fence(pco_instr *instr)
+    if (instr->op != PCO_OP_DITR && instr->op != PCO_OP_DITRP)
+       return false;
+ 
+-   pco_builder b =
+-      pco_builder_create(instr->parent_func, pco_cursor_after_instr(instr));
++   bool progress = false;
+ 
+-   /* Always insert a post-fence to enforce WDF ordering. */
+-   pco_fence(&b);
++   /* A DITR/DITRP with sched_ctrl = wdf has the hardware wait for the
++    * iteration result itself (the form the vendor compiler emits, and the
++    * reason its fragment shaders carry no fence groups around the DITRP), so
++    * no post-fence is needed. Without it, insert one to enforce WDF ordering.
++    */
++   if (pco_instr_get_sched(instr) != PCO_SCHED_WDF) {
++      pco_builder b =
++         pco_builder_create(instr->parent_func, pco_cursor_after_instr(instr));
++      pco_fence(&b);
++      progress = true;
++   }
+ 
+    if (ditr_needs_pre_fence(instr)) {
+-      b.cursor = pco_cursor_before_instr(instr);
++      pco_builder b =
++         pco_builder_create(instr->parent_func, pco_cursor_before_instr(instr));
+       pco_fence(&b);
++      progress = true;
+    }
+ 
+-   return true;
++   return progress;
+ }
+ 
+ /**
 diff --git a/src/imagination/pco/pco_map.py b/src/imagination/pco/pco_map.py
 index cca59f85..14a962d2 100644
 --- a/src/imagination/pco/pco_map.py
@@ -24857,8 +24902,27 @@ index 1a8354f2..bb1b790e 100644
        }
     }
  
+diff --git a/src/imagination/pco/pco_schedule.c b/src/imagination/pco/pco_schedule.c
+index 2577096e..81619f31 100644
+--- a/src/imagination/pco/pco_schedule.c
++++ b/src/imagination/pco/pco_schedule.c
+@@ -33,6 +33,14 @@ bool pco_schedule(pco_shader *shader)
+          if (instr->op == PCO_OP_WDF || instr->op == PCO_OP_IDF)
+             continue;
+ 
++         /* A DITR/DITRP with sched_ctrl = wdf waits for its own iteration
++          * result in hardware (see pco_legalize.c), so the explicit wait the
++          * DRC source below would add is redundant.
++          */
++         if ((instr->op == PCO_OP_DITR || instr->op == PCO_OP_DITRP) &&
++             pco_instr_get_sched(instr) == PCO_SCHED_WDF)
++            continue;
++
+          pco_foreach_instr_src (psrc, instr) {
+             if (!pco_ref_is_drc(*psrc))
+                continue;
 diff --git a/src/imagination/pco/pco_trans_nir.c b/src/imagination/pco/pco_trans_nir.c
-index 6dde9d20..526312cf 100644
+index 6dde9d20..d443e2a3 100644
 --- a/src/imagination/pco/pco_trans_nir.c
 +++ b/src/imagination/pco/pco_trans_nir.c
 @@ -15,8 +15,11 @@
@@ -24916,7 +24980,24 @@ index 6dde9d20..526312cf 100644
  }
  
  /**
-@@ -451,6 +481,18 @@ static pco_ref fs_is_single_sampled(trans_ctx *tctx)
+@@ -366,6 +396,16 @@ static inline pco_instr *build_itr(pco_builder *b,
+ 
+    pco_instr_set_itr_mode(instr, itr_mode);
+ 
++   /* The enhanced-interpolation forms have a scheduling field: telling the
++    * hardware to wait for the iteration result itself is what the vendor
++    * compiler does, and it is what lets the legalizer drop the explicit
++    * flush/branch fence (pco_legalize.c). The non-enhanced FITR forms have no
++    * such field and are unchanged (they only ever got pco_schedule's explicit
++    * WDF, not the post-fence).
++    */
++   if (d)
++      pco_instr_set_sched(instr, PCO_SCHED_WDF);
++
+    pco_builder_insert_instr(b, instr);
+ 
+    return instr;
+@@ -451,6 +491,18 @@ static pco_ref fs_is_single_sampled(trans_ctx *tctx)
                                      : fs_is_single_sampled_meta(tctx);
  }
  
@@ -24935,7 +25016,7 @@ index 6dde9d20..526312cf 100644
  /**
   * \brief Translates a NIR fs load_input intrinsic into PCO.
   *
-@@ -534,6 +576,9 @@ static pco_instr *trans_load_input_fs(trans_ctx *tctx,
+@@ -534,6 +586,9 @@ static pco_instr *trans_load_input_fs(trans_ctx *tctx,
           pco_ref xy_p[] = { pco_ref_hwreg(PCO_SR_X_P, PCO_REG_CLASS_SPEC),
                              pco_ref_hwreg(PCO_SR_Y_P, PCO_REG_CLASS_SPEC) };
  
@@ -24945,7 +25026,7 @@ index 6dde9d20..526312cf 100644
           return pco_csel(&tctx->b,
                           dest,
                           fs_is_single_sampled(tctx),
-@@ -617,6 +662,314 @@ static pco_instr *trans_load_input_fs(trans_ctx *tctx,
+@@ -617,6 +672,314 @@ static pco_instr *trans_load_input_fs(trans_ctx *tctx,
     }
  }
  
@@ -25260,7 +25341,7 @@ index 6dde9d20..526312cf 100644
  static pco_instr *
  trans_load_fs_coeffs(trans_ctx *tctx, nir_intrinsic_instr *intr, pco_ref dest)
  {
-@@ -747,14 +1100,17 @@ trans_store_output_fs(trans_ctx *tctx, nir_intrinsic_instr *intr, pco_ref src)
+@@ -747,14 +1110,17 @@ trans_store_output_fs(trans_ctx *tctx, nir_intrinsic_instr *intr, pco_ref src)
                pco_ref_null(),
                .savmsk_mode = PCO_SAVMSK_MODE_ICM);
  
@@ -25286,7 +25367,7 @@ index 6dde9d20..526312cf 100644
  
     return pco_st_tiled(&tctx->b,
                         data_comp,
-@@ -1003,6 +1359,13 @@ static pco_instr *trans_load_common_store(trans_ctx *tctx,
+@@ -1003,6 +1369,13 @@ static pco_instr *trans_load_common_store(trans_ctx *tctx,
        assert(offset < range->count);
  
        pco_ref src = pco_ref_hwreg_vec(range->start + offset, reg_class, chans);
@@ -25300,7 +25381,7 @@ index 6dde9d20..526312cf 100644
        return pco_mbyp(&tctx->b, dest, src, .rpt = chans);
     }
  
-@@ -1244,6 +1607,27 @@ static pco_instr *trans_atomic_shared(trans_ctx *tctx,
+@@ -1244,6 +1617,27 @@ static pco_instr *trans_atomic_shared(trans_ctx *tctx,
     return instr;
  }
  
@@ -25328,7 +25409,7 @@ index 6dde9d20..526312cf 100644
  static pco_instr *trans_load_buffer(trans_ctx *tctx,
                                      nir_intrinsic_instr *intr,
                                      pco_ref dest,
-@@ -1299,6 +1683,30 @@ static pco_instr *trans_load_buffer(trans_ctx *tctx,
+@@ -1299,6 +1693,30 @@ static pco_instr *trans_load_buffer(trans_ctx *tctx,
                                       });
     }
  
@@ -25359,7 +25440,7 @@ index 6dde9d20..526312cf 100644
     pco_ref base_addr[2];
     pco_ref_hwreg_addr_comps(sh_index, PCO_REG_CLASS_SHARED, base_addr);
  
-@@ -1336,30 +1744,35 @@ static pco_instr *trans_load_buffer(trans_ctx *tctx,
+@@ -1336,30 +1754,35 @@ static pco_instr *trans_load_buffer(trans_ctx *tctx,
     pco_ref addr_comps_dyn_off[2];
     pco_ref_new_ssa_addr_comps(tctx->func, addr_comps_dyn_off);
  
@@ -25416,7 +25497,7 @@ index 6dde9d20..526312cf 100644
  
     pco_ref addr = pco_ref_new_ssa_addr(tctx->func);
     pco_vec(&tctx->b, addr, ARRAY_SIZE(addr_comps_dyn_off), addr_comps_dyn_off);
-@@ -1566,30 +1979,35 @@ static pco_instr *trans_store_buffer(trans_ctx *tctx,
+@@ -1566,30 +1989,35 @@ static pco_instr *trans_store_buffer(trans_ctx *tctx,
     };
     pco_ref_new_ssa_addr_comps(tctx->func, addr_data_comps_dyn_off);
  
@@ -25473,7 +25554,7 @@ index 6dde9d20..526312cf 100644
  
     pco_ref addr_data = pco_ref_new_ssa_addr_data(tctx->func, chans);
     pco_vec(&tctx->b,
-@@ -1700,30 +2118,35 @@ static pco_instr *trans_atomic_buffer(trans_ctx *tctx,
+@@ -1700,30 +2128,35 @@ static pco_instr *trans_atomic_buffer(trans_ctx *tctx,
     };
     pco_ref_new_ssa_addr_comps(tctx->func, addr_data_comps_dyn_off);
  
@@ -25530,7 +25611,7 @@ index 6dde9d20..526312cf 100644
  
     pco_ref addr_data = pco_ref_new_ssa_addr_data(tctx->func, chans);
     pco_vec(&tctx->b,
-@@ -2333,7 +2756,7 @@ static pco_instr *trans_reg_intr(trans_ctx *tctx,
+@@ -2333,7 +2766,7 @@ static pco_instr *trans_reg_intr(trans_ctx *tctx,
        assert(!nir_intrinsic_legacy_fabs(intr));
        assert(!nir_intrinsic_legacy_fneg(intr));
  
@@ -25539,7 +25620,7 @@ index 6dde9d20..526312cf 100644
  
     case nir_intrinsic_store_reg:
        assert(!nir_intrinsic_base(intr));
-@@ -2457,7 +2880,11 @@ static pco_instr *trans_is_null_desc(trans_ctx *tctx,
+@@ -2457,7 +2890,11 @@ static pco_instr *trans_is_null_desc(trans_ctx *tctx,
     unsigned sh_index =
        fetch_resource_base_reg_packed(common, packed_desc, elem, &stride, NULL, &is_img_smp, NULL);
  
@@ -25552,7 +25633,7 @@ index 6dde9d20..526312cf 100644
  
     if (is_dynidx) {
        dynidx_stride = pco_ref_new_ssa32(tctx->func);
-@@ -2469,7 +2896,8 @@ static pco_instr *trans_is_null_desc(trans_ctx *tctx,
+@@ -2469,7 +2906,8 @@ static pco_instr *trans_is_null_desc(trans_ctx *tctx,
        pco_ref dword_is_zero =
           pco_ref_new_ssa(tctx->func, pco_ref_get_bits(dest), 1);
  
@@ -25562,7 +25643,7 @@ index 6dde9d20..526312cf 100644
        if (is_dynidx) {
           pco_ref dynidx_dword_reg = pco_ref_new_ssa32(tctx->func);
           pco_dynidx(&tctx->b,
-@@ -2519,6 +2947,18 @@ static pco_instr *trans_is_null_desc(trans_ctx *tctx,
+@@ -2519,6 +2957,18 @@ static pco_instr *trans_is_null_desc(trans_ctx *tctx,
   */
  static pco_instr *trans_intr(trans_ctx *tctx, nir_intrinsic_instr *intr)
  {
@@ -25581,7 +25662,7 @@ index 6dde9d20..526312cf 100644
     const nir_intrinsic_info *info = &nir_intrinsic_infos[intr->intrinsic];
  
     pco_ref dest = info->has_dest ? pco_ref_nir_def_t(&intr->def, tctx)
-@@ -2866,6 +3306,13 @@ static pco_instr *trans_intr(trans_ctx *tctx, nir_intrinsic_instr *intr)
+@@ -2866,6 +3316,13 @@ static pco_instr *trans_intr(trans_ctx *tctx, nir_intrinsic_instr *intr)
        instr = trans_load_sysval(tctx, intr, dest);
        break;
  
@@ -25595,7 +25676,7 @@ index 6dde9d20..526312cf 100644
     case nir_intrinsic_load_fs_meta_pco:
        assert(tctx->stage == MESA_SHADER_FRAGMENT);
        assert(tctx->shader->data.fs.meta.count > 0);
-@@ -3523,6 +3970,14 @@ static inline bool is_min(nir_op op)
+@@ -3523,6 +3980,14 @@ static inline bool is_min(nir_op op)
     UNREACHABLE("");
  }
  
@@ -25610,7 +25691,7 @@ index 6dde9d20..526312cf 100644
  /**
   * \brief Translates a NIR min/max op into PCO.
   *
-@@ -3638,6 +4093,19 @@ trans_conv(trans_ctx *tctx, nir_op op, pco_ref dest, pco_ref src)
+@@ -3638,6 +4103,19 @@ trans_conv(trans_ctx *tctx, nir_op op, pco_ref dest, pco_ref src)
                         op == nir_op_b2f32 ? pco_fone : pco_one,
                         pco_zero);
  
@@ -25630,7 +25711,7 @@ index 6dde9d20..526312cf 100644
     case nir_op_f2f16:
     case nir_op_f2f16_rtne:
     case nir_op_f2f16_rtz:
-@@ -3687,6 +4155,24 @@ trans_conv(trans_ctx *tctx, nir_op op, pco_ref dest, pco_ref src)
+@@ -3687,6 +4165,24 @@ trans_conv(trans_ctx *tctx, nir_op op, pco_ref dest, pco_ref src)
        unpck = true;
        break;
  
@@ -25655,7 +25736,7 @@ index 6dde9d20..526312cf 100644
     default:
        UNREACHABLE("Unsupported conversion op.");
     }
-@@ -3703,6 +4189,33 @@ trans_conv(trans_ctx *tctx, nir_op op, pco_ref dest, pco_ref src)
+@@ -3703,6 +4199,33 @@ trans_conv(trans_ctx *tctx, nir_op op, pco_ref dest, pco_ref src)
                            .roundzero = roundzero);
  }
  
@@ -25689,7 +25770,7 @@ index 6dde9d20..526312cf 100644
  /**
   * \brief Translates a NIR alu instruction into PCO.
   *
-@@ -3721,6 +4234,25 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
+@@ -3721,6 +4244,25 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
     for (unsigned s = 0; s < num_srcs; ++s)
        src[s] = pco_ref_nir_alu_src_t(alu, s, tctx);
  
@@ -25715,7 +25796,7 @@ index 6dde9d20..526312cf 100644
     pco_instr *instr;
     switch (alu->op) {
     case nir_op_fneg:
-@@ -3735,6 +4267,15 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
+@@ -3735,6 +4277,15 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
        instr = pco_fflr(&tctx->b, dest, src[0]);
        break;
  
@@ -25731,7 +25812,7 @@ index 6dde9d20..526312cf 100644
     case nir_op_fceil:
        instr = pco_fceil(&tctx->b, dest, src[0]);
        break;
-@@ -3775,9 +4316,33 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
+@@ -3775,9 +4326,33 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
        instr = pco_fsign(&tctx->b, dest, src[0]);
        break;
  
@@ -25767,7 +25848,7 @@ index 6dde9d20..526312cf 100644
  
     case nir_op_fsin:
     case nir_op_fcos:
-@@ -3810,9 +4375,53 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
+@@ -3810,9 +4385,53 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
                           .s = true);
        break;
  
@@ -25823,7 +25904,7 @@ index 6dde9d20..526312cf 100644
  
     /* TODO: PCO pass to combine u{add,sub}{carry,borrow}s with the same srcs. */
     case nir_op_uadd_carry:
-@@ -3967,7 +4576,36 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
+@@ -3967,7 +4586,36 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
  
     case nir_op_iand:
     case nir_op_ior:
@@ -25861,7 +25942,7 @@ index 6dde9d20..526312cf 100644
     case nir_op_inot:
        instr = trans_logical(tctx, alu->op, dest, src[0], src[1]);
        break;
-@@ -3987,6 +4625,10 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
+@@ -3987,6 +4635,10 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
        break;
  
     case nir_op_ibitfield_extract: {
@@ -25872,7 +25953,7 @@ index 6dde9d20..526312cf 100644
        pco_ref bfe = pco_ref_new_ssa32(tctx->func);
        pco_ibfe(&tctx->b, bfe, src[0], src[1], src[2]);
        instr = pco_bcsel(&tctx->b, dest, src[2], bfe, pco_zero);
-@@ -3994,6 +4636,10 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
+@@ -3994,6 +4646,10 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
     }
  
     case nir_op_ubitfield_extract: {
@@ -25883,7 +25964,7 @@ index 6dde9d20..526312cf 100644
        pco_ref bfe = pco_ref_new_ssa32(tctx->func);
        pco_ubfe(&tctx->b, bfe, src[0], src[1], src[2]);
        instr = pco_bcsel(&tctx->b, dest, src[2], bfe, pco_zero);
-@@ -4001,6 +4647,10 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
+@@ -4001,6 +4657,10 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
     }
  
     case nir_op_bitfield_insert: {
@@ -25894,7 +25975,7 @@ index 6dde9d20..526312cf 100644
        pco_ref bfi = pco_ref_new_ssa32(tctx->func);
        pco_bfi(&tctx->b, bfi, src[0], src[1], src[2], src[3]);
        instr = pco_bcsel(&tctx->b, dest, src[3], bfi, src[0]);
-@@ -4015,6 +4665,7 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
+@@ -4015,6 +4675,7 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
        instr = pco_shuffle(&tctx->b, dest, src[0], src[1]);
        break;
  
@@ -25902,7 +25983,7 @@ index 6dde9d20..526312cf 100644
     case nir_op_b2f32:
     case nir_op_b2i32:
     case nir_op_f2f16:
-@@ -4024,9 +4675,11 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
+@@ -4024,9 +4685,11 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
     case nir_op_f2i32:
     case nir_op_f2i32_rtne:
     case nir_op_f2u32:
@@ -25914,7 +25995,7 @@ index 6dde9d20..526312cf 100644
     case nir_op_u2f32:
     case nir_op_u2u16:
     case nir_op_u2u32:
-@@ -4041,6 +4694,16 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
+@@ -4041,6 +4704,16 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
  
     case nir_op_umin:
     case nir_op_umax:
@@ -25931,7 +26012,7 @@ index 6dde9d20..526312cf 100644
        instr = trans_min_max(tctx, alu->op, dest, src[0], src[1]);
        break;
  
-@@ -4145,6 +4808,81 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
+@@ -4145,6 +4818,81 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
        instr = pco_mov(&tctx->b, dest, src[0]);
        break;
  
@@ -26013,7 +26094,7 @@ index 6dde9d20..526312cf 100644
     default:
        printf("Unsupported alu instruction: \"");
        nir_print_instr(&alu->instr, stdout);
-@@ -4326,6 +5064,8 @@ static pco_block *trans_block(trans_ctx *tctx,
+@@ -4326,6 +5074,8 @@ static pco_block *trans_block(trans_ctx *tctx,
  
     tctx->b = pco_builder_create(tctx->func, pco_cursor_after_block(block));
  

@@ -5107,3 +5107,56 @@ earlier FP16-rate-parity finding); then the `sched_ctrl = wdf` form of the DITR 
 the explicit post-fence sequence can go with it, a further -4 groups per interpolation batch, but
 hardware semantics need board validation); pairing placement is worth at most ~2 groups here because
 the `tst`/`movc` select groups are semantic barriers.
+
+## Round 239 - the DITR hardware wait form (patch 0385) + first full 3-stack run on the codegen work
+
+Round 238 removed the redundant interpolation instructions; the fence sequence pco wraps around each
+DITR is likewise pco's conservative ordering rather than a hardware need: the vendor DITRP carries
+`sched_ctrl = wdf` (field value 2) and its 568 B cel FS has no fence groups at all. Patch 0385 emits
+the same form: `build_itr()` sets `sched_ctrl = wdf` on the enhanced DITR/DITRP (the non-enhanced
+FITR/FITRP have no such field, so those are unchanged), the legalizer skips the post-fence
+for an instruction that carries it (the pre-fence for destination-register reuse is unchanged), and
+`pco_schedule()` no longer adds its redundant explicit WDF for it.
+
+Counted offline: every fragment shader with an enhanced interpolated load loses its 4-group fence
+sequence - cel FS 57 -> 53 groups (728 -> 696 B, control 4 -> 1), bump 25 -> 21 (264 B), math
+23 -> 19 (208 B); phong 37 -> 33 is inferred from the same -4 shape (no offline phong shader); the IR
+is now `ditrp.pixel.schedwdf r0..5, drc0, cf4..27, cf0..3, 0x6`, one control group with the vendor's
+count and scheduling field. The change only touches the enhanced DITR/DITRP: the non-enhanced
+FITR/FITRP have no sched_ctrl field and are unchanged - they never had the post-fence, only
+pco_schedule()'s explicit WDF (verified on GX6250 in the offline harness).
+
+Board validation (same-session A/B against the round-238 build; raw outputs in
+open-perf/tasks/T-2026-11-02-codegen/runs/006-ditr-wdf/):
+- correctness: native gate ALL GROUPS PASS (20/20); loop (18/217/167) and conditionals (54) replay
+  readbacks identical; the two-varying test shader (64 64 255 255), the vendor bump FS replay
+  (86 86 86 255) and the shading phong replay (5 5 5 255) are pixel-identical across the change.
+  (The shading cel replay renders no fragments - its centre readback is black with the guard firing
+  on both builds - so it is codegen evidence only, not pixel evidence.) This is the evidence that
+  matters here: the instruction now relies on the hardware's own wait, so the gate + pixel matrix is
+  the validation, not construction.
+- Vulkan path: the native Vulkan driver shares this compiler, so the Vulkan correctness gate was
+  run on the changed build too: 44/44 pass (vkedge/vkrender modes, cstp/cstpf/cstpi output hashes,
+  vkheavy 256/1024, bits, wg48/wg96, vkmany 512/2048) - open-perf/tasks/T-2026-11-02-codegen/
+  runs/008-vulkan-path/vulkan-gate.log.
+- fps: db2 math 1043.7 -> 1074.6 (+3.0%); bump 1388.3 -> 1378.9 (-0.7%, within run-to-run spread;
+  an earlier session measured +2.0%); ilp parity; glmark2 bump +1.0-1.5%, shading phong +1.3%,
+  cel +0.7%, loop and conditionals within noise.
+
+First full 3-stack `glmark2 --off-screen` run on the three patches (bench31 harness, mesa b4f43ffb,
+identity-checked per arm; raw scores in the same run directory - their identity strings still read
+`git-546db1bac7` because that run predates the comment-only amend of the same tree content):
+
+  native 825 / 830, zink 774 / 776, vendor 1216 / 1203
+
+The last recorded full native run (round 205, patches 0367-0370) was 794 / 802, so patches 0371-0385
+are +3.5-4% on the full benchmark - those runs are not a same-session A/B, and the delta spans the
+whole 0371-0385 series, not only the three codegen patches. Zink is unchanged at 774 / 776: it runs
+on this branch's Vulkan driver, which shares the pco compiler, so the native GL gate + pixel matrix
+and the Vulkan gate above are what validate the codegen; zink itself was scored, not pixel-validated. Current native/vendor ratios per
+scene: loop 0.60 / 0.66 / 0.51 (its three variants), conditionals 0.78 / 0.55 / 0.82, bump
+0.65 / 0.71 / 0.62, shading 0.68 / 0.66 / 0.57 / 0.49 (gouraud / blinn / phong / cel), texture
+0.87-0.95, jellyfish 0.83. The remaining large gaps are the fragment-lit shading and loop variants -
+the ranked next item is f16sop for mediump arithmetic (counted -5..8 groups on cel/phong; the win is
+issue density, 2 ops per instruction, not half-precision throughput) - and terrain/refract
+(0.54 / 0.49), which are scene-specific bandwidth/geometry gaps outside this codegen series.
