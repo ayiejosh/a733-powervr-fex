@@ -97,7 +97,8 @@ GL versions today (probe `open-perf/glinfo`):
 Board between tests: vendor + desktop + original firmware (`tools/verify/switch-safe.sh`). Never start GL
 harnesses while vendor is bound (caused a watchdog reset). Every feature needs its own gltri (or new test)
 mode comparing against zink checksums, plus the existing full gltri gate and 0 MMU faults before pushing.
-Patch series continues at the next number in `mesa/open-driver-series/` (currently 0339).
+Patch series continues at the next number in `mesa/open-driver-series/` (currently ends at 0387;
+the next patch is 0388).
 
 ### MRT design notes (recon 2026-10-29; implemented as patch 0332 - see round-73 notes for the
 `nir_lower_blend` colormask trap that ate attachment 1's store)

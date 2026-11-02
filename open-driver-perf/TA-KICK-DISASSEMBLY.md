@@ -3863,6 +3863,11 @@ frame are recorded as hw passes inside one sub-command's control stream, then su
 The zink measurement (3 jobs per submit, one submit per frame for 27 FBO passes) is consistent with
 exactly that.
 
+**RETRACTED (round 242):** the last inference above is wrong. The 3 jobs per submit are the
+geometry + PR + fragment job set of one sub-command; a sub-command cannot carry several hardware
+passes with different render-target sets, because a new pass ends the sub-command (see the round-242
+erratum). The section is kept as the record of the model that was tested and disproved.
+
 Next reading points: `pvr_arch_cmd_buffer.c` around the sub-command/hw-pass setup (lines ~1423,
 1872, 2659) and `pvr_arch_hw_pass.c` - specifically how a second hw pass re-emits the per-render
 target state (PBE/EOT/RT address) into the control stream instead of building a new geometry/fragment
@@ -3956,6 +3961,11 @@ lower-risk route, one dispatch per level with no cross-job dependency.
 
 ### Round 185 - the reference's per-pass encoding, decoded from its own control-stream dump
 
+**RETRACTED (round 242):** the decode below was misread. `cs-cmds-27` is one render pass with 27
+*draws* (27 VDM_STATE_UPDATE / 26 INDEX_LIST / 25 PPP_STATE_UPDATE = per-draw state with dedup), not
+27 hardware passes; `PPP_STATE_UPDATE` carries per-draw selectors, not per-pass render targets. The
+retraction is in the round-242 erratum; the text is kept as the record of what was believed.
+
 Enabling the Vulkan driver's control-stream dump (`PVR_DEBUG=cs`) for zink `passes` gives the answer
 directly.  NPASSES=1 produces a 3-command control stream (PPP_STATE_UPDATE, VDM_STATE_UPDATE,
 PPP_STATE_UPDATE); NPASSES=27 produces ONE control stream with 78 top-level commands:
@@ -3993,6 +4003,11 @@ remaining gap is render-pipeline/job overhead per pass (the hw-pass merge) and m
 where the previous rounds already point.
 
 ### Round 187 - the reference fragment job stream is batch-invariant (384 bytes, 1 or 27 passes)
+
+**RETRACTED (round 242):** "batch-invariant" is invariant across the *draws* of one render pass, not
+across passes - the fragment job carries exactly one render-target set and a second pass is a second
+job set (round-242 erratum). The conclusion drawn below (move per-pass target state into one control
+stream) is not implementable; see also round 244 for where the real mip mechanism is blocked.
 
 Dumped the fragment job's static stream at submit time (`frag_state->fw_stream`) for zink `passes`:
 it is **384 bytes for both NPASSES=1 and NPASSES=27**, and the words are identical apart from the
@@ -5207,3 +5222,254 @@ packing it into phase-2 slots of groups that exist anyway, like the vendor does 
 phase-2 slot occupancy/`p2end` model and predicate liveness in the scheduler, i.e. it is the next
 scheduler project rather than a small fold. f16sop for mediump remains the other ranked item (-5..8
 groups on cel/phong), and the fractal scene is unchanged by both.
+
+## Round 241 - the codegen series on the full 3-stack benchmark; terrain/refract root-caused
+
+First full bench31 run since round 239, now on the whole 0371-0386 series (HEAD edd2b676, i.e. the
+select-folding patch 0386 included). Same session, same board, one glmark2-es2 x11-glesv2 binary on
+all three stacks, two runs per stack, governor performance, taskset 6-7; identity read from each log:
+
+    native  GL_RENDERER: PowerVR B-Series BXM-4-64 (36.56.104.183)
+            GL_VERSION:  OpenGL ES 2.0 Mesa 26.3.0-devel (git-edd2b676df)
+    zink    GL_RENDERER: zink Vulkan 1.3(PowerVR B-Series BXM-4-64 MC1 (IMAGINATION_OPEN_SOURCE_MESA))
+    vendor  GL_RENDERER: PowerVR B-Series BXM-4-64
+            GL_VERSION:  OpenGL ES 3.2 build 24.2@6603887   (no "Mesa" in the log)
+
+Scores: **native 833 / 831, zink 781 / 781, vendor 1211 / 1199.**
+
+Attribution, so the numbers are not overread:
+- against round 205 (0367-0370, native 794 / 802) the 0371-0386 series is **+4.9 % / +3.6 %** on the
+  full benchmark;
+- against round 239's own run (0371-0385, native 825 / 830, zink 774 / 776, vendor 1216 / 1203) the
+  select-folding patch alone is **+1.0 % / +0.1 %** native, +0.9 % / +0.6 % zink and -0.4 % / -0.3 %
+  vendor, i.e. at the edge of run-to-run noise. That is expected: the patch's measured effect is the
+  cel shading variant (+3.6 %), and the full score is dominated by scenes whose fragment shaders the
+  codegen work does not move (build, texture, buffer, loop, conditionals). The codegen series is a
+  shading-scene win, not a benchmark-wide one.
+
+Per-scene native/vendor ratios (each value is the mean over the two runs of that variant): build
+0.90 / 0.75, texture 0.90 / 0.92 / 0.96, shading gouraud / blinn / phong / cel
+**0.68 / 0.64 / 0.58 / 0.51**, bump 0.65 / 0.74 / 0.64, loop **0.61 / 0.62 / 0.50**, conditionals
+0.80 / 0.55 / 0.83, pulsar 0.66, desktop 0.39 / 0.59, buffer 0.93 / 0.92 / 0.77, ideas 0.59,
+jellyfish 0.88, shadow 0.56, function 0.64 / 0.51, **terrain 0.56, refract 0.50**. Against zink the
+same ratios are at or above parity except terrain (0.82) and refract (0.82); the small-size desktop
+variant (0.94), the second and third buffer variants (0.97-0.98) and the two function variants
+(0.98-0.99) are marginally behind, and the loop variants are at parity (0.996 / 0.998 / 1.035). The
+shading and loop families remain the codegen targets, terrain/refract the scene-specific ones.
+
+### Why terrain and refract are behind zink
+
+They are the only two glmark2 scenes that call `glGenerateMipmap` on render targets every frame
+(terrain 5 mipmaps/frame, refract 3, measured from the vendor GL trace in
+`open-perf/tasks/T-2026-11-02-codegen/runs/014-rtt-twiddle/terrain-refract-drawstats.md`). Native
+emits **one geometry + primitive + fragment job set per mip level** (`pvr_context.c:908`
+`pvr_generate_mipmap` -> `pvr_draw.c:2083` `pvr_draw_blit`), at the project's measured 0.19-0.26 ms
+GPU completion per render: terrain ~45 level-renders/frame (~8.6-11.5 ms of its 11.7 ms gap),
+refract 11 (~3.4-3.9 ms of its 5-9 ms gap). zink goes through `util_gen_mipmap`'s per-level
+`pipe->blit`, i.e. 11 cheap blits in one command buffer. It is not twiddled/PoT/TFBC: zink's Vulkan
+backend uses the same layout and FBC rules, and the control measurements below confirm that.
+
+Ceiling measured on the board with a diagnostic-only knob (`PVR_NATIVE_DEBUG=no_mipgen`: claim the
+levels without rendering them - stale mips, timing only, not shipped), 800x600, duration=2, 3
+interleaved reps with rotated arm order, identity checked every run:
+
+| scene   | control | no_mipgen ceiling | no_fbc | no_twiddle |
+|---------|---------|-------------------|--------|------------|
+| terrain | 18/20/20 | 28/30/30          | 20/21/21 | 24/24/24  |
+| refract | 32/31/33 | 46/46/45          | 34/32/33 | 38/36/39  |
+
+So dropping the per-level job sets alone moves terrain 20 -> 30 (vs zink 27) and refract 33 -> 46
+(= zink 46): the ceiling is enough to win terrain and to reach parity on refract. `no_fbc` is
+neutral (TFBC is not the lever) and `no_twiddle`'s +15-20 % remains rejected - it reads as a quality
+regression and costs 14-34 % on the other scenes. So the lever is the number of render job sets,
+not the layout - but the obvious merge (a mip chain's per-level renders as hardware passes of one job
+set) turned out to be impossible, see the round-242 erratum below. The mechanism that can reach those
+ceilings is the reference's own mip path: transfer (TQ) blits, one in-order transfer job per chain
+(zink's `util_gen_mipmap` -> per-level `pipe->blit` -> `vkCmdBlitImage` -> one transfer job). That
+route was then investigated and is blocked below userspace on this stack (round 244), so the ceilings
+remain a target for a kernel-side transfer init or a different pass model, not for a userspace-only
+change. f16sop for mediump fragment arithmetic is the ranked codegen item in parallel
+(counted -5..8 groups on cel/phong).
+
+## Round 242 - erratum: rounds 185/187's "hw passes in one job" model does not hold; the mip-chain render merge is retracted
+
+Round 241's terrain/refract ceiling (terrain 20 -> 30 fps, refract 33 -> 46 with mip generation
+skipped) made "merge the per-level renders into one job set" the obvious next step, and rounds 185/187
+had already "decoded" the encoding for it. That decoding was wrong, and the step it implied is not
+implementable. Recording it because the wrong model is in this document (rounds 185 and 187) and
+because the failure mode is silent.
+
+The reference does **not** put two hardware passes into one job set, and structurally cannot:
+
+- one graphical sub-command is exactly one render job plus one control stream
+  (`struct pvr_sub_cmd_gfx`, `pvr_cmd_buffer.h:152-183`), and the queue submits one job set per
+  sub-command (`pvr_arch_queue.c:310/339`, `pvr_arch_render_job_submit()` at
+  `pvr_arch_job_render.c:1473`);
+- a new hardware pass *ends* the sub-command and starts a new one (`CmdNextSubpass2`,
+  `pvr_arch_cmd_buffer.c:11013-11030`); the ordering between them is the geom/fragment syncobj waits -
+  that split is the reference's dependency mechanism;
+- the fragment firmware stream carries exactly one render-target set: one `CR_ISP_SCISSOR_BASE`, one
+  ZLS, one EOT program (packed at `pvr_arch_job_render.c:1375-1423`), and one
+  `pbe_reg_words[PVR_MAX_COLOR_ATTACHMENTS]` block copied with a single `memcpy`
+  (`pvr_arch_job_render.c:916-1130`, `:1063`). A second target set has nowhere to go;
+- `PPP_STATE_UPDATE` holds per-draw state selectors (ispctl, pds pointers, region clip, viewport,
+  outselects, varying words, ppp ctrl, stream-out size) - there is no per-pass fence/barrier word in
+  it (`captures/vk-multipass/ppp-state-sample.txt`).
+
+Re-reading the capture: `cs-cmds-27.txt` is one render pass with 27 **draws**, not 27 hardware
+passes - 27 `VDM_STATE_UPDATE`, 26 `INDEX_LIST` (the first draw auto-indexes), 25
+`PPP_STATE_UPDATE` (repeated state deduped). Round 181 had already shown that zink collapses the
+27 GL passes of the `passes` microbenchmark into 2 `vkCmdBeginRendering` calls, so the 27 passes never
+reach Vulkan as 27 render passes. The round-185/187 "batch-invariant fragment stream" is invariant
+across *draws* of one pass, not across passes.
+
+Consequence: packing a mip chain's 9-11 level renders into one job would make level n's TPU reads race
+level n-1's PBE stores, because the only ordering inside a job would be stream order and the hardware
+has no documented per-hw-pass completion barrier. The failure would be silent - no MMU fault, no
+kernel error, just stale/partial mip levels visible only in minified sampling (glmark2 does not
+validate these two scenes). The mip-chain render merge (run 016's F1) is retracted; the diagnostic
+`no_mipgen`/`no_fbc`/`no_twiddle` knobs from that investigation are not shipped.
+
+What stands from round 241: the per-level job-set cost is real and large (one GPU job set per level at
+~0.25 ms of fixed per-render cost, the round-176 scaling), the ceilings are the right target, TFBC and
+the twiddled layout are not the levers. What changes is the mechanism: the reference generates mips
+with transfer (TQ) blits - `util_gen_mipmap`'s per-level `pipe->blit` becomes one in-order transfer
+job, no dependency word needed because the TQ command list is in order - and that is what the native
+driver is missing (the transfer path is roadmap open item 1; the TQ replay fault and the missing
+PDS-DMA/heap-base state are documented in rounds 154-166). A CDM compute mip generator is the fallback
+route (up to 9 kernels per control stream, PDS fences), but it needs the twiddled-write address maths
+that the transfer path gets from the hardware for free.
+
+## Round 243 - the mediump/f16 project stops at its falsifier; abort on unsupported ALU in release builds (patch 0387)
+
+After round 240 the ranked codegen item was f16sop for mediump fragment arithmetic (vendor cel FS
+uses 16 f16sop, pco emitted none; counted saving -5..8 groups on cel/phong). The plan was to advertise
+fp16/int16 fragment caps so `nir_lower_mediump_vars` runs, then fill pco's missing f16 forms. The
+first measurement says that plan is backwards, so the project stopped before any cap was enabled.
+
+**B0 (offline, mediump demotion emulated with the f32 fallback, pco offline harness):** with today's
+emission coverage, demoting to mediump is a net *regression* - only about 17 % of the 16-bit ALU ops
+have an F16SOP form, the rest pay f16<->f32 conversion pairs: cel 49 -> 65 groups / 648 -> 888 B,
+phong 36 -> 44, bump 21 -> 25, blinn 21 -> 25, conditionals 11 -> 22, loop runs away (below). So the
+work is emission coverage first (B1a), not the demotion.
+
+**B1a (coverage: f16 MAD/ffma, 2-channel packed pairs, refined keep-f16 filter, modifiers, int and
+conversion lowering, NIR fallback gate):** attempted and stopped at the falsifier. The structural
+blocker is not tuning: pco's F16SOP operand/register encoding was never derived. `isa-scratch`'s
+validator byte-checks the generated bit-struct encoders (32/32 forms pass) but the operand bytes
+11-21 - source register/descriptor/flag fields, destination register vs the 0x40/0x41 lane-pair
+select, MAD word order, and the source-class/form-selection rules (SOPEXPR/MUL/MUL_TEMP/MAD/literal)
+- are raw placeholders (`op_ref_maps`), and the in-tree map writes the destination as a plain register
+index while the validated vendor fixtures use a lane-pair byte. Emitting MAD/2-channel forms from
+guesses would silently miscompile. Measured with only the SOPEXPR forms emittable and everything else
+falling back: cel 49 -> 170 groups / 648 -> 2912 B, phong 36 -> 125, bump 21 -> 54, blinn 21 -> 50,
+loop 22 -> 40, conditionals 11 -> 27 - the KPI was cel <= 44, so the falsifier fired and the project
+is parked. The unblock path is one forced-temp vendor capture corpus to derive the operand encoding
+plus a validator extension that byte-checks the pco maps (capture request issued;
+`open-perf/vendor-usc/captures/f16sop-encoding/`). No fp16/int16 caps are advertised, so no
+application behaviour changes with this round.
+
+**The bug the measurement found (patch 0387):** the offline harness wrote 2.3 GB into the 2.9 GB
+/tmp tmpfs (and would have kept writing) because an
+unsupported 16-bit ALU instruction reached the default case of `trans_alu()`
+(`pco_trans_nir.c:4897`): it printed the instruction and called `UNREACHABLE("")`. Under `-DNDEBUG`
+the assert half of that macro compiles out and what remains is `__builtin_unreachable()`, i.e.
+undefined behaviour, so the function did fall through with an uninitialised `pco_instr` and the
+caller looped forever re-printing (37,734 identical `f2i16` lines in a 2 MB capped run, plus undefined
+behaviour). Patch 0387 makes that path abort deterministically in every build: an unsupported opcode
+is a compiler bug and must fail loudly rather than corrupt output or loop. 1 file, +11 -4, in
+`src/imagination/pco/pco_trans_nir.c`; no behaviour change in any build that does not hit an
+unsupported opcode.
+
+**Validation (mesa bfcee2c9, libgallium md5 d0e0b51a):** native gate `run-all.sh` **20/20 groups,
+ALL GROUPS PASS**; Vulkan gate **44/44 pass** (pco is shared with the Vulkan driver, so both paths are
+checked). The gate session's EXIT trap restored the board and reported
+`bound=pvrsrvkm dm=active kwin=alive faults=0` (`gate-0387/restore.log`; the same board state was
+re-checked afterwards).
+
+With the f16 route parked, the ranked codegen list is effectively closed at the level this project can
+reach with measured ISA encodings, and the per-render-pass fixed cost (rounds 176-177: one GPU kick
+per render job set, ~0.25 ms) stays the biggest measured lever. That is why terrain/refract (round
+241's ceilings) were pursued through the transfer/TQ path rather than more compiler work - until round
+244 retired that route below userspace.
+
+## Round 244 - the transfer (TQ) route for mip generation is blocked below userspace
+
+Round 241 measured the prize (terrain 20 -> 30 fps, refract 33 -> 46 with mip generation skipped vs
+zink 27/46), round 242 retracted the one-job render merge, and the remaining reference mechanism was
+the transfer path: zink generates mips with `util_gen_mipmap`'s per-level `pipe->blit` ->
+`vkCmdBlitImage` -> one in-order transfer job. The native driver has no transfer path; rounds 100-166
+had replayed captured TQ command streams (a fill/clear TQ kernel writes, a copy kernel never stores,
+and the firmware raises a context reset). This round finished the diagnosis with three board sessions
+that replay the captured job while tracing the live reference on the same kernel.
+
+Ruled out, in order (every item is an experiment, not an inference):
+
+| candidate | result | evidence |
+|---|---|---|
+| captured replay stream is stale | **no** - live reference fill/copy fw streams are byte-identical to the captured bundle (176 B each, `cmpstreams.py` self-tested) | `runs/017-tq-transfer/stream-diff-ref.txt` |
+| the probe submits different bytes | only bundle stream 1 plus its deliberate clear-register patch (dword 30) | `stream-diff-probe.txt` |
+| job/context/hwrt/flags/length differ | no - type/ctx/flags/len/hwrt identical, transfer context creation identical | `logs/*-submits.log` (LD_PRELOAD DRM-UAPI tracer) |
+| sync-op differences reach the firmware | no - the kernel copies the stream verbatim and turns sync ops into dma_fences only | `pvr_job.c:87-100, :339/366` |
+| a hidden reference init submit exists | none - `pvr_ctx_reset_cmd_init` is an empty stub for this winsys (`src/imagination/vulkan/pvr_arch_job_context.c:63`) and `pvr_queue_create()` zeroes the transfer queue's register state (`kernel-src/powervr/pvr_queue.c:1236-1247,1365-1372`) | tracer + source |
+| a transfer context can carry static context state | no - the kernel returns `-EINVAL` if `static_context_state_len != 0`; the reference passes none | `kernel-src/powervr/pvr_context.c:130-137` |
+| ordering / fill pre-job matters | no - the pre-job completes and fills the source 4096/4096, the copy still faults | session 2 |
+| a render job must warm the context | no - the reference runs zero render jobs before its copy | tracer |
+| the reference's extra contexts matter | no - 2 compute contexts (64 B static state) + 1 render context (192 B static state + callstack) created 3/3 in the reference's order, copy still faults | session 3, `ab-ctxs-run.log` |
+
+The failure is stable across every run: the copy job completes and its fence signals, the destination
+stays at its poison value (0/4096 words written), and the firmware reports
+`CTXRESET ctx=0 reason=1 (GUILTY_LOCKUP) dm=3 job=1 flags=0x1 fault=0xe00004b080` - the USC heap base
+plus the texstate-DMA low word, i.e. the ISP/PDS DMA resolved the shader's texture-state source
+address against the USC heap instead of the general heap. That line is decoded by temporarily
+installing the kernel-src module with `tools/verify/kernel-ctxreset-decode.patch` (the installed
+module is backed up and restored; all three board sessions ended on the vendor stack with 0 faults).
+
+Conclusion: every input the firmware consumes through the UAPI is proven identical between the failing
+native job and the succeeding reference job on the same kernel, so the missing piece is firmware-visible
+per-context state that the open kernel/UAPI cannot set (a vendor-style transfer-context init). That is
+a kernel/firmware project, not a Mesa one. The transfer route for mip generation is therefore parked;
+the remaining mip-level option is a CDM compute generator (one dispatch per level, or several levels
+chained with the existing PDS fence program) which needs (a) a cost probe showing a compute job set is
+materially cheaper than the measured 0.189-0.256 ms render job set and (b) the twiddled-write address
+encoding, which the tree does not have. Neither is started here.
+
+Evidence: `open-perf/tasks/T-2026-11-02-codegen/runs/017-tq-transfer/` (card.md, stream-diff-*,
+logs/dmesg-*, ab-ctxs-run.log, probe-ctxs-experiment.patch), plus the existing
+`captures/tq-fault/` bundle.
+
+## Round 245 - F16SOP encoding: the corpus arrived, the blocker moved to the destination/writeback convention
+
+Round 243 parked the mediump/f16 project on the underived F16SOP operand/register encoding and asked
+the vendor-usc hunter for a forced-temp capture corpus. The corpus is in
+(`vendor-usc/captures/f16sop-encoding/`, 23 samples: the 21 requested templates plus G1/G2 for the
+both-temp multiply; all captured, both runs of every sample byte-identical) with
+`vendor-usc/f16sop-samples/map-fixtures.txt` (81 SOP instructions with payload+semantics lines) and
+`vendor-usc/f16sop-encoding-report.md`.
+
+It settles a useful part of the encoding: the operand layout is **source-class dependent**, not fixed.
+Temp-source EXPR (`t = a + b`) puts `0x80|reg` for src0 at byte 11, the src0 descriptor at 12, `0x00`
+at 13, the src1 register with bit 7 clear at 14, the src1 descriptor at 15 and the destination lane-pair
+select 0x40/0x41 at 16, with a +2 register / +2 descriptor / +1 pair delta between the two lanes; the
+coefficient form carries two extra descriptor bytes and moves the pair select to byte 19, and MAD with
+a coefficient addend to 21. Form words are class-dependent too (`94 33 88` for a temp-source MUL vs
+`94 33 22` for the coefficient form; `94 92 97` vs `94 92 93` for MAD), plus an unclassified `33 44`
+in two samples. Modifiers keep their byte-8/byte-9 bit positions when the sources are temps, and
+min/max keep their byte-4 selector.
+
+That is not enough to wire the forms, because the block has moved to the **destination/writeback
+convention**: the destination *register number* is not encoded in the SOP at all (the fixtures can only
+mark it `unknown`, 73 of the 81 instructions do not name their destination; the other 8 carry only the
+lane-pair select), the group stream after the SOP
+payload - where a writeback descriptor could live - is not decoded by the vendor disassembler yet, and
+pco's group model has F16SOP groups with an empty destination list and a placeholder source map (the
+vendor's chain framing was never modelled). A byte-validating map gate would fail on every instruction
+by construction, and writing class-dependent maps now would be exactly the guessing the gate exists to
+prevent - so the pco side stopped before changing anything. No Mesa change from this phase; the fp16/
+int16 fragment caps are still not advertised, so no application behaviour depends on any of it.
+
+Two unblock paths are recorded for a future session: (A) extend the vendor disassembler to split a SOP
+group into payload vs group source/dest stream, plus two targeted captures (an SOP result consumed in a
+later group, and an SOP result written straight to `gl_FragColor`) and the 4 missing samples; or
+(B) decode the SOP framing from the vendor's `libusc.so` `g_psInstDesc` descriptor table, which is
+authoritative and static. Until one lands, the mediump/f16 item stays parked.

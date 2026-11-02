@@ -25048,7 +25048,7 @@ index 2577096e..81619f31 100644
              if (!pco_ref_is_drc(*psrc))
                 continue;
 diff --git a/src/imagination/pco/pco_trans_nir.c b/src/imagination/pco/pco_trans_nir.c
-index 6dde9d20..d443e2a3 100644
+index 6dde9d20..8873ac67 100644
 --- a/src/imagination/pco/pco_trans_nir.c
 +++ b/src/imagination/pco/pco_trans_nir.c
 @@ -15,8 +15,11 @@
@@ -26138,7 +26138,7 @@ index 6dde9d20..d443e2a3 100644
        instr = trans_min_max(tctx, alu->op, dest, src[0], src[1]);
        break;
  
-@@ -4145,6 +4818,81 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
+@@ -4145,11 +4818,93 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
        instr = pco_mov(&tctx->b, dest, src[0]);
        break;
  
@@ -26218,9 +26218,25 @@ index 6dde9d20..d443e2a3 100644
 +   }
 +
     default:
-       printf("Unsupported alu instruction: \"");
-       nir_print_instr(&alu->instr, stdout);
-@@ -4326,6 +5074,8 @@ static pco_block *trans_block(trans_ctx *tctx,
+-      printf("Unsupported alu instruction: \"");
+-      nir_print_instr(&alu->instr, stdout);
+-      printf("\"\n");
+-      UNREACHABLE("");
++      /* In a release build the assert half of UNREACHABLE() compiles out and
++       * only __builtin_unreachable() remains (undefined behaviour), so this
++       * path did fall through with an uninitialised instruction and the caller
++       * looped forever re-printing the message (hit by the offline harness
++       * while probing mediump/f16).  Abort even in release builds: an
++       * unsupported opcode is a compiler bug and must fail deterministically.
++       */
++      fprintf(stderr, "pco: unsupported ALU instruction: \"");
++      nir_print_instr(&alu->instr, stderr);
++      fprintf(stderr, "\"\n");
++      abort();
+    }
+ 
+    if (!pco_ref_is_scalar(dest))
+@@ -4326,6 +5081,8 @@ static pco_block *trans_block(trans_ctx *tctx,
  
     tctx->b = pco_builder_create(tctx->func, pco_cursor_after_block(block));
  
