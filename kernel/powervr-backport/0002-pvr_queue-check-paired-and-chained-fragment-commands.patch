@@ -1,0 +1,296 @@
+From b40eb31afa53e07123cec6a55679cd924f7351c0 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Wed, 4 Nov 2026 01:07:13 +0800
+Subject: [PATCH 2/2] pvr_queue: check paired and chained fragment commands
+ against the fragment CCCB
+
+The space for a geometry job's paired partial render job and chained fragment
+job was checked in the geometry CCCB (prepare_job called with the geometry
+entity) and per job, while run_job writes both into the fragment CCCB: under a
+slow fragment queue the fragment CCCB overflowed (WARN pvr_cccb.c:178), the
+commands were dropped with the kick still sent, and the done fences never
+signalled. Size the whole fragment sequence (paired fence and command,
+chained job) as one, check it in the fragment CCCB (mainline 4baf9e70cb75,
+9cd74f935306), wake on the size stored at registration, let a second waiter
+on a CCCB wait behind the first, fix combine_pr at load, and do not chain a
+sequence that could never fit.
+---
+ pvr_job.c   |   3 +-
+ pvr_queue.c | 138 +++++++++++++++++++++++++++++++++++++++++++---------
+ pvr_queue.h |  11 +++++
+ 3 files changed, 129 insertions(+), 23 deletions(-)
+
+diff --git a/pvr_job.c b/pvr_job.c
+index 01b74c7..d1d2dfb 100644
+--- a/pvr_job.c
++++ b/pvr_job.c
+@@ -633,7 +633,8 @@ static bool can_chain_frag_job(struct pvr_job *geom_job, struct pvr_job *pr_job,
+ 	    frag_job->type != DRM_PVR_JOB_TYPE_FRAGMENT ||
+ 	    frag_job->fw_ccb_cmd_type != ROGUE_FWIF_CCB_CMD_TYPE_FRAG ||
+ 	    frag_job->ctx != geom_job->ctx ||
+-	    frag_job->hwrt != geom_job->hwrt)
++	    frag_job->hwrt != geom_job->hwrt ||
++	    !pvr_queue_frag_chain_can_fit(pr_job, frag_job))
+ 		return false;
+ 
+ 	xa_for_each(&frag_job->base.dependencies, index, f) {
+diff --git a/pvr_queue.c b/pvr_queue.c
+index 4d9e1ed..e11220a 100644
+--- a/pvr_queue.c
++++ b/pvr_queue.c
+@@ -382,6 +382,71 @@ static unsigned long job_count_remaining_native_deps(struct pvr_job *job)
+ 	return remaining_count;
+ }
+ 
++static bool pvr_pr_job_combinable(struct pvr_job *pr_job, struct pvr_job *frag_job);
++
++/**
++ * pvr_queue_job_cccb_size() - CCCB space the commands of a job need when it is run.
++ * @job: Job to size.
++ *
++ * A fragment job paired with a geometry job is written to the fragment CCCB by the geometry job's
++ * run_job(), followed by the chained fragment job if there is one (see pvr_queue_run_job()): the
++ * paired job's waits with its partial render fence last, its command and update unless only its
++ * fences are written, then the chained job's waits, command and update. The whole sequence has to
++ * fit, so it is sized as one.
++ *
++ * Returns: Size in bytes.
++ */
++static u32 pvr_queue_job_cccb_size(struct pvr_job *job)
++{
++	struct pvr_job *chained_job;
++	u32 size;
++
++	if (job->type != DRM_PVR_JOB_TYPE_FRAGMENT || !job->paired_job)
++		return job_cmds_size(job, job_count_remaining_native_deps(job));
++
++	/* The partial render fence is not a native dependency until the geometry job has run, but it
++	 * is written with the waits (pvr_queue_write_job_to_cccb()).
++	 */
++	size = ufo_cmds_size(job_count_remaining_native_deps(job) + 1);
++	chained_job = job->paired_job->chained_job;
++	if (!pvr_pr_job_combinable(job, chained_job))
++		size += pvr_cccb_get_size_of_cmd_with_hdr(job->cmd_len) + ufo_cmds_size(1);
++	if (chained_job)
++		size += job_cmds_size(chained_job, job_count_remaining_native_deps(chained_job));
++
++	return size;
++}
++
++/**
++ * pvr_queue_frag_chain_can_fit() - Whether a partial render job and the fragment job chained to it
++ * can ever fit in the fragment CCCB together.
++ * @pr_job: Partial render job.
++ * @frag_job: Fragment job to chain to it.
++ *
++ * Called when the jobs are linked, with their dependencies added. Every unsignaled dependency is
++ * counted as a wait (some only become UFO-backed later) and the partial render command is counted
++ * even if it ends up combined, so this bounds what pvr_queue_run_job() writes.
++ *
++ * Returns: True if the sequence fits in an empty CCCB.
++ */
++bool pvr_queue_frag_chain_can_fit(struct pvr_job *pr_job, struct pvr_job *frag_job)
++{
++	struct pvr_queue *queue = pr_job->ctx->queues.fragment;
++	u32 pr_waits = 1, frag_waits = 0;
++	struct dma_fence *f;
++	unsigned long index;
++
++	xa_for_each(&pr_job->base.dependencies, index, f)
++		pr_waits += !dma_fence_is_signaled(f);
++	xa_for_each(&frag_job->base.dependencies, index, f)
++		frag_waits += !dma_fence_is_signaled(f);
++
++	return pvr_cccb_cmdseq_can_fit(&queue->cccb,
++				       ufo_cmds_size(pr_waits) +
++				       pvr_cccb_get_size_of_cmd_with_hdr(pr_job->cmd_len) +
++				       ufo_cmds_size(1) + job_cmds_size(frag_job, frag_waits));
++}
++
+ /**
+  * pvr_queue_get_job_cccb_fence() - Get the CCCB fence attached to a job.
+  * @queue: The queue this job will be submitted to.
+@@ -398,7 +463,7 @@ static struct dma_fence *
+ pvr_queue_get_job_cccb_fence(struct pvr_queue *queue, struct pvr_job *job)
+ {
+ 	struct pvr_queue_fence *cccb_fence;
+-	unsigned int native_deps_remaining;
++	u32 size;
+ 
+ 	/* If the fence is NULL, that means we already checked that we had
+ 	 * enough space in the cccb for our job.
+@@ -409,20 +474,32 @@ pvr_queue_get_job_cccb_fence(struct pvr_queue *queue, struct pvr_job *job)
+ 	mutex_lock(&queue->cccb_fence_ctx.job_lock);
+ 
+ 	/* Count remaining native dependencies and check if the job fits in the CCCB. */
+-	native_deps_remaining = job_count_remaining_native_deps(job);
+-	if (pvr_cccb_cmdseq_fits(&queue->cccb, job_cmds_size(job, native_deps_remaining))) {
++	size = pvr_queue_job_cccb_size(job);
++	if (pvr_cccb_cmdseq_fits(&queue->cccb, size)) {
+ 		pvr_queue_fence_put(job->cccb_fence);
+ 		job->cccb_fence = NULL;
+ 		goto out_unlock;
+ 	}
+ 
+-	/* There should be no job attached to the CCCB fence context:
++	/* A geometry job checks its paired fragment job's space on the fragment
++	 * queue, whose own scheduler may already have a job waiting for space
++	 * there: wait behind that job and check again when its fence signals.
++	 */
++	if (queue->cccb_fence_ctx.job && queue->cccb_fence_ctx.job != job) {
++		struct dma_fence *f = dma_fence_get(queue->cccb_fence_ctx.job->cccb_fence);
++
++		mutex_unlock(&queue->cccb_fence_ctx.job_lock);
++		return f;
++	}
++
++	/* Otherwise there should be no job attached to the CCCB fence context:
+ 	 * drm_sched_entity guarantees that jobs are submitted one at a time.
+ 	 */
+ 	if (WARN_ON(queue->cccb_fence_ctx.job))
+ 		pvr_job_put(queue->cccb_fence_ctx.job);
+ 
+ 	queue->cccb_fence_ctx.job = pvr_job_get(job);
++	queue->cccb_fence_ctx.size = size;
+ 
+ 	/* Initialize the fence before returning it. */
+ 	cccb_fence = container_of(job->cccb_fence, struct pvr_queue_fence, base);
+@@ -468,8 +545,7 @@ pvr_queue_get_job_kccb_fence(struct pvr_queue *queue, struct pvr_job *job)
+ }
+ 
+ static struct dma_fence *
+-pvr_queue_get_frag_job_dep(struct pvr_queue *queue, struct pvr_job *job,
+-			   struct pvr_job *frag_job)
++pvr_queue_get_frag_job_dep(struct pvr_job *job, struct pvr_job *frag_job)
+ {
+ 	struct dma_fence *f;
+ 	unsigned long index;
+@@ -486,25 +562,44 @@ pvr_queue_get_frag_job_dep(struct pvr_queue *queue, struct pvr_job *job,
+ 		return dma_fence_get(f);
+ 	}
+ 
+-	return frag_job->base.sched->ops->prepare_job(&frag_job->base, &queue->entity);
++	return NULL;
+ }
+ 
+ static struct dma_fence *
+-pvr_queue_get_paired_frag_job_dep(struct pvr_queue *queue, struct pvr_job *job)
++pvr_queue_get_paired_frag_job_dep(struct pvr_job *job)
+ {
++	struct pvr_job *frag_job = job->paired_job;
++	struct pvr_queue *frag_queue;
+ 	struct dma_fence *f;
+ 
+-	if (job->type != DRM_PVR_JOB_TYPE_GEOMETRY || !job->paired_job)
++	if (job->type != DRM_PVR_JOB_TYPE_GEOMETRY || !frag_job)
+ 		return NULL;
+ 
+-	f = pvr_queue_get_frag_job_dep(queue, job, job->paired_job);
+-	if (f || !job->chained_job)
++	f = pvr_queue_get_frag_job_dep(job, frag_job);
++	if (!f && job->chained_job)
++		f = pvr_queue_get_frag_job_dep(job, job->chained_job);
++	if (f)
+ 		return f;
+ 
+-	/* The chained job comes after the partial render job in the CCCB, so its
+-	 * done fence must be initialised after it.
++	/* Both fragment jobs are written to the fragment CCCB, so their done fences
++	 * belong to the fragment queue and the space is checked there; the chained
++	 * job comes after the partial render job, so its done fence is initialised
++	 * after it, and its commands are included in the paired job's size.
+ 	 */
+-	return pvr_queue_get_frag_job_dep(queue, job, job->chained_job);
++	frag_queue = frag_job->ctx->queues.fragment;
++	pvr_queue_job_fence_init(frag_job->done_fence, frag_queue);
++	if (job->chained_job)
++		pvr_queue_job_fence_init(job->chained_job->done_fence, frag_queue);
++
++	f = pvr_queue_get_job_cccb_fence(frag_queue, frag_job);
++
++	/* The chained job's space is counted in the paired job's size. */
++	if (!f && job->chained_job && job->chained_job->cccb_fence) {
++		pvr_queue_fence_put(job->chained_job->cccb_fence);
++		job->chained_job->cccb_fence = NULL;
++	}
++
++	return f;
+ }
+ 
+ /**
+@@ -573,7 +668,7 @@ pvr_queue_prepare_job(struct drm_sched_job *sched_job,
+ 
+ 	/* The paired job fence should come last, when everything else is ready. */
+ 	if (!internal_dep)
+-		internal_dep = pvr_queue_get_paired_frag_job_dep(queue, job);
++		internal_dep = pvr_queue_get_paired_frag_job_dep(job);
+ 
+ 	return internal_dep;
+ }
+@@ -717,7 +812,8 @@ static void pvr_queue_submit_job_to_cccb(struct pvr_job *job)
+ }
+ 
+ static bool combine_pr = true;
+-module_param(combine_pr, bool, 0644);
++/* Read when a job's CCCB space is checked and again when it is written: fixed at load. */
++module_param(combine_pr, bool, 0444);
+ MODULE_PARM_DESC(combine_pr,
+ 		 "Drop the partial render command when it matches the chained fragment command");
+ 
+@@ -1011,7 +1107,6 @@ static void
+ pvr_queue_check_job_waiting_for_cccb_space(struct pvr_queue *queue)
+ {
+ 	struct pvr_queue_fence *cccb_fence;
+-	u32 native_deps_remaining;
+ 	struct pvr_job *job;
+ 
+ 	mutex_lock(&queue->cccb_fence_ctx.job_lock);
+@@ -1034,12 +1129,11 @@ pvr_queue_check_job_waiting_for_cccb_space(struct pvr_queue *queue)
+ 		goto out_unlock;
+ 	}
+ 
+-	/* Evict signaled dependencies before checking for CCCB space.
+-	 * If the job fits, signal the CCCB fence, this should unblock
+-	 * the drm_sched_entity.
++	/* The size was computed when the job was registered; its dependencies
++	 * only get fewer, so it is an upper bound. If the job fits, signal the
++	 * CCCB fence, this should unblock the drm_sched_entity.
+ 	 */
+-	native_deps_remaining = job_count_remaining_native_deps(job);
+-	if (!pvr_cccb_cmdseq_fits(&queue->cccb, job_cmds_size(job, native_deps_remaining))) {
++	if (!pvr_cccb_cmdseq_fits(&queue->cccb, queue->cccb_fence_ctx.size)) {
+ 		job = NULL;
+ 		goto out_unlock;
+ 	}
+diff --git a/pvr_queue.h b/pvr_queue.h
+index 93fe9ac..8c220f3 100644
+--- a/pvr_queue.h
++++ b/pvr_queue.h
+@@ -51,6 +51,15 @@ struct pvr_queue_cccb_fence_ctx {
+ 	 */
+ 	struct pvr_job *job;
+ 
++	/**
++	 * @size: CCCB space @job needs, computed when it was registered: the
++	 * wake-up runs from the FW event path and must not follow the job's
++	 * paired or chained jobs.
++	 *
++	 * Must be accessed with @job_lock held.
++	 */
++	u32 size;
++
+ 	/** @job_lock: Lock protecting access to the job object. */
+ 	struct mutex job_lock;
+ };
+@@ -145,6 +154,8 @@ bool pvr_queue_fence_is_ufo_backed(struct dma_fence *f);
+ 
+ int pvr_queue_job_init(struct pvr_job *job);
+ 
++bool pvr_queue_frag_chain_can_fit(struct pvr_job *pr_job, struct pvr_job *frag_job);
++
+ void pvr_queue_job_cleanup(struct pvr_job *job);
+ 
+ void pvr_queue_job_push(struct pvr_job *job);
+-- 
+2.47.3
+
