@@ -601,3 +601,45 @@ with its own shaders) renders the same image through the native driver (`MESA_LO
 zink - 32768 red pixels on green, `Kick TA -> TA finished -> Kick 3D -> 3D finished`. Native GL is not complete yet:
 varyings, uniforms, textures, depth, blending, culling and loading a target without a clear are still missing, so
 glmark2 does not run on it yet.
+
+## Added 2026-11-03: the native gallium GLES driver, patches 0299-0399
+
+The series now carries a native gallium driver for the BXM-4-64 (`src/gallium/drivers/pvr_native`,
+selected with `MESA_LOADER_DRIVER_OVERRIDE=pvr`): GLES 2.0 drawn through the TA/3D path on the
+mainline `powervr` kernel driver, with no Vulkan or zink in between. Patches by area:
+
+- **Draw path (0299, 0304-0315):** PBE target addresses and strides, varyings, uniforms, textures,
+  window system buffers, GL clip-space depth, face culling, depth testing and depth-only renders,
+  blending, asynchronous render submission with fences, mipmapped textures.
+- **Vulkan and WSI fixes (0300-0303):** batched buffer-copy clip box, semaphore waits kept on the GPU,
+  X11 surface geometry poll, debug hooks dropped.
+- **Memory layouts (0316-0321):** twiddled + TFBC-compressed colour targets, twiddled depth buffers and
+  depth textures, GPU staging for maps of twiddled targets.
+- **Performance (0322-0329, 0340-0341, 0367-0370, 0375-0378, 0383-0386):** real mipmaps, per-render
+  cost cuts, buffer reuse, deferred clears, render batching, mip-chain caching, per-draw state
+  skipping, depth load/store only when used, shader literal pooling and varying/select scheduling
+  in `pco`.
+- **GLES features (0331-0346, 0354):** R8/RG8 targets, MRT 2/4 with mixed formats, instancing, sRGB,
+  derivatives, 10-bit packed and float textures, half-float linear filtering and colour targets, cube
+  maps, border-clamp sampling, mirror-clamp, anisotropic filtering, an emulated glPolygonOffset.
+- **Transfer-queue groundwork (0347-0366, 0392):** a `pvr-probe` that replays a captured transfer
+  job on the open kernel, used to decode the transfer stream and its PDS/USC programs.
+- **Correctness (0379-0382, 0387-0398):** draw scissor, vertex input placement and variants,
+  fragment-coordinate convention, transfers, odd-width line strides, R8/RG8 pixel packing, MRT
+  `gl_FragColor`, `discard` (helper-pixel test read an unfilled sample mask), GL_NONE draw buffers,
+  converting/scaling blits on the CPU.
+- **0399:** mip levels generated with one transfer job each instead of a render (terrain 21 -> 25,
+  refract 38 -> 41 FPS; the levels are byte-identical to the render path).
+- **0371-0374:** F16SOP packed-half encodings in `pco`; offline only, not enabled (the vendor's own
+  gain from half precision measured at 2-5 %, see `open-driver-perf/TA-KICK-DISASSEMBLY.md`).
+
+Verification: `open-driver-perf/tools/verify/run-all.sh` (27 groups: probes for each feature and fix
+above, gltri/mip/MRT/instancing/sRGB tests, and a firmware context reset check) passes on the tip.
+glmark2-es2: native 843, zink 781, vendor 1199-1211 (`RESULTS.md`). The investigation log is
+`open-driver-perf/TA-KICK-DISASSEMBLY.md` (rounds up to 255) and the remaining work is in
+`open-driver-perf/GLES-PARITY-ROADMAP.md`.
+
+Known limits: the native driver exposes GLES 2.0 only (GLES 3.x needs the transfer-job port for
+3D/array/compressed/depth uploads, roadmap item 1); the desktop GL a compositor needs still comes from
+zink; shader register use and many small render passes are the remaining performance gaps to the
+vendor driver.

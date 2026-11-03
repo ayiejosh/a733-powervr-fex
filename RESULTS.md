@@ -78,6 +78,15 @@ vendor = DDK 24.2 native GLES. 800×600 off-screen, GPU 1104 MHz, pinned to core
 |---|---|---|---|---|---|---|
 | Radxa Cubie A7A | 6.6.98-5-aw2511 | 233 | 627 | **688** | 930 | 2026-10-14: two runs 690 / 687, per-scene geomean vs vendor 0.72, texture 84–95 %, gouraud 87 %, phong 72 %, effect2d 62–68 %, desktop 39–46 %. 2026-10-11, per-scene: build 86 %, texture 85–95 %, gouraud 87 %, phong 65 %, effect2d 50 %, desktop 30 % of vendor |
 
+## GPU — native GLES driver (Mesa gallium `pvr`, no zink) vs zink vs vendor, glmark2-es2 (trixie)
+Open stack = mainline `powervr` + official `rogue_36.56.104.183_v1.fw` + Mesa main with
+`mesa/open-driver-series` 0001–0399; native = `MESA_LOADER_DRIVER_OVERRIDE=pvr` (GLES 2.0), zink = GL
+through the open Vulkan driver (GLES 3.1); vendor = DDK 24.2 GLES. glmark2-es2 800×600 off-screen,
+GPU 1104 MHz, pinned to cores 6-7, `performance` governor.
+| Board | Kernel | native 2026-11-03 | zink 2026-11-02 | vendor 2026-11-02 | Notes |
+|---|---|---|---|---|---|
+| Radxa Cubie A7A | 6.6.98-5-aw2511 | **843** | 781 | 1199–1211 | native is 1.08× zink, 0.70× vendor. Largest per-scene gaps to vendor: shader-heavy scenes (register use), many small render passes (desktop), terrain 26 vs 38 and refract 41 vs 54 FPS (mip generation; patch 0399 closed part of it). Native verify gate `open-driver-perf/tools/verify/run-all.sh`: 27 groups pass, no firmware context reset. |
+
 ## GPU — open Mesa `pvr` vs vendor `pvrsrvkm`, native Vulkan (`bench/pvr-vulkan`, trixie)
 3 alternating open/vendor rounds, medians, pinned to cores 6-7, `performance` governor.
 
