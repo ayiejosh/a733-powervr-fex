@@ -5841,7 +5841,8 @@ NONE, 2}) crashed the driver at that render's flush on the base; it is now drawn
 and cleared on the CPU (attachments past a hole are not drawn yet, and a framebuffer whose draw buffer
 0 is GL_NONE is not drawn). Blits that convert or scale (CopyTexSubImage with a format change,
 BlitFramebuffer) still reach `pvr_blit`'s skip, and a scissored glClear of an MRT framebuffer (st draws
-it as a quad) leaves attachments 1-3 uncleared on every build; both are listed in the roadmap, not gated.
+it as a quad) left attachments 1-3 uncleared on every build until 0394 (round 253); the blit skip is listed
+in the roadmap, not gated.
 
 **0391 - linear strides padded to the PBE unit.** The PBE encodes a linear line stride in 2-pixel
 units, so it wrote an odd-width linear resource with a pitch one pixel wider than the stride the
@@ -5998,3 +5999,19 @@ with no flush in between returning 0; that was the CPU map's clear ordering, fix
 Evidence: `open-perf/tasks/T-2026-11-02-texture-tq/runs/010-mrt/` (bisect.txt, kernel.log),
 `014-rt8/` (rt8probe.c, variants.txt, v-*.txt, kernel.log), `015-pk/` (variants.txt, gate output),
 `018-final/` (gate output on the shipped tree).
+
+## Round 253 - a scissored glClear of an MRT framebuffer cleared attachment 0 only (patch 0394)
+
+Round 250 listed this as a known limit: on every build a scissored glClear of an MRT framebuffer left
+attachments 1-3 uncleared. The state tracker draws such a clear as a quad whose fragment shader writes
+`gl_FragColor` with `FS_COLOR0_WRITES_ALL_CBUFS` set, i.e. `FRAG_RESULT_COLOR`, which Mesa defines as
+written to every bound colour buffer; the driver renamed it to `DATA0` only (`pvr_shader.c`). Patch 0394
+lowers it with `nir_lower_fragcolor` to the variant's attachment count, as zink and panfrost do; with one
+attachment the shader is the same as before. A texexact case (16x16 MRT, both attachments drawn, then
+a 4x4 scissored clear, attachment 1 read back inside and outside the scissor): the build before 0394
+reads 0 255 0 255 inside (not cleared), 0394 reads 0 0 255 255 inside and keeps 0 255 0 255 outside.
+The gate passes all 25 groups with no firmware context reset; glmark2 838 (before) and 840 (0394),
+one run each in the same session.
+
+Evidence: `open-perf/tasks/T-2026-11-02-texture-tq/runs/019-fragcolor/` (probe outputs, gate output,
+full-*.txt).

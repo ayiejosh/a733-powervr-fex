@@ -1,0 +1,41 @@
+From 15486074ff5fc5e58e386857155ab08592720815 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Tue, 3 Nov 2026 10:55:14 +0800
+Subject: [PATCH] gallium/pvr: write gl_FragColor to every bound colour buffer
+
+A fragment shader's FRAG_RESULT_COLOR is written to every bound colour
+buffer (the state tracker's clear quad sets FS_COLOR0_WRITES_ALL_CBUFS for
+a scissored or masked clear), but the driver renamed it to DATA0 only. A
+scissored glClear of an MRT framebuffer therefore left attachments 1-3
+uncleared. Lower it with nir_lower_fragcolor to the variant's attachment
+count, as zink and panfrost do; with one attachment the result is the
+same as before.
+---
+ src/gallium/drivers/pvr_native/pvr_shader.c | 10 ++++++++--
+ 1 file changed, 8 insertions(+), 2 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_shader.c b/src/gallium/drivers/pvr_native/pvr_shader.c
+index 250087fb..76e5d9eb 100644
+--- a/src/gallium/drivers/pvr_native/pvr_shader.c
++++ b/src/gallium/drivers/pvr_native/pvr_shader.c
+@@ -776,9 +776,15 @@ pvr_shader_compile_data_with(pco_ctx *ctx, struct nir_shader *nir, pco_data *dat
+       pvr_shader_init_vs_formats(nir, data, vs_element_formats);
+    }
+ 
+-   /* GL's single colour output arrives as FRAG_RESULT_COLOR; pco and the output map work on
+-    * DATA0..7, as the Vulkan driver's shaders do. */
++   /* GL's single colour output arrives as FRAG_RESULT_COLOR and is written to every bound colour
++    * buffer (st's clear quad relies on it for a scissored or masked MRT clear); pco and the output
++    * map work on DATA0..7, as the Vulkan driver's shaders do. */
+    if (nir->info.stage == MESA_SHADER_FRAGMENT) {
++      unsigned nr_out = 1;
++      while (nr_out < PVR_MAX_COLOR_ATTACHMENTS &&
++             data->fs.output_formats[FRAG_RESULT_DATA0 + nr_out] != PIPE_FORMAT_NONE)
++         nr_out++;
++      NIR_PASS(_, nir, nir_lower_fragcolor, nr_out);
+       nir_foreach_shader_out_variable (var, nir) {
+          if (var->data.location == FRAG_RESULT_COLOR)
+             var->data.location = FRAG_RESULT_DATA0;
+-- 
+2.47.3
+

@@ -100,7 +100,8 @@ fi
 # sampled before its first upload (exercises 0390's flag flip), MRT attachment 1 read back or written
 # right after its render (need 0389's attachment tracking), glReadPixels from a GL_RGB target, R8/RG8
 # gradients (fail without 0393), a clear read back or patched with no flush and MRT attachment 0 patched
-# while bound (0389), and an MRT framebuffer with a hole in its draw buffers (crashed before 0389).
+# while bound (0389), an MRT scissored clear (0394), and an MRT framebuffer with a hole in its draw
+# buffers (crashed before 0389).
 te=$(timeout 60 $OUT/texexact_probe 2>&1)
 if echo "$te" | grep -q '^DIAG-END' && ! echo "$te" | grep -q '^DIAG BAD'; then
    ok "texel-exact sampling and odd widths"

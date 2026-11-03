@@ -15628,10 +15628,10 @@ index 00000000..f0282d81
 +#endif /* PVR_SCREEN_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_shader.c b/src/gallium/drivers/pvr_native/pvr_shader.c
 new file mode 100644
-index 00000000..250087fb
+index 00000000..76e5d9eb
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_shader.c
-@@ -0,0 +1,1112 @@
+@@ -0,0 +1,1118 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + */
@@ -16410,9 +16410,15 @@ index 00000000..250087fb
 +      pvr_shader_init_vs_formats(nir, data, vs_element_formats);
 +   }
 +
-+   /* GL's single colour output arrives as FRAG_RESULT_COLOR; pco and the output map work on
-+    * DATA0..7, as the Vulkan driver's shaders do. */
++   /* GL's single colour output arrives as FRAG_RESULT_COLOR and is written to every bound colour
++    * buffer (st's clear quad relies on it for a scissored or masked MRT clear); pco and the output
++    * map work on DATA0..7, as the Vulkan driver's shaders do. */
 +   if (nir->info.stage == MESA_SHADER_FRAGMENT) {
++      unsigned nr_out = 1;
++      while (nr_out < PVR_MAX_COLOR_ATTACHMENTS &&
++             data->fs.output_formats[FRAG_RESULT_DATA0 + nr_out] != PIPE_FORMAT_NONE)
++         nr_out++;
++      NIR_PASS(_, nir, nir_lower_fragcolor, nr_out);
 +      nir_foreach_shader_out_variable (var, nir) {
 +         if (var->data.location == FRAG_RESULT_COLOR)
 +            var->data.location = FRAG_RESULT_DATA0;

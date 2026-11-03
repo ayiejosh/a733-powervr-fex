@@ -345,6 +345,44 @@ int main(void)
          glUseProgram(p);
       }
    }
+   /* MRT 16x16: both attachments drawn, then a scissored glClear (st draws it as a quad that writes
+    * gl_FragColor, which goes to every bound colour buffer): attachment 1 must be cleared inside the
+    * scissor and keep the draw outside it. */
+   {
+      const char *ext = (const char *)glGetString(GL_EXTENSIONS);
+      void (*draw_buffers)(GLsizei, const GLenum *) = (void *)eglGetProcAddress("glDrawBuffersEXT");
+      if (ext == NULL || strstr(ext, "GL_EXT_draw_buffers") == NULL || draw_buffers == NULL) {
+         printf("DIAG BAD 16x16 MRT scissored clear: GL_EXT_draw_buffers missing\n");
+      } else {
+         GLuint pc = glCreateProgram();
+         glAttachShader(pc, sh(GL_VERTEX_SHADER, "attribute vec2 q; void main(){ gl_Position=vec4(q,0.0,1.0); }"));
+         glAttachShader(pc, sh(GL_FRAGMENT_SHADER, "#extension GL_EXT_draw_buffers : require\nprecision highp float;"
+                               " void main(){ gl_FragData[0]=vec4(1.0,0.0,0.0,1.0); gl_FragData[1]=vec4(0.0,1.0,0.0,1.0); }"));
+         glBindAttribLocation(pc, 0, "q"); glLinkProgram(pc); glUseProgram(pc);
+         GLuint tq[2], fq, fq1;
+         glGenTextures(2, tq);
+         for (int i = 0; i < 2; i++) {
+            glBindTexture(GL_TEXTURE_2D, tq[i]);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 16, 16, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+         }
+         glGenFramebuffers(1, &fq); glBindFramebuffer(GL_FRAMEBUFFER, fq);
+         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tq[0], 0);
+         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0 + 1, GL_TEXTURE_2D, tq[1], 0);
+         const GLenum qbufs[2] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT0 + 1 };
+         draw_buffers(2, qbufs);
+         glViewport(0, 0, 16, 16); glDrawArrays(GL_TRIANGLES, 0, 3);
+         glEnable(GL_SCISSOR_TEST); glScissor(0, 0, 4, 4);
+         glClearColor(0.0f, 0.0f, 1.0f, 1.0f); glClear(GL_COLOR_BUFFER_BIT);
+         glDisable(GL_SCISSOR_TEST);
+         glGenFramebuffers(1, &fq1); glBindFramebuffer(GL_FRAMEBUFFER, fq1);
+         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tq[1], 0);
+         unsigned char q1[4], q2[4]; readpx(1, 1, q1); readpx(10, 10, q2);
+         printf("DIAG %s 16x16 MRT scissored clear got %d %d %d %d at 1,1 (want 0 0 255 255) and %d %d %d %d at 10,10 (want 0 255 0 255) on attachment 1\n",
+                q1[0] == 0 && q1[1] == 0 && q1[2] == 255 && q1[3] == 255 && q2[0] == 0 && q2[1] == 255 && q2[2] == 0 && q2[3] == 255 ? "OK " : "BAD",
+                q1[0], q1[1], q1[2], q1[3], q2[0], q2[1], q2[2], q2[3]);
+         glUseProgram(p);
+      }
+   }
    /* Last, because it crashed older builds: MRT with a hole in the draw buffers ({0, NONE, 2}). Attachment 0
     * must be drawn (attachments past a hole are not supported yet). */
    {
