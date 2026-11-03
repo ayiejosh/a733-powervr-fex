@@ -100,8 +100,8 @@ GL versions today (probe `open-perf/glinfo`):
 Board between tests: vendor + desktop + original firmware (`tools/verify/switch-safe.sh`). Never start GL
 harnesses while vendor is bound (caused a watchdog reset). Every feature needs its own gltri (or new test)
 mode comparing against zink checksums, plus the existing full gltri gate and 0 MMU faults before pushing.
-Patch series continues at the next number in `mesa/open-driver-series/` (currently ends at 0398;
-the next patch is 0399).
+Patch series continues at the next number in `mesa/open-driver-series/` (currently ends at 0399;
+the next patch is 0400).
 
 ### MRT design notes (recon 2026-10-29; implemented as patch 0332 - see round-73 notes for the
 `nir_lower_blend` colormask trap that ate attachment 1's store)
@@ -172,8 +172,8 @@ Open blocks, each with its precise next step:
    question is which control-stream/texture-data pair the reference executes per pass.
    **Resolved 2026-11-03 (TA-KICK-DISASSEMBLY.md round 251):** the remaining difference was the
    texture unicode program at PDS+0x1e40, installed as two zero words; generated with libpowervr_pds
-   (patch 0392) the captured copy job copies 4096/4096 on the open kernel. A native transfer path for
-   mip generation is the next step.
+   (patch 0392) the captured copy job copies 4096/4096 on the open kernel. Mip generation runs on
+   native transfer jobs since patch 0399.
 2. **Performance**: remaining gap is FP16 ALU; pco has an lp-fmad bit but it gives only ~2%, and the
    vendor's ~2x on shading/terrain/refract needs F16SOP single-op FP16 encodings that pco lacks entirely.
    Since then (TA-KICK-DISASSEMBLY.md rounds 243-250): the f16/F16SOP route is parked (243/245); a
@@ -260,5 +260,8 @@ removing the 0.189 ms serial GPU completion per render.
    `pbe_cs_words`/`pbe_reg_words` to their emit site and to the CSCB command definitions).
 
 8. Mip generation: patch 0368 caches chains whose base contents are unchanged (glmark2 terrain
-   20->23, refract 37->43 fps; gate all pass).  Remaining gap is the per-frame regenerated chains:
-   generate those through the transfer/blit path (one job per level) instead of a render job set.
+   20->23, refract 37->43 fps; gate all pass). Patch 0399 generates each regenerated level with one
+   transfer job instead of a render job set (terrain 21->25, refract 38->41; chain 256x256
+   2.18->0.63 ms). Remaining gap (vendor terrain 38, refract 54): the vendor builds a whole chain in
+   one transfer kick of about 2 levels per pass (round 255); the large levels are bound by the
+   four-fetch box shader, which one bilinear fetch per pixel would cut.

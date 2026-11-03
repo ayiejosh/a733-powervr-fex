@@ -6046,3 +6046,33 @@ Results (each pair in one session): discard probe FAIL before, PASS with 0395; t
 work); the gate passes all 26 groups with no firmware context reset; glmark2 836 -> 839 (0395) and
 837 -> 840 (0396-0398), one run each.
 Evidence: `open-perf/tasks/T-2026-11-02-texture-tq/runs/021-discard/` to `024-revfix/`.
+
+## Round 255 - mip levels generated on the transfer queue (patch 0399)
+The per-frame mip chains of glmark2 terrain (five chains, about 43 levels per frame) and refract (one
+1600x1200 chain) cost most of their gap to the vendor: with regeneration skipped (a scratch knob)
+terrain went 21 -> 30 fps and refract 38 -> 54 (vendor 38 and 54-56). glmark2 samples every chain it
+builds with a mipmap filter, so deferring generation would save nothing. A microbenchmark (draw
+level 0, generate, sample) gave a chain cost of 2.19 / 3.62 / 8.22 ms native against 0.04 / 0.17 /
+0.75 ms vendor (256x256, 800x600, 1600x1200): each level was a render (geometry, partial render and
+fragment job) at the per-render fixed cost.
+
+Measurements that chose the route:
+- A captured transfer job (64x64 copy) submitted 43 or 100 times in one SUBMIT_JOBS costs about
+  0.10-0.12 ms per job on the open kernel, every copy exact, no reset.
+- A kernel trace of that submission shows all jobs reaching the firmware within 0.2 ms and
+  completing 0.1 ms apart: the per-job cost is firmware/GPU time, not kernel scheduling.
+- The vendor's kernel trace points (enabled for one session) show one glGenerateMipmap of a
+  256x256 texture as exactly one TQ3D kick holding four GPU passes, about 0.21 ms in all.
+
+Patch 0399 builds each level as one TRANSFER_FRAG job: a FAST_SCALE background object (no IPF control
+stream; the stream layout of the Vulkan driver's pvr_submit_info_stream_init) that runs the render
+path's own 2x2 box program, EOT program and PBE words, so the bytes are the same. The job takes a draw
+slot, waits for the latest render, and the next render batch waits for it on its first geometry job.
+TFBC resources and multi-dword formats keep the render path; PVR_NO_TQ_MIP forces it.
+
+Results (same sessions): every level of six sizes byte-identical to the render path, including
+regeneration after a redraw and a draw sampling right after generation (new gate group, 27 groups);
+gate all pass with no firmware context reset; chain 2.18 -> 0.63, 3.60 -> 1.93, 8.06 -> 6.31 ms;
+glmark2 terrain 21 -> 25 and refract 38 -> 41 fps in two alternated rounds; full run 841 -> 843,
+no scene down by more than 2 %.
+Evidence: `open-perf/tasks/T-2026-11-02-texture-tq/runs/025-mipcost/` to `032-tqdefault/`.

@@ -1377,10 +1377,10 @@ index 00000000..0c679b3f
 +#endif /* PVR_COMPUTE_TRIANGLE_SPV_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_context.c b/src/gallium/drivers/pvr_native/pvr_context.c
 new file mode 100644
-index 00000000..5c50e625
+index 00000000..c66b00cb
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_context.c
-@@ -0,0 +1,1160 @@
+@@ -0,0 +1,1165 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + */
@@ -2419,8 +2419,10 @@ index 00000000..5c50e625
 +   FREE(ctx);
 +}
 +
-+/* Each level a GPU render of the 2x2 box filter of the one above it. A chain that keeps level 0
-+ * only (a format the PBE cannot write, see pvr_resource_create) has nothing to generate. */
++/* Each level the 2x2 box filter of the one above it: a transfer job (pvr_draw_gen_level_tq), or a
++ * GPU render where that path cannot take the resource (PVR_NO_TQ_MIP: always the render). A chain
++ * that keeps level 0 only (a format the PBE cannot write, see pvr_resource_create) has nothing to
++ * generate. */
 +static bool
 +pvr_generate_mipmap(struct pipe_context *pctx, struct pipe_resource *pres,
 +                    enum pipe_format format, unsigned base_level, unsigned last_level,
@@ -2437,8 +2439,11 @@ index 00000000..5c50e625
 +       last <= res->mips_last)
 +      return true;
 +   const unsigned faces = res->cube ? 6 : 1;
++   const bool tq = getenv("PVR_NO_TQ_MIP") == NULL;
 +   for (unsigned l = base_level + 1; l <= last; l++) {
 +      for (unsigned f = 0; f < faces; f++) {
++         if (tq && pvr_draw_gen_level_tq(pvr_context(pctx), pres, l, f))
++            continue;
 +         if (!pvr_draw_blit(pvr_context(pctx), pres, l, f, pres, l - 1, f, true))
 +            return false;
 +      }
@@ -5423,10 +5428,10 @@ index 00000000..47695cc7
 +#endif /* PVR_CSB_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_draw.c b/src/gallium/drivers/pvr_native/pvr_draw.c
 new file mode 100644
-index 00000000..61566cf7
+index 00000000..0e967063
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_draw.c
-@@ -0,0 +1,2510 @@
+@@ -0,0 +1,2635 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -5518,6 +5523,10 @@ index 00000000..61566cf7
 +
 +struct pvr_draw_state {
 +   bool ready, failed;
++   /* Transfer-queue mip generation: its TRANSFER_FRAG context, and the seq of its latest job, which
++    * the next render batch waits for on the GPU (the render context does not order against it). */
++   uint32_t tq_ctx;
++   uint32_t tq_seq;
 +   /* Cube faces: the render target and the load source may be one face of a cube map (a transfer
 +    * blit), addressed at face * layer_size past the level. */
 +   unsigned rt_layer;
@@ -7554,6 +7563,116 @@ index 00000000..61566cf7
 +   return true;
 +}
 +
++/* Mip level generation on the transfer queue: one TRANSFER_FRAG job, a FAST_SCALE background
++ * object running the same 2x2 box program as pvr_draw_blit's gen render (so the level is the same
++ * bytes), with no geometry job, HWRT or partial render. The job takes a draw slot as a render does,
++ * so fences, CPU maps and slot reuse wait for it; it waits for the latest render, and the next
++ * render batch waits for it. */
++bool
++pvr_draw_gen_level_tq(struct pvr_context *ctx, struct pipe_resource *res, unsigned level,
++                      unsigned layer)
++{
++   struct pvr_draw_state *d = ctx->draw;
++   struct pvr_screen *scr = draw_screen(ctx);
++   struct pvr_resource *r = pvr_resource(res);
++   const uint32_t w = u_minify(res->width0, level), h = u_minify(res->height0, level);
++   bool ok = false;
++   if (level == 0 || r->fbc || !draw_format_ok(res->format) ||
++       pvr_pbe_output_dwords(res->format) != 1)
++      return false;
++   pvr_draw_flush(ctx);
++   if (d == NULL) {
++      ctx->draw = d = calloc(1, sizeof(struct pvr_draw_state));
++      if (d == NULL)
++         return false;
++   }
++   draw_materialize(ctx, res);
++   if (!draw_init(ctx, d))
++      return false;
++   if (d->tq_ctx == 0) {
++      struct drm_pvr_ioctl_create_context_args cargs = {
++         .type = DRM_PVR_CTX_TYPE_TRANSFER_FRAG,
++         .vm_context_handle = scr->vm.context_handle,
++      };
++      if (drmIoctl(scr->fd, DRM_IOCTL_PVR_CREATE_CONTEXT, &cargs) != 0) {
++         mesa_loge("pvr: draw: no transfer context: %s", strerror(errno));
++         return false;
++      }
++      d->tq_ctx = cargs.handle;
++   }
++   /* The next slot, as draw_open takes it. */
++   {
++      const unsigned next = (d->cur_slot + 1) % PVR_DRAW_SLOTS;
++      struct pvr_draw_slot *sl = &d->slots[next];
++      draw_slot_idle(ctx, sl);
++      d->cur_slot = next;
++      d->gen = sl->gen;
++      d->pds = sl->pds;
++      d->ctrl_bo = sl->ctrl_bo;
++      d->ctrl_addr = sl->ctrl_addr;
++   }
++   d->gen.used = 0;
++   d->pds.used = 0;
++   /* Submits the pending renders: the job waits for the latest, which orders it after them all. */
++   const uint32_t wait = pvr_draw_last_sync(ctx);
++   pipe_resource_reference(&d->rt, res);
++   d->rt_level = level;
++   pipe_resource_reference(&d->load_src, res);
++   d->load_src_level = level - 1;
++   d->load_src_layer = layer;
++   d->load_gen = true;
++   uint64_t bgnd[3], pbe_words[3] = { 0 };
++   const uint64_t dst = pvr_resource_level_addr_layer(r, level, layer);
++   const enum pipe_format format = res->format;
++   const uint32_t start_dword = 0;
++   const uint64_t eot = draw_eot_program(ctx, d, 1, &dst, &format, &start_dword, false);
++   if (eot == 0 || !draw_load_program(ctx, d, bgnd) ||
++       !pvr_csb_pbe_words(format, pvr_resource_level_stride(r, level), w, h,
++                          pvr_resource_level_phys_h(r, level), r->twiddled, r->fbc, pbe_words))
++      goto done;
++   uint32_t usc_pixel_output_ctrl, isp_ctl;
++   pvr_setup_tiles_in_flight(&scr->dev_info, &scr->dev_runtime_info, 1, false, 0, &isp_ctl,
++                             &usc_pixel_output_ctrl);
++   const uint32_t tile_x = PVR_GET_FEATURE_VALUE(&scr->dev_info, tile_size_x, 16);
++   const uint32_t tile_y = PVR_GET_FEATURE_VALUE(&scr->dev_info, tile_size_y, 16);
++   /* The transfer command stream (the reference's pvr_submit_info_stream_init): header, the
++    * background PDS words, IPF control stream base (none: FAST_SCALE draws the background object
++    * over every tile), the PBE words of render target 0, then the ISP/USC/pixel-event registers. */
++   uint32_t s[44] = { 0 };
++   s[0] = sizeof(s);
++   memcpy(&s[2], bgnd, sizeof(bgnd));
++   memcpy(&s[10], pbe_words, sizeof(pbe_words));
++   s[28] = 1u << 9;                                  /* ISP_BGOBJVALS.enablebgtag */
++   s[29] = usc_pixel_output_ctrl;
++   s[34] = (DIV_ROUND_UP(w, tile_x) << 16) | DIV_ROUND_UP(h, tile_y); /* ISP_MTILE_SIZE x, y */
++   s[36] = isp_ctl | (1u << 17);                     /* ISP_CTL.process_empty_tiles */
++   s[38] = 0x00000201u;                              /* EVENT_PIXEL_PDS_INFO, as the fragment job */
++   s[39] = (uint32_t)scr->vm.offsets[DRM_PVR_HEAP_PDS_CODE_DATA].eot;
++   s[40] = (uint32_t)eot;
++   s[41] = ROGUE_CR_ISP_RENDER_MODE_TYPE_FAST_SCALE;
++   s[43] = ((h - 1) << 16) | (w - 1);                /* FRAG_SCREEN ymax, xmax */
++   if (getenv("PVR_TQ_LOG") != NULL) {
++      fprintf(stderr, "TQMIP %ux%u l%u f%u wait %u:", w, h, level, layer, wait);
++      for (unsigned i = 0; i < ARRAY_SIZE(s); i++)
++         fprintf(stderr, " %08x", s[i]);
++      fprintf(stderr, "\n");
++   }
++   d->seq++;
++   draw_use(d, res);
++   uint32_t done_sync = 0;
++   if (!pvr_job_submit_transfer_async(&scr->vm, d->tq_ctx, s, sizeof(s), wait, &done_sync))
++      goto done;
++   d->slots[d->cur_slot].sync = done_sync;
++   d->slots[d->cur_slot].seq = d->seq;
++   d->tq_seq = d->seq;
++   ok = true;
++done:
++   pipe_resource_reference(&d->load_src, NULL);
++   d->load_gen = false;
++   d->load_src_layer = 0;
++   pipe_resource_reference(&d->rt, NULL);
++   return ok;
++}
 +void
 +pvr_draw_resource_materialize(struct pvr_context *ctx, struct pvr_resource *res)
 +{
@@ -7637,7 +7756,13 @@ index 00000000..61566cf7
 +      };
 +   }
 +
-+   if (!pvr_job_submit_render_batch(&scr->vm, d->gctx.handle, entries, n, done)) {
++   /* The batch reads what the latest transfer job wrote: wait for it unless it is already done. */
++   uint32_t tq_wait = 0;
++   for (unsigned i = 0; d->tq_seq != 0 && i < PVR_DRAW_SLOTS; i++) {
++      if (d->slots[i].seq == d->tq_seq && d->slots[i].sync != 0)
++         tq_wait = d->slots[i].sync;
++   }
++   if (!pvr_job_submit_render_batch(&scr->vm, d->gctx.handle, entries, n, tq_wait, done)) {
 +      /* The submission failed: drop the batch (the pixels are lost) but keep the slots usable. */
 +      for (unsigned i = 0; i < n; i++) {
 +         d->slots[d->pend[i].slot].pending = false;
@@ -7655,6 +7780,7 @@ index 00000000..61566cf7
 +   }
 +   memmove(&d->pend[0], &d->pend[n], (d->npend - n) * sizeof(d->pend[0]));
 +   d->npend -= n;
++   d->tq_seq = 0;
 +   return submitted == n;
 +}
 +
@@ -7928,6 +8054,10 @@ index 00000000..61566cf7
 +         draw_hwrt_free(draw_screen(ctx), &ctx->draw->hwrt[i]);
 +   }
 +   draw_idle(ctx, ctx->draw);
++   if (ctx->draw->tq_ctx != 0) {
++      uint32_t handle = ctx->draw->tq_ctx;
++      drmIoctl(draw_screen(ctx)->fd, DRM_IOCTL_PVR_DESTROY_CONTEXT, &handle);
++   }
 +   for (unsigned i = 0; i < PVR_DRAW_SLOTS; i++)
 +      free(ctx->draw->slots[i].refs);
 +   pipe_resource_reference(&ctx->draw->scratch_rt, NULL);
@@ -7939,10 +8069,10 @@ index 00000000..61566cf7
 +}
 diff --git a/src/gallium/drivers/pvr_native/pvr_draw.h b/src/gallium/drivers/pvr_native/pvr_draw.h
 new file mode 100644
-index 00000000..a94c4c67
+index 00000000..1fda7aa5
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_draw.h
-@@ -0,0 +1,59 @@
+@@ -0,0 +1,63 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -7983,6 +8113,10 @@ index 00000000..a94c4c67
 +                   unsigned dst_layer, struct pipe_resource *src, unsigned src_level,
 +                   unsigned src_layer, bool gen);
 +
++/* Generates mip level `level` (> 0) of one layer of res from the level above it on the transfer
++ * queue; false (nothing submitted) if the resource or format cannot take that path. */
++bool pvr_draw_gen_level_tq(struct pvr_context *ctx, struct pipe_resource *res, unsigned level,
++                           unsigned layer);
 +/* Records a full depth clear for the render a colour clear just opened; false if not possible. */
 +bool pvr_draw_note_zclear(struct pvr_context *ctx, float depth);
 +
@@ -17899,10 +18033,10 @@ index 00000000..8317cd94
 +#endif /* PVR_STATIC_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_vm.c b/src/gallium/drivers/pvr_native/pvr_vm.c
 new file mode 100644
-index 00000000..a13f5c72
+index 00000000..ac1d08c7
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_vm.c
-@@ -0,0 +1,1228 @@
+@@ -0,0 +1,1272 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -18530,6 +18664,45 @@ index 00000000..a13f5c72
 +}
 +
 +bool
++pvr_job_submit_transfer_async(struct pvr_vm *vm, uint32_t context_handle, const void *stream,
++                              uint32_t stream_len, uint32_t wait_sync, uint32_t *done_out)
++{
++   uint32_t done_sync = 0;
++   struct drm_pvr_sync_op ops[2];
++   struct drm_pvr_job job;
++   struct drm_pvr_ioctl_submit_jobs_args args = {
++      .jobs = { .stride = sizeof(job), .count = 1, .array = (__u64)(uintptr_t)&job },
++   };
++   if (drmSyncobjCreate(vm->fd, 0, &done_sync) != 0)
++      return false;
++   ops[0] = (struct drm_pvr_sync_op){
++      .handle = done_sync,
++      .flags = DRM_PVR_SYNC_OP_FLAG_SIGNAL | DRM_PVR_SYNC_OP_FLAG_HANDLE_TYPE_SYNCOBJ,
++   };
++   ops[1] = (struct drm_pvr_sync_op){
++      .handle = wait_sync,
++      .flags = DRM_PVR_SYNC_OP_FLAG_WAIT | DRM_PVR_SYNC_OP_FLAG_HANDLE_TYPE_SYNCOBJ,
++   };
++   job = (struct drm_pvr_job){
++      .type = DRM_PVR_JOB_TYPE_TRANSFER_FRAG,
++      .context_handle = context_handle,
++      /* A multi-core dispatch of a transfer job faults in the ISP data master (see the sync
++       * variant above). */
++      .flags = DRM_PVR_SUBMIT_JOB_TRANSFER_CMD_SINGLE_CORE,
++      .cmd_stream = (uint64_t)(uintptr_t)stream,
++      .cmd_stream_len = stream_len,
++      .sync_ops = { .stride = sizeof(ops[0]), .count = wait_sync ? 2 : 1,
++                    .array = (__u64)(uintptr_t)ops },
++   };
++   if (drmIoctl(vm->fd, DRM_IOCTL_PVR_SUBMIT_JOBS, &args) != 0) {
++      mesa_loge("pvr: SUBMIT_JOBS transfer (%u B) failed: %s", stream_len, strerror(errno));
++      drmSyncobjDestroy(vm->fd, done_sync);
++      return false;
++   }
++   *done_out = done_sync;
++   return true;
++}
++bool
 +pvr_job_submit_compute_async(struct pvr_vm *vm, uint32_t context_handle,
 +                             const void *stream, uint32_t stream_len, uint32_t *sync_out)
 +{
@@ -18597,10 +18770,11 @@ index 00000000..a13f5c72
 +bool
 +pvr_job_submit_render_batch(struct pvr_vm *vm, uint32_t context_handle,
 +                            const struct pvr_render_batch_entry *entries, uint32_t count,
-+                            uint32_t *done_out)
++                            uint32_t wait_sync, uint32_t *done_out)
 +{
 +   struct drm_pvr_job jobs[PVR_RENDER_BATCH * 3];
-+   struct drm_pvr_sync_op geom_ops[PVR_RENDER_BATCH], pr_ops[PVR_RENDER_BATCH * 2];
++   /* geom_ops[0] waits for wait_sync; render i signals with geom_ops[i + 1]. */
++   struct drm_pvr_sync_op geom_ops[PVR_RENDER_BATCH + 1], pr_ops[PVR_RENDER_BATCH * 2];
 +   struct drm_pvr_sync_op frag_ops[PVR_RENDER_BATCH];
 +   uint32_t geom_sync[PVR_RENDER_BATCH] = { 0 }, pr_sync[PVR_RENDER_BATCH] = { 0 };
 +   uint32_t done_sync[PVR_RENDER_BATCH] = { 0 };
@@ -18627,10 +18801,14 @@ index 00000000..a13f5c72
 +      }
 +   }
 +
++   geom_ops[0] = (struct drm_pvr_sync_op){
++      .handle = wait_sync,
++      .flags = DRM_PVR_SYNC_OP_FLAG_WAIT | DRM_PVR_SYNC_OP_FLAG_HANDLE_TYPE_SYNCOBJ,
++   };
 +   for (uint32_t i = 0; i < count; i++) {
 +      const struct pvr_render_batch_entry *e = &entries[i];
 +
-+      geom_ops[i] = (struct drm_pvr_sync_op){
++      geom_ops[i + 1] = (struct drm_pvr_sync_op){
 +         .handle = geom_sync[i],
 +         .flags = DRM_PVR_SYNC_OP_FLAG_SIGNAL | DRM_PVR_SYNC_OP_FLAG_HANDLE_TYPE_SYNCOBJ,
 +      };
@@ -18653,8 +18831,8 @@ index 00000000..a13f5c72
 +         .cmd_stream = (uint64_t)(uintptr_t)e->geom_stream,
 +         .cmd_stream_len = e->geom_len,
 +         .flags = DRM_PVR_SUBMIT_JOB_GEOM_CMD_FIRST | DRM_PVR_SUBMIT_JOB_GEOM_CMD_LAST,
-+         .sync_ops = { .stride = sizeof(geom_ops[0]), .count = 1,
-+                       .array = (__u64)(uintptr_t)&geom_ops[i] },
++         .sync_ops = { .stride = sizeof(geom_ops[0]), .count = (i == 0 && wait_sync) ? 2 : 1,
++                       .array = (__u64)(uintptr_t)&geom_ops[(i == 0 && wait_sync) ? 0 : i + 1] },
 +         .hwrt = { .set_handle = e->hwrt_set_handle, .data_index = e->hwrt_data_index },
 +      };
 +      jobs[3 * i + 1] = (struct drm_pvr_job){
@@ -19133,10 +19311,10 @@ index 00000000..a13f5c72
 +}
 diff --git a/src/gallium/drivers/pvr_native/pvr_vm.h b/src/gallium/drivers/pvr_native/pvr_vm.h
 new file mode 100644
-index 00000000..534c8427
+index 00000000..df54c126
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_vm.h
-@@ -0,0 +1,221 @@
+@@ -0,0 +1,228 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -19327,9 +19505,16 @@ index 00000000..534c8427
 +   uint32_t frag_flags;
 +};
 +
++/* wait_sync (0: none): a binary syncobj the batch's first geometry job waits for; every later job
++ * of the batch follows it (fragment jobs wait for their geometry job, the queues are in order). */
 +bool pvr_job_submit_render_batch(struct pvr_vm *vm, uint32_t context_handle,
 +                                 const struct pvr_render_batch_entry *entries, uint32_t count,
-+                                 uint32_t *done_out);
++                                 uint32_t wait_sync, uint32_t *done_out);
++/* One TRANSFER_FRAG job that waits for wait_sync (0: none); *done_out gets a binary syncobj it
++ * signals, owned by the caller. */
++bool pvr_job_submit_transfer_async(struct pvr_vm *vm, uint32_t context_handle,
++                                   const void *stream, uint32_t stream_len, uint32_t wait_sync,
++                                   uint32_t *done_out);
 +
 +bool pvr_job_submit_render(struct pvr_vm *vm, uint32_t context_handle,
 +                            const void *geom_stream, uint32_t geom_len,

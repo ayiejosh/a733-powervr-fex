@@ -13,7 +13,7 @@ ok() { printf 'PASS %s\n' "$*"; }
 bad() { printf 'FAIL %s\n' "$*"; fail=1; }
 
 # Compile the probes from source so the gate is self-contained.
-for p in cube_probe cube_mip border_probe mirror_probe aniso_probe polygon_offset_probe rg_probe f16rt_probe zls_mip_probe scissor_probe clear_diag fragcoord_diag texexact_probe rgbx_probe discard_probe; do
+for p in cube_probe cube_mip border_probe mirror_probe aniso_probe polygon_offset_probe rg_probe f16rt_probe zls_mip_probe scissor_probe clear_diag fragcoord_diag texexact_probe rgbx_probe discard_probe tqmip_probe; do
    rm -f "$OUT/$p"
    [ -f "$V/$p.c" ] || { bad "missing $p.c"; continue; }
    gcc -O2 "$V/$p.c" -o "$OUT/$p" -lEGL -lGLESv2 || bad "compile $p"
@@ -127,6 +127,17 @@ if echo "$dc" | grep -q '^RESULT: PASS'; then
    ok "discard"
 else
    bad "discard: $(echo "$dc" | grep '^DIAG BAD' | head -5 | tr '\n' ' ')"
+fi
+# Mip levels generated on the transfer queue (0399) hold the same bytes as the render path's: every
+# level of six sizes (odd and non-power-of-two included), regenerated after a redraw, and sampled by a
+# draw right after generation. The transfer path must also have run (its jobs are logged).
+PVR_NO_TQ_MIP=1 timeout 60 $OUT/tqmip_probe 2>/dev/null | grep '^MIP' > $OUT/tqmip-render.txt
+PVR_TQ_LOG=1 timeout 60 $OUT/tqmip_probe 2>$OUT/tqmip.err | grep '^MIP' > $OUT/tqmip-tq.txt
+nj=$(grep -c '^TQMIP' $OUT/tqmip.err)
+if [ -s $OUT/tqmip-render.txt ] && cmp -s $OUT/tqmip-render.txt $OUT/tqmip-tq.txt && [ "$nj" -gt 0 ]; then
+   ok "transfer-queue mip generation ($nj jobs)"
+else
+   bad "transfer-queue mip generation: $(diff $OUT/tqmip-render.txt $OUT/tqmip-tq.txt | grep -c '^[<>]') lines differ, $nj jobs"
 fi
 # No firmware context resets during the gate (CONTEXT_RESET_NOTIFICATION, which the kernel logs
 # undecoded; a GPU page fault shows up only as one). rt8test raised two per run until 0393 (R8/RG8
