@@ -62,15 +62,21 @@ open)
    if [ "$(drv)" != powervr ]; then
       # Do not leave the board without a driver/desktop: restore the vendor stack and fail loudly.
       sudo rmmod powervr 2>/dev/null
+      [ -x /usr/local/sbin/open-stack-libs.sh ] && sudo /usr/local/sbin/open-stack-libs.sh off
       sudo modprobe pvrsrvkm 2>/dev/null
       sleep 2
       sudo systemctl start display-manager 2>/dev/null
       echo "ABORT: open driver will not bind after a vendor probe cycle (left board on vendor+desktop); a clean reboot is needed for the open stack"
       exit 1
    fi
+   # With the open driver bound, the open Mesa (if installed, system/open-stack) becomes the GL, EGL, GBM
+   # and Vulkan programs find, including ones that ignore LD_LIBRARY_PATH such as kwin_wayland.
+   [ -x /usr/local/sbin/open-stack-libs.sh ] && sudo /usr/local/sbin/open-stack-libs.sh on
    ;;
 vendor)
    stop_clients
+   # The vendor stack must not find the open Mesa (system/open-stack).
+   [ -x /usr/local/sbin/open-stack-libs.sh ] && sudo /usr/local/sbin/open-stack-libs.sh off
    if lsmod | grep -q '^powervr '; then
       sudo rmmod powervr || { echo "ABORT: rmmod powervr failed"; exit 1; }
       sleep 1
