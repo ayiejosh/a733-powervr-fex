@@ -8,12 +8,14 @@ V=/home/radxa/a733-powervr-fex/open-driver-perf/tools/verify
 OUT=/tmp/run-all; mkdir -p $OUT
 export MESA_LOADER_DRIVER_OVERRIDE=pvr MESA_SHADER_CACHE_DISABLE=1
 fail=0
+t0=$(date '+%Y-%m-%d %H:%M:%S')
 ok() { printf 'PASS %s\n' "$*"; }
 bad() { printf 'FAIL %s\n' "$*"; fail=1; }
 
 # Compile the probes from source so the gate is self-contained.
-for p in cube_probe cube_mip border_probe mirror_probe aniso_probe polygon_offset_probe rg_probe f16rt_probe zls_mip_probe scissor_probe clear_diag; do
-   [ -f "$V/$p.c" ] || continue
+for p in cube_probe cube_mip border_probe mirror_probe aniso_probe polygon_offset_probe rg_probe f16rt_probe zls_mip_probe scissor_probe clear_diag fragcoord_diag texexact_probe rgbx_probe; do
+   rm -f "$OUT/$p"
+   [ -f "$V/$p.c" ] || { bad "missing $p.c"; continue; }
    gcc -O2 "$V/$p.c" -o "$OUT/$p" -lEGL -lGLESv2 || bad "compile $p"
 done
 
@@ -21,6 +23,9 @@ sets=$(sh $OP/tri.sh 2>&1 | tee $OUT/tri.log | grep -c '^== ')
 errs=$(grep -c 'glGetError: 0x0' $OUT/tri.log)
 nz=$(grep -c 'glGetError: 0x[^0]' $OUT/tri.log)
 [ "$nz" = 0 ] && [ "$errs" -ge 32 ] && ok "gltri $sets modes / $errs clean" || bad "gltri (nz=$nz ok=$errs)"
+# The one gate case that writes (glTexSubImage) into a level a render compressed with TFBC: since 0390
+# client-filled textures stay uncompressed, so only rendered levels reach the decode/patch/encode path.
+grep -q 'subimg patch (5,5) 00 00 ff  triangle (256,200) ff 00 00' $OUT/tri.log && ok "gltri subimg into a rendered TFBC level" || bad "gltri subimg"
 
 mip=$(sh $OP/tri.sh mip 2>&1 | tee $OUT/mip.log | grep -c 'pixel inside')
 mnz=$(grep -c 'glGetError: 0x[^0]' $OUT/mip.log)
@@ -78,6 +83,51 @@ if echo "$cr" | grep -q '^DIAG-END' && ! echo "$cr" | grep -q '^DIAG BAD'; then
    ok "clear quad (D1-D19)"
 else
    bad "clear quad: $(echo "$cr" | grep '^DIAG BAD' | head -5 | tr '\n' ' ')"
+fi
+
+# Fragment coordinates (0388): F1/F2 read gl_FragCoord directly, F3 the upload/readback round trip, F4
+# sampling at centres built from floor(gl_FragCoord), F5 F2 on a pbuffer (drawn y-flipped); F1, F2 and
+# F4 fail without 0388 (a half-pixel shift).
+fc=$(timeout 60 $OUT/fragcoord_diag 2>&1)
+if echo "$fc" | grep -q '^DIAG-END' && ! echo "$fc" | grep -q '^DIAG BAD'; then
+   ok "fragment coordinates (F1-F5)"
+else
+   bad "fragment coordinates: $(echo "$fc" | grep '^DIAG BAD' | head -5 | tr '\n' ' ')"
+fi
+
+# Texel-exact sampling at 12 sizes in GL_RGBA and GL_RGB (all but 62x62 fail without 0388, odd widths
+# also without 0391), odd-width render readback and partial upload (fail without 0391), a texture
+# sampled before its first upload (exercises 0390's flag flip), MRT attachment 1 read back or written
+# right after its render (need 0389's attachment tracking), glReadPixels from a GL_RGB target, R8/RG8
+# gradients (fail without 0393), a clear read back or patched with no flush and MRT attachment 0 patched
+# while bound (0389), and an MRT framebuffer with a hole in its draw buffers (crashed before 0389).
+te=$(timeout 60 $OUT/texexact_probe 2>&1)
+if echo "$te" | grep -q '^DIAG-END' && ! echo "$te" | grep -q '^DIAG BAD'; then
+   ok "texel-exact sampling and odd widths"
+else
+   bad "texel-exact sampling: $(echo "$te" | grep '^DIAG BAD' | head -5 | tr '\n' ' ')"
+fi
+
+# GL_RGB (R8G8B8X8) textures and targets: X1-X3 sampling and partial upload, X4 an RGB render target
+# read back and sampled (X1 and X4's sampling fail without 0388, X4's readback without 0389).
+rx=$(timeout 60 $OUT/rgbx_probe 2>&1)
+if echo "$rx" | grep -q '^RESULT: PASS' && ! echo "$rx" | grep -q '^SKIP'; then
+   ok "RGB textures and targets (X1-X4)"
+else
+   bad "RGB textures and targets: $(echo "$rx" | grep '^FAIL' | head -5 | tr '\n' ' ')"
+fi
+
+# No firmware context resets during the gate (CONTEXT_RESET_NOTIFICATION, which the kernel logs
+# undecoded; a GPU page fault shows up only as one). rt8test raised two per run until 0393 (R8/RG8
+# targets written at 4 bytes per pixel, past their end). A notice can arrive with a later job, so one
+# more short probe runs first.
+timeout 60 $OUT/fragcoord_diag >/dev/null 2>&1; sleep 3
+# (plain journalctl shows no kernel lines to a user outside adm/systemd-journal, so it would report 0)
+if log=$(sudo -n journalctl -k --since "$t0" 2>/dev/null); then
+   nr=$(printf '%s\n' "$log" | grep -c 'FWCCB command 2abc0069')
+   [ "$nr" = 0 ] && ok "no firmware context resets" || bad "firmware context resets: $nr"
+else
+   printf 'INFO firmware context resets during the gate: unknown (kernel log not readable)\n'
 fi
 
 if [ $fail = 0 ]; then echo "ALL GROUPS PASS"; else echo "SOME GROUPS FAILED"; fi

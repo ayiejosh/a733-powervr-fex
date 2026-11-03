@@ -22,7 +22,12 @@ GL versions today (probe `open-perf/glinfo`):
   MRT GPU clear, pixel-output width derived from the dword count; `GL_EXT_draw_buffers` advertised;
   mrt_test matches zink for 1/2/4 targets and for mixed RGBA8+BGRA8 (patch 0334: PBE source data is
   packed in logical channel order, which also fixed BGRA8 targets). Open MRT sub-items: all
-  attachments must be one dword per pixel; no per-render-target blend state (ES2 has none).
+  attachments must be one dword per pixel; no per-render-target blend state (ES2 has none); a hole in
+  the draw buffers (a GL_NONE between two attachments) is drawn as attachment 0 only (patch 0389),
+  and a framebuffer whose draw buffer 0 is GL_NONE is not drawn; a render that continues an MRT
+  framebuffer after a flush reloads attachment 0 only (`draw_load_program`), so attachments 1-3 are
+  not preserved outside the new draws; a scissored glClear of an MRT framebuffer (st's clear quad)
+  leaves attachments 1-3 uncleared (measured in TA-KICK-DISASSEMBLY.md round 250's sessions).
 - 2D array + 3D textures: `resource_create` refuses them; twiddled/stride descriptors are 2D-only
 - UBOs: uniforms are push-constants/shared-reg only; needs a real constant-buffer binding path
 - ~~Instancing (core; also EE: `GL_NV_draw_instanced`, `GL_NV_instanced_arrays`)~~ **DONE (patch
@@ -97,8 +102,8 @@ GL versions today (probe `open-perf/glinfo`):
 Board between tests: vendor + desktop + original firmware (`tools/verify/switch-safe.sh`). Never start GL
 harnesses while vendor is bound (caused a watchdog reset). Every feature needs its own gltri (or new test)
 mode comparing against zink checksums, plus the existing full gltri gate and 0 MMU faults before pushing.
-Patch series continues at the next number in `mesa/open-driver-series/` (currently ends at 0387;
-the next patch is 0388).
+Patch series continues at the next number in `mesa/open-driver-series/` (currently ends at 0393;
+the next patch is 0394).
 
 ### MRT design notes (recon 2026-10-29; implemented as patch 0332 - see round-73 notes for the
 `nir_lower_blend` colormask trap that ate attachment 1's store)
@@ -141,13 +146,15 @@ withdrawals, border/mirror clamp, anisotropy, emulated polygon offset, half-floa
 End-of-session status 2026-10-31 (patch series 0361, head 51b209dc) supersedes block 1 below: the
 copy replay was launching the wrong TQ shader (16-word 0x7340 instead of the 20-word 0x73c0 the IPF
 control stream's kickusc program at PDS 0x42000 names) and never installed the IPF control stream
-itself; both are fixed in probe 0361 and every input is now byte-exact. The replay still stores
+itself; both are fixed in probe 0361 and every input is now byte-exact (except PDS+0x1e40, which 0361
+zeroed - see TA-KICK-DISASSEMBLY.md round 251). The replay still stores
 nothing, but a kernel-side decode of the firmware's CCB shows it is a **hard fault**, not silence:
 `CTXRESET reason=1 (GUILTY_LOCKUP) dm=3 flags=0x1 fault=0xe00004b080` - the ISP data master page-faults
 on the texture-state DMA source `0x800004b080` resolved with the USC-heap base (`0xe000000000`) as its
 upper part. Next step: diff the fw `rogue_fwif_cmd_transfer` for the reference vs the replay with a
 temporary kernel print, then find the PDS/ISP DMA address-base state the reference sets up. See
-TA-KICK-DISASSEMBLY.md round-161 and captures/tq-fault/.
+TA-KICK-DISASSEMBLY.md round-161 and captures/tq-fault/. (Superseded, round 251: the missing piece was
+the unitex program at PDS+0x1e40, not DMA address-base state.)
 
 End-of-session status 2026-10-31 round-162 (patch series 0362, head 41f0d30d): the firmware command
 is now **byte-identical** to the reference's (only the deliberately patched clear register differs);
@@ -157,13 +164,25 @@ tracks the **first dword of the PDS program named by the IPF control stream's te
 resolved against the USC/PDS heap base - i.e. that program's first word is consumed as an address. Next:
 same-run capture of both texture-data programs *and* both control streams with per-pass tags (the copy
 blit builds two passes), then replay the matching pass; if it still faults, the remainder is per-context
-firmware state and the TQ path needs a transfer-context init job.
+firmware state and the TQ path needs a transfer-context init job. **Superseded (TA-KICK-DISASSEMBLY.md
+round 251):** the remainder was not firmware state: the probe installed the unitex program at
+PDS+0x1e40 as two zero words; with the generated program the replay copies 4096/4096 and no init job
+is needed.
 
 Open blocks, each with its precise next step:
 1. **Transfer-job copy replay**: see round-162 above - job description proven identical; remaining
    question is which control-stream/texture-data pair the reference executes per pass.
+   **Resolved 2026-11-03 (TA-KICK-DISASSEMBLY.md round 251):** the remaining difference was the
+   texture unicode program at PDS+0x1e40, installed as two zero words; generated with libpowervr_pds
+   (patch 0392) the captured copy job copies 4096/4096 on the open kernel. A native transfer path for
+   mip generation is the next step.
 2. **Performance**: remaining gap is FP16 ALU; pco has an lp-fmad bit but it gives only ~2%, and the
    vendor's ~2x on shading/terrain/refract needs F16SOP single-op FP16 encodings that pco lacks entirely.
+   Since then (TA-KICK-DISASSEMBLY.md rounds 243-250): the f16/F16SOP route is parked (243/245); a
+   non-batchable render pass costs native ~0.30 vs vendor ~0.25 ms (246/248; desktop emits 10 per
+   frame); compressing the RGB textures cut effect2d/desktop DRAM reads by 28-75 % for at most ~1 % fps
+   (249; bandwidth vs decode cost not separated); 0388 and 0390 gained 2-7 % on the gl_FragCoord and
+   client-texture scenes (249/250).
 3. **ES3 core**: needs the transfer/twiddle work (1) for 3D/array/compressed/depth uploads.
 
 ## Session summary 2026-10-30 (patch series 0346, head 483a4890)
@@ -192,7 +211,8 @@ Open items, in order of value:
    heap-relative offsets; every heap base has low 32 bits zero). Remaining work is driver integration:
    transfer context + install captured pixel-event/kickusc/unitex programs + generate the DMA
    space/stream + submit/verify. Artifacts: `tools/verify/captures/tq-ref/` (streams, pds.dump,
-   usc.dump, heap.dump, dma.dump, decode_transfer_stream.py, vktq_copy.c).
+   usc.dump, heap.dump (all zeros, TA-KICK-DISASSEMBLY.md round 251), dma.dump,
+   decode_transfer_stream.py, vktq_copy.c).
 2. **ES3 core block** (2D-array/3D, UBOs, integer formats, MSAA, primitive restart, occlusion queries,
    sampler objects, ES3 GLSL) - most of it also needs the transfer-job/upload work above.
 3. Polygon-offset slope term and the hardware depth-bias integer mode (parked: the int-mode bit hangs

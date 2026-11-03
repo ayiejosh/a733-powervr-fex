@@ -904,6 +904,10 @@ left in place for reuse; both are built from the patched source and never instal
 
 ## Transfer-job port status (end of 2026-10-30 session)
 
+**Superseded (TA-KICK-DISASSEMBLY.md round 251):** the missing piece was the unitex program at PDS+0x1e40,
+installed as zeros since probe 0361; with the generated program (patch 0392) the captured copy job
+copies 4096/4096 on the open kernel.
+
 Everything for a native TQ copy replay is captured and the harness exists, but the replay does not write
 the destination yet. Exact state:
 

@@ -1373,10 +1373,10 @@ index 00000000..0c679b3f
 +#endif /* PVR_COMPUTE_TRIANGLE_SPV_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_context.c b/src/gallium/drivers/pvr_native/pvr_context.c
 new file mode 100644
-index 00000000..54645949
+index 00000000..9fa20275
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_context.c
-@@ -0,0 +1,1029 @@
+@@ -0,0 +1,1035 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + */
@@ -1429,6 +1429,12 @@ index 00000000..54645949
 +    * through a linear copy of the level: the GPU decodes it into the staging resource (unless the
 +    * content is discarded) and, after a write, encodes it back on unmap. Twiddled depth is only
 +    * written by the ZLS. */
++   /* A compressed level that nothing has rendered into and that the CPU writes first belongs to a
++    * client texture: keep it uncompressed (sampling such textures compressed measured slower).
++    * Textures first written by a GPU render keep TFBC. The data address stays past the unused
++    * header area, and descriptors and PBE words read the flag at use. */
++   if (res->fbc && res->write_seq == 0 && (usage & PIPE_MAP_WRITE))
++      res->fbc = false;
 +   if (res->twiddled) {
 +      struct pvr_context *ctx = pvr_context(pctx);
 +      /* A cube map is mapped one face at a time: the box's z selects the face. */
@@ -2528,10 +2534,10 @@ index 00000000..2eddcdd5
 +#endif /* PVR_CONTEXT_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_csb.c b/src/gallium/drivers/pvr_native/pvr_csb.c
 new file mode 100644
-index 00000000..09a2ddbd
+index 00000000..55f2dc16
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_csb.c
-@@ -0,0 +1,1880 @@
+@@ -0,0 +1,1884 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + */
@@ -3568,9 +3574,13 @@ index 00000000..09a2ddbd
 +                                          : ROGUE_PBESTATE_PACKMODE_F16F16F16F16)
 +                        : ROGUE_PBESTATE_PACKMODE_F32F32F32F32;
 +   } else if (desc->channel[chan].size == 8) {
-+      sw1.packmode = desc->channel[chan].type == UTIL_FORMAT_TYPE_SIGNED
-+                        ? ROGUE_PBESTATE_PACKMODE_S8S8S8S8
-+                        : ROGUE_PBESTATE_PACKMODE_U8U8U8U8;
++      /* One byte per channel the format has (the reference's U8 / U8U8 / U8U8U8U8 for R8 / RG8 /
++       * RGBA8): U8U8U8U8 on a one- or two-channel target wrote 4 bytes per pixel, past its end. */
++      const bool sgn = desc->channel[chan].type == UTIL_FORMAT_TYPE_SIGNED;
++      sw1.packmode = nr_chan == 1   ? (sgn ? ROGUE_PBESTATE_PACKMODE_S8 : ROGUE_PBESTATE_PACKMODE_U8)
++                     : nr_chan == 2 ? (sgn ? ROGUE_PBESTATE_PACKMODE_S8S8 : ROGUE_PBESTATE_PACKMODE_U8U8)
++                                    : (sgn ? ROGUE_PBESTATE_PACKMODE_S8S8S8S8
++                                           : ROGUE_PBESTATE_PACKMODE_U8U8U8U8);
 +   } else {
 +      sw1.packmode = desc->channel[chan].type == UTIL_FORMAT_TYPE_SIGNED
 +                        ? ROGUE_PBESTATE_PACKMODE_S16S16S16S16
@@ -5281,10 +5291,10 @@ index 00000000..47695cc7
 +#endif /* PVR_CSB_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_draw.c b/src/gallium/drivers/pvr_native/pvr_draw.c
 new file mode 100644
-index 00000000..b9cecf1b
+index 00000000..fe7d6772
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_draw.c
-@@ -0,0 +1,2488 @@
+@@ -0,0 +1,2507 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -6612,10 +6622,10 @@ index 00000000..b9cecf1b
 +static bool
 +draw_format_ok(enum pipe_format f)
 +{
-+   /* Every 8-bit colour target the PBE can write with the generic U8x4 packmode: the 8888 set
-+    * plus the single/double-channel formats, which ES2 needs as render targets only so that
++   /* Every 8-bit colour target the PBE writes with its own byte-per-channel pack mode: the 8888
++    * set plus the single/double-channel formats, which ES2 needs as render targets so that
 +    * EXT_texture_rg is advertised (Mesa gates it on R8/RG8 being renderable, table
-+    * st_extension_format_mapping); rendering them works the same through the twiddled path. */
++    * st_extension_format_mapping). */
 +   return f == PIPE_FORMAT_R8G8B8A8_UNORM || f == PIPE_FORMAT_B8G8R8A8_UNORM ||
 +          f == PIPE_FORMAT_R8G8B8X8_UNORM || f == PIPE_FORMAT_B8G8R8X8_UNORM ||
 +          f == PIPE_FORMAT_R8_UNORM || f == PIPE_FORMAT_R8G8_UNORM ||
@@ -6863,6 +6873,19 @@ index 00000000..b9cecf1b
 +{
 +   return ctx->fb.nr_cbufs && ctx->fb.cbufs[0].texture ? ctx->fb.cbufs[0].level : 0;
 +}
++/* The colour attachments a framebuffer render writes; the draw-time shader variant, the EOT and the
++ * GPU clear all use it. shortcut: a hole in the list (a GL_NONE draw buffer between two others) is
++ * drawn as attachment 0 only and cleared on the CPU, and a framebuffer whose draw buffer 0 is
++ * GL_NONE is not drawn at all; handle holes in the EOT layout when an app needs it. */
++static unsigned
++draw_fb_nr_attach(const struct pvr_context *ctx)
++{
++   const unsigned nr = MIN2(ctx->fb.nr_cbufs, PVR_MAX_COLOR_ATTACHMENTS);
++   for (unsigned i = 1; i < nr; i++)
++      if (ctx->fb.cbufs[i].texture == NULL)
++         return 1;
++   return nr;
++}
 +
 +/* The vertex shader derives each attribute's fetch format from the declared type.  GL lets the
 + * bound vertex element supply fewer components (a vec4 attribute fed three floats gets w = 1) and
@@ -7002,7 +7025,7 @@ index 00000000..b9cecf1b
 +   /* The fragment shader variant for this framebuffer's colour format(s) and blend state. MRT v1:
 +    * every attachment shares the first one's format (the background program emits one value). */
 +   enum pipe_format rt_formats[PVR_MAX_COLOR_ATTACHMENTS] = { rt_format };
-+   unsigned nr_formats = MIN2(ctx->fb.nr_cbufs, PVR_MAX_COLOR_ATTACHMENTS);
++   unsigned nr_formats = draw_fb_nr_attach(ctx);
 +   for (unsigned i = 0; i < nr_formats; i++)
 +      rt_formats[i] = ctx->fb.cbufs[i].format;
 +   nir_lower_blend_options blend;
@@ -7297,7 +7320,7 @@ index 00000000..b9cecf1b
 +{
 +   struct pvr_draw_state *d = ctx->draw;
 +   if (ctx->fb.nr_cbufs == 0 || ctx->fb.cbufs[0].texture == NULL ||
-+       !draw_format_ok(ctx->fb.cbufs[0].format))
++       !draw_format_ok(ctx->fb.cbufs[0].format) || draw_fb_nr_attach(ctx) < ctx->fb.nr_cbufs)
 +      return false;
 +   if (d == NULL) {
 +      ctx->draw = d = calloc(1, sizeof(struct pvr_draw_state));
@@ -7406,6 +7429,9 @@ index 00000000..b9cecf1b
 +pvr_draw_resource_sync(struct pvr_context *ctx, struct pvr_resource *res)
 +{
 +   struct pvr_draw_state *d = ctx->draw;
++   /* Flush an open render that writes res first: it marks MRT attachments 1-3 only when flushed, and
++    * a render that only clears defers its clear onto res, which the materialize below realizes. */
++   pvr_draw_flush_writer(ctx, &res->base);
 +   if (res->clear_pending || res->zclear_pending)
 +      draw_materialize(ctx, &res->base);
 +   if (d == NULL || res->render_seq == 0)
@@ -7574,12 +7600,13 @@ index 00000000..b9cecf1b
 +   unsigned nr_attach = 1;
 +   uint64_t eot_addrs[PVR_MAX_COLOR_ATTACHMENTS] = { 0 };
 +   enum pipe_format eot_formats[PVR_MAX_COLOR_ATTACHMENTS] = { PIPE_FORMAT_NONE };
-+   const unsigned nr_fb = MIN2(ctx->fb.nr_cbufs, PVR_MAX_COLOR_ATTACHMENTS);
++   const unsigned nr_fb = draw_fb_nr_attach(ctx);
 +   /* MRT only when this render really is the framebuffer's: materialize/blit renders open the
-+    * driver's own target (d->rt) while the context framebuffer state still names some other set. */
++    * driver's own target (d->rt) while the context framebuffer state still names some other set,
++    * and one into attachment 0 itself (a CPU map's encode, a deferred clear) is not it either. */
 +   const bool fb_render =
-+      !zonly && nr_fb > 1 && d->rt == ctx->fb.cbufs[0].texture &&
-+      d->rt_level == ctx->fb.cbufs[0].level;
++      !zonly && nr_fb > 1 && d->load_src == NULL && !d->no_defer &&
++      d->rt == ctx->fb.cbufs[0].texture && d->rt_level == ctx->fb.cbufs[0].level;
 +   const uint64_t rt_addr = pvr_resource_level_addr_layer(rt, d->rt_level, d->rt_layer);
 +   if (zonly) {
 +      eot_addrs[0] = rt_addr;
@@ -7591,6 +7618,8 @@ index 00000000..b9cecf1b
 +         nr_attach = nr_fb;
 +         for (unsigned i = 1; i < nr_attach; i++) {
 +            struct pvr_resource *ri = pvr_resource(ctx->fb.cbufs[i].texture);
++            /* This render writes attachment i too: a CPU map of it must wait for the render. */
++            draw_use(d, ctx->fb.cbufs[i].texture);
 +            eot_addrs[i] = pvr_resource_level_addr(ri, ctx->fb.cbufs[i].level);
 +            eot_formats[i] = ctx->fb.cbufs[i].format;
 +         }
@@ -7969,10 +7998,10 @@ index 00000000..7c2fb328
 +#endif /* PVR_HWRT_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
 new file mode 100644
-index 00000000..72f28844
+index 00000000..602620f7
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_probe.c
-@@ -0,0 +1,6447 @@
+@@ -0,0 +1,6463 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -13854,10 +13883,6 @@ index 00000000..72f28844
 +      0x81040000, 0x00080061, 0x80020000, 0xa057ff6a, 0x8044e400, 0x88088062, 0xff00a080,
 +      0xff6a8002, 0x87008a36, 0x20000040, 0xfffffff2, 0x87808a34, 0x21000041,
 +   };
-+   /* Captured unitex "texture unicode" program at PDS+0x1e40 for this copy job: two zero words
-+    * (the reference uploads a 2-word no-op here; the shader's inputs come from the texturedata
-+    * DMA at PDS+0x2640). */
-+   static const uint32_t texdata_code[2] = { 0x00000000, 0x00000000 };
 +   struct drm_pvr_ioctl_create_context_args cargs = {
 +      .type = DRM_PVR_CTX_TYPE_TRANSFER_FRAG,
 +      .vm_context_handle = vm->context_handle,
@@ -14061,7 +14086,27 @@ index 00000000..72f28844
 +      memcpy((uint8_t *)pdsbo.map + (0x2600 - 0x1000), fill_data, sizeof(fill_data));
 +      memcpy((uint8_t *)pdsbo.map + (0x2620 - 0x1000), fill_code, sizeof(fill_code));
 +   }
-+   memcpy((uint8_t *)pdsbo.map + (0x1e40 - 0x1000), texdata_code, sizeof(texdata_code));
++   {
++      /* The unitex "texture unicode" program at PDS+0x1e40: the DOUTD that DMAs the texture state
++       * from the texturedata segment (PDS+0x2640/0x2700) into the shader's shared registers, then
++       * HALT. Generated by the libpowervr_pds call the reference transfer context uses for one
++       * texture DMA kick (pvr_arch_pds_unitex_state_program_create_and_upload); the reference
++       * single-run capture holds the same f4020000 d3000000. With zero words here (an earlier
++       * dump printed code-only uploads as zeros) the copy faulted: decoded statically, the PDS
++       * runs on into the next program, which kicks the USC at the texture-state address
++       * (CTXRESET, PF at USC heap + texdata low word). */
++      struct pvr_pds_pixel_shader_sa_program up = { .num_texture_dma_kicks = 1 };
++      static uint32_t unitex[16] __attribute__((aligned(64)));
++
++      pvr_pds_set_sizes_pixel_shader_uniform_texture_code(&up);
++      if (up.code_size != 2) {
++         printf("tqcopy:        FAIL: unitex code is %u words, expected 2\n", up.code_size);
++         goto out_bo;
++      }
++      pvr_pds_generate_pixel_shader_sa_code_segment(&up, unitex);
++      memcpy((uint8_t *)pdsbo.map + (0x1e40 - 0x1000), unitex, 2 * sizeof(uint32_t));
++      printf("tqcopy:        PDS+0x1e40 unitex = %08x %08x\n", unitex[0], unitex[1]);
++   }
 +   memcpy((uint8_t *)pdsbo.map + (0x2680 - 0x1000), ev_data, sizeof(ev_data));
 +   memcpy((uint8_t *)pdsbo.map + (0x26a0 - 0x1000), ev_code, sizeof(ev_code));
 +
@@ -14450,10 +14495,10 @@ index 00000000..dab58714
 +#endif /* PVR_PUBLIC_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_resource.c b/src/gallium/drivers/pvr_native/pvr_resource.c
 new file mode 100644
-index 00000000..bb79c92c
+index 00000000..6fccbeff
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_resource.c
-@@ -0,0 +1,364 @@
+@@ -0,0 +1,374 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + */
@@ -14495,7 +14540,10 @@ index 00000000..bb79c92c
 +         *size = (uint64_t)*stride * ALIGN_POT(templ->height0, 32);
 +         return true;
 +      }
-+      *stride = util_format_get_stride(templ->format, templ->width0);
++      /* The PBE line stride counts 2-pixel units (pbestate.xml, pvr_pbe_linestride), so an odd pitch
++       * is written one pixel wider than the CPU and the TPU read it. Pad as the Vulkan driver does
++       * (pvr_image.c, get_pbe_stride_align: BXM-4-64 lacks pbe_stride_align_1pixel). */
++      *stride = util_format_get_stride(templ->format, ALIGN_POT(templ->width0, 2));
 +      *size = (uint64_t)*stride * templ->height0;
 +      return true;
 +
@@ -14758,6 +14806,13 @@ index 00000000..bb79c92c
 +   const off_t size = lseek(whandle->handle, 0, SEEK_END);
 +   if (size <= 0 || (uint64_t)whandle->stride * templ->height0 > (uint64_t)size)
 +      return NULL;
++   /* The PBE stores a linear pitch in 2-pixel units: a render target whose pitch it cannot encode, or
++    * any pitch shorter than a row, would have rows written past the buffer. (The DRI frontend marks
++    * every import in a renderable format as a render target, so the 2-pixel rule covers those.) */
++   if (whandle->stride < util_format_get_stride(templ->format, templ->width0) ||
++       ((templ->bind & PIPE_BIND_RENDER_TARGET) &&
++        whandle->stride % (2 * util_format_get_blocksize(templ->format)) != 0))
++      return NULL;
 +   if (drmPrimeFDToHandle(screen->fd, whandle->handle, &handle) != 0)
 +      return NULL;
 +   res = CALLOC_STRUCT(pvr_resource);
@@ -14967,10 +15022,10 @@ index 00000000..3f8798ac
 +#endif /* PVR_RESOURCE_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_screen.c b/src/gallium/drivers/pvr_native/pvr_screen.c
 new file mode 100644
-index 00000000..57a5fb3d
+index 00000000..2fe83545
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_screen.c
-@@ -0,0 +1,492 @@
+@@ -0,0 +1,502 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -15299,6 +15354,10 @@ index 00000000..57a5fb3d
 +       * fragment variant maps data0..3. ES3 needs 4; v1 requires a shared format (see flush). */
 +      caps->max_render_targets = 4;
 +      caps->generate_mipmap = true; /* GPU box filter renders, pvr_generate_mipmap */
++      /* pvr_blit skips blits that convert, flip or scale, so st must not stage ReadPixels or
++       * TexSubImage conversions through it (RGBX/BGRA readbacks returned the untouched staging
++       * texture, all zeros). 0 selects st's CPU map + util_format fallbacks. */
++      caps->texture_transfer_modes = 0;
 +
 +      /* Separate RGB/alpha blend equations. Not a guess: Mesa's own ES2 requirement
 +       * list (version.c compute_version_es2) is exactly three extensions -
@@ -15323,6 +15382,12 @@ index 00000000..57a5fb3d
 +       * sampler-border work item.) */
 +      caps->fragment_shader_depth = false;
 +      caps->texture_shadow_map = false;
++      /* gl_FragCoord conventions, as zink declares them over the same pco code: pco reads x/y from
++       * SR_X_P/SR_Y_P, which hold pixel centres (x + 0.5) with an upper-left origin. With none of
++       * the four caps set, nir_lower_wpos_ytransform reaches UNREACHABLE("invalid options"); the
++       * release build then adds 0.5, so gl_FragCoord.xy = (x + 1.0, y + 1.0). */
++      caps->fs_coord_origin_upper_left = true;
++      caps->fs_coord_pixel_center_half_integer = true;
 +   }
 +
 +   /* Runtime info: free-list sizing and the shader limits, which pco needs before it

@@ -1,0 +1,40 @@
+From 9810d6b1bee1b8e424507b5e9ec390b8585f864d Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Mon, 2 Nov 2026 23:02:58 +0800
+Subject: [PATCH 388/393] gallium/pvr: declare the fragment coordinate
+ conventions
+
+The driver set none of the fs_coord_* caps. With all four false,
+nir_lower_wpos_ytransform reaches UNREACHABLE("invalid options"); in a
+release build that is undefined behaviour, and the generated code adds 0.5
+to the hardware position, so gl_FragCoord.xy read (x + 1.0, y + 1.0), half
+a pixel past the pixel centre. A NEAREST texture read at
+gl_FragCoord.xy / size returned texel (x + 1, y + 1) at every power-of-two
+size. An assert build would abort.
+
+pco reads the position from SR_X_P/SR_Y_P, which hold pixel centres with an
+upper-left origin, the same as zink declares over the same compiler.
+---
+ src/gallium/drivers/pvr_native/pvr_screen.c | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_screen.c b/src/gallium/drivers/pvr_native/pvr_screen.c
+index 57a5fb3d..4fb11f9c 100644
+--- a/src/gallium/drivers/pvr_native/pvr_screen.c
++++ b/src/gallium/drivers/pvr_native/pvr_screen.c
+@@ -350,6 +350,12 @@ pvr_screen_create(int fd, const struct pipe_screen_config *config,
+        * sampler-border work item.) */
+       caps->fragment_shader_depth = false;
+       caps->texture_shadow_map = false;
++      /* gl_FragCoord conventions, as zink declares them over the same pco code: pco reads x/y from
++       * SR_X_P/SR_Y_P, which hold pixel centres (x + 0.5) with an upper-left origin. With none of
++       * the four caps set, nir_lower_wpos_ytransform reaches UNREACHABLE("invalid options"); the
++       * release build then adds 0.5, so gl_FragCoord.xy = (x + 1.0, y + 1.0). */
++      caps->fs_coord_origin_upper_left = true;
++      caps->fs_coord_pixel_center_half_integer = true;
+    }
+ 
+    /* Runtime info: free-list sizing and the shader limits, which pco needs before it
+-- 
+2.47.3
+

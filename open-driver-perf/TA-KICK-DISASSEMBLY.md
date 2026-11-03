@@ -2478,6 +2478,9 @@ Captures from this round are checked in (`tx-*.dump`, `cs-*.bin`).
 
 ## Round-120 (2026-10-30): complete PDS/USC/transfer heap dump captured for one copy
 
+**RETRACTED (round 251):** every word in `captures/tq-ref/heap.dump` is zero (7984 of 7984), so it does
+not hold the programs' bytes. The valid program captures are `pds.dump`, `usc.dump` and `copypds.dump`.
+
 Wrapped `pvr_bo_suballoc` with an env-gated dump (`PVR_DUMP_HEAP`) that records every allocation in the
 pds, usc and transfer-frag heaps with its heap offset, size and bytes. Running the known buffer copy
 once produced **69 allocation records (106 KB)**: every PDS program (offsets 0x1000..0x73c0) and USC
@@ -2637,7 +2640,8 @@ which closes the loop.
 Replay recipe (all pieces now known and checked in):
 1. load the captured transfer stream (fill stream 0 and copy stream 1 from `cd -- cs.dump`);
 2. install the captured PDS/USC programs at their captured heap offsets (bundles in
-   `captures/tq-ref/`: `heap.dump` has every program's bytes and offsets);
+   `captures/tq-ref/`: `pds.dump`/`usc.dump` have the programs' bytes and offsets; `heap.dump` is all
+   zeros, round 251);
 3. map the source and destination buffers in the general heap, write the copy stream's
    pixel-event data word 2 with `dst >> 2` and the kickusc PDS data word 2 with `src >> 2` (high-bit words
    keep their captured templates; the general heap keeps their value valid);
@@ -3193,6 +3197,10 @@ pattern (4 windows x multi-pass desktop effects) points at per-small-render-pass
 
 ## Round-161 (2026-10-31): the copy replay *hard-faults* in firmware - the missing state is the DMA/texture address base
 
+**RETRACTED (round 251):** the heading's conclusion and the address-base reading below do not stand. The
+programs were not byte-identical (PDS+0x1e40 held zeros in the probe); with the generated program the
+same job copies 4096/4096. The section is kept as the record of what was believed.
+
 ### 1. The replay was launching the wrong TQ shader (fixed in the probe)
 PDS/USC dumps from one reference `vktq_copy` run (temporary hooks in `src/imagination/vulkan`, reverted)
 show the reference compiles **two** TQ fragment shaders per run:
@@ -3211,8 +3219,12 @@ temps. Also captured byte-exact and now installed:
   base `0xe400000000` (the stream's `isp_mtile_base` is its heap offset, 0); the replay never mapped it;
 * the reference's texture-unicode program at PDS `0x1e40`: two **zero** words (the probe had guessed a
   DMA program there);
+  **RETRACTED (round 251):** the reference holds `f4020000 d3000000` there
+  (`captures/tq-fault/single-run-blocks.txt:623-625`); probe 0361 (51b209dc) replaced the correct
+  pair that earlier probes had with zeros from a dump that printed code-only uploads as zeros.
 * the texture-state DMA program at PDS `0x2700` (`state->tex_state_data_offset`, named by the control
-  stream's TEXTUREDATABASE field) - `[0x0004b080, 0x00000080, 0x90000014, 0]`;
+  stream's TEXTUREDATABASE field) - `[0x0004b080, 0x00000080, 0x90000014, 0]`; (corrected in round 163:
+  the reference holds `0x0004b100` there; `0x0004b080` is the 0x2640 program);
 * the PDS block named at `0x26c0` (`pvr_isp_prim_block_pds_state`'s varying base) and both kickusc
   program buffers (`data = [task, 8]` + `f4000002` code, 0x24-byte BOs).
 
@@ -3318,6 +3330,11 @@ plus that decode.
 
 ## Round-163 (2026-10-31): coherent single-run snapshot - the replay's inputs are now provably identical, the fault is per-context firmware state
 
+**RETRACTED (round 251):** the inputs were not identical: PDS+0x1e40, listed below as byte-identical,
+holds `f4020000 d3000000` in this snapshot and held zeros in the probe. The per-context-state conclusion
+here, and its restatements in rounds 164-166, does not stand. The section is kept as the record of what
+was believed.
+
 ### 1. Root cause of the contradictory bisection results: mixed runs
 The PDS sub-allocator hands out offsets in allocation order, so a stream captured in one process run
 does not necessarily name the same blocks as an allocation dump from another run. Every earlier
@@ -3392,6 +3409,11 @@ all job inputs (stream, control stream, shaders, DMA spaces) verified byte-ident
 the remaining difference is firmware-visible per-context state or the hardware's DMA address-base
 selection for the transfer path, not the static programs.
 
+**RETRACTED (round 251):** the inputs were not byte-identical: at PDS+0x1e40 the probe had zeros and
+the reference `f4020000 d3000000` (`open-perf/tasks/T-2026-11-02-texture-tq/tq-reexam/tq_memdiff.out`),
+so the per-context-state conclusion
+here does not stand; see round 251.
+
 Next (unchanged from round-163, now with the static areas ruled out): dump the kernel's
 `rogue_fwif_fwtransfercontext` for both paths and diff; if identical, compare the two processes'
 first-kick timing (the reference submits its clear pass first on the same context).
@@ -3429,6 +3451,10 @@ the stream; the control-stream words 56 and 60 need small additions), using the 
 values as the reference for "DOUTD mode works" - the draws set the same kind of texturedata program and
 the hardware does treat it as a DMA descriptor there.
 
+**RETRACTED (round 251):** the program bytes were not identical (PDS+0x1e40: probe zeros, reference
+`f4020000 d3000000`); with the generated program the copy writes 4096/4096 (round 251). The
+measurements above stand.
+
 Note: the round-163/164 fault-address bisection is partly confounded - the probe's static firmware
 areas were unmapped then (fixed in round-164), so some of those faults were "firmware executed from
 unmapped static memory" rather than the transfer job itself.
@@ -3453,6 +3479,9 @@ stays blocked; the honest conclusion after rounds 161-166 is that the remaining 
 the userspace-visible job state (command, all mapped memory, static programs and kernel context object
 all verified identical or structurally identical), i.e. firmware behaviour we cannot reach from the
 userspace side with these probes.
+
+**RETRACTED (round 251):** this conclusion rests on round 163's byte-identical claim, which failed at
+PDS+0x1e40; with the correct program there the same job copies 4096/4096 (round 251).
 
 ### 2. Performance re-baseline (bench31, native + zink)
 `bench31.sh` on the current driver (patches 0361-0365): **native 794 / 805** (previous baseline
@@ -5395,6 +5424,13 @@ per render job set, ~0.25 ms) stays the biggest measured lever. That is why terr
 
 ## Round 244 - the transfer (TQ) route for mip generation is blocked below userspace
 
+**RETRACTED (round 251):** the conclusion below is wrong. The copy faulted because the probe installed
+the texture unicode program at PDS+0x1e40 as two zero words; with the generated program (patch 0392)
+the same captured job copies 4096/4096 on the open kernel. The table of ruled-out differences stands
+(each row was measured); the "firmware-visible per-context state" conclusion does not, nor do the
+claims in rounds 161-166 it rests on, the sentences in rounds 241, 243 and 246 that repeat it, or the
+pointers to that state in rounds 183 and 242. The section is kept as the record of what was believed.
+
 Round 241 measured the prize (terrain 20 -> 30 fps, refract 33 -> 46 with mip generation skipped vs
 zink 27/46), round 242 retracted the one-job render merge, and the remaining reference mechanism was
 the transfer path: zink generates mips with `util_gen_mipmap`'s per-level `pipe->blit` ->
@@ -5542,3 +5578,423 @@ well).
 
 Evidence: `open-perf/tasks/T-2026-11-02-codegen/runs/021-per-pass-cost/card.md` (tables, raw log
 paths, instrumentation patch, per-scene counter table); raw microbench logs in `open-perf/runs-246/`.
+
+## Round 247 - per-scene gaps on one command per stack: the vendor driver is not CPU-bound, native CPU time was not logged, and FBC helps on every scene tried
+
+Round 246 left the scenes that submit one render job set per frame as the next lever. This round
+asked whether their remaining gap is CPU time in the driver (a userspace lever) or GPU work. It ran
+each scene's default glmark2 variant once per stack in one sitting, as two script runs (below):
+`glmark2-es2 --off-screen -b "<scene>:duration=3"`, 800x600, same binary, governor performance,
+taskset 6-7, `system.slice` limited to CPUs 0-5. The vendor arm ran on a bare `Xorg :1` (bench31's vendor arm) under bash
+`time`; the native arm ran under headless weston + Xwayland with `MESA_LOADER_DRIVER_OVERRIDE=pvr`.
+The first native pass (`run-247.sh`) ran no glmark2: its `TIMEFORMAT=... time env ...` line makes
+bash look for an external `time` program, which the board does not have (`X=1 time true` reproduces
+`time: command not found`), so every native scene recorded no fps and the identity check printed
+`STACK ERROR native identity` (`summary.txt`). The native arm was re-run with `run-247b.sh` about two
+minutes later, after the first script had restored the vendor stack and the display manager
+(`sw-restore.log` 19:03:35) and the second had switched back (`sw-open.log` 19:04:24). Identities from the
+logs: vendor `OpenGL ES 3.2 build 24.2@6603887` with no "Mesa" in any vendor log; native
+`OpenGL ES 2.0 Mesa 26.3.0-devel (git-bfcee2c932)` with renderer
+`PowerVR B-Series BXM-4-64 (36.56.104.183)` in every native log.
+
+| scene        | vendor fps | native fps | n/v  | vendor CPU/frame | vendor CPU share |
+|--------------|-----------:|-----------:|-----:|-----------------:|-----------------:|
+| loop         |       1511 |       1358 | 0.90 | 0.241 ms | 36 % |
+| bump         |       2168 |       1564 | 0.72 | 0.164 ms | 35 % |
+| texture      |       1584 |       1370 | 0.86 | 0.134 ms | 21 % |
+| conditionals |       1913 |       1381 | 0.72 | 0.121 ms | 23 % |
+| function     |       1903 |       1388 | 0.73 | 0.136 ms | 26 % |
+| shading      |       1354 |        879 | 0.65 | 0.197 ms | 27 % |
+| build        |       1786 |       1222 | 0.68 | 0.131 ms | 23 % |
+| desktop      |        333 |        124 | 0.37 | 1.335 ms | 44 % |
+
+`n/v` is native fps / vendor fps from one run each of the same `-b "<scene>:duration=3"` command,
+i.e. the scene's default variant only. These are **not** bench31's ratios: bench31 runs named
+variants (three for loop) twice per stack and reports each variant, so the two sets measure
+different things and can differ a lot (loop is 0.90 here; round 241 has 0.61 / 0.62 / 0.50 for
+bench31's three loop variants). Compare the n/v values only with each other. `vendor CPU/frame` is
+user+sys from bash `time` divided by fps x 3 s, and `vendor CPU share` is that divided by glmark2's
+FrameTime. `time` covers the whole process (real 3.1-3.75 s for the 3 s window, so start-up and
+shader compilation are included), so both columns are upper bounds on the glmark2 process's own
+steady-state CPU time (driver work in kernel threads and in the X server is not counted).
+
+There is no native CPU column. In `run-247b.sh` the bash `time` keyword prints to the script's own
+stderr, outside the `> $out 2>&1` redirect, so neither `native-*.txt` nor `summary-native.txt`
+holds the native CPU time. This round therefore has no logged native CPU number and makes no native
+CPU claim.
+
+The same session also ran a native-only A/B of two layout knobs (`run-247c.sh`,
+`PVR_NATIVE_DEBUG=no_fbc` turns framebuffer compression off; `no_twiddle` uses the linear layout for
+colour and depth targets and mip chains, which also turns TFBC off because TFBC is set only on twiddled
+colour targets, so that arm is "no twiddle + no FBC", not twiddling alone; parsed at
+`pvr_screen.c:418-419` and applied in `pvr_resource.c:95-161` of the measured bfcee2c9 build; one run
+each, same identity in every log; percentages are the fps change against control):
+
+| scene   | control fps | no_fbc fps (vs control) | no_twiddle fps (vs control) |
+|---------|------------:|-----------:|---------------:|
+| desktop |         126 | 114 (-9.5 %)  | 112 (-11.1 %) |
+| loop    |        1316 | 1208 (-8.2 %) | 1149 (-12.7 %) |
+| shading |         917 | 806 (-12.1 %) | 781 (-14.8 %) |
+
+The control runs differ from the native runs in the first table by 1.6-4.3 % (126 vs 124, 1316 vs
+1358, 917 vs 879), which is the spread between single runs here. The FBC effect (8-12 %) is larger.
+Twiddling alone (no_twiddle against no_fbc) is -1.8 / -4.9 / -3.1 % (desktop FrameTime 8.808 -> 8.998
+ms), inside that spread except loop (-4.9 %, just outside it). Each arm ran once, always in the order
+control, no_fbc, no_twiddle (`run-247c.sh:33-34`).
+
+What it means:
+
+- **The vendor driver is not CPU-bound on any of these scenes** (no glmark2 thread saturated; the X
+  server and kernel threads were not measured): even as an
+  upper bound, its CPU time is 21-44 % of its frame time.
+- **For the native driver this round does not answer the CPU question.** The only native evidence is
+  indirect: native frame time is sensitive to the GPU-side layout on all three A/B scenes (8-12 %
+  fewer fps without FBC, 11-15 % with no_twiddle, which also drops FBC), which is consistent with
+  GPU-limited frames; this is not a CPU
+  measurement. A re-run that writes the timing into the log is needed before a native CPU number can
+  be quoted.
+- **FBC helps on every scene tried, desktop included** (8-12 %). The linear layout, which also drops
+  FBC, costs 11-15 %; twiddling's own share cannot be told apart from single-run noise here. Neither
+  knob is a fix for desktop's gap.
+- In this run loop (0.90) and texture (0.86) have the smallest gaps, shading, build, bump,
+  conditionals and function sit at 0.65-0.73, and desktop (0.37, 10 render job sets per frame from
+  round 246) is the outlier. This round does not measure what the 0.65-0.73 band is made of.
+
+Evidence: `open-perf/runs-247/` (`vendor-<scene>.txt`, `native-<scene>.txt`, `summary.txt`,
+`summary-native.txt`, `ab-<arm>-<scene>.txt`, `desktop-ab.txt`) and the scripts
+`open-perf/run-247.sh`, `run-247b.sh`, `run-247c.sh`; run card
+`open-perf/tasks/T-2026-11-02-codegen/runs/022-per-frame-bound/card.md` (its native CPU column has
+no saved log behind it).
+
+## Round 248 - the per-pass fixed cost does not depend on target size (64x64 to 512x512) on either stack
+
+Round 246 measured the cost of a non-batchable render pass with 64x64 passes only. This round asked
+whether that cost grows with the pass's target size (fill or bandwidth) or stays fixed per render job
+set. It reused `drawbench2` (db2) in `MODE=alt` (NPASSES small passes that alternate between two
+targets, so no driver can merge them, plus one 800x600 pass per frame), with NPASSES=1 and 27, PSIZE (the side
+of the small square targets) 64, 256 and 512, FRAMES=200, surfaceless EGL, governor performance,
+taskset 6-7, vendor and native in one session, one run per cell. Identities from the logs: vendor
+`OpenGL ES 3.2 build 24.2@6603887` in `identity-vendor.txt` and every vendor log, no "Mesa"; native
+`OpenGL ES 2.0 Mesa 26.3.0-devel (git-bfcee2c932)` + `(36.56.104.183)` in every native log. The
+vendor arm ran first, before the stack switch, and the script does not stop the desktop session for
+it; the native arm ran after the switch, with no desktop session. Interference from the live desktop
+(its user.slice processes are not limited to CPUs 0-5) is expected to slow only the vendor cells, so the native
+premium below is if anything a lower bound. Round 246 ran its vendor arm the same way.
+
+| stack  | PSIZE | fps, NPASSES=1 | fps, NPASSES=27 | marginal/pass |
+|--------|------:|---------------:|----------------:|--------------:|
+| vendor |    64 | 1407.2 | 136.1 | **0.255 ms** |
+| vendor |   256 | 1312.7 | 130.4 | **0.266 ms** |
+| vendor |   512 | 1210.0 | 136.0 | **0.251 ms** |
+| native |    64 | 1239.2 | 114.9 | **0.304 ms** |
+| native |   256 | 1283.7 | 116.6 | **0.300 ms** |
+| native |   512 | 1350.4 | 113.0 | **0.312 ms** |
+
+`marginal/pass` = (frame time at NPASSES=27 - frame time at NPASSES=1) / 26, with frame time =
+1000 / fps. The same logs record the process's CPU time (`cpu=`, getrusage user+sys of the whole
+process at the end of the timed loop, setup included, teardown not; the per-pass figures are
+differences between NPASSES=27 and 1 over
+200 frames, so the setup cost cancels): per extra pass vendor 0.121 / 0.112 / 0.109 ms and native 0.042 / 0.044 / 0.031 ms at PSIZE
+64 / 256 / 512. The native premium is therefore not CPU time in the process (userspace or ioctl
+entry); it is time the process waits (kernel threads, firmware or GPU), which this test does not split
+further.
+
+What it means:
+
+- **The per-pass cost is flat in target size on both stacks.** From 64x64 to 512x512 (64x the
+  pixels) the marginal stays at 0.251-0.266 ms on vendor and 0.300-0.312 ms on native. For these
+  constant-colour passes it is a fixed cost per render job set, not per-pixel fill (their writes
+  should compress well; bandwidth was not measured here).
+- **Native pays more per pass than vendor at every size** (single runs: native/vendor ratio of
+  marginal/pass 1.19 / 1.13 / 1.24 at PSIZE 64 / 256 / 512). Round 246's repeated 64x64 runs put the
+  premium between about +4 and +23 %, so the size-to-size differences are within run-to-run spread.
+  The 64x64 cells (vendor 0.255, native 0.304 ms) fall inside round 246's per-rep ranges (vendor
+  0.252-0.281, native 0.292-0.309), so the two rounds agree.
+- **The fixed cost is a small part of desktop's gap.** Desktop's frame is 8.075 ms native vs 3.011 ms
+  vendor (round 247 logs), a 5.06 ms difference, and native emits 10 render job sets per frame
+  (round 246). At the marginals above, the native per-pass premium is about 9-10 extra job sets x
+  (native - vendor) = 0.31-0.61 ms per frame, about a tenth of the difference. This assumes (a) the vendor driver also
+  emits 10 job sets per desktop frame, which was not measured, and (b) the per-pass cost adds to the
+  pass's fill work instead of overlapping it. The rest of the gap is per-frame work that these
+  constant-colour microbenchmark passes cannot show.
+
+Evidence: `open-perf/runs-248/` (`vendor-alt-ps<PSIZE>-np<N>.txt`, `native-alt-ps<PSIZE>-np<N>.txt`,
+`identity-vendor.txt`, `identity-native.txt`, `summary.txt`) and the script `open-perf/run-248.sh`;
+summarized in the round-248 addendum of
+`open-perf/tasks/T-2026-11-02-codegen/runs/022-per-frame-bound/card.md` (its "+17-24 %" is
++13-24 % from the same logs).
+
+## Round 249 - GPU DRAM reads: native reads 2-7x the vendor's on texture scenes, but cutting the reads raised fps by at most about 1 %; client-filled textures stay uncompressed (patch 0390)
+
+The NSI PMU counters (`open-perf/tools/nsitable.py`, GPU DRAM bytes per frame) were read on the same
+glmark2 scenes on both stacks, two passes per stack in one session (vendor, then native; governor
+performance, taskset 6-7). MB/frame are the GPU port's DRAM read bytes divided by frames rendered. The
+`gpu` port counts every GPU read (textures, loads of earlier render-target contents, geometry), not
+texture reads alone, and its unit is assumed to be KB/s (`nsitable.py`), so the ratios are firmer than
+the absolute MB:
+
+| scene | native rd MB/frame | vendor rd MB/frame | native / vendor |
+|---|---:|---:|---:|
+| effect2d 3x3 kernel | 2.21 / 2.21 | 0.31 / 0.33 | 6.9x |
+| desktop shadow | 3.37 / 3.35 | 1.02 / 1.01 | 3.3x |
+| desktop blur | 5.93 / 5.93 | 2.10 / 2.00 | 2.9x |
+| bump height | 1.25 / 1.25 | 0.58 / 0.58 | 2.2x |
+| build (vbo) | 0.75 / 0.75 | 0.84 / 0.86 | 0.9x |
+| shading cel | 1.72 / 1.73 | 1.79 / 1.78 | 1.0x |
+| loop | 0.22 / 0.22 | 0.23 / 0.23 | 1.0x |
+| conditionals | 0.22 / 0.22 | 0.23 / 0.23 | 1.0x |
+
+Scenes that sample images read 2-7x more; ALU-bound scenes read the same. A debug log in the texture
+creation and descriptor paths then showed every sampled texture is twiddled; `GL_RGB` (R8G8B8X8)
+images are uncompressed (TFBC is enabled for RGBA8/BGRA8 only), among them the 800x600 image that
+effect2d and both desktop scenes sample and the texture scene's 512x512 image; client-filled RGBA8
+images such as bump height's 1024x1024 map are compressed.
+
+Two experiments test whether the bandwidth is what costs the frames:
+
+- **TFBC on RGB textures (rejected, not shipped).** On the scenes that sample the 800x600 RGB image,
+  reads drop by 1.6-1.7 MB/frame (effect2d 2.20 -> 0.56, shadow 3.35 -> 1.73, blur 5.97 -> 4.27,
+  i.e. 28-75 %) and fps moves by about 1 % or less (two full runs each way: -0.2 % to +0.7 % on these
+  three scenes; the 5x5 effect2d kernel, whose reads were not measured, -0.7 %; the targeted A/B's
+  first base run was the first after weston started and reads low, and its second round gives 0 to
+  +0.3 %). The nearest and linear texture variants, which sample a 512x512 RGB image without mipmaps,
+  get 12 % slower (nearest 1439/1435 -> 1262/1265 fps, linear 1416/1410 -> 1246/1242) while their
+  reads barely move (linear 1.79 -> 1.72 MB/frame; nearest had no NSI pass); the mipmap variant does
+  not move (-0.1 %). The full run falls
+  from 838/839 to 827/827. With the RGB images compressed, desktop blur still reads 4.27 against the
+  vendor's 2.0-2.1 MB/frame and shadow 1.73 against 1.01; that remainder is not attributed here. A
+  per-render count on the base build with a temporary counting patch
+  (`open-perf/tasks/T-2026-11-02-codegen/runs/023-desktop-pixels/`, `raw/desktop-prof.log`) found 10.0
+  render job sets per desktop (blur) frame, 6 of them 800x600, with 80 % of renders (2790/3492)
+  loading the target's previous contents (about 8.4 MB/frame logical,
+  before compression); the vendor's count was not measured.
+- **Client-filled RGBA8 textures uncompressed (patch 0390).** Measured as the same condition behind a
+  debug knob (`PVR_NATIVE_DEBUG=tex_nofbc`) on series 0387, two full runs each way: bump height
+  1096/1092 -> 1169/1166 (+6.7 %), jellyfish 450/453 -> 481/481 (+6.5 %), full run 838/839 -> 842/842,
+  no scene down by more than 0.31 % (2.5 fps at most); gate 20/20. Round 250's runs reproduce bump
+  height and jellyfish on the patch itself.
+
+The two experiments do not give one rule. On the texture, bump height and jellyfish scenes, sampling
+the compressed client image measured slower than sampling it uncompressed (a texture-unit decode cost is
+the likely reason; no texture-unit counter was read). On effect2d and desktop, cutting the reads by
+28-75 % moved fps by about 1 % or less: either those reads are not the bound, or the decode cost that
+made the texture scenes 12 % slower cancels the saving, and this round does not separate the two.
+Patch 0390 clears a texture's fbc flag at the first CPU write when nothing has rendered into it;
+textures first written by a GPU render keep TFBC. Descriptors and PBE words read the flag at use, and
+a synchronized `pvr_transfer_map` first flushes an open render that writes or uses the texture, so a
+pending render into it counts as a GPU write.
+
+Evidence: `open-perf/tasks/T-2026-11-02-texture-tq/runs/001-dram-temps/` (nsi-native1/2,
+nsi-vendor1/2), `002-texprof/` (per-scene texture lists), `003b-fbcx/` (nsi, t*/full-*.txt),
+`005-texnofbc/` (full-*.txt, gate).
+
+## Round 250 - gl_FragCoord was half a pixel off, GL_RGB and MRT readback returned zeros, odd widths sheared: patches 0388, 0389, 0391, three probe gate groups and a gltri check
+
+A texel-exact probe (draw a full-screen triangle that samples `texture2D(t, gl_FragCoord.xy / size)`
+with GL_NEAREST and compare bytes) failed 19/19 cases on the native driver and passed 19/19 on zink
+(this first 19-case version; the gate version's zink run is below). At every power-of-two size (8x8 to
+256x64, RGBA and RGB) pixel (x, y) read texel (x + 1, y + 1); 100x60 and 800x600 failed only at the
+far corner, 63x63 read sheared rows, and a `GL_RGB` render target read back 0 0 0 0. All of these pass
+after 0388/0389 below, the odd widths after 0391.
+
+**0388 - fragment coordinate conventions.** The driver set none of the `fs_coord_*` caps. With all
+four false, `nir_lower_wpos_ytransform` reaches `UNREACHABLE("invalid options")`; in a release build
+the generated code adds 0.5 to the hardware position, so `gl_FragCoord.xy` read (x + 1.0, y + 1.0),
+half a pixel past the pixel centre. That was predicted and then measured with `fragcoord_diag` on the
+base build: `fract(gl_FragCoord)` = 0 0 (want 0.5), `floor(gl_FragCoord)` at (5, 9) = 6 10 and at
+(0, 0) = 1 1, and sampling at centres built from `floor(gl_FragCoord)` returned exactly the (x + 1,
+y + 1) texels. The same check on a pbuffer (window-system framebuffer, drawn y-flipped) passes with
+0388-0392 (5 9 and 0 63); on the base it reads 0 0 at both points because its readback hit the blit
+skip that 0389 removes, so the base run does not test the y-flipped path. pco reads the position from
+SR_X_P/SR_Y_P (pixel centres, upper-left origin), which is what zink declares over the same compiler;
+0388 declares the same. Loop, conditionals (5 fragment steps) and function, whose per-fragment code
+reads `gl_FragCoord.xy`, run 2.1-3.5 % faster with it. That is attributed to 0388 by elimination
+(0390's condition did not move them in round 249; 0389 as measured then changed only transfer paths,
+and its later handling changes behaviour only when a CPU map hits a resource an open render writes);
+the instruction-level cause was not measured. ideas' logo-shadow shader also reads `gl_FragCoord.xy` (+0.2 %, noise); terrain
+reads only `.zw`.
+
+**0389 - no blit-staged format conversion, and MRT attachments synchronized.** `glReadPixels` from a
+`GL_RGB` (R8G8B8X8) render target returned 0 0 0 0: the default `texture_transfer_modes` makes the
+state tracker stage a format-changing ReadPixels/TexSubImage through `pipe->blit`, and `pvr_blit`
+skips every converting blit, so the never-written staging texture was read. 0389 selects the CPU map +
+`util_format` path, which goes through `pvr_transfer_map` (deferred clears applied, twiddled/compressed
+levels decoded). Every ReadPixels now maps the read buffer itself (st already did so for reads that
+need no conversion, `st_cb_readpixels.c`), so a CPU map must be ordered after every render that writes
+the resource - and colour attachments 1-3 of an MRT render were never marked as used by it. Three
+probe cases on a 4x4 (linear) MRT framebuffer show it: attachment 1 read back through another
+framebuffer right after the draw, read in place with `glReadBufferNV` while the MRT framebuffer is
+still bound, and written with `glTexSubImage2D` right after the draw. All three fail on the base (the
+reads return 0 0 0 0, the write's neighbour 0 0 0 0), so the gap predates 0389. A first version of the
+fix, which marked the attachments when the render was flushed, passed the first case only (the
+in-place read still returned 0 0 0 0, and the render's later store overwrote the glTexSubImage write);
+0389 now also has a CPU map flush an open render that writes the resource, and all three are exact.
+Two more ordering gaps showed on the way and are closed in 0389 too. A render that only clears defers
+its clear onto the resource when it is flushed, and the map used to apply the deferred clears before
+that flush: a clear read back with no flush in between returned 0 (4x4 RGBA8 and 64x64 R8), and a
+one-texel glTexSubImage2D after a clear was overwritten by the clear; the map now flushes first. And a
+blit render into attachment 0 (the encode of a CPU map) while an MRT framebuffer is bound was built as
+that framebuffer's MRT render: a partial glTexSubImage2D into attachment 0 left attachment 1 at 0 0 0 0;
+blit and materialize renders now get no MRT end-of-tile writes. All of these fail on the build before
+these fixes and pass on the shipped series. An MRT framebuffer with a hole in its draw buffers ({0,
+NONE, 2}) crashed the driver at that render's flush on the base; it is now drawn as attachment 0 only
+and cleared on the CPU (attachments past a hole are not drawn yet, and a framebuffer whose draw buffer
+0 is GL_NONE is not drawn). Blits that convert or scale (CopyTexSubImage with a format change,
+BlitFramebuffer) still reach `pvr_blit`'s skip, and a scissored glClear of an MRT framebuffer (st draws
+it as a quad) leaves attachments 1-3 uncleared on every build; both are listed in the roadmap, not gated.
+
+**0391 - linear strides padded to the PBE unit.** The PBE encodes a linear line stride in 2-pixel
+units, so it wrote an odd-width linear resource with a pitch one pixel wider than the stride the
+resource records: readback of a 63-wide level was sheared, and by the pitch arithmetic the PBE can
+write up to (height - 1) * cpp bytes past the resource. Linear widths are now padded to 2 pixels (the
+Vulkan driver's `get_pbe_stride_align` without `pbe_stride_align_1pixel`); even widths keep a
+byte-identical layout. An import whose pitch is not a multiple of 2 pixels is now rejected when it may
+be rendered to (the DRI frontend marks every import in a renderable format so), and any import whose
+pitch is shorter than a row; the Vulkan driver rejects both for every linear image.
+
+The probes are now gate groups in `tools/verify/run-all.sh`, and a gltri check that a glTexSubImage
+into a level a render compressed with TFBC survives (since 0390 only rendered levels reach that path):
+with the reset check of round 252, 25 groups. The probes in their gate form, base and shipped tree in
+one session:
+
+| build | fragcoord_diag (13 checks) | texexact_probe (38 cases) | rgbx_probe (116 checks) |
+|---|---|---|---|
+| base (series 0387) | 4 OK / 9 BAD | 2 OK / 35 BAD, then crash (MRT hole) | 77 PASS / 39 FAIL |
+| 0388-0393 as shipped | 13 / 0 | 38 / 0 | 116 / 0 |
+
+With 0388-0390 only, an earlier 27-case version of texexact failed exactly the 14 odd-width cases
+that 0391 fixes (run 008). The case "texture sampled
+before its first upload" exercises 0390's flag flip; it fails only on the base, through 0388's
+half-pixel shift, and no build has shown it catching a 0390 regression. The probes on zink (same board,
+`RGBX_ANY_RENDERER=1`, the 32-case texexact version): fragcoord 11 OK / 2 BAD (F5 reads 0 8 and 0 61), texexact 30 OK / 2 BAD
+(7x7 RGBA and RGB), rgbx 116/0, so zink over the same Vulkan driver is not a clean reference for
+those three cases. The shipped tree passes all 25 groups. There is no Vulkan gate here: 0388-0393 change only
+`src/gallium/drivers/pvr_native`, not pco or the Vulkan driver. The gate also fails on any firmware
+context reset the kernel logs during it (round 252).
+
+Full glmark2 (native, weston headless + Xwayland, off-screen, taskset 6-7, alternated in one session):
+base 837/838 -> 0388-0390 (first version of 0389) 847/847. Per scene, bump height +7.0 % and jellyfish
++5.7 % (0390, round 249), loop +2.5 to +3.4 %, function low +3.5 % and medium +2.1 %, conditionals (5
+fragment steps) +2.6 % (0388); no scene down by more than 0.5 %. The same build scored 847/847 in that
+session and 836/841 in a later one, so scores are compared only within one session. The chain to the
+shipped series, each link alternated within one session: 0388-0390 836/841 -> first version of
+0388-0392 839/843; base 827/827 -> first version of 0388-0392 838/843 (bump height +6.8 %, jellyfish
++6.1 %, loop / function low / conditionals +2.9 to +4.1 %; the worst two-run mean is bump high-poly
+-1.5 %, 433/425 -> 416/429, and single runs dip up to -3.9 %); first version -> attachments marked at
+flush 840/840 -> 841/841; marked at flush -> also flushed on a CPU map, with the import check and a
+first hole guard 836/841 -> 840/841; that build plus 0393 -> the shipped code (flush before the clear,
+no MRT writes for blit renders, the final hole rule) 839/839 -> 839/840. The shipped tree scored 838
+in its final session. No single session compares the shipped series with the base directly.
+
+Evidence: `open-perf/tasks/T-2026-11-02-texture-tq/runs/005-texnofbc/` (texexact-native/zink),
+`006-fixes/` (fragcoord/texexact/rgbx per build, full-*.txt, gates), `007-oddw/`, `008-tq/`,
+`009-ship/` (full-*.txt, gate-pr.txt), `010-mrt/`, `012-mrt-sync/`, `016-mrt-order/`, `017-mrt-encode/`,
+`018-final/` (probe outputs per build and on zink, gate outputs, full-*.txt).
+
+## Round 251 - erratum to round 244: the captured transfer (TQ) copy job runs on the open kernel; the fault was two zero words in the probe (patch 0392)
+
+Round 244 concluded that the TQ copy fault needs firmware-visible per-context state the open kernel
+cannot set. That is wrong, and so is the premise it rested on since round 161. A diff of the 16 blocks
+the copy job's streams name - reference words from the single-run capture
+(`captures/tq-fault/single-run-blocks.txt`), probe words from what `pvr_probe.c` installs
+(`tq_memdiff.py`) - finds exactly 2 differing words, both at PDS+0x1e40, the texture "unicode" (unitex)
+program that `TEXUNICODEBASE` names: the reference holds `f4020000 d3000000`
+(`single-run-blocks.txt:623-625`; the round-115 capture `tools/verify/captures/tq-ref/pds.dump:121-123`
+already held the same pair), the probe installed `00000000 00000000`. Probe 0361 (51b209dc)
+replaced the correct pair that earlier probes installed with zeros copied from an allocation-time debug
+dump, which printed every code-only PDS upload as zeros, in the same patch that fixed the TQ shader and
+control-stream installs. Round 161 then recorded the reference's program as two zero words, and round
+163 listed it among the inputs proven byte-identical. Round 162 had seen the fault address follow the
+texture-data program; the program that runs that DMA was the zero pair.
+
+Patch 0392 generates the program with the libpowervr_pds calls the reference transfer context uses
+for one texture DMA kick (`pvr_pds_set_sizes_pixel_shader_uniform_texture_code` +
+`pvr_pds_generate_pixel_shader_sa_code_segment`): DOUTD.end + HALT, `f4020000 d3000000`. Decoded
+statically, zero words do not halt the PDS, which runs on into the next program and kicks the USC at
+the texture-state address; that matches round 244's decoded fault (page fault at USC heap + 0x4b080)
+but was not observed directly.
+
+| arm (stock UAPI; the board's installed powervr module for 6.6.98-5-aw2511, sha256 2dc07e9a3700de75...) | PDS+0x1e40 | readback |
+|---|---|---|
+| zeros, as in rounds 161-244 | 00000000 00000000 | 0/4096 written, destination still poison |
+| generated program | f4020000 d3000000 | 4096/4096 = source, "tqcopy: PASS" |
+| 0392 builds, no knob (five later sessions) | f4020000 d3000000 | 4096/4096, PASS 6/6 |
+
+The first two rows ran in one session with the same probe binary; only an env knob selected the words,
+so those two words are the cause. That session also ran two flush arms with the zero words, which
+read back 0/4096 too. (The installed module, an out-of-tree build with debug prints, logs a firmware
+context reset only undecoded, as `Received unknown FWCCB command 2abc0069` (round 161:
+CONTEXT_RESET_NOTIFICATION), and the notice arrives at a later GPU wake-up (round 163 saw it with a
+later submission), not with the faulting job. In that session the kernel journal has one such line, 0.3 ms after the zero arm created
+its context and so before it could submit: it reports an earlier job, most likely the flush arm that
+ran just before it with the same zero words. The job is not decoded here, since round 244's decode
+needed a temporary kernel patch, `tools/verify/kernel-ctxreset-decode.patch`. None appears around the
+0392 builds' copy runs.) The TQ copy is not a gate group, since it needs the pvr-probe binary from the
+Mesa build; it ran outside the gate, with the command below, in each session listed.
+
+To reproduce, with the GPU on the open driver (`open-driver-perf/tools/verify/switch-safe.sh open`, and
+`switch-safe.sh vendor` afterwards), from the Mesa tree:
+
+    PVR_PROBE_TQ_COPY_ONLY=1 PVR_PROBE_TQ_COPY=<this repo>/open-driver-perf/captures/tq-fault/single-run-streams.bin \
+    PVR_PROBE_TQ_COPY_CS=1 build/src/gallium/drivers/pvr_native/pvr-probe /dev/dri/renderD128
+
+What this retracts: round 244's conclusion; the claims it rests on in rounds 161-166 (round 161's
+heading, its DMA address-base reading and its bullet that the reference's program at PDS 0x1e40 is two
+zero words, round 163's byte-identical 0x1e40 bullet and "all job memory proven identical", and their
+restatements in rounds 164-166, which now carry their own notes); the sentences in rounds 241, 243 and
+246 that repeat "blocked below userspace", and the pointers to that state in rounds 183 and 242; rounds
+120 and 128's claim that `captures/tq-ref/heap.dump` holds every program's bytes (every word in it is
+zero); the same claims in the commit messages of probe patches 0361 ("no-op texture-unicode program",
+"all programs byte-identical") and 0363 ("firmware-visible per-context state"); and the TQ blocker note
+in HANDOFF.md. It resolves open block 1 of GLES-PARITY-ROADMAP.md. Round 244's table of ruled-out
+differences stands (each row was measured). The claim here is only that the captured reference copy
+job, replayed by pvr-probe, runs correctly on the open kernel: no natively built transfer job exists
+yet, TQ mip generation is not built, and terrain 20 -> 30 / refract 33 -> 46 are still round 241's
+skip-mipgen ceilings, not TQ results. The next step is a native transfer path for `glGenerateMipmap`
+(a subset of the Vulkan driver's transfer job), measured against those ceilings.
+
+Evidence: `open-perf/tasks/T-2026-11-02-texture-tq/tq-reexam/` (tq_memdiff.py/out),
+`runs/004-tq-unitex/` (arm logs), `runs/008-tq/` (tqcopy, tqcopy2), `runs/009-ship/tqcopy.log`,
+`runs/011-final/tqcopy.log`, `runs/013-final/tqcopy.log`, `runs/018-final/tqcopy.log`, and the kernel
+journal for each session.
+
+## Round 252 - the gate's firmware context resets: R8 and RG8 render targets were written at 4 bytes per pixel (patch 0393)
+
+Every gate run in the kernel journal (since 2026-10-31), the base included, logged two
+`Received unknown FWCCB command 2abc0069` lines (a firmware CONTEXT_RESET_NOTIFICATION, round 161), and
+no group checked for them (the `2abc006b` lines in the same journal are UPDATE_STATS and benign). Each
+gate test run alone between kernel-log markers, with a probe known not to raise one run after each to
+collect a late notice, put both on `rt8test`, which clears a 64x64 `GL_R8` and a 64x64 `GL_RG8` target
+and reads one pixel back each; its readbacks were right (255 0 and 255 128).
+
+A probe that replays rt8test's steps one switch at a time (`rt8probe`, each variant its own process)
+gave one reset per format (R8 and RG8 each, none for RGBA8), none without the readback, none without a
+GPU write before it (a draw instead of the clear also resets) and none at 8x8. The readback of a
+twiddled target is a GPU blit into a linear staging copy of the same size. The pixel-event state
+(`pvr_csb.c`) wrote every 8-bit format with `PACKMODE_U8U8U8U8`, 4 bytes per pixel, whatever its
+channel count, where the Vulkan driver's format table uses U8 for R8 and U8U8 for RG8
+(`pvr_arch_formats.c`). That predicts a scrambled layout at every size, which a uniform clear hides,
+and writes past the end of the surface, which fault only where they leave its last page into unmapped
+GPU address space. A gradient (R = x, G = y) drawn and read back whole, before and after patch 0393
+(U8 / U8U8 / U8U8U8U8 by channel count, S8 / S8S8 / S8S8S8S8 for signed formats), one session:
+
+| target (bytes) | wrong pixels before | resets before | wrong pixels after | resets after |
+|---|---:|---:|---:|---:|
+| R8 8x8 (64) | 62 / 64 | 0 | 0 | 0 |
+| R8 32x32 (1 KiB) | 1016 / 1024 | 0 | 0 | 0 |
+| R8 64x64 (4 KiB) | 4048 / 4096 | 1 | 0 | 0 |
+| R8 128x128 (16 KiB) | 16256 / 16384 | 1 | 0 | 0 |
+| RG8 32x32 (2 KiB) | 1023 / 1024 | 0 | 0 | 0 |
+| RG8 64x64 (8 KiB) | 4095 / 4096 | 1 | 0 | 0 |
+| RGBA8 64x64 (16 KiB) | 0 / 4096 | 0 | 0 | 0 |
+
+rt8test itself raises none after 0393. The overrun stays inside the client's own GPU address space:
+where the next page is mapped, the writes land in a neighbouring buffer of the same process instead of
+faulting. texexact_probe now checks R8 and RG8 gradients, and `run-all.sh` fails on any firmware
+context reset logged during the gate (a GPU page fault shows up only as one); on the shipped series the
+gate passes all 25 groups with none. The same step probe also showed an R8 clear read back
+with no flush in between returning 0; that was the CPU map's clear ordering, fixed in 0389 (round 250).
+
+Evidence: `open-perf/tasks/T-2026-11-02-texture-tq/runs/010-mrt/` (bisect.txt, kernel.log),
+`014-rt8/` (rt8probe.c, variants.txt, v-*.txt, kernel.log), `015-pk/` (variants.txt, gate output),
+`018-final/` (gate output on the shipped tree).

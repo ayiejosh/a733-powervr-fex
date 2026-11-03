@@ -1,0 +1,54 @@
+From b930781f3eef2ea1bd4ef9e0bcace8964439eabd Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Mon, 2 Nov 2026 23:30:53 +0800
+Subject: [PATCH 391/393] gallium/pvr: pad linear strides to the PBE
+ line-stride unit
+
+The PBE encodes a linear line stride in 2-pixel units, so it wrote an
+odd-width linear resource with a pitch one pixel wider than the stride the
+resource records, which the CPU and the TPU use. A glReadPixels of a
+63-wide twiddled level read its linear staging copy sheared, and by the
+pitch arithmetic the PBE can write up to (height - 1) * cpp bytes past the
+end of the resource. Pad linear widths to 2 pixels, as the Vulkan driver
+does (get_pbe_stride_align without pbe_stride_align_1pixel). Even widths
+keep a byte-identical layout. Reject an imported resource whose pitch is
+not a multiple of 2 pixels when it may be rendered to (the DRI frontend
+marks every import in a renderable format so), and any import whose pitch
+is shorter than a row, as the Vulkan driver does for every linear image.
+---
+ src/gallium/drivers/pvr_native/pvr_resource.c | 12 +++++++++++-
+ 1 file changed, 11 insertions(+), 1 deletion(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_resource.c b/src/gallium/drivers/pvr_native/pvr_resource.c
+index bb79c92c..6fccbeff 100644
+--- a/src/gallium/drivers/pvr_native/pvr_resource.c
++++ b/src/gallium/drivers/pvr_native/pvr_resource.c
+@@ -39,7 +39,10 @@ pvr_resource_layout(const struct pipe_resource *templ, uint32_t *stride,
+          *size = (uint64_t)*stride * ALIGN_POT(templ->height0, 32);
+          return true;
+       }
+-      *stride = util_format_get_stride(templ->format, templ->width0);
++      /* The PBE line stride counts 2-pixel units (pbestate.xml, pvr_pbe_linestride), so an odd pitch
++       * is written one pixel wider than the CPU and the TPU read it. Pad as the Vulkan driver does
++       * (pvr_image.c, get_pbe_stride_align: BXM-4-64 lacks pbe_stride_align_1pixel). */
++      *stride = util_format_get_stride(templ->format, ALIGN_POT(templ->width0, 2));
+       *size = (uint64_t)*stride * templ->height0;
+       return true;
+ 
+@@ -302,6 +305,13 @@ pvr_resource_from_handle(struct pipe_screen *pscreen, const struct pipe_resource
+    const off_t size = lseek(whandle->handle, 0, SEEK_END);
+    if (size <= 0 || (uint64_t)whandle->stride * templ->height0 > (uint64_t)size)
+       return NULL;
++   /* The PBE stores a linear pitch in 2-pixel units: a render target whose pitch it cannot encode, or
++    * any pitch shorter than a row, would have rows written past the buffer. (The DRI frontend marks
++    * every import in a renderable format as a render target, so the 2-pixel rule covers those.) */
++   if (whandle->stride < util_format_get_stride(templ->format, templ->width0) ||
++       ((templ->bind & PIPE_BIND_RENDER_TARGET) &&
++        whandle->stride % (2 * util_format_get_blocksize(templ->format)) != 0))
++      return NULL;
+    if (drmPrimeFDToHandle(screen->fd, whandle->handle, &handle) != 0)
+       return NULL;
+    res = CALLOC_STRUCT(pvr_resource);
+-- 
+2.47.3
+

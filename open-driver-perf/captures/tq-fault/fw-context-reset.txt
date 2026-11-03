@@ -2,6 +2,8 @@
 # pvr_ccb.c decode only: tools/verify/kernel-ctxreset-decode.patch, reverted after the session).
 
 # 1) Copy replay (captured reference job, all buffers/stream/programs byte-identical): FAULTS.
+#    Note (TA-KICK-DISASSEMBLY.md round 251): not byte-identical - PDS+0x1e40 held zeros in the probe
+#    (reference f4020000 d3000000); with the generated program the replay copies 4096/4096.
 #    dmesg after: PVR_PROBE_TQ_COPY=<tq-ref/copystream2.bin> PVR_PROBE_TQ_COPY_CS=1 ./pvr-probe
 powervr 1800000.gpu: [drm] *ERROR* CTXRESET ctx=0 reason=1 dm=3 job=1 flags=0x1 pc=0x112310000 fault=0xe00004b080
 
