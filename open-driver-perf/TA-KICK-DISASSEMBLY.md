@@ -6015,3 +6015,34 @@ one run each in the same session.
 
 Evidence: `open-perf/tasks/T-2026-11-02-texture-tq/runs/019-fragcolor/` (probe outputs, gate output,
 full-*.txt).
+
+## Round 254 - discard wrote nothing, GL_NONE draw buffers, converting blits, the compute fallback (patches 0395-0398)
+Checking the roadmap note that an MRT render continued after a flush reloads attachment 0 only: it
+did not reproduce. Attachment 1 kept its content; the probe's second draw wrote nothing because it
+discards. A single-target probe (`tools/verify/discard_probe.c`, now a gate group) showed every
+fragment shader that contains `discard` wrote nothing, even one whose condition never holds; zink
+drew all seven cases correctly. The cause: `nir_lower_is_helper_invocation` turns discard into "the
+sample mask is zero", and `gl_SampleMaskIn` was lowered to the fs_meta sample mask ANDed with the
+coverage. This driver provides no fs_meta, so the load read shared register 0, which held the
+`gl_FragCoord` y transform (+-1.0, bit 9 clear): every fragment was a helper. Patch 0395 takes the mask
+from the coverage alone when `skip_sample_check` is set (single-sampled, sample 0 in the static mask);
+the Vulkan driver sets that flag only in the same case.
+
+The rest of the open list, fixed in the same series:
+- 0396: a framebuffer with a GL_NONE draw buffer drew attachment 0 only ({0, NONE, 2}) or nothing
+  ({NONE, 1}). The framebuffer is compacted when it is set, with each colour buffer's draw buffer
+  index kept; the fragment variant's output formats are by draw buffer index with PIPE_FORMAT_NONE
+  for a GL_NONE one (pco drops it and gives it no output dwords), and the clear reads its bits at that
+  index. Blending and the colour mask apply when output 0 is NONE too (found in review).
+- 0397: the compute fallback rasteriser wrote linear rows by width; it now refuses padded, twiddled
+  and TFBC targets (the twiddled power-of-two case was found in review).
+- 0398: `pipe->blit` skipped every blit that converts, scales or mirrors, so glCopyTexImage2D into
+  GL_RGB from an RGBA framebuffer left the texture black. Colour blits now run on the CPU through the
+  transfer maps (nearest, or bilinear for a scaled LINEAR blit; mask, swizzle, alpha blend, scissor);
+  depth/stencil, integer, compressed and multisampled blits are still reported and skipped.
+
+Results (each pair in one session): discard probe FAIL before, PASS with 0395; texexact 39/1 -> 40/0
+(0395) and 41/4 -> 45/0 (0396-0398; zink agrees on every new case, its two 7x7 failures predate this
+work); the gate passes all 26 groups with no firmware context reset; glmark2 836 -> 839 (0395) and
+837 -> 840 (0396-0398), one run each.
+Evidence: `open-perf/tasks/T-2026-11-02-texture-tq/runs/021-discard/` to `024-revfix/`.

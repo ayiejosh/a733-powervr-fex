@@ -446,10 +446,10 @@ index 00000000..2067feca
 +#endif /* PVR_BO_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_compute.c b/src/gallium/drivers/pvr_native/pvr_compute.c
 new file mode 100644
-index 00000000..0c8401dd
+index 00000000..bd13af0a
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_compute.c
-@@ -0,0 +1,582 @@
+@@ -0,0 +1,586 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -920,8 +920,12 @@ index 00000000..0c8401dd
 +   uint32_t params[14];
 +
 +   if (target->dev_addr == 0 || target->base.target != PIPE_TEXTURE_2D ||
-+       target->base.format != PIPE_FORMAT_R8G8B8A8_UNORM || w == 0 || h == 0) {
-+      mesa_loge("pvr: compute fallback: target must be a non-empty RGBA8 2D texture");
++       target->base.format != PIPE_FORMAT_R8G8B8A8_UNORM || w == 0 || h == 0 ||
++       target->stride != w * 4 || target->twiddled || target->fbc) {
++      /* The rasteriser writes linear rows indexed by the width from the start of the allocation: a
++       * padded (odd-width) row pitch skews them, and a twiddled or compressed layout is not rows. */
++      mesa_loge("pvr: compute fallback: target must be a non-empty linear RGBA8 2D texture with "
++                "unpadded rows");
 +      return false;
 +   }
 +   if (!screen->vm_valid)
@@ -1373,10 +1377,10 @@ index 00000000..0c679b3f
 +#endif /* PVR_COMPUTE_TRIANGLE_SPV_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_context.c b/src/gallium/drivers/pvr_native/pvr_context.c
 new file mode 100644
-index 00000000..9fa20275
+index 00000000..5c50e625
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_context.c
-@@ -0,0 +1,1035 @@
+@@ -0,0 +1,1160 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + */
@@ -1384,6 +1388,7 @@ index 00000000..9fa20275
 +#include "common/pvr_limits.h"
 +
 +#include "pipe/p_context.h"
++#include "util/format/u_format.h"
 +#include "util/format/u_formats.h"
 +#include "util/log.h"
 +#include "util/u_inlines.h"
@@ -1658,6 +1663,19 @@ index 00000000..9fa20275
 +   /* Previously discarded. The draw path needs the render targets, and the copy takes
 +    * the resource references that keep them alive while bound. */
 +   util_copy_framebuffer_state(&ctx->fb, state);
++   /* Drop GL_NONE draw buffers, so the draw path sees colour buffers 0..n-1 (the moved entries keep
++    * their references). */
++   unsigned nr = 0;
++   for (unsigned i = 0; i < ctx->fb.nr_cbufs; i++) {
++      if (ctx->fb.cbufs[i].texture == NULL)
++         continue;
++      if (nr != i) {
++         ctx->fb.cbufs[nr] = ctx->fb.cbufs[i];
++         memset(&ctx->fb.cbufs[i], 0, sizeof(ctx->fb.cbufs[i]));
++      }
++      ctx->fb_gl_index[nr++] = i;
++   }
++   ctx->fb.nr_cbufs = nr;
 +
 +   if (state->nr_cbufs > 0 && state->cbufs[0].texture != NULL) {
 +      /* Log what the GPU would be asked to write. A render target with no device
@@ -2025,8 +2043,12 @@ index 00000000..9fa20275
 +    * attachment, each packed for that attachment's format, so mixed-format MRT clears too); then
 +    * there is nothing for the CPU to fill for it. */
 +   bool gpu_cleared = false;
-+   if ((buffers & PIPE_CLEAR_COLOR0) && (color_clear_mask & 0xf) == 0xf && scissor_state == NULL &&
-+       ctx->fb.nr_cbufs >= 1 && ctx->fb.nr_cbufs <= PVR_MAX_COLOR_ATTACHMENTS) {
++   /* The clear bits and channel masks are per draw buffer, so colour buffer i's are at
++    * fb_gl_index[i]. */
++   const unsigned gl0 = ctx->fb.nr_cbufs ? ctx->fb_gl_index[0] : 0;
++   if ((buffers & (PIPE_CLEAR_COLOR0 << gl0)) && ((color_clear_mask >> (4 * gl0)) & 0xf) == 0xf &&
++       scissor_state == NULL && ctx->fb.nr_cbufs >= 1 &&
++       ctx->fb.nr_cbufs <= PVR_MAX_COLOR_ATTACHMENTS) {
 +      gpu_cleared = pvr_draw_note_clear(ctx, color);
 +      /* MRT: one background colour covers every attachment (v1), so submit the clear render now -
 +       * deferred clears are single-resource only. */
@@ -2037,14 +2059,15 @@ index 00000000..9fa20275
 +      pvr_draw_flush(ctx);
 +   for (unsigned i = 0; i < ctx->fb.nr_cbufs; i++) {
 +      /* A GPU clear covers every attachment (one background colour, one emit each). */
-+      if (gpu_cleared || (buffers & (PIPE_CLEAR_COLOR0 << i)) == 0)
++      const unsigned gl = ctx->fb_gl_index[i];
++      if (gpu_cleared || (buffers & (PIPE_CLEAR_COLOR0 << gl)) == 0)
 +         continue;
 +
 +      if (ctx->fb.cbufs[i].texture == NULL)
 +         continue;
 +
 +      /* four channel bits per colour buffer */
-+      if (((color_clear_mask >> (4 * i)) & 0xf) != 0xf) {
++      if (((color_clear_mask >> (4 * gl)) & 0xf) != 0xf) {
 +         static bool warned;
 +
 +         if (!warned) {
@@ -2232,8 +2255,110 @@ index 00000000..9fa20275
 +   util_resource_copy_region(pctx, dst, dst_level, dstx, dsty, dstz, src, src_level, box);
 +}
 +
-+/* shortcut: no GPU blit yet. Same-format, unscaled copies go through the CPU; anything else is
-+ * reported and skipped. */
++/* The unpacked source rectangle (sw x sh RGBA floats) sampled at (x, y) in its texels, clamped to
++ * its edge. */
++static void
++blit_fetch(const float *s, int sw, int sh, float x, float y, bool linear, float out[4])
++{
++   if (!linear) {
++      const int ix = CLAMP((int)floorf(x), 0, sw - 1), iy = CLAMP((int)floorf(y), 0, sh - 1);
++      memcpy(out, &s[(iy * sw + ix) * 4], 4 * sizeof(float));
++      return;
++   }
++   x -= 0.5f;
++   y -= 0.5f;
++   const int x0 = (int)floorf(x), y0 = (int)floorf(y);
++   const float fx = x - x0, fy = y - y0;
++   const int xa = CLAMP(x0, 0, sw - 1), xb = CLAMP(x0 + 1, 0, sw - 1);
++   const int ya = CLAMP(y0, 0, sh - 1), yb = CLAMP(y0 + 1, 0, sh - 1);
++   for (unsigned c = 0; c < 4; c++)
++      out[c] = (s[(ya * sw + xa) * 4 + c] * (1 - fx) + s[(ya * sw + xb) * 4 + c] * fx) * (1 - fy) +
++               (s[(yb * sw + xa) * 4 + c] * (1 - fx) + s[(yb * sw + xb) * 4 + c] * fx) * fy;
++}
++
++/* A colour blit that converts, scales or mirrors, on the CPU through the transfer maps: the source
++ * rectangle is unpacked to floats, then each destination pixel samples it at its centre (a negative
++ * source extent mirrors) and is packed in the destination format. False for what it does not do:
++ * depth/stencil, integer, compressed or multisampled formats, 3D scaling, window rectangles. */
++static bool
++pvr_blit_cpu(struct pipe_context *pctx, const struct pipe_blit_info *info)
++{
++   const enum pipe_format sf = info->src.format, df = info->dst.format;
++   const struct pipe_box *sb = &info->src.box, *db = &info->dst.box;
++   if ((info->mask & ~PIPE_MASK_RGBA) || !(info->mask & PIPE_MASK_RGBA) ||
++       util_format_is_depth_or_stencil(sf) || util_format_is_depth_or_stencil(df) ||
++       util_format_is_pure_integer(sf) || util_format_is_pure_integer(df) ||
++       util_format_is_compressed(sf) || util_format_is_compressed(df) ||
++       info->src.resource->nr_samples > 1 || info->dst.resource->nr_samples > 1 ||
++       info->num_window_rectangles || sb->depth != db->depth || db->width <= 0 || db->height <= 0 ||
++       sb->width == 0 || sb->height == 0)
++      return false;
++   const int sx0 = MIN2(sb->x, sb->x + sb->width), sw = abs(sb->width);
++   const int sy0 = MIN2(sb->y, sb->y + sb->height), sh = abs(sb->height);
++   int x0 = db->x, x1 = db->x + db->width, y0 = db->y, y1 = db->y + db->height;
++   if (info->scissor_enable) {
++      x0 = MAX2(x0, (int)info->scissor.minx);
++      x1 = MIN2(x1, (int)info->scissor.maxx);
++      y0 = MAX2(y0, (int)info->scissor.miny);
++      y1 = MIN2(y1, (int)info->scissor.maxy);
++   }
++   if (x0 >= x1 || y0 >= y1)
++      return true;
++   const bool linear = info->filter == PIPE_TEX_FILTER_LINEAR &&
++                       (sw != db->width || sh != db->height);
++   const bool read_dst = info->mask != PIPE_MASK_RGBA || info->alpha_blend;
++   float *sbuf = malloc((size_t)sw * sh * 4 * sizeof(float));
++   float *row = malloc((size_t)(x1 - x0) * 4 * sizeof(float));
++   bool ok = sbuf != NULL && row != NULL;
++   for (int z = 0; ok && z < db->depth; z++) {
++      struct pipe_transfer *t;
++      const uint8_t *src = pipe_texture_map(pctx, info->src.resource, info->src.level, sb->z + z,
++                                            PIPE_MAP_READ, sx0, sy0, sw, sh, &t);
++      if (src == NULL) {
++         ok = false;
++         break;
++      }
++      for (int y = 0; y < sh; y++)
++         util_format_unpack_rgba(sf, &sbuf[y * sw * 4], src + y * t->stride, sw);
++      pipe_texture_unmap(pctx, t);
++      uint8_t *dst = pipe_texture_map(pctx, info->dst.resource, info->dst.level, db->z + z,
++                                      PIPE_MAP_WRITE | (read_dst ? PIPE_MAP_READ : 0), x0, y0,
++                                      x1 - x0, y1 - y0, &t);
++      if (dst == NULL) {
++         ok = false;
++         break;
++      }
++      for (int y = y0; y < y1; y++) {
++         uint8_t *drow = dst + (y - y0) * t->stride;
++         if (read_dst)
++            util_format_unpack_rgba(df, row, drow, x1 - x0);
++         const float v = sb->y + (y - db->y + 0.5f) * sb->height / (float)db->height - sy0;
++         for (int x = x0; x < x1; x++) {
++            const float u = sb->x + (x - db->x + 0.5f) * sb->width / (float)db->width - sx0;
++            float c[4], s[4], *d = &row[(x - x0) * 4];
++            blit_fetch(sbuf, sw, sh, u, v, linear, s);
++            for (unsigned i = 0; i < 4; i++) {
++               const unsigned swz = info->swizzle_enable ? info->swizzle[i] : i;
++               c[i] = swz < 4 ? s[swz] : swz == PIPE_SWIZZLE_1 ? 1.0f : 0.0f;
++            }
++            if (info->alpha_blend)
++               for (unsigned i = 0; i < 3; i++)
++                  c[i] = c[i] * c[3] + d[i] * (1.0f - c[3]);
++            for (unsigned i = 0; i < 4; i++)
++               if (info->mask & (PIPE_MASK_R << i))
++                  d[i] = c[i];
++         }
++         util_format_pack_rgba(df, drow, row, x1 - x0);
++      }
++      pipe_texture_unmap(pctx, t);
++   }
++   free(sbuf);
++   free(row);
++   return ok;
++}
++
++/* shortcut: no GPU blit yet. Same-format, unscaled copies take resource_copy_region; other colour
++ * blits run on the CPU (pvr_blit_cpu); the rest is reported and skipped. */
 +static void
 +pvr_blit(struct pipe_context *pctx, const struct pipe_blit_info *info)
 +{
@@ -2245,10 +2370,14 @@ index 00000000..9fa20275
 +                                info->src.level, &info->src.box);
 +      return;
 +   }
++   if (pvr_blit_cpu(pctx, info))
++      return;
 +   static bool warned;
 +   if (!warned) {
 +      warned = true;
-+      mesa_logw("pvr: blit with conversion or scaling is not supported yet; skipped");
++      mesa_logw("pvr: blit %s -> %s (mask 0x%x) is not supported yet; skipped",
++                util_format_short_name(info->src.format), util_format_short_name(info->dst.format),
++                info->mask);
 +   }
 +}
 +
@@ -2414,10 +2543,10 @@ index 00000000..9fa20275
 +}
 diff --git a/src/gallium/drivers/pvr_native/pvr_context.h b/src/gallium/drivers/pvr_native/pvr_context.h
 new file mode 100644
-index 00000000..2eddcdd5
+index 00000000..fd6df76a
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_context.h
-@@ -0,0 +1,114 @@
+@@ -0,0 +1,117 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -2461,6 +2590,9 @@ index 00000000..2eddcdd5
 +    * a pvr_resource, so pvr_resource(fb.cbufs[i].texture)->dev_addr is the address the
 +    * draw path wants. Storing a second copy would be a second thing to keep in sync. */
 +   struct pipe_framebuffer_state fb;
++   /* fb.cbufs holds no GL_NONE draw buffers: the draw buffer index of each colour buffer (the
++    * fragment output it takes and its clear bit). */
++   uint8_t fb_gl_index[PIPE_MAX_COLOR_BUFS];
 +
 +   /* Pipeline state, recorded rather than discarded. The create_* hooks allocate a
 +    * copy of the pipe state struct, because the state the caller passes in may be a
@@ -5291,10 +5423,10 @@ index 00000000..47695cc7
 +#endif /* PVR_CSB_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_draw.c b/src/gallium/drivers/pvr_native/pvr_draw.c
 new file mode 100644
-index 00000000..fe7d6772
+index 00000000..61566cf7
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_draw.c
-@@ -0,0 +1,2507 @@
+@@ -0,0 +1,2510 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + *
@@ -6873,18 +7005,12 @@ index 00000000..fe7d6772
 +{
 +   return ctx->fb.nr_cbufs && ctx->fb.cbufs[0].texture ? ctx->fb.cbufs[0].level : 0;
 +}
-+/* The colour attachments a framebuffer render writes; the draw-time shader variant, the EOT and the
-+ * GPU clear all use it. shortcut: a hole in the list (a GL_NONE draw buffer between two others) is
-+ * drawn as attachment 0 only and cleared on the CPU, and a framebuffer whose draw buffer 0 is
-+ * GL_NONE is not drawn at all; handle holes in the EOT layout when an app needs it. */
++/* The colour attachments a framebuffer render writes (fb.cbufs has no GL_NONE holes); the
++ * draw-time shader variant, the EOT and the GPU clear all use it. */
 +static unsigned
 +draw_fb_nr_attach(const struct pvr_context *ctx)
 +{
-+   const unsigned nr = MIN2(ctx->fb.nr_cbufs, PVR_MAX_COLOR_ATTACHMENTS);
-+   for (unsigned i = 1; i < nr; i++)
-+      if (ctx->fb.cbufs[i].texture == NULL)
-+         return 1;
-+   return nr;
++   return MIN2(ctx->fb.nr_cbufs, PVR_MAX_COLOR_ATTACHMENTS);
 +}
 +
 +/* The vertex shader derives each attribute's fetch format from the declared type.  GL lets the
@@ -7024,10 +7150,19 @@ index 00000000..fe7d6772
 +
 +   /* The fragment shader variant for this framebuffer's colour format(s) and blend state. MRT v1:
 +    * every attachment shares the first one's format (the background program emits one value). */
++   /* Indexed by draw buffer: a GL_NONE one is PIPE_FORMAT_NONE, whose output pco drops and gives no
++    * output dwords, so each written output lands in its attachment's dwords of the EOT layout. */
 +   enum pipe_format rt_formats[PVR_MAX_COLOR_ATTACHMENTS] = { rt_format };
-+   unsigned nr_formats = draw_fb_nr_attach(ctx);
-+   for (unsigned i = 0; i < nr_formats; i++)
-+      rt_formats[i] = ctx->fb.cbufs[i].format;
++   unsigned nr_formats = 0;
++   for (unsigned i = 0; i < draw_fb_nr_attach(ctx); i++) {
++      const unsigned gl = ctx->fb_gl_index[i];
++      if (gl >= PVR_MAX_COLOR_ATTACHMENTS)
++         break;
++      if (i == 0)
++         rt_formats[0] = PIPE_FORMAT_NONE;
++      rt_formats[gl] = ctx->fb.cbufs[i].format;
++      nr_formats = gl + 1;
++   }
 +   nir_lower_blend_options blend;
 +   memset(&blend, 0, sizeof(blend));
 +   {
@@ -15628,10 +15763,10 @@ index 00000000..f0282d81
 +#endif /* PVR_SCREEN_H */
 diff --git a/src/gallium/drivers/pvr_native/pvr_shader.c b/src/gallium/drivers/pvr_native/pvr_shader.c
 new file mode 100644
-index 00000000..76e5d9eb
+index 00000000..8c67d7ea
 --- /dev/null
 +++ b/src/gallium/drivers/pvr_native/pvr_shader.c
-@@ -0,0 +1,1118 @@
+@@ -0,0 +1,1123 @@
 +/* Copyright 2026 The Mesa authors
 + * SPDX-License-Identifier: MIT
 + */
@@ -15980,14 +16115,19 @@ index 00000000..76e5d9eb
 +         /* Take the next free pixel-output dwords: an 8-bit colour output is one dword, a 16F one
 +          * is two. The EOT program's per-attachment PBE emit reads from this position (its
 +          * source_pos), matching the reference's usc_mrt_resource output_reg allocation. */
-+         const unsigned dwords = pvr_pbe_output_dwords(color_formats[i]);
++         const unsigned dwords =
++            color_formats[i] == PIPE_FORMAT_NONE ? 0 : pvr_pbe_output_dwords(color_formats[i]);
 +         data.fs.output_formats[FRAG_RESULT_DATA0 + i] = color_formats[i];
 +         data.fs.outputs[FRAG_RESULT_DATA0 + i] = (pco_range){ .start = output_start,
 +                                                              .count = dwords };
 +         output_start += dwords;
 +      }
-+      /* Blending is lowered into the shader (pco runs nir_lower_blend with these). */
-+      if (blend != NULL && nr_formats > 0 && color_formats[0] != PIPE_FORMAT_NONE) {
++      /* Blending is lowered into the shader (pco runs nir_lower_blend with these; it skips the
++       * NONE format of a GL_NONE draw buffer, so output 0 may be one). */
++      bool any_format = false;
++      for (unsigned i = 0; i < MIN2(nr_formats, PVR_MAX_COLOR_ATTACHMENTS); i++)
++         any_format |= color_formats[i] != PIPE_FORMAT_NONE;
++      if (blend != NULL && any_format) {
 +         data.fs.blend_opts = *blend;
 +         for (unsigned i = 0; i < MIN2(nr_formats, PVR_MAX_COLOR_ATTACHMENTS); i++)
 +            data.fs.blend_opts.rt[i].format = color_formats[i];
@@ -16415,9 +16555,9 @@ index 00000000..76e5d9eb
 +    * map work on DATA0..7, as the Vulkan driver's shaders do. */
 +   if (nir->info.stage == MESA_SHADER_FRAGMENT) {
 +      unsigned nr_out = 1;
-+      while (nr_out < PVR_MAX_COLOR_ATTACHMENTS &&
-+             data->fs.output_formats[FRAG_RESULT_DATA0 + nr_out] != PIPE_FORMAT_NONE)
-+         nr_out++;
++      for (unsigned i = 1; i < PVR_MAX_COLOR_ATTACHMENTS; i++)
++         if (data->fs.output_formats[FRAG_RESULT_DATA0 + i] != PIPE_FORMAT_NONE)
++            nr_out = i + 1;
 +      NIR_PASS(_, nir, nir_lower_fragcolor, nr_out);
 +      nir_foreach_shader_out_variable (var, nir) {
 +         if (var->data.location == FRAG_RESULT_COLOR)
@@ -21961,7 +22101,7 @@ index b46a2b16..a122a1a2 100644
         * that are a multiple of the icache alignment.
         */
 diff --git a/src/imagination/pco/pco_internal.h b/src/imagination/pco/pco_internal.h
-index 326111b1..6e36186a 100644
+index 326111b1..f9abb522 100644
 --- a/src/imagination/pco/pco_internal.h
 +++ b/src/imagination/pco/pco_internal.h
 @@ -70,6 +70,7 @@ enum pco_debug {
@@ -22017,7 +22157,13 @@ index 326111b1..6e36186a 100644
  bool pco_index(pco_shader *shader, bool skip_ssa);
  bool pco_opt_comp_only_vecs(pco_shader *shader);
  bool pco_nir_compute_instance_check(nir_shader *shader);
-@@ -1828,14 +1835,17 @@ bool pco_nir_lower_vs_intrinsics(nir_shader *shader);
+@@ -1823,19 +1830,22 @@ bool pco_nir_lower_alu(nir_shader *shader, pco_ctx *ctx);
+ bool pco_nir_lower_atomics(nir_shader *shader, pco_data *data);
+ bool pco_nir_lower_barriers(nir_shader *shader, pco_data *data);
+ void pco_nir_lower_clip_cull_vars(nir_shader *shader);
+-bool pco_nir_lower_fs_intrinsics(nir_shader *shader);
++bool pco_nir_lower_fs_intrinsics(nir_shader *shader, const pco_fs_data *fs);
+ bool pco_nir_lower_vs_intrinsics(nir_shader *shader);
  bool pco_nir_lower_images(nir_shader *shader, pco_data *data, pco_ctx *ctx);
  bool pco_nir_lower_interpolation(nir_shader *shader, pco_fs_data *fs);
  bool pco_nir_lower_io(nir_shader *shader, pco_data *data);
@@ -22783,7 +22929,7 @@ index cca59f85..14a962d2 100644
     hdr=(I_IGRP_HDR_BITWISE, [
        ('opcnt', ['p0', 'p2']),
 diff --git a/src/imagination/pco/pco_nir.c b/src/imagination/pco/pco_nir.c
-index 2ef81062..796a5d08 100644
+index 2ef81062..01576acf 100644
 --- a/src/imagination/pco/pco_nir.c
 +++ b/src/imagination/pco/pco_nir.c
 @@ -12,8 +12,10 @@
@@ -23133,7 +23279,8 @@ index 2ef81062..796a5d08 100644
 +         NIR_PASS(_, nir, pco_nir_lower_sample_mask_out, &data->fs);
        NIR_PASS(_, nir, pco_nir_pfo, &data->fs);
        NIR_PASS(_, nir, nir_lower_is_helper_invocation);
-       NIR_PASS(_, nir, pco_nir_lower_fs_intrinsics);
+-      NIR_PASS(_, nir, pco_nir_lower_fs_intrinsics);
++      NIR_PASS(_, nir, pco_nir_lower_fs_intrinsics, &data->fs);
     } else if (nir->info.stage == MESA_SHADER_VERTEX) {
 +      /* If needed, duplicate the point size for xfb prior to it being clamped.
 +       */
@@ -24141,7 +24288,7 @@ index 0b0a3d1f..c02ba0fd 100644
 +   return progress;
  }
 diff --git a/src/imagination/pco/pco_nir_pvfio.c b/src/imagination/pco/pco_nir_pvfio.c
-index 71efda9f..2a8ccc99 100644
+index 71efda9f..2ab74f70 100644
 --- a/src/imagination/pco/pco_nir_pvfio.c
 +++ b/src/imagination/pco/pco_nir_pvfio.c
 @@ -15,14 +15,17 @@
@@ -24552,7 +24699,71 @@ index 71efda9f..2a8ccc99 100644
        return false;
  
     /* Create a point size variable if there isn't one. */
-@@ -1232,12 +1367,19 @@ swap_clip_cull_load(nir_builder *b, nir_intrinsic_instr *intr, void *cb_data)
+@@ -1057,21 +1192,29 @@ static bool lower_front_face(nir_builder *b, nir_intrinsic_instr *intr)
+    return true;
+ }
+ 
+-static bool lower_sample_mask_in(nir_builder *b, nir_intrinsic_instr *intr)
++static bool lower_sample_mask_in(nir_builder *b,
++                                 nir_intrinsic_instr *intr,
++                                 const pco_fs_data *fs)
+ {
+-   nir_def *mask =
+-      nir_ubitfield_extract_imm(b,
+-                                nir_load_fs_meta_pco(b),
+-                                PVR_FS_META_SAMPLE_MASK_OFFSET,
+-                                PVR_FS_META_SAMPLE_MASK_LENGTH);
+-   mask = nir_iand(b, mask, nir_load_savmsk_vm_pco(b));
++   nir_def *mask = nir_load_savmsk_vm_pco(b);
++   /* Statically single-sampled with sample 0 in the static mask: the mask
++    * is the coverage, and the driver may provide no fs_meta at all.
++    */
++   if (!fs->skip_sample_check) {
++      mask = nir_iand(b,
++                      nir_ubitfield_extract_imm(b,
++                                                nir_load_fs_meta_pco(b),
++                                                PVR_FS_META_SAMPLE_MASK_OFFSET,
++                                                PVR_FS_META_SAMPLE_MASK_LENGTH),
++                      mask);
++   }
+    nir_def_rewrite_uses(&intr->def, mask);
+    nir_instr_remove(&intr->instr);
+    return true;
+ }
+ 
+ static bool
+-lower_fs_intr(nir_builder *b, nir_intrinsic_instr *intr, UNUSED void *cb_data)
++lower_fs_intr(nir_builder *b, nir_intrinsic_instr *intr, void *cb_data)
+ {
+    b->cursor = nir_before_instr(&intr->instr);
+ 
+@@ -1080,7 +1223,7 @@ lower_fs_intr(nir_builder *b, nir_intrinsic_instr *intr, UNUSED void *cb_data)
+       return lower_front_face(b, intr);
+ 
+    case nir_intrinsic_load_sample_mask_in:
+-      return lower_sample_mask_in(b, intr);
++      return lower_sample_mask_in(b, intr, cb_data);
+ 
+    /* Drop these, already handled by nir_lower_is_helper_invocation. */
+    case nir_intrinsic_demote:
+@@ -1095,14 +1238,14 @@ lower_fs_intr(nir_builder *b, nir_intrinsic_instr *intr, UNUSED void *cb_data)
+    return false;
+ }
+ 
+-bool pco_nir_lower_fs_intrinsics(nir_shader *shader)
++bool pco_nir_lower_fs_intrinsics(nir_shader *shader, const pco_fs_data *fs)
+ {
+    assert(shader->info.stage == MESA_SHADER_FRAGMENT);
+ 
+    return nir_shader_intrinsics_pass(shader,
+                                      lower_fs_intr,
+                                      nir_metadata_control_flow,
+-                                     NULL);
++                                     (void *)fs);
+ }
+ 
+ static bool
+@@ -1232,12 +1375,19 @@ swap_clip_cull_load(nir_builder *b, nir_intrinsic_instr *intr, void *cb_data)
  bool pco_nir_link_clip_cull_vars(nir_shader *producer, nir_shader *consumer)
  {
     if (producer->info.stage != MESA_SHADER_VERTEX ||
@@ -24575,7 +24786,7 @@ index 71efda9f..2a8ccc99 100644
     /* Skip if clip/cull comps aren't actually consumed. */
     if (!clip_cull_comps)
        return false;
-@@ -1261,14 +1403,76 @@ bool pco_nir_link_clip_cull_vars(nir_shader *producer, nir_shader *consumer)
+@@ -1261,14 +1411,76 @@ bool pco_nir_link_clip_cull_vars(nir_shader *producer, nir_shader *consumer)
                                nir_metadata_control_flow,
                                clone_var);
  
@@ -24659,7 +24870,7 @@ index 71efda9f..2a8ccc99 100644
  
     return true;
  }
-@@ -1492,3 +1696,114 @@ bool pco_nir_link_multiview(nir_shader *producer,
+@@ -1492,3 +1704,114 @@ bool pco_nir_link_multiview(nir_shader *producer,
  
     return true;
  }

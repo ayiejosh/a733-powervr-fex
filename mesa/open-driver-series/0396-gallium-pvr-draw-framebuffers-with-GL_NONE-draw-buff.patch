@@ -1,0 +1,187 @@
+From 5a16877f7f972498b9b18d6e160c3bcb8aac9b02 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Tue, 3 Nov 2026 14:35:23 +0800
+Subject: [PATCH 396/398] gallium/pvr: draw framebuffers with GL_NONE draw
+ buffers
+
+The draw path takes colour buffer 0 as the render target and the
+attachments as a gap-free list, so a framebuffer with a GL_NONE draw
+buffer was cut short: a hole ({0, NONE, 2}) drew attachment 0 only and a
+leading one ({NONE, 1}) drew nothing. Drop the NULL colour buffers when
+the framebuffer is set and keep each one's draw buffer index. The
+fragment variant gets its output formats by draw buffer index, with
+PIPE_FORMAT_NONE for a GL_NONE one: pco drops that output's stores and
+gives it no output dwords, so every written output lands in its
+attachment's dwords of the EOT layout. Clear bits and channel masks are
+per draw buffer, so the clear reads them at that index; gl_FragColor is
+written up to the last bound draw buffer.
+---
+ src/gallium/drivers/pvr_native/pvr_context.c | 26 ++++++++++++++++---
+ src/gallium/drivers/pvr_native/pvr_context.h |  3 +++
+ src/gallium/drivers/pvr_native/pvr_draw.c    | 27 +++++++++++---------
+ src/gallium/drivers/pvr_native/pvr_shader.c  | 17 +++++++-----
+ 4 files changed, 51 insertions(+), 22 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_context.c b/src/gallium/drivers/pvr_native/pvr_context.c
+index 9fa20275..d0e11195 100644
+--- a/src/gallium/drivers/pvr_native/pvr_context.c
++++ b/src/gallium/drivers/pvr_native/pvr_context.c
+@@ -279,6 +279,19 @@ pvr_set_framebuffer_state(struct pipe_context *pctx,
+    /* Previously discarded. The draw path needs the render targets, and the copy takes
+     * the resource references that keep them alive while bound. */
+    util_copy_framebuffer_state(&ctx->fb, state);
++   /* Drop GL_NONE draw buffers, so the draw path sees colour buffers 0..n-1 (the moved entries keep
++    * their references). */
++   unsigned nr = 0;
++   for (unsigned i = 0; i < ctx->fb.nr_cbufs; i++) {
++      if (ctx->fb.cbufs[i].texture == NULL)
++         continue;
++      if (nr != i) {
++         ctx->fb.cbufs[nr] = ctx->fb.cbufs[i];
++         memset(&ctx->fb.cbufs[i], 0, sizeof(ctx->fb.cbufs[i]));
++      }
++      ctx->fb_gl_index[nr++] = i;
++   }
++   ctx->fb.nr_cbufs = nr;
+ 
+    if (state->nr_cbufs > 0 && state->cbufs[0].texture != NULL) {
+       /* Log what the GPU would be asked to write. A render target with no device
+@@ -646,8 +659,12 @@ pvr_clear(struct pipe_context *pctx, unsigned buffers, uint32_t color_clear_mask
+     * attachment, each packed for that attachment's format, so mixed-format MRT clears too); then
+     * there is nothing for the CPU to fill for it. */
+    bool gpu_cleared = false;
+-   if ((buffers & PIPE_CLEAR_COLOR0) && (color_clear_mask & 0xf) == 0xf && scissor_state == NULL &&
+-       ctx->fb.nr_cbufs >= 1 && ctx->fb.nr_cbufs <= PVR_MAX_COLOR_ATTACHMENTS) {
++   /* The clear bits and channel masks are per draw buffer, so colour buffer i's are at
++    * fb_gl_index[i]. */
++   const unsigned gl0 = ctx->fb.nr_cbufs ? ctx->fb_gl_index[0] : 0;
++   if ((buffers & (PIPE_CLEAR_COLOR0 << gl0)) && ((color_clear_mask >> (4 * gl0)) & 0xf) == 0xf &&
++       scissor_state == NULL && ctx->fb.nr_cbufs >= 1 &&
++       ctx->fb.nr_cbufs <= PVR_MAX_COLOR_ATTACHMENTS) {
+       gpu_cleared = pvr_draw_note_clear(ctx, color);
+       /* MRT: one background colour covers every attachment (v1), so submit the clear render now -
+        * deferred clears are single-resource only. */
+@@ -658,14 +675,15 @@ pvr_clear(struct pipe_context *pctx, unsigned buffers, uint32_t color_clear_mask
+       pvr_draw_flush(ctx);
+    for (unsigned i = 0; i < ctx->fb.nr_cbufs; i++) {
+       /* A GPU clear covers every attachment (one background colour, one emit each). */
+-      if (gpu_cleared || (buffers & (PIPE_CLEAR_COLOR0 << i)) == 0)
++      const unsigned gl = ctx->fb_gl_index[i];
++      if (gpu_cleared || (buffers & (PIPE_CLEAR_COLOR0 << gl)) == 0)
+          continue;
+ 
+       if (ctx->fb.cbufs[i].texture == NULL)
+          continue;
+ 
+       /* four channel bits per colour buffer */
+-      if (((color_clear_mask >> (4 * i)) & 0xf) != 0xf) {
++      if (((color_clear_mask >> (4 * gl)) & 0xf) != 0xf) {
+          static bool warned;
+ 
+          if (!warned) {
+diff --git a/src/gallium/drivers/pvr_native/pvr_context.h b/src/gallium/drivers/pvr_native/pvr_context.h
+index 2eddcdd5..fd6df76a 100644
+--- a/src/gallium/drivers/pvr_native/pvr_context.h
++++ b/src/gallium/drivers/pvr_native/pvr_context.h
+@@ -41,6 +41,9 @@ struct pvr_context {
+     * a pvr_resource, so pvr_resource(fb.cbufs[i].texture)->dev_addr is the address the
+     * draw path wants. Storing a second copy would be a second thing to keep in sync. */
+    struct pipe_framebuffer_state fb;
++   /* fb.cbufs holds no GL_NONE draw buffers: the draw buffer index of each colour buffer (the
++    * fragment output it takes and its clear bit). */
++   uint8_t fb_gl_index[PIPE_MAX_COLOR_BUFS];
+ 
+    /* Pipeline state, recorded rather than discarded. The create_* hooks allocate a
+     * copy of the pipe state struct, because the state the caller passes in may be a
+diff --git a/src/gallium/drivers/pvr_native/pvr_draw.c b/src/gallium/drivers/pvr_native/pvr_draw.c
+index fe7d6772..61566cf7 100644
+--- a/src/gallium/drivers/pvr_native/pvr_draw.c
++++ b/src/gallium/drivers/pvr_native/pvr_draw.c
+@@ -1576,18 +1576,12 @@ draw_fb_level(struct pvr_context *ctx)
+ {
+    return ctx->fb.nr_cbufs && ctx->fb.cbufs[0].texture ? ctx->fb.cbufs[0].level : 0;
+ }
+-/* The colour attachments a framebuffer render writes; the draw-time shader variant, the EOT and the
+- * GPU clear all use it. shortcut: a hole in the list (a GL_NONE draw buffer between two others) is
+- * drawn as attachment 0 only and cleared on the CPU, and a framebuffer whose draw buffer 0 is
+- * GL_NONE is not drawn at all; handle holes in the EOT layout when an app needs it. */
++/* The colour attachments a framebuffer render writes (fb.cbufs has no GL_NONE holes); the
++ * draw-time shader variant, the EOT and the GPU clear all use it. */
+ static unsigned
+ draw_fb_nr_attach(const struct pvr_context *ctx)
+ {
+-   const unsigned nr = MIN2(ctx->fb.nr_cbufs, PVR_MAX_COLOR_ATTACHMENTS);
+-   for (unsigned i = 1; i < nr; i++)
+-      if (ctx->fb.cbufs[i].texture == NULL)
+-         return 1;
+-   return nr;
++   return MIN2(ctx->fb.nr_cbufs, PVR_MAX_COLOR_ATTACHMENTS);
+ }
+ 
+ /* The vertex shader derives each attribute's fetch format from the declared type.  GL lets the
+@@ -1727,10 +1721,19 @@ pvr_draw_3d(struct pvr_context *ctx, const struct pipe_draw_info *info,
+ 
+    /* The fragment shader variant for this framebuffer's colour format(s) and blend state. MRT v1:
+     * every attachment shares the first one's format (the background program emits one value). */
++   /* Indexed by draw buffer: a GL_NONE one is PIPE_FORMAT_NONE, whose output pco drops and gives no
++    * output dwords, so each written output lands in its attachment's dwords of the EOT layout. */
+    enum pipe_format rt_formats[PVR_MAX_COLOR_ATTACHMENTS] = { rt_format };
+-   unsigned nr_formats = draw_fb_nr_attach(ctx);
+-   for (unsigned i = 0; i < nr_formats; i++)
+-      rt_formats[i] = ctx->fb.cbufs[i].format;
++   unsigned nr_formats = 0;
++   for (unsigned i = 0; i < draw_fb_nr_attach(ctx); i++) {
++      const unsigned gl = ctx->fb_gl_index[i];
++      if (gl >= PVR_MAX_COLOR_ATTACHMENTS)
++         break;
++      if (i == 0)
++         rt_formats[0] = PIPE_FORMAT_NONE;
++      rt_formats[gl] = ctx->fb.cbufs[i].format;
++      nr_formats = gl + 1;
++   }
+    nir_lower_blend_options blend;
+    memset(&blend, 0, sizeof(blend));
+    {
+diff --git a/src/gallium/drivers/pvr_native/pvr_shader.c b/src/gallium/drivers/pvr_native/pvr_shader.c
+index 76e5d9eb..8c67d7ea 100644
+--- a/src/gallium/drivers/pvr_native/pvr_shader.c
++++ b/src/gallium/drivers/pvr_native/pvr_shader.c
+@@ -346,14 +346,19 @@ pvr_shader_create_with(struct nir_shader *nir, pco_ctx *ctx, const enum pipe_for
+          /* Take the next free pixel-output dwords: an 8-bit colour output is one dword, a 16F one
+           * is two. The EOT program's per-attachment PBE emit reads from this position (its
+           * source_pos), matching the reference's usc_mrt_resource output_reg allocation. */
+-         const unsigned dwords = pvr_pbe_output_dwords(color_formats[i]);
++         const unsigned dwords =
++            color_formats[i] == PIPE_FORMAT_NONE ? 0 : pvr_pbe_output_dwords(color_formats[i]);
+          data.fs.output_formats[FRAG_RESULT_DATA0 + i] = color_formats[i];
+          data.fs.outputs[FRAG_RESULT_DATA0 + i] = (pco_range){ .start = output_start,
+                                                               .count = dwords };
+          output_start += dwords;
+       }
+-      /* Blending is lowered into the shader (pco runs nir_lower_blend with these). */
+-      if (blend != NULL && nr_formats > 0 && color_formats[0] != PIPE_FORMAT_NONE) {
++      /* Blending is lowered into the shader (pco runs nir_lower_blend with these; it skips the
++       * NONE format of a GL_NONE draw buffer, so output 0 may be one). */
++      bool any_format = false;
++      for (unsigned i = 0; i < MIN2(nr_formats, PVR_MAX_COLOR_ATTACHMENTS); i++)
++         any_format |= color_formats[i] != PIPE_FORMAT_NONE;
++      if (blend != NULL && any_format) {
+          data.fs.blend_opts = *blend;
+          for (unsigned i = 0; i < MIN2(nr_formats, PVR_MAX_COLOR_ATTACHMENTS); i++)
+             data.fs.blend_opts.rt[i].format = color_formats[i];
+@@ -781,9 +786,9 @@ pvr_shader_compile_data_with(pco_ctx *ctx, struct nir_shader *nir, pco_data *dat
+     * map work on DATA0..7, as the Vulkan driver's shaders do. */
+    if (nir->info.stage == MESA_SHADER_FRAGMENT) {
+       unsigned nr_out = 1;
+-      while (nr_out < PVR_MAX_COLOR_ATTACHMENTS &&
+-             data->fs.output_formats[FRAG_RESULT_DATA0 + nr_out] != PIPE_FORMAT_NONE)
+-         nr_out++;
++      for (unsigned i = 1; i < PVR_MAX_COLOR_ATTACHMENTS; i++)
++         if (data->fs.output_formats[FRAG_RESULT_DATA0 + i] != PIPE_FORMAT_NONE)
++            nr_out = i + 1;
+       NIR_PASS(_, nir, nir_lower_fragcolor, nr_out);
+       nir_foreach_shader_out_variable (var, nir) {
+          if (var->data.location == FRAG_RESULT_COLOR)
+-- 
+2.47.3
+

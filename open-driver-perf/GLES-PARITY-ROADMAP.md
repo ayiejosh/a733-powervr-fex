@@ -22,11 +22,10 @@ GL versions today (probe `open-perf/glinfo`):
   MRT GPU clear, pixel-output width derived from the dword count; `GL_EXT_draw_buffers` advertised;
   mrt_test matches zink for 1/2/4 targets and for mixed RGBA8+BGRA8 (patch 0334: PBE source data is
   packed in logical channel order, which also fixed BGRA8 targets). Open MRT sub-items: all
-  attachments must be one dword per pixel; no per-render-target blend state (ES2 has none); a hole in
-  the draw buffers (a GL_NONE between two attachments) is drawn as attachment 0 only (patch 0389),
-  and a framebuffer whose draw buffer 0 is GL_NONE is not drawn; a render that continues an MRT
-  framebuffer after a flush reloads attachment 0 only (`draw_load_program`), so attachments 1-3 are
-  not preserved outside the new draws.
+  attachments must be one dword per pixel; no per-render-target blend state (ES2 has none). GL_NONE
+  draw buffers (a hole, or draw buffer 0) are drawn since patch 0396. The earlier note that a render
+  continued after a flush reloads attachment 0 only did not reproduce (round 254): the failing probe
+  was a discarding draw, which wrote nothing on every build before patch 0395.
 - 2D array + 3D textures: `resource_create` refuses them; twiddled/stride descriptors are 2D-only
 - UBOs: uniforms are push-constants/shared-reg only; needs a real constant-buffer binding path
 - ~~Instancing (core; also EE: `GL_NV_draw_instanced`, `GL_NV_instanced_arrays`)~~ **DONE (patch
@@ -101,8 +100,8 @@ GL versions today (probe `open-perf/glinfo`):
 Board between tests: vendor + desktop + original firmware (`tools/verify/switch-safe.sh`). Never start GL
 harnesses while vendor is bound (caused a watchdog reset). Every feature needs its own gltri (or new test)
 mode comparing against zink checksums, plus the existing full gltri gate and 0 MMU faults before pushing.
-Patch series continues at the next number in `mesa/open-driver-series/` (currently ends at 0394;
-the next patch is 0395).
+Patch series continues at the next number in `mesa/open-driver-series/` (currently ends at 0398;
+the next patch is 0399).
 
 ### MRT design notes (recon 2026-10-29; implemented as patch 0332 - see round-73 notes for the
 `nir_lower_blend` colormask trap that ate attachment 1's store)

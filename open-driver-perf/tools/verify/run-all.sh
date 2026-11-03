@@ -13,7 +13,7 @@ ok() { printf 'PASS %s\n' "$*"; }
 bad() { printf 'FAIL %s\n' "$*"; fail=1; }
 
 # Compile the probes from source so the gate is self-contained.
-for p in cube_probe cube_mip border_probe mirror_probe aniso_probe polygon_offset_probe rg_probe f16rt_probe zls_mip_probe scissor_probe clear_diag fragcoord_diag texexact_probe rgbx_probe; do
+for p in cube_probe cube_mip border_probe mirror_probe aniso_probe polygon_offset_probe rg_probe f16rt_probe zls_mip_probe scissor_probe clear_diag fragcoord_diag texexact_probe rgbx_probe discard_probe; do
    rm -f "$OUT/$p"
    [ -f "$V/$p.c" ] || { bad "missing $p.c"; continue; }
    gcc -O2 "$V/$p.c" -o "$OUT/$p" -lEGL -lGLESv2 || bad "compile $p"
@@ -100,8 +100,10 @@ fi
 # sampled before its first upload (exercises 0390's flag flip), MRT attachment 1 read back or written
 # right after its render (need 0389's attachment tracking), glReadPixels from a GL_RGB target, R8/RG8
 # gradients (fail without 0393), a clear read back or patched with no flush and MRT attachment 0 patched
-# while bound (0389), an MRT scissored clear (0394), and an MRT framebuffer with a hole in its draw
-# buffers (crashed before 0389).
+# while bound (0389), an MRT scissored clear (0394), an MRT render continued after a flush by a
+# discarding draw (0395), glCopyTexImage2D into GL_RGB (0398), and MRT framebuffers with a hole in
+# their draw buffers ({0, NONE, 2} crashed before 0389; it and {NONE, 1} draw every attachment since
+# 0396).
 te=$(timeout 60 $OUT/texexact_probe 2>&1)
 if echo "$te" | grep -q '^DIAG-END' && ! echo "$te" | grep -q '^DIAG BAD'; then
    ok "texel-exact sampling and odd widths"
@@ -118,6 +120,14 @@ else
    bad "RGB textures and targets: $(echo "$rx" | grep '^FAIL' | head -5 | tr '\n' ' ')"
 fi
 
+# A fragment shader that can discard writes the pixels it keeps (every such shader wrote nothing
+# before 0395).
+dc=$(timeout 60 $OUT/discard_probe 2>&1)
+if echo "$dc" | grep -q '^RESULT: PASS'; then
+   ok "discard"
+else
+   bad "discard: $(echo "$dc" | grep '^DIAG BAD' | head -5 | tr '\n' ' ')"
+fi
 # No firmware context resets during the gate (CONTEXT_RESET_NOTIFICATION, which the kernel logs
 # undecoded; a GPU page fault shows up only as one). rt8test raised two per run until 0393 (R8/RG8
 # targets written at 4 bytes per pixel, past their end). A notice can arrive with a later job, so one

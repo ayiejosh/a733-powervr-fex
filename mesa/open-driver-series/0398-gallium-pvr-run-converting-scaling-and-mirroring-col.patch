@@ -1,0 +1,165 @@
+From 9d9822ae6ea8ecdac5843edc79780d4dd586a719 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Tue, 3 Nov 2026 14:35:46 +0800
+Subject: [PATCH 398/398] gallium/pvr: run converting, scaling and mirroring
+ colour blits on the CPU
+
+pipe->blit did same-format unscaled copies only and skipped everything
+else with a warning, so the state tracker's blits did nothing:
+glCopyTexImage2D into another format (GL_RGB or GL_LUMINANCE from an
+RGBA framebuffer), a y-flipped copy from a window framebuffer, and the
+generic mipmap fallback. Do colour blits through the transfer maps: the
+source rectangle is unpacked to floats, each destination pixel samples
+it at its centre (nearest, or bilinear for a scaled LINEAR blit; a
+negative source extent mirrors), with the channel mask, swizzle, alpha
+blend and scissor applied, and is packed in the destination format.
+Depth/stencil, integer, compressed and multisampled blits are still
+reported and skipped.
+---
+ src/gallium/drivers/pvr_native/pvr_context.c | 113 ++++++++++++++++++-
+ 1 file changed, 110 insertions(+), 3 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_context.c b/src/gallium/drivers/pvr_native/pvr_context.c
+index d0e11195..5c50e625 100644
+--- a/src/gallium/drivers/pvr_native/pvr_context.c
++++ b/src/gallium/drivers/pvr_native/pvr_context.c
+@@ -5,6 +5,7 @@
+ #include "common/pvr_limits.h"
+ 
+ #include "pipe/p_context.h"
++#include "util/format/u_format.h"
+ #include "util/format/u_formats.h"
+ #include "util/log.h"
+ #include "util/u_inlines.h"
+@@ -871,8 +872,110 @@ pvr_resource_copy_region(struct pipe_context *pctx, struct pipe_resource *dst, u
+    util_resource_copy_region(pctx, dst, dst_level, dstx, dsty, dstz, src, src_level, box);
+ }
+ 
+-/* shortcut: no GPU blit yet. Same-format, unscaled copies go through the CPU; anything else is
+- * reported and skipped. */
++/* The unpacked source rectangle (sw x sh RGBA floats) sampled at (x, y) in its texels, clamped to
++ * its edge. */
++static void
++blit_fetch(const float *s, int sw, int sh, float x, float y, bool linear, float out[4])
++{
++   if (!linear) {
++      const int ix = CLAMP((int)floorf(x), 0, sw - 1), iy = CLAMP((int)floorf(y), 0, sh - 1);
++      memcpy(out, &s[(iy * sw + ix) * 4], 4 * sizeof(float));
++      return;
++   }
++   x -= 0.5f;
++   y -= 0.5f;
++   const int x0 = (int)floorf(x), y0 = (int)floorf(y);
++   const float fx = x - x0, fy = y - y0;
++   const int xa = CLAMP(x0, 0, sw - 1), xb = CLAMP(x0 + 1, 0, sw - 1);
++   const int ya = CLAMP(y0, 0, sh - 1), yb = CLAMP(y0 + 1, 0, sh - 1);
++   for (unsigned c = 0; c < 4; c++)
++      out[c] = (s[(ya * sw + xa) * 4 + c] * (1 - fx) + s[(ya * sw + xb) * 4 + c] * fx) * (1 - fy) +
++               (s[(yb * sw + xa) * 4 + c] * (1 - fx) + s[(yb * sw + xb) * 4 + c] * fx) * fy;
++}
++
++/* A colour blit that converts, scales or mirrors, on the CPU through the transfer maps: the source
++ * rectangle is unpacked to floats, then each destination pixel samples it at its centre (a negative
++ * source extent mirrors) and is packed in the destination format. False for what it does not do:
++ * depth/stencil, integer, compressed or multisampled formats, 3D scaling, window rectangles. */
++static bool
++pvr_blit_cpu(struct pipe_context *pctx, const struct pipe_blit_info *info)
++{
++   const enum pipe_format sf = info->src.format, df = info->dst.format;
++   const struct pipe_box *sb = &info->src.box, *db = &info->dst.box;
++   if ((info->mask & ~PIPE_MASK_RGBA) || !(info->mask & PIPE_MASK_RGBA) ||
++       util_format_is_depth_or_stencil(sf) || util_format_is_depth_or_stencil(df) ||
++       util_format_is_pure_integer(sf) || util_format_is_pure_integer(df) ||
++       util_format_is_compressed(sf) || util_format_is_compressed(df) ||
++       info->src.resource->nr_samples > 1 || info->dst.resource->nr_samples > 1 ||
++       info->num_window_rectangles || sb->depth != db->depth || db->width <= 0 || db->height <= 0 ||
++       sb->width == 0 || sb->height == 0)
++      return false;
++   const int sx0 = MIN2(sb->x, sb->x + sb->width), sw = abs(sb->width);
++   const int sy0 = MIN2(sb->y, sb->y + sb->height), sh = abs(sb->height);
++   int x0 = db->x, x1 = db->x + db->width, y0 = db->y, y1 = db->y + db->height;
++   if (info->scissor_enable) {
++      x0 = MAX2(x0, (int)info->scissor.minx);
++      x1 = MIN2(x1, (int)info->scissor.maxx);
++      y0 = MAX2(y0, (int)info->scissor.miny);
++      y1 = MIN2(y1, (int)info->scissor.maxy);
++   }
++   if (x0 >= x1 || y0 >= y1)
++      return true;
++   const bool linear = info->filter == PIPE_TEX_FILTER_LINEAR &&
++                       (sw != db->width || sh != db->height);
++   const bool read_dst = info->mask != PIPE_MASK_RGBA || info->alpha_blend;
++   float *sbuf = malloc((size_t)sw * sh * 4 * sizeof(float));
++   float *row = malloc((size_t)(x1 - x0) * 4 * sizeof(float));
++   bool ok = sbuf != NULL && row != NULL;
++   for (int z = 0; ok && z < db->depth; z++) {
++      struct pipe_transfer *t;
++      const uint8_t *src = pipe_texture_map(pctx, info->src.resource, info->src.level, sb->z + z,
++                                            PIPE_MAP_READ, sx0, sy0, sw, sh, &t);
++      if (src == NULL) {
++         ok = false;
++         break;
++      }
++      for (int y = 0; y < sh; y++)
++         util_format_unpack_rgba(sf, &sbuf[y * sw * 4], src + y * t->stride, sw);
++      pipe_texture_unmap(pctx, t);
++      uint8_t *dst = pipe_texture_map(pctx, info->dst.resource, info->dst.level, db->z + z,
++                                      PIPE_MAP_WRITE | (read_dst ? PIPE_MAP_READ : 0), x0, y0,
++                                      x1 - x0, y1 - y0, &t);
++      if (dst == NULL) {
++         ok = false;
++         break;
++      }
++      for (int y = y0; y < y1; y++) {
++         uint8_t *drow = dst + (y - y0) * t->stride;
++         if (read_dst)
++            util_format_unpack_rgba(df, row, drow, x1 - x0);
++         const float v = sb->y + (y - db->y + 0.5f) * sb->height / (float)db->height - sy0;
++         for (int x = x0; x < x1; x++) {
++            const float u = sb->x + (x - db->x + 0.5f) * sb->width / (float)db->width - sx0;
++            float c[4], s[4], *d = &row[(x - x0) * 4];
++            blit_fetch(sbuf, sw, sh, u, v, linear, s);
++            for (unsigned i = 0; i < 4; i++) {
++               const unsigned swz = info->swizzle_enable ? info->swizzle[i] : i;
++               c[i] = swz < 4 ? s[swz] : swz == PIPE_SWIZZLE_1 ? 1.0f : 0.0f;
++            }
++            if (info->alpha_blend)
++               for (unsigned i = 0; i < 3; i++)
++                  c[i] = c[i] * c[3] + d[i] * (1.0f - c[3]);
++            for (unsigned i = 0; i < 4; i++)
++               if (info->mask & (PIPE_MASK_R << i))
++                  d[i] = c[i];
++         }
++         util_format_pack_rgba(df, drow, row, x1 - x0);
++      }
++      pipe_texture_unmap(pctx, t);
++   }
++   free(sbuf);
++   free(row);
++   return ok;
++}
++
++/* shortcut: no GPU blit yet. Same-format, unscaled copies take resource_copy_region; other colour
++ * blits run on the CPU (pvr_blit_cpu); the rest is reported and skipped. */
+ static void
+ pvr_blit(struct pipe_context *pctx, const struct pipe_blit_info *info)
+ {
+@@ -884,10 +987,14 @@ pvr_blit(struct pipe_context *pctx, const struct pipe_blit_info *info)
+                                 info->src.level, &info->src.box);
+       return;
+    }
++   if (pvr_blit_cpu(pctx, info))
++      return;
+    static bool warned;
+    if (!warned) {
+       warned = true;
+-      mesa_logw("pvr: blit with conversion or scaling is not supported yet; skipped");
++      mesa_logw("pvr: blit %s -> %s (mask 0x%x) is not supported yet; skipped",
++                util_format_short_name(info->src.format), util_format_short_name(info->dst.format),
++                info->mask);
+    }
+ }
+ 
+-- 
+2.47.3
+

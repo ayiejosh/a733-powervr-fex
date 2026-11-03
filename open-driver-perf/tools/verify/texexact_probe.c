@@ -4,7 +4,9 @@
  * was read. Then odd-width targets and uploads (63x16 render readback, 63x40 partial glTexSubImage), a
  * texture sampled before its first upload, MRT attachment 1 read back or written right after its render,
  * glReadPixels from a GL_RGB render target, R8/RG8 render targets, a clear read back or patched with no
- * flush, MRT attachment 0 patched while bound, and an MRT framebuffer with a hole in its draw buffers.
+ * flush, MRT attachment 0 patched while bound, an MRT scissored clear, an MRT render continued after a
+ * flush by a discarding draw, glCopyTexImage2D into GL_RGB and GL_LUMINANCE, and MRT framebuffers with a
+ * hole in their draw buffers ({0, NONE, 2} and {NONE, 1}).
  * RGBX_ANY_RENDERER=1 allows a reference driver. */
 #include <stdio.h>
 #include <stdlib.h>
@@ -383,8 +385,94 @@ int main(void)
          glUseProgram(p);
       }
    }
-   /* Last, because it crashed older builds: MRT with a hole in the draw buffers ({0, NONE, 2}). Attachment 0
-    * must be drawn (attachments past a hole are not supported yet). */
+   /* MRT 16x16: both attachments drawn, glFlush (the render is submitted), then a second full-screen draw
+    * that discards outside a 4x4 corner: attachment 1 keeps the first draw where the second discards and
+    * takes the second inside the corner (the second draw wrote nothing before 0395). */
+   {
+      const char *ext = (const char *)glGetString(GL_EXTENSIONS);
+      void (*draw_buffers)(GLsizei, const GLenum *) = (void *)eglGetProcAddress("glDrawBuffersEXT");
+      if (ext == NULL || strstr(ext, "GL_EXT_draw_buffers") == NULL || draw_buffers == NULL) {
+         printf("DIAG BAD 16x16 MRT continued after a flush: GL_EXT_draw_buffers missing\n");
+      } else {
+         const char *fsa = "#extension GL_EXT_draw_buffers : require\nprecision highp float;"
+                           " void main(){ gl_FragData[0]=vec4(1.0,0.0,0.0,1.0); gl_FragData[1]=vec4(0.0,1.0,0.0,1.0); }";
+         const char *fsb = "#extension GL_EXT_draw_buffers : require\nprecision highp float;"
+                           " void main(){ if (gl_FragCoord.x > 4.0 || gl_FragCoord.y > 4.0) discard;"
+                           " gl_FragData[0]=vec4(0.0,0.0,1.0,1.0); gl_FragData[1]=vec4(1.0,1.0,0.0,1.0); }";
+         GLuint pa = glCreateProgram(), pb = glCreateProgram();
+         glAttachShader(pa, sh(GL_VERTEX_SHADER, "attribute vec2 q; void main(){ gl_Position=vec4(q,0.0,1.0); }"));
+         glAttachShader(pa, sh(GL_FRAGMENT_SHADER, fsa));
+         glAttachShader(pb, sh(GL_VERTEX_SHADER, "attribute vec2 q; void main(){ gl_Position=vec4(q,0.0,1.0); }"));
+         glAttachShader(pb, sh(GL_FRAGMENT_SHADER, fsb));
+         glBindAttribLocation(pa, 0, "q"); glLinkProgram(pa);
+         glBindAttribLocation(pb, 0, "q"); glLinkProgram(pb);
+         GLuint tk[2], fk, fk1;
+         glGenTextures(2, tk);
+         for (int i = 0; i < 2; i++) {
+            glBindTexture(GL_TEXTURE_2D, tk[i]);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 16, 16, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+         }
+         glGenFramebuffers(1, &fk); glBindFramebuffer(GL_FRAMEBUFFER, fk);
+         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tk[0], 0);
+         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0 + 1, GL_TEXTURE_2D, tk[1], 0);
+         const GLenum kbufs[2] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT0 + 1 };
+         draw_buffers(2, kbufs);
+         glViewport(0, 0, 16, 16);
+         glUseProgram(pa); glDrawArrays(GL_TRIANGLES, 0, 3);
+         glFlush();
+         glUseProgram(pb); glDrawArrays(GL_TRIANGLES, 0, 3);
+         glGenFramebuffers(1, &fk1); glBindFramebuffer(GL_FRAMEBUFFER, fk1);
+         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tk[1], 0);
+         unsigned char k1[4], k2[4]; readpx(10, 10, k1); readpx(1, 1, k2);
+         printf("DIAG %s 16x16 MRT continued after a flush got %d %d %d %d at 10,10 (want 0 255 0 255) and %d %d %d %d at 1,1 (want 255 255 0 255) on attachment 1\n",
+                k1[0] == 0 && k1[1] == 255 && k1[2] == 0 && k1[3] == 255 && k2[0] == 255 && k2[1] == 255 && k2[2] == 0 && k2[3] == 255 ? "OK " : "BAD",
+                k1[0], k1[1], k1[2], k1[3], k2[0], k2[1], k2[2], k2[3]);
+         glUseProgram(p);
+      }
+   }
+   /* glCopyTexImage2D from an RGBA framebuffer into GL_RGB and GL_LUMINANCE: the state tracker makes each a
+    * format-converting blit, which was skipped (the copy left undefined texels) before 0398. */
+   {
+      const int w = 16, h = 16;
+      unsigned char *data = malloc((size_t)w * h * 4);
+      for (int y = 0; y < h; y++)
+         for (int x = 0; x < w; x++) {
+            unsigned char *t = data + ((size_t)y * w + x) * 4;
+            t[0] = pr(x, y); t[1] = pg(x, y); t[2] = pb(x, y); t[3] = 255;
+         }
+      GLuint ts, fs_, td, fd, tc[2];
+      glGenTextures(1, &ts); glBindTexture(GL_TEXTURE_2D, ts);
+      glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
+      free(data);
+      glGenFramebuffers(1, &fs_); glBindFramebuffer(GL_FRAMEBUFFER, fs_);
+      glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, ts, 0);
+      const GLenum cf[2] = { GL_RGB, GL_LUMINANCE };
+      glGenTextures(2, tc);
+      for (int i = 0; i < 2; i++) {
+         glBindTexture(GL_TEXTURE_2D, tc[i]);
+         glCopyTexImage2D(GL_TEXTURE_2D, 0, cf[i], 0, 0, w, h, 0);
+         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+      }
+      glGenTextures(1, &td); glBindTexture(GL_TEXTURE_2D, td);
+      glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+      glGenFramebuffers(1, &fd); glBindFramebuffer(GL_FRAMEBUFFER, fd);
+      glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, td, 0);
+      glUseProgram(p); glViewport(0, 0, w, h);
+      glUniform2f(glGetUniformLocation(p, "sz"), (float)w, (float)h);
+      for (int i = 0; i < 2; i++) {
+         glBindTexture(GL_TEXTURE_2D, tc[i]);
+         glDrawArrays(GL_TRIANGLES, 0, 3);
+         unsigned char px[4]; readpx(5, 3, px);
+         const int r = pr(5, 3), g = i ? r : pg(5, 3), b = i ? r : pb(5, 3);
+         printf("DIAG %s glCopyTexImage2D RGBA -> %s got %d %d %d %d at 5,3 want %d %d %d 255\n",
+                px[0] == r && px[1] == g && px[2] == b && px[3] == 255 ? "OK " : "BAD", i ? "GL_LUMINANCE" : "GL_RGB",
+                px[0], px[1], px[2], px[3], r, g, b);
+      }
+   }
+   /* Last, because it crashed older builds: MRT with a hole in the draw buffers ({0, NONE, 2}), then a
+    * leading hole ({NONE, 1}) cleared and drawn. Every attachment a draw buffer names is written (before
+    * 0396 only attachment 0 of the first, and nothing of the second). */
    {
       const char *ext = (const char *)glGetString(GL_EXTENSIONS);
       void (*draw_buffers)(GLsizei, const GLenum *) = (void *)eglGetProcAddress("glDrawBuffersEXT");
@@ -411,6 +499,46 @@ int main(void)
          readpx(2, 2, px);
          printf("DIAG %s 4x4 MRT with a hole drew attachment 0 got %d %d %d %d want 255 0 0 255\n",
                 px[0] == 255 && px[1] == 0 && px[2] == 0 && px[3] == 255 ? "OK " : "BAD", px[0], px[1], px[2], px[3]);
+         GLuint fr;
+         glGenFramebuffers(1, &fr); glBindFramebuffer(GL_FRAMEBUFFER, fr);
+         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, th[1], 0);
+         readpx(2, 2, px);
+         printf("DIAG %s 4x4 MRT with a hole drew attachment 2 got %d %d %d %d want 0 255 0 255\n",
+                px[0] == 0 && px[1] == 255 && px[2] == 0 && px[3] == 255 ? "OK " : "BAD", px[0], px[1], px[2], px[3]);
+         /* Leading hole: only attachment 1, draw buffers {NONE, 1}. */
+         GLuint pl = glCreateProgram();
+         glAttachShader(pl, sh(GL_VERTEX_SHADER, "attribute vec2 q; void main(){ gl_Position=vec4(q,0.0,1.0); }"));
+         glAttachShader(pl, sh(GL_FRAGMENT_SHADER, "#extension GL_EXT_draw_buffers : require\nprecision highp float;"
+                               " void main(){ gl_FragData[0]=vec4(1.0,0.0,0.0,1.0); gl_FragData[1]=vec4(0.0,1.0,0.0,1.0); }"));
+         glBindAttribLocation(pl, 0, "q"); glLinkProgram(pl);
+         GLuint tl, fl;
+         glGenTextures(1, &tl); glBindTexture(GL_TEXTURE_2D, tl);
+         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 4, 4, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+         glGenFramebuffers(1, &fl); glBindFramebuffer(GL_FRAMEBUFFER, fl);
+         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0 + 1, GL_TEXTURE_2D, tl, 0);
+         const GLenum lbufs[2] = { GL_NONE, GL_COLOR_ATTACHMENT0 + 1 };
+         draw_buffers(2, lbufs);
+         glClearColor(0, 0, 1, 1); glClear(GL_COLOR_BUFFER_BIT);
+         glBindFramebuffer(GL_FRAMEBUFFER, fr);
+         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tl, 0);
+         readpx(2, 2, px);
+         printf("DIAG %s 4x4 MRT with a leading hole cleared attachment 1 got %d %d %d %d want 0 0 255 255\n",
+                px[0] == 0 && px[1] == 0 && px[2] == 255 && px[3] == 255 ? "OK " : "BAD", px[0], px[1], px[2], px[3]);
+         glBindFramebuffer(GL_FRAMEBUFFER, fl);
+         glUseProgram(pl); glDrawArrays(GL_TRIANGLES, 0, 3);
+         glBindFramebuffer(GL_FRAMEBUFFER, fr);
+         readpx(2, 2, px);
+         printf("DIAG %s 4x4 MRT with a leading hole drew attachment 1 got %d %d %d %d want 0 255 0 255\n",
+                px[0] == 0 && px[1] == 255 && px[2] == 0 && px[3] == 255 ? "OK " : "BAD", px[0], px[1], px[2], px[3]);
+         /* The colour mask (blend state, lowered into the shader) applies with a leading hole too. */
+         glBindFramebuffer(GL_FRAMEBUFFER, fl);
+         glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+         glUseProgram(p); glDrawArrays(GL_TRIANGLES, 0, 3);
+         glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+         glBindFramebuffer(GL_FRAMEBUFFER, fr);
+         readpx(2, 2, px);
+         printf("DIAG %s 4x4 MRT with a leading hole kept attachment 1 under glColorMask(0) got %d %d %d %d want 0 255 0 255\n",
+                px[0] == 0 && px[1] == 255 && px[2] == 0 && px[3] == 255 ? "OK " : "BAD", px[0], px[1], px[2], px[3]);
       }
    }
    printf("DIAG-END\n");
