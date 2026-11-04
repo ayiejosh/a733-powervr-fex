@@ -1,0 +1,260 @@
+From 81b7c7bca0de20c7eb61247c64dde9ac3026953b Mon Sep 17 00:00:00 2001
+From: Simon Perretta <simon.perretta@imgtec.com>
+Date: Fri, 11 Sep 2026 01:14:22 +0100
+Subject: [PATCH 272/294] pco: gather transform feedback info for vertex
+ shaders
+
+Signed-off-by: Simon Perretta <simon.perretta@imgtec.com>
+Acked-by: Frank Binns <frank.binns@imgtec.com>
+Part-of: <https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/44385>
+(cherry picked from commit dba51ed0254a3cdeb865c1b5676ef68b85aa303c)
+---
+ src/imagination/pco/pco_data.h             |  3 +
+ src/imagination/pco/pco_nir.c              | 19 +++++
+ src/imagination/pco/pco_nir_pvfio.c        | 90 +++++++++++++++++++---
+ src/imagination/vulkan/pvr_arch_pipeline.c | 13 ++--
+ 4 files changed, 110 insertions(+), 15 deletions(-)
+
+diff --git a/src/imagination/pco/pco_data.h b/src/imagination/pco/pco_data.h
+index 9e3fc203..79870ee5 100644
+--- a/src/imagination/pco/pco_data.h
++++ b/src/imagination/pco/pco_data.h
+@@ -16,6 +16,7 @@
+ #include "common/pvr_limits.h"
+ #include "compiler/shader_enums.h"
+ #include "nir/nir_lower_blend.h"
++#include "nir/nir_xfb_info.h"
+ #include "util/format/u_format.h"
+ 
+ #include <stdbool.h>
+@@ -49,6 +50,8 @@ typedef struct _pco_vs_data {
+    unsigned clip_count;
+    unsigned cull_count;
+ 
++   nir_xfb_info *xfb_info;
++
+    unsigned f32_smooth; /** Number of F32 linear varyings. */
+    unsigned f32_flat; /** Number of F32 flat varyings. */
+    unsigned f32_npc; /** Number of F32 NPC varyings. */
+diff --git a/src/imagination/pco/pco_nir.c b/src/imagination/pco/pco_nir.c
+index 141afb73..db9aa9c0 100644
+--- a/src/imagination/pco/pco_nir.c
++++ b/src/imagination/pco/pco_nir.c
+@@ -12,6 +12,7 @@
+ 
+ #include "nir/nir_builder.h"
+ #include "nir/nir_lower_blend.h"
++#include "nir/nir_xfb_info.h"
+ #include "pco.h"
+ #include "pco_internal.h"
+ #include "util/set.h"
+@@ -305,6 +306,20 @@ static void gather_fs_data(nir_shader *nir, pco_data *data)
+    data->fs.uses.sample_shading |= data->fs.uses.sample_locations;
+ }
+ 
++static void gather_vs_xfb_data(nir_shader *nir, pco_vs_data *vs_data)
++{
++   if (nir->info.internal)
++      return;
++
++   nir_gather_xfb_info_from_intrinsics(nir);
++   if (!nir->xfb_info)
++      return;
++
++   unsigned xfb_info_size = nir_xfb_info_size(nir->xfb_info->output_count);
++   vs_data->xfb_info = rzalloc_size(NULL, xfb_info_size);
++   memcpy(vs_data->xfb_info, nir->xfb_info, xfb_info_size);
++}
++
+ /**
+  * \brief Gathers vertex shader data.
+  *
+@@ -314,6 +329,7 @@ static void gather_fs_data(nir_shader *nir, pco_data *data)
+ static void gather_vs_data(nir_shader *nir, pco_data *data)
+ {
+    pco_vs_data *vs_data = &data->vs;
++   gather_vs_xfb_data(nir, vs_data);
+ 
+    vs_data->clip_count = nir->info.clip_distance_array_size;
+    vs_data->cull_count = nir->info.cull_distance_array_size;
+@@ -970,6 +986,9 @@ void pco_lower_nir(pco_ctx *ctx, nir_shader *nir, pco_data *data)
+ {
+    bool internal = nir->info.internal;
+ 
++   if (nir->info.stage == MESA_SHADER_VERTEX && nir->xfb_info)
++      pco_nir_link_clip_cull_vars(nir, NULL);
++
+    NIR_PASS(_,
+             nir,
+             nir_opt_access,
+diff --git a/src/imagination/pco/pco_nir_pvfio.c b/src/imagination/pco/pco_nir_pvfio.c
+index ebeac8fc..dc7df3c2 100644
+--- a/src/imagination/pco/pco_nir_pvfio.c
++++ b/src/imagination/pco/pco_nir_pvfio.c
+@@ -15,6 +15,7 @@
+ #include "nir.h"
+ #include "nir_builder.h"
+ #include "nir_format_convert.h"
++#include "nir_xfb_info.h"
+ #include "pvr_iface.h"
+ #include "pco.h"
+ #include "pco_builder.h"
+@@ -1290,12 +1291,19 @@ swap_clip_cull_load(nir_builder *b, nir_intrinsic_instr *intr, void *cb_data)
+ bool pco_nir_link_clip_cull_vars(nir_shader *producer, nir_shader *consumer)
+ {
+    if (producer->info.stage != MESA_SHADER_VERTEX ||
+-       consumer->info.stage != MESA_SHADER_FRAGMENT) {
++       (consumer && consumer->info.stage != MESA_SHADER_FRAGMENT)) {
+       return false;
+    }
+ 
+-   unsigned clip_cull_comps = consumer->info.clip_distance_array_size +
+-                              consumer->info.cull_distance_array_size;
++   unsigned clip_cull_comps;
++   if (consumer) {
++      clip_cull_comps = consumer->info.clip_distance_array_size +
++                        consumer->info.cull_distance_array_size;
++   } else {
++      clip_cull_comps = producer->info.clip_distance_array_size +
++                        producer->info.cull_distance_array_size;
++   }
++
+    /* Skip if clip/cull comps aren't actually consumed. */
+    if (!clip_cull_comps)
+       return false;
+@@ -1319,14 +1327,76 @@ bool pco_nir_link_clip_cull_vars(nir_shader *producer, nir_shader *consumer)
+                               nir_metadata_control_flow,
+                               clone_var);
+ 
+-   clone_var =
+-      nir_variable_create(consumer, nir_var_shader_in, clone_var_type, NULL);
+-   clone_var->data.location = clone_slot;
++   if (consumer) {
++      clone_var =
++         nir_variable_create(consumer, nir_var_shader_in, clone_var_type, NULL);
++      clone_var->data.location = clone_slot;
+ 
+-   nir_shader_intrinsics_pass(consumer,
+-                              swap_clip_cull_load,
+-                              nir_metadata_control_flow,
+-                              clone_var);
++      nir_shader_intrinsics_pass(consumer,
++                                 swap_clip_cull_load,
++                                 nir_metadata_control_flow,
++                                 clone_var);
++   } else {
++      /* TODO: we do this in this manner because of the cloned clip/cull
++       * array(s) being "scalarised" to one varying per element... there are
++       * better ways.
++       */
++      unsigned output_count = 0;
++      nir_xfb_info *xfb_info = producer->xfb_info;
++
++      for (unsigned u = 0; u < xfb_info->output_count; ++u) {
++         gl_varying_slot location = xfb_info->outputs[u].location;
++
++         if (location != VARYING_SLOT_CLIP_DIST0 &&
++             location != VARYING_SLOT_CLIP_DIST1) {
++            ++output_count;
++            continue;
++         }
++
++         output_count += util_bitcount(xfb_info->outputs[u].component_mask);
++      }
++
++      nir_xfb_info *xfb =
++         rzalloc_size(producer, nir_xfb_info_size(output_count));
++      memcpy(xfb, xfb_info, sizeof(*xfb));
++      xfb->output_count = output_count;
++
++      unsigned output = 0;
++      for (unsigned u = 0; u < xfb_info->output_count; ++u) {
++         gl_varying_slot location = xfb_info->outputs[u].location;
++
++         if (location != VARYING_SLOT_CLIP_DIST0 &&
++             location != VARYING_SLOT_CLIP_DIST1) {
++            memcpy(&xfb->outputs[output++],
++                   &xfb_info->outputs[u],
++                   sizeof(*xfb->outputs));
++            continue;
++         }
++
++         unsigned offset = (location - VARYING_SLOT_CLIP_DIST0) * 4;
++
++         unsigned comp = 0;
++         u_foreach_bit (b, xfb_info->outputs[u].component_mask) {
++            xfb->outputs[output++] = (nir_xfb_output_info){
++               .buffer = xfb_info->outputs[u].buffer,
++               .offset = xfb_info->outputs[u].offset + comp,
++               .location = clone_slot + offset + b,
++               .high_16bits = xfb_info->outputs[u].high_16bits,
++               .component_mask = 1,
++               .component_offset = 0,
++            };
++
++            /* TODO: hardcoded size of 4 for now... might be ok overall since
++             * clip/cull array types are fixed?
++             */
++            comp += 4;
++         }
++      }
++      assert(output == output_count);
++
++      ralloc_free(producer->xfb_info);
++      producer->xfb_info = xfb;
++   }
+ 
+    return true;
+ }
+diff --git a/src/imagination/vulkan/pvr_arch_pipeline.c b/src/imagination/vulkan/pvr_arch_pipeline.c
+index 7c8c7d96..5dd494cf 100644
+--- a/src/imagination/vulkan/pvr_arch_pipeline.c
++++ b/src/imagination/vulkan/pvr_arch_pipeline.c
+@@ -1325,7 +1325,7 @@ pvr_compute_pipeline_create(struct pvr_device *device,
+    return VK_SUCCESS;
+ }
+ 
+-static void pvr_pipeline_destroy_shader_data(pco_data *data);
++static void pvr_pipeline_destroy_shader_data(pco_data *data, bool vs);
+ 
+ static void pvr_compute_pipeline_destroy(
+    struct pvr_device *const device,
+@@ -1342,7 +1342,7 @@ static void pvr_compute_pipeline_destroy(
+    pvr_bo_suballoc_free(compute_pipeline->shader_state.coeff_update_shader_bo);
+    pvr_bo_suballoc_free(compute_pipeline->shader_state.shader_bo);
+ 
+-   pvr_pipeline_destroy_shader_data(&compute_pipeline->cs_data);
++   pvr_pipeline_destroy_shader_data(&compute_pipeline->cs_data, false);
+ 
+    pvr_pipeline_finish(device, &compute_pipeline->base);
+ 
+@@ -1384,11 +1384,14 @@ VkResult PVR_PER_ARCH(CreateComputePipelines)(
+    Graphics pipeline functions
+  ******************************************************************************/
+ 
+-static void pvr_pipeline_destroy_shader_data(pco_data *data)
++static void pvr_pipeline_destroy_shader_data(pco_data *data, bool vs)
+ {
+    for (unsigned u = 0; u < ARRAY_SIZE(data->common.desc_sets); ++u) {
+       ralloc_free(data->common.desc_sets[u].bindings);
+    }
++
++   if (vs)
++      ralloc_free(data->vs.xfb_info);
+ }
+ 
+ static void
+@@ -1448,8 +1451,8 @@ pvr_graphics_pipeline_destroy(struct pvr_device *const device,
+ 
+    pvr_pipeline_finish(device, &gfx_pipeline->base);
+ 
+-   pvr_pipeline_destroy_shader_data(&gfx_pipeline->vs_data);
+-   pvr_pipeline_destroy_shader_data(&gfx_pipeline->fs_data);
++   pvr_pipeline_destroy_shader_data(&gfx_pipeline->vs_data, true);
++   pvr_pipeline_destroy_shader_data(&gfx_pipeline->fs_data, false);
+ 
+    pvr_destroy_alt_fragment_variant(device, allocator, gfx_pipeline);
+ 
+-- 
+2.47.3
+

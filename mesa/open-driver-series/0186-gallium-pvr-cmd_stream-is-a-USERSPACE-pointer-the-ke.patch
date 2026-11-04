@@ -1,7 +1,7 @@
-From fab56cb5e7f6395d09380617eff04d86e7ced098 Mon Sep 17 00:00:00 2001
+From 35fa7476c49e60afc5124a9ffbbc0ea5fb3c9c85 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Fri, 23 Oct 2026 17:50:10 +0800
-Subject: [PATCH 186/269] gallium/pvr: cmd_stream is a USERSPACE pointer; the
+Subject: [PATCH 186/294] gallium/pvr: cmd_stream is a USERSPACE pointer; the
  kernel parses it into rogue_fwif_cmd_geom
 
 Read the kernel source instead of guessing at the errno, and found the mistake that EFAULT was

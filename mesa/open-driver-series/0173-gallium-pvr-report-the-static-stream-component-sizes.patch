@@ -1,7 +1,7 @@
-From a3bd89a430cd78c9716b086108986343000df352 Mon Sep 17 00:00:00 2001
+From 544f70249214033d58ae7b506b90b0da0c1c5005 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sun, 18 Oct 2026 10:05:47 +0800
-Subject: [PATCH 173/269] gallium/pvr: report the static-stream component sizes
+Subject: [PATCH 173/294] gallium/pvr: report the static-stream component sizes
 
 Diagnostic print of pre/pbe/tail (and each tail packet) from the compiled constants, which surfaced that
 the builder returns 364 bytes while its own macros sum to 368 - a one-dword internal inconsistency inside

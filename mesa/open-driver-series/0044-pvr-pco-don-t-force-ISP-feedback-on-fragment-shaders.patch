@@ -1,7 +1,7 @@
-From 9dc8497d74f38fd663dbf20db0e2894223c7061d Mon Sep 17 00:00:00 2001
+From b167929ea81afb63c30c362dc482d34c5fe85627 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sat, 10 Oct 2026 00:16:08 +0800
-Subject: [PATCH 44/98] pvr/pco: don't force ISP feedback on fragment shaders
+Subject: [PATCH 044/294] pvr/pco: don't force ISP feedback on fragment shaders
  that cannot discard
 
 Every non-internal fragment shader got an implicit sample-mask check and a
@@ -29,7 +29,7 @@ constant and dFdx shaders, 256/1024 px) and vkrender pixel checks pass.
  5 files changed, 65 insertions(+), 5 deletions(-)
 
 diff --git a/src/imagination/pco/pco_data.h b/src/imagination/pco/pco_data.h
-index a34f034..8243e91 100644
+index a34f0340..8243e914 100644
 --- a/src/imagination/pco/pco_data.h
 +++ b/src/imagination/pco/pco_data.h
 @@ -102,6 +102,17 @@ typedef struct _pco_fs_data {
@@ -51,7 +51,7 @@ index a34f034..8243e91 100644
  
     pco_range sample_locations;
 diff --git a/src/imagination/pco/pco_internal.h b/src/imagination/pco/pco_internal.h
-index d3e3318..ffbc3b4 100644
+index d3e3318e..ffbc3b45 100644
 --- a/src/imagination/pco/pco_internal.h
 +++ b/src/imagination/pco/pco_internal.h
 @@ -1829,7 +1829,7 @@ bool pco_nir_lower_images(nir_shader *shader, pco_data *data, pco_ctx *ctx);
@@ -64,7 +64,7 @@ index d3e3318..ffbc3b4 100644
  bool pco_nir_lower_subgroups(nir_shader *shader);
  bool pco_nir_lower_tex(nir_shader *shader, pco_data *data, pco_ctx *ctx);
 diff --git a/src/imagination/pco/pco_nir.c b/src/imagination/pco/pco_nir.c
-index 9b177fd..425baa5 100644
+index 9b177fdc..425baa5e 100644
 --- a/src/imagination/pco/pco_nir.c
 +++ b/src/imagination/pco/pco_nir.c
 @@ -1128,7 +1128,7 @@ void pco_lower_nir(pco_ctx *ctx, nir_shader *nir, pco_data *data)
@@ -86,7 +86,7 @@ index 9b177fd..425baa5 100644
        NIR_PASS(_, nir, nir_lower_is_helper_invocation);
        NIR_PASS(_, nir, pco_nir_lower_fs_intrinsics);
 diff --git a/src/imagination/pco/pco_nir_pvfio.c b/src/imagination/pco/pco_nir_pvfio.c
-index 3660c75..d6e21f0 100644
+index 3660c753..d6e21f00 100644
 --- a/src/imagination/pco/pco_nir_pvfio.c
 +++ b/src/imagination/pco/pco_nir_pvfio.c
 @@ -498,12 +498,18 @@ static bool lower_sample_mask_out(nir_builder *b, nir_intrinsic_instr *intr, UNU
@@ -156,7 +156,7 @@ index 3660c75..d6e21f0 100644
     /* Drop depth writes and discard cond if early fragment tests. */
     if (shader->info.fs.early_fragment_tests) {
 diff --git a/src/imagination/vulkan/pvr_arch_pipeline.c b/src/imagination/vulkan/pvr_arch_pipeline.c
-index 54fde59..82093ca 100644
+index 54fde59a..82093ca7 100644
 --- a/src/imagination/vulkan/pvr_arch_pipeline.c
 +++ b/src/imagination/vulkan/pvr_arch_pipeline.c
 @@ -2733,6 +2733,19 @@ pvr_preprocess_shader_data(pco_data *data,

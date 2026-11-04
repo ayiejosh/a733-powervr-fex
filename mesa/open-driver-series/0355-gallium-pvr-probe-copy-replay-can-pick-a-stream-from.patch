@@ -1,0 +1,99 @@
+From 3a4c77ec7ad4ff0a94cba48927756ac5c2e5fe3f Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 30 Oct 2026 17:50:14 +0800
+Subject: [PATCH] gallium/pvr: probe copy replay can pick a stream from a
+ multi-stream capture
+
+The captured bundle files hold several transfer streams back to back; the replay now selects one with
+PVR_PROBE_TQ_COPY_STREAM (0-based, default 1 = the copy job). Also keeps the fill-like hybrid switch
+(PVR_PROBE_TQ_COPY_HYBRID) used to test whether zeroing the background-program words and writing the
+USC clear register makes the copy job write: it does not, so the blocker is inside the job description.
+Probe-only, env-gated; default behaviour unchanged.
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c | 67 ++++++++++++++++++----
+ 1 file changed, 55 insertions(+), 12 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index 625cb92c..2c22783b 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -5891,21 +5891,64 @@ tq_copy_check(int fd, struct pipe_screen *pscreen)
+       printf("tqcopy:        FAIL: cannot open %s\n", path);
+       return false;
+    }
+-   if (read(tfd, &stream_len, sizeof(stream_len)) != sizeof(stream_len) ||
+-       stream_len == 0 || stream_len > 4096) {
+-      printf("tqcopy:        FAIL: bad stream header\n");
+-      close(tfd);
+-      return false;
+-   }
+-   stream = malloc(stream_len);
+-   if (!stream || read(tfd, stream, stream_len) != (ssize_t)stream_len) {
+-      printf("tqcopy:        FAIL: cannot read stream %s\n", path);
+-      close(tfd);
+-      free(stream);
+-      return false;
++   {
++      /* Capture files hold streams back to back as [u32 len][bytes]; PVR_PROBE_TQ_COPY_STREAM picks
++       * one (0-based, default 1 = the copy job in the bundle). */
++      const unsigned want = getenv("PVR_PROBE_TQ_COPY_STREAM")
++                               ? (unsigned)strtoul(getenv("PVR_PROBE_TQ_COPY_STREAM"), NULL, 0)
++                               : 1U;
++      uint8_t filebuf[65536];
++      ssize_t got = read(tfd, filebuf, sizeof(filebuf));
++      unsigned idx = 0;
++      size_t pos = 0;
++      bool found = false;
++
++      while (got > 0 && pos + 4 <= (size_t)got) {
++         uint32_t len;
++
++         memcpy(&len, filebuf + pos, sizeof(len));
++         pos += 4;
++         if (len == 0 || len > 4096 || pos + len > (size_t)got)
++            break;
++         if (idx == want) {
++            stream_len = len;
++            stream = malloc(len);
++            if (stream)
++               memcpy(stream, filebuf + pos, len);
++            found = stream != NULL;
++            break;
++         }
++         pos += len;
++         idx++;
++      }
++      if (!found) {
++         printf("tqcopy:        FAIL: stream index %u not present in %s\n", want, path);
++         close(tfd);
++         free(stream);
++         stream = NULL;
++         return false;
++      }
+    }
+    close(tfd);
+ 
++   if (getenv("PVR_PROBE_TQ_COPY_HYBRID") != NULL) {
++      /* Experiment: make the copy job write like the fill job (background words zeroed, clear
++       * pattern set) and optionally copy fill's isp_render/isp_aa values, to find what blocks the
++       * copy write. Stream dword layout: header 2 dw, bgnd0 2-3, bgnd1 4-5, bgnd3 6-7, mtile 8-9,
++       * u32 fields from 28 (bgobjvals 28, clear0 30, aa 37, ev_code 39, ev_data 40, isp_render 41). */
++      uint32_t *w = (uint32_t *)stream;
++      uint32_t mask = (uint32_t)strtoul(getenv("PVR_PROBE_TQ_COPY_HYBRID"), NULL, 0);
++
++      if (mask & 1U) { w[2] = 0; w[3] = 0; }
++      if (mask & 2U) { w[4] = 0; w[5] = 0; }
++      if (mask & 4U) { w[6] = 0; w[7] = 0; }
++      if (mask & 8U) { w[8] = 0; w[9] = 0; }
++      if (mask & 16U) w[28] = 0;
++      if (mask & 32U) w[41] = 3;
++      if (mask & 64U) w[37] = 0x2500;
++      w[30] = 0xdeadbeefu;
++   }
++
+    /* Patch the pixel-event data: word 2 = destination >> 2, word 3 bits 0..5 = destination >> 34. */
+    ev_data[2] = (uint32_t)((dst_addr >> 2) & 0xffffffffu);
+    ev_data[3] = (ev_data[3] & ~0x3fu) | (uint32_t)((dst_addr >> 34) & 0x3fu);
+-- 
+2.47.3
+

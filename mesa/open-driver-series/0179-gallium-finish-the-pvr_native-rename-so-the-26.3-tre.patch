@@ -1,7 +1,7 @@
-From 101f3bb9c993b2e2e8b32ebd80f33ec15c3733e5 Mon Sep 17 00:00:00 2001
+From 81e31fd2fc83b0447d975c31eae10dfa4dec7225 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sun, 18 Oct 2026 14:12:12 +0800
-Subject: [PATCH 179/269] gallium: finish the pvr_native rename so the 26.3
+Subject: [PATCH 179/294] gallium: finish the pvr_native rename so the 26.3
  tree builds again
 
 The native driver's code moved to drivers/pvr_native when the wrapper took the pvr slot; this fixes the

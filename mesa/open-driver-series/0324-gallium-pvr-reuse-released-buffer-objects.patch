@@ -1,0 +1,139 @@
+From 22c49c958a6579ebdf76cba665ec2a5324422103 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Thu, 29 Oct 2026 00:36:18 +0800
+Subject: [PATCH 324/324] gallium/pvr: reuse released buffer objects
+
+With client vertex arrays (glmark2 build use-vbo=false) the stream
+uploader fills its 1 MiB buffer about once a frame and asks for a new
+one: a kernel allocation, a GPU VM map, an mmap and 256 page faults per
+frame, then the reverse on release (459 buffer creations in 3 s).
+
+Released buffer resources up to 4 MiB now go to a small per-screen cache
+(8 entries) with their CPU and GPU mappings, and a buffer of the same
+size is taken from it. A released resource is idle: renders keep a
+reference to everything they use until they have been waited for.
+
+A/B (alternating libgallium, perf governor, cores 6-7): build
+use-vbo=false 491/495 -> 950/923 FPS (vendor 862), use-vbo=true and the
+buffer scenes unchanged. gltri: all modes unchanged.
+---
+ src/gallium/drivers/pvr_native/pvr_resource.c | 33 +++++++++++++++++++
+ src/gallium/drivers/pvr_native/pvr_screen.c   |  9 +++++
+ src/gallium/drivers/pvr_native/pvr_screen.h   | 13 ++++++++
+ 3 files changed, 55 insertions(+)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_resource.c b/src/gallium/drivers/pvr_native/pvr_resource.c
+index 41233680..77bcb2d8 100644
+--- a/src/gallium/drivers/pvr_native/pvr_resource.c
++++ b/src/gallium/drivers/pvr_native/pvr_resource.c
+@@ -172,6 +172,24 @@ pvr_resource_create(struct pipe_screen *pscreen, const struct pipe_resource *tem
+    if (size == 0)
+       size = 4096;
+ 
++   /* A cached buffer of the same size: already mapped for the CPU and the GPU. */
++   if (templ->target == PIPE_BUFFER && screen->vm_valid) {
++      simple_mtx_lock(&screen->bo_cache_lock);
++      for (unsigned i = 0; i < screen->nr_bo_cache; i++) {
++         struct pvr_bo_cache_entry *e = &screen->bo_cache[i];
++         if (e->bo.size == ALIGN_POT(size, 4096)) {
++            res->bo = e->bo;
++            res->dev_addr = res->data_addr = e->dev_addr;
++            res->dev_size = e->dev_size;
++            *e = screen->bo_cache[--screen->nr_bo_cache];
++            break;
++         }
++      }
++      simple_mtx_unlock(&screen->bo_cache_lock);
++      if (res->dev_addr != 0)
++         return &res->base;
++   }
++
+    if (!pvr_bo_create(screen->fd, size, 1, &res->bo))
+       goto fail;
+ 
+@@ -284,6 +302,21 @@ pvr_resource_destroy(struct pipe_screen *pscreen, struct pipe_resource *prsc)
+    struct pvr_screen *screen = pvr_screen(pscreen);
+    struct pvr_resource *res = pvr_resource(prsc);
+ 
++   if (prsc->target == PIPE_BUFFER && res->dev_addr != 0 && res->bo.size <= (4u << 20)) {
++      simple_mtx_lock(&screen->bo_cache_lock);
++      if (screen->nr_bo_cache < ARRAY_SIZE(screen->bo_cache)) {
++         screen->bo_cache[screen->nr_bo_cache++] = (struct pvr_bo_cache_entry){
++            .bo = res->bo, .dev_addr = res->dev_addr, .dev_size = res->dev_size,
++         };
++         res->dev_addr = 0;
++      }
++      simple_mtx_unlock(&screen->bo_cache_lock);
++      if (res->dev_addr == 0) {
++         FREE(res);
++         return;
++      }
++   }
++
+    /* The GPU mapping goes first, then the address, then the object - the same order
+     * the Vulkan winsys tears down in. */
+    if (res->dev_addr != 0) {
+diff --git a/src/gallium/drivers/pvr_native/pvr_screen.c b/src/gallium/drivers/pvr_native/pvr_screen.c
+index e0faeff6..1a11ccd7 100644
+--- a/src/gallium/drivers/pvr_native/pvr_screen.c
++++ b/src/gallium/drivers/pvr_native/pvr_screen.c
+@@ -170,6 +170,14 @@ pvr_destroy_screen(struct pipe_screen *pscreen)
+ 
+    if (screen->pco_ctx != NULL)
+       ralloc_free(screen->pco_ctx);
++   for (unsigned i = 0; i < screen->nr_bo_cache; i++) {
++      struct pvr_bo_cache_entry *e = &screen->bo_cache[i];
++      pvr_bo_unmap(&e->bo);
++      pvr_vm_unmap(&screen->vm, e->dev_addr, e->dev_size);
++      pvr_vm_free(&screen->vm, e->dev_addr, e->dev_size);
++      pvr_bo_destroy(screen->fd, &e->bo);
++   }
++   simple_mtx_destroy(&screen->bo_cache_lock);
+    if (screen->vm_valid)
+       pvr_vm_finish(&screen->vm);
+    if (screen->fd >= 0)
+@@ -323,6 +331,7 @@ pvr_screen_create(int fd, const struct pipe_screen_config *config,
+    if (!screen->vm_valid)
+       mesa_logi("pvr: no GPU address space; resources will not be creatable");
+ 
++   simple_mtx_init(&screen->bo_cache_lock, mtx_plain);
+    const char *dbg = getenv("PVR_NATIVE_DEBUG");
+    screen->no_twiddle = dbg != NULL && strstr(dbg, "no_twiddle") != NULL;
+    screen->no_fbc = dbg != NULL && strstr(dbg, "no_fbc") != NULL;
+diff --git a/src/gallium/drivers/pvr_native/pvr_screen.h b/src/gallium/drivers/pvr_native/pvr_screen.h
+index d6fc7c95..fc068036 100644
+--- a/src/gallium/drivers/pvr_native/pvr_screen.h
++++ b/src/gallium/drivers/pvr_native/pvr_screen.h
+@@ -5,9 +5,11 @@
+ #define PVR_SCREEN_H
+ 
+ #include "pipe/p_screen.h"
++#include "util/simple_mtx.h"
+ 
+ #include "common/pvr_device_info.h"
+ #include "pco/pco.h"
++#include "pvr_bo.h"
+ #include "pvr_vm.h"
+ 
+ struct pvr_screen {
+@@ -49,6 +51,17 @@ struct pvr_screen {
+ 
+    /* PVR_NATIVE_DEBUG=no_twiddle,no_fbc: linear (or uncompressed) render targets, read once. */
+    bool no_twiddle, no_fbc;
++
++   /* Released buffer resources kept mapped (CPU and GPU) for reuse: the stream uploader replaces
++    * its 1 MiB buffer about once a frame with client arrays, and a new BO costs a kernel
++    * allocation, a VM map, an mmap and its page faults. A released resource is idle (renders hold
++    * references until they are waited for). */
++   simple_mtx_t bo_cache_lock;
++   struct pvr_bo_cache_entry {
++      struct pvr_bo bo;
++      uint64_t dev_addr, dev_size;
++   } bo_cache[8];
++   unsigned nr_bo_cache;
+ };
+ 
+ static inline struct pvr_screen *
+-- 
+2.47.3
+

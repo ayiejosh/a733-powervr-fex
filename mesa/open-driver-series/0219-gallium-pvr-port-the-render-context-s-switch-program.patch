@@ -1,7 +1,7 @@
-From 485d4c513ab33b760250fc708d99a2b32a5979ac Mon Sep 17 00:00:00 2001
+From 74939336f5234c7df2ec771d8ebcb40a5510ff0a Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sat, 24 Oct 2026 23:47:03 +0800
-Subject: [PATCH 219/269] gallium/pvr: port the render context's switch
+Subject: [PATCH 219/294] gallium/pvr: port the render context's switch
  programs and context state
 
 The firmware never completes this driver's jobs, even a render whose control stream is only

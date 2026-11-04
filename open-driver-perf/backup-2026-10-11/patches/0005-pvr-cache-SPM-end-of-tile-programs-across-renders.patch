@@ -1,0 +1,238 @@
+From 859daf65d9463a478f3072d55e78270bb4f43c5f Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sun, 11 Oct 2026 04:46:54 +0800
+Subject: [PATCH 05/10] pvr: cache SPM end of tile programs across renders
+
+Like the load op, every render state set up its SPM end of tile state by
+compiling the EOT program with pco and uploading the USC and PDS
+programs, which dynamic rendering does for every render. The program
+only depends on the PBE state words, the tile buffer addresses, the
+output register count and the sample count, so keep up to 16 on the
+device, keyed by those. When the cache is full a render state gets its
+own programs, as before.
+
+CTS: TFBC list (9170), dynamic_rendering sample (6745), 5062 list,
+loops/indexing/graphicsfuzz list (6428), synchronization (1718):
+identical to before.
+---
+ src/imagination/vulkan/pvr_arch_device.c |  3 +
+ src/imagination/vulkan/pvr_arch_spm.c    | 96 +++++++++++++++++++++++-
+ src/imagination/vulkan/pvr_device.h      |  4 +
+ src/imagination/vulkan/pvr_spm.c         |  3 +
+ src/imagination/vulkan/pvr_spm.h         |  7 ++
+ 5 files changed, 110 insertions(+), 3 deletions(-)
+
+diff --git a/src/imagination/vulkan/pvr_arch_device.c b/src/imagination/vulkan/pvr_arch_device.c
+index d70df95..dc72086 100644
+--- a/src/imagination/vulkan/pvr_arch_device.c
++++ b/src/imagination/vulkan/pvr_arch_device.c
+@@ -931,6 +931,8 @@ VkResult PVR_PER_ARCH(create_device)(struct pvr_physical_device *pdevice,
+ 
+    simple_mtx_init(&device->load_op_cache_mtx, mtx_plain);
+    device->load_op_cache = NULL;
++   simple_mtx_init(&device->spm_eot_cache_mtx, mtx_plain);
++   device->spm_eot_cache = NULL;
+ 
+    *pDevice = pvr_device_to_handle(device);
+ 
+@@ -1025,6 +1027,7 @@ void PVR_PER_ARCH(destroy_device)(struct pvr_device *device,
+    /* After the render states above, which hand their datasets to the cache. */
+    pvr_rt_dataset_cache_finish(device);
+    pvr_arch_mrt_load_op_cache_finish(device);
++   pvr_arch_spm_eot_cache_finish(device);
+    pvr_arch_border_color_table_finish(device);
+    pvr_robustness_buffer_finish(device);
+    pvr_spm_finish_scratch_buffer_store(device);
+diff --git a/src/imagination/vulkan/pvr_arch_spm.c b/src/imagination/vulkan/pvr_arch_spm.c
+index 5c2883c..8f616ba 100644
+--- a/src/imagination/vulkan/pvr_arch_spm.c
++++ b/src/imagination/vulkan/pvr_arch_spm.c
+@@ -451,6 +451,43 @@ static VkResult pvr_pds_pixel_event_program_create_and_upload(
+    return result;
+ }
+ 
++#define PVR_SPM_EOT_CACHE_MAX 16U
++
++/* Everything pvr_usc_eot() reads. */
++struct pvr_spm_eot_cache_key {
++   uint32_t emit_count;
++   uint32_t num_output_regs;
++   uint32_t msaa_samples;
++   uint32_t state_words[PVR_MAX_COLOR_ATTACHMENTS]
++                       [ROGUE_NUM_PBESTATE_STATE_WORDS];
++   uint64_t tile_buffer_addrs[PVR_MAX_COLOR_ATTACHMENTS];
++};
++
++struct pvr_spm_eot_cache_entry {
++   struct pvr_spm_eot_cache_key key;
++   struct pvr_suballoc_bo *usc_eot_program;
++   uint64_t pixel_event_program_data_offset;
++   struct pvr_suballoc_bo *pixel_event_program_data_upload;
++};
++
++struct pvr_spm_eot_cache {
++   uint32_t count;
++   struct pvr_spm_eot_cache_entry entries[PVR_SPM_EOT_CACHE_MAX];
++};
++
++void pvr_arch_spm_eot_cache_finish(struct pvr_device *device)
++{
++   struct pvr_spm_eot_cache *cache = device->spm_eot_cache;
++
++   for (uint32_t i = 0; cache && i < cache->count; i++) {
++      pvr_bo_suballoc_free(cache->entries[i].pixel_event_program_data_upload);
++      pvr_bo_suballoc_free(cache->entries[i].usc_eot_program);
++   }
++
++   vk_free(&device->vk.alloc, cache);
++   simple_mtx_destroy(&device->spm_eot_cache_mtx);
++}
++
+ /**
+  * \brief Sets up the End of Tile (EOT) program for SPM.
+  *
+@@ -590,6 +627,38 @@ VkResult pvr_arch_spm_init_eot_state(
+ 
+    memcpy(props.tile_buffer_addrs, tile_buffer_addrs, sizeof(tile_buffer_addrs));
+ 
++   /* Dynamic rendering sets up the EOT state, and so compiles its program, for
++    * every render: reuse the programs of an earlier one with the same inputs.
++    */
++   struct pvr_spm_eot_cache_key key;
++   memset(&key, 0, sizeof(key));
++   key.emit_count = props.emit_count;
++   key.num_output_regs = props.num_output_regs;
++   key.msaa_samples = props.msaa_samples;
++   memcpy(key.state_words,
++          pbe_state_words,
++          total_render_target_used * sizeof(pbe_state_words[0]));
++   memcpy(key.tile_buffer_addrs, tile_buffer_addrs, sizeof(tile_buffer_addrs));
++
++   simple_mtx_lock(&device->spm_eot_cache_mtx);
++
++   struct pvr_spm_eot_cache *cache = device->spm_eot_cache;
++   for (uint32_t i = 0; cache && i < cache->count; i++) {
++      const struct pvr_spm_eot_cache_entry *entry = &cache->entries[i];
++      if (memcmp(&entry->key, &key, sizeof(key)))
++         continue;
++
++      spm_eot_state->usc_eot_program = entry->usc_eot_program;
++      spm_eot_state->pixel_event_program_data_upload =
++         entry->pixel_event_program_data_upload;
++      spm_eot_state->pixel_event_program_data_offset =
++         entry->pixel_event_program_data_offset;
++      spm_eot_state->progs_cached = true;
++
++      simple_mtx_unlock(&device->spm_eot_cache_mtx);
++      return VK_SUCCESS;
++   }
++
+    eot = pvr_usc_eot(device->pdevice->pco_ctx, &props, dev_info);
+    usc_temp_count = pco_shader_data(eot)->common.temps;
+ 
+@@ -599,11 +668,11 @@ VkResult pvr_arch_spm_init_eot_state(
+                                pco_shader_binary_size(eot),
+                                16,
+                                &spm_eot_state->usc_eot_program);
+-
+    ralloc_free(eot);
+-
+-   if (result != VK_SUCCESS)
++   if (result != VK_SUCCESS) {
++      simple_mtx_unlock(&device->spm_eot_cache_mtx);
+       return result;
++   }
+ 
+    result = pvr_pds_pixel_event_program_create_and_upload(
+       device,
+@@ -612,12 +681,33 @@ VkResult pvr_arch_spm_init_eot_state(
+       &pds_eot_program);
+    if (result != VK_SUCCESS) {
+       pvr_bo_suballoc_free(spm_eot_state->usc_eot_program);
++      simple_mtx_unlock(&device->spm_eot_cache_mtx);
+       return result;
+    }
+ 
+    spm_eot_state->pixel_event_program_data_upload = pds_eot_program.pvr_bo;
+    spm_eot_state->pixel_event_program_data_offset = pds_eot_program.data_offset;
+ 
++   if (!cache) {
++      cache = vk_zalloc(&device->vk.alloc,
++                        sizeof(*cache),
++                        8,
++                        VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
++      device->spm_eot_cache = cache;
++   }
++
++   if (cache && cache->count < PVR_SPM_EOT_CACHE_MAX) {
++      struct pvr_spm_eot_cache_entry *entry = &cache->entries[cache->count++];
++      memcpy(&entry->key, &key, sizeof(key));
++      entry->usc_eot_program = spm_eot_state->usc_eot_program;
++      entry->pixel_event_program_data_upload =
++         spm_eot_state->pixel_event_program_data_upload;
++      entry->pixel_event_program_data_offset =
++         spm_eot_state->pixel_event_program_data_offset;
++      spm_eot_state->progs_cached = true;
++   }
++
++   simple_mtx_unlock(&device->spm_eot_cache_mtx);
+    return VK_SUCCESS;
+ }
+ 
+diff --git a/src/imagination/vulkan/pvr_device.h b/src/imagination/vulkan/pvr_device.h
+index 0e5b6a2..28d9f56 100644
+--- a/src/imagination/vulkan/pvr_device.h
++++ b/src/imagination/vulkan/pvr_device.h
+@@ -195,6 +195,10 @@ struct pvr_device {
+     */
+    simple_mtx_t load_op_cache_mtx;
+    struct pvr_load_op_cache *load_op_cache;
++
++   /* Likewise for the SPM end of tile programs. */
++   simple_mtx_t spm_eot_cache_mtx;
++   struct pvr_spm_eot_cache *spm_eot_cache;
+ };
+ 
+ struct pvr_device_memory {
+diff --git a/src/imagination/vulkan/pvr_spm.c b/src/imagination/vulkan/pvr_spm.c
+index 9bc8e4d..4e9f0ba 100644
+--- a/src/imagination/vulkan/pvr_spm.c
++++ b/src/imagination/vulkan/pvr_spm.c
+@@ -213,6 +213,9 @@ VkResult pvr_spm_scratch_buffer_get_buffer(
+ void pvr_spm_finish_eot_state(struct pvr_device *device,
+                               struct pvr_spm_eot_state *spm_eot_state)
+ {
++   if (spm_eot_state->progs_cached)
++      return;
++
+    pvr_bo_suballoc_free(spm_eot_state->pixel_event_program_data_upload);
+    pvr_bo_suballoc_free(spm_eot_state->usc_eot_program);
+ }
+diff --git a/src/imagination/vulkan/pvr_spm.h b/src/imagination/vulkan/pvr_spm.h
+index 5af66fb..254291f 100644
+--- a/src/imagination/vulkan/pvr_spm.h
++++ b/src/imagination/vulkan/pvr_spm.h
+@@ -72,6 +72,9 @@ struct pvr_spm_eot_state {
+     */
+    uint64_t pixel_event_program_data_offset;
+    struct pvr_suballoc_bo *pixel_event_program_data_upload;
++
++   /* The programs above belong to pvr_device::spm_eot_cache. */
++   bool progs_cached;
+ };
+ 
+ struct pvr_spm_bgobj_state {
+@@ -138,6 +141,10 @@ VkResult PVR_PER_ARCH(spm_init_eot_state)(
+ 
+ #   define pvr_arch_spm_init_eot_state PVR_PER_ARCH(spm_init_eot_state)
+ 
++void PVR_PER_ARCH(spm_eot_cache_finish)(struct pvr_device *device);
++
++#   define pvr_arch_spm_eot_cache_finish PVR_PER_ARCH(spm_eot_cache_finish)
++
+ VkResult PVR_PER_ARCH(spm_init_bgobj_state)(
+    struct pvr_device *device,
+    struct pvr_spm_bgobj_state *spm_bgobj_state,
+-- 
+2.47.3
+

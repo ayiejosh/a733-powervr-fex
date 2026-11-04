@@ -1,0 +1,100 @@
+From 41f0d30d75011f59bdb7db2fa54f3e8f52a583ca Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sat, 31 Oct 2026 10:24:35 +0800
+Subject: [PATCH] gallium/pvr: probe submits TQ replays single-core and exposes
+ the texture-DMA experiments
+
+The reference submits every transfer job with DRM_PVR_SUBMIT_JOB_TRANSFER_CMD_SINGLE_CORE
+(firmware ROGUE_TRANSFER_FLAGS_SINGLE_CORE, BIT(1)); the probe passed no flags, so
+the firmware dispatched the replay's TQ job across all cores of the multicore
+device. pvr_job_submit_transfer_sync() now sets SINGLE_CORE by default
+(PVR_PROBE_TQ_FLAGS overrides).
+
+The replay's firmware command is now byte-identical to the reference's (captured
+with a temporary kernel dump): the only remaining difference is a deliberately
+patched clear register. The replay still faults in the firmware (context reset,
+ISP data master page fault), and the fault address tracks the first dword of the
+PDS program named by the IPF control stream's texture-database field, resolved
+with the USC heap base - i.e. that program's first word is consumed as a
+USC-space address. Experiments added for that:
+PVR_PROBE_TQ_COPY_TEXDMA1/TEXDMA2/TEXDMA2H (the two texture-DMA source words),
+PVR_PROBE_TQ_COPY_CSDB/CSVAR (the control stream's texture-database and varying
+fields), PVR_DUMP_HEAPS (all VM heap bases).
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c | 34 +++++++++++++++++++---
+ src/gallium/drivers/pvr_native/pvr_vm.c    |  7 +++++
+ 2 files changed, 37 insertions(+), 4 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index 5c858a48..0d1e98e6 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -6116,10 +6116,26 @@ tq_copy_check(int fd, struct pipe_screen *pscreen)
+          memcpy(base + (0x42000 - 0x40000), kick_data2, sizeof(kick_data2));
+          memcpy(base + (0x42020 - 0x40000), kick_code, sizeof(kick_code));
+       }
+-      memcpy((uint8_t *)pdsbo.map + (0x2640 - 0x1000), texdata_dma, sizeof(texdata_dma));
+-      /* The IPF control stream's TEXTUREDATABASE field names the same DMA burst program at
+-       * PDS+0x2700 (state->tex_state_data_offset); install it there too. */
+-      memcpy((uint8_t *)pdsbo.map + (0x2700 - 0x1000), texdata_dma, sizeof(texdata_dma));
++      {
++         uint32_t texdma1[4] = { texdata_dma[0], texdata_dma[1], texdata_dma[2], texdata_dma[3] };
++
++         if (getenv("PVR_PROBE_TQ_COPY_TEXDMA1") != NULL)
++            texdma1[0] = (uint32_t)strtoul(getenv("PVR_PROBE_TQ_COPY_TEXDMA1"), NULL, 0);
++         memcpy((uint8_t *)pdsbo.map + (0x2640 - 0x1000), texdma1, sizeof(texdma1));
++      }
++      /* The IPF control stream's TEXTUREDATABASE field names the DMA burst program at PDS+0x2700
++       * (state->tex_state_data_offset); the reference generates it from that pass's own texstate
++       * data buffer, which can differ from the bgnd1 one. PVR_PROBE_TQ_COPY_TEXDMA2 sets its
++       * first word explicitly for experiments (default: same DMA space as 0x2640). */
++      {
++         uint32_t texdma2[4] = { texdata_dma[0], texdata_dma[1], texdata_dma[2], texdata_dma[3] };
++
++         if (getenv("PVR_PROBE_TQ_COPY_TEXDMA2") != NULL)
++            texdma2[0] = (uint32_t)strtoul(getenv("PVR_PROBE_TQ_COPY_TEXDMA2"), NULL, 0);
++         if (getenv("PVR_PROBE_TQ_COPY_TEXDMA2H") != NULL)
++            texdma2[1] = (uint32_t)strtoul(getenv("PVR_PROBE_TQ_COPY_TEXDMA2H"), NULL, 0);
++         memcpy((uint8_t *)pdsbo.map + (0x2700 - 0x1000), texdma2, sizeof(texdma2));
++      }
+    }
+ 
+    /* Texture-state DMA space (general heap) the kick program DMAs from. */
+@@ -6199,6 +6215,16 @@ tq_copy_check(int fd, struct pipe_screen *pscreen)
+                 (unsigned long long)tfrag->base);
+       } else {
+          memcpy(csbo.map, ipf_cs, sizeof(ipf_cs));
++         if (getenv("PVR_PROBE_TQ_COPY_CSDB") != NULL) {
++            /* Override the primitive block's TA_STATE_PDS_TEXTUREDATABASE field (word 58). */
++            ((uint32_t *)csbo.map)[58] =
++               (uint32_t)strtoul(getenv("PVR_PROBE_TQ_COPY_CSDB"), NULL, 0);
++         }
++         if (getenv("PVR_PROBE_TQ_COPY_CSVAR") != NULL) {
++            /* Override TA_STATE_PDS_VARYINGBASE (word 57). */
++            ((uint32_t *)csbo.map)[57] =
++               (uint32_t)strtoul(getenv("PVR_PROBE_TQ_COPY_CSVAR"), NULL, 0);
++         }
+          printf("tqcopy:        IPF control stream installed at 0x%llx (isp_mtile_base offset 0)\n",
+                 (unsigned long long)tfrag->base);
+       }
+diff --git a/src/gallium/drivers/pvr_native/pvr_vm.c b/src/gallium/drivers/pvr_native/pvr_vm.c
+index 56278868..d3dfdb4b 100644
+--- a/src/gallium/drivers/pvr_native/pvr_vm.c
++++ b/src/gallium/drivers/pvr_native/pvr_vm.c
+@@ -596,6 +596,13 @@ pvr_job_submit_transfer_sync(struct pvr_vm *vm, uint32_t context_handle,
+    job = (struct drm_pvr_job){
+       .type = DRM_PVR_JOB_TYPE_TRANSFER_FRAG,
+       .context_handle = context_handle,
++      /* The reference submits every transfer job with SINGLE_CORE (the transfer-frag path sets
++       * use_single_core whenever the device has the multicore feature, which BXM-4-64 has); a
++       * multi-core dispatch of this job faults in the ISP data master. */
++      .flags = getenv("PVR_PROBE_TQ_FLAGS")
++                  ? (uint32_t)strtoul(getenv("PVR_PROBE_TQ_FLAGS"), NULL, 0) &
++                       DRM_PVR_SUBMIT_JOB_TRANSFER_CMD_FLAGS_MASK
++                  : DRM_PVR_SUBMIT_JOB_TRANSFER_CMD_SINGLE_CORE,
+       .cmd_stream = (uint64_t)(uintptr_t)stream,
+       .cmd_stream_len = stream_len,
+       .sync_ops = { .stride = sizeof(ops[0]), .count = 1, .array = (__u64)(uintptr_t)ops },
+-- 
+2.47.3
+

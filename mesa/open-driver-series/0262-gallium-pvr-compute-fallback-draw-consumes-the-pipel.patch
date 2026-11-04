@@ -1,7 +1,7 @@
-From 171150f1e98f350503da1f68cb227baf8099b251 Mon Sep 17 00:00:00 2001
+From d346cd2755ac52ceb05d755c66c978cd05e52fe9 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Mon, 26 Oct 2026 09:28:51 +0800
-Subject: [PATCH 262/269] gallium/pvr: compute fallback draw consumes the
+Subject: [PATCH 262/294] gallium/pvr: compute fallback draw consumes the
  pipeline's vertex buffer and any RGBA8 target size
 
 The fallback is now a real pipeline draw instead of a fixed triangle:

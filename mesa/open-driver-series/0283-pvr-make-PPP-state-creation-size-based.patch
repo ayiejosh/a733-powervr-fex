@@ -1,0 +1,97 @@
+From a1700630c2d444a8fd2ca21defa6a9b38fc2cec0 Mon Sep 17 00:00:00 2001
+From: Ashish Chauhan <ashish.chauhan@imgtec.com>
+Date: Fri, 9 Oct 2026 11:32:20 +0100
+Subject: [PATCH 283/294] pvr: make PPP state creation size based
+
+Signed-off-by: Ashish Chauhan <ashish.chauhan@imgtec.com>
+Acked-by: Frank Binns <frank.binns@imgtec.com>
+Part-of: <https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/44385>
+(cherry picked from commit 501ab805f02f25d1addade2a9ae1d7d079703b06)
+---
+ src/imagination/vulkan/pvr_arch_framebuffer.c | 22 ++++++++++++-------
+ src/imagination/vulkan/pvr_framebuffer.h      |  7 ++++++
+ 2 files changed, 21 insertions(+), 8 deletions(-)
+
+diff --git a/src/imagination/vulkan/pvr_arch_framebuffer.c b/src/imagination/vulkan/pvr_arch_framebuffer.c
+index a70748fc..e0bc3378 100644
+--- a/src/imagination/vulkan/pvr_arch_framebuffer.c
++++ b/src/imagination/vulkan/pvr_arch_framebuffer.c
+@@ -27,9 +27,11 @@
+ #include "pvr_rt_dataset.h"
+ #include "pvr_spm.h"
+ 
+-static VkResult
+-pvr_render_state_create_ppp_state(struct pvr_device *device,
+-                                  struct pvr_render_state *rstate)
++VkResult PVR_PER_ARCH(ppp_state_create)(struct pvr_device *device,
++                                        uint32_t width,
++                                        uint32_t height,
++                                        struct pvr_suballoc_bo **const bo_out,
++                                        size_t *const size_out)
+ {
+    const uint32_t cache_line_size =
+       pvr_get_slc_cache_line_size(&device->pdevice->dev_info);
+@@ -43,12 +45,12 @@ pvr_render_state_create_ppp_state(struct pvr_device *device,
+    pvr_csb_pack (&ppp_state[1], TA_STATE_TERMINATE0, term0) {
+       term0.clip_right =
+          DIV_ROUND_UP(
+-            rstate->width,
++            width,
+             ROGUE_TA_STATE_TERMINATE0_CLIP_RIGHT_BLOCK_SIZE_IN_PIXELS) -
+          1;
+       term0.clip_bottom =
+          DIV_ROUND_UP(
+-            rstate->height,
++            height,
+             ROGUE_TA_STATE_TERMINATE0_CLIP_BOTTOM_BLOCK_SIZE_IN_PIXELS) -
+          1;
+    }
+@@ -63,12 +65,12 @@ pvr_render_state_create_ppp_state(struct pvr_device *device,
+                            ppp_state,
+                            sizeof(ppp_state),
+                            cache_line_size,
+-                           &rstate->ppp_state_bo);
++                           bo_out);
+    if (result != VK_SUCCESS)
+       return result;
+ 
+    /* Calculate the size of PPP state in dwords. */
+-   rstate->ppp_state_size = sizeof(ppp_state) / sizeof(uint32_t);
++   *size_out = sizeof(ppp_state) / sizeof(uint32_t);
+ 
+    return VK_SUCCESS;
+ }
+@@ -143,7 +145,11 @@ pvr_arch_render_state_setup(struct pvr_device *device,
+    if (result != VK_SUCCESS)
+       goto err_finish_render_targets;
+ 
+-   result = pvr_render_state_create_ppp_state(device, rstate);
++   result = pvr_arch_ppp_state_create(device,
++                                      rstate->width,
++                                      rstate->height,
++                                      &rstate->ppp_state_bo,
++                                      &rstate->ppp_state_size);
+    if (result != VK_SUCCESS)
+       goto err_release_scratch_buffer;
+ 
+diff --git a/src/imagination/vulkan/pvr_framebuffer.h b/src/imagination/vulkan/pvr_framebuffer.h
+index 48149eb7..8f89cc19 100644
+--- a/src/imagination/vulkan/pvr_framebuffer.h
++++ b/src/imagination/vulkan/pvr_framebuffer.h
+@@ -79,6 +79,13 @@ VkResult PVR_PER_ARCH(render_state_setup)(
+ 
+ #   define pvr_arch_render_state_setup PVR_PER_ARCH(render_state_setup)
+ 
++VkResult PVR_PER_ARCH(ppp_state_create)(struct pvr_device *device,
++                                        uint32_t width,
++                                        uint32_t height,
++                                        struct pvr_suballoc_bo **const bo_out,
++                                        size_t *const size_out);
++#define pvr_arch_ppp_state_create PVR_PER_ARCH(ppp_state_create)
++
+ #endif
+ 
+ void pvr_render_state_cleanup(struct pvr_device *device,
+-- 
+2.47.3
+

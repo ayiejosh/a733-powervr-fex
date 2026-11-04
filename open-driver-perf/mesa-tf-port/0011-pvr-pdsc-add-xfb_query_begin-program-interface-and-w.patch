@@ -1,0 +1,160 @@
+From 7748bb4ad85964b50b984a1f680fd4e05e0d07c7 Mon Sep 17 00:00:00 2001
+From: Ashish Chauhan <ashish.chauhan@imgtec.com>
+Date: Fri, 11 Sep 2026 02:04:22 +0100
+Subject: [PATCH 280/294] pvr, pdsc: add xfb_query_begin program interface and
+ wiring
+
+Signed-off-by: Ashish Chauhan <ashish.chauhan@imgtec.com>
+Acked-by: Frank Binns <frank.binns@imgtec.com>
+Part-of: <https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/44385>
+(cherry picked from commit 1134a0052adbfa9b4ed27e9e75f0cb5702f65f51)
+---
+ src/imagination/common/pvr_iface.h            | 23 ++++++
+ src/imagination/pdsc/pdsc_precomp.c           |  2 +
+ .../pdsc/programs/pdsc_xfb_query_begin.h      | 82 +++++++++++++++++++
+ 3 files changed, 107 insertions(+)
+ create mode 100644 src/imagination/pdsc/programs/pdsc_xfb_query_begin.h
+
+diff --git a/src/imagination/common/pvr_iface.h b/src/imagination/common/pvr_iface.h
+index 543acfff..d44530e0 100644
+--- a/src/imagination/common/pvr_iface.h
++++ b/src/imagination/common/pvr_iface.h
+@@ -296,4 +296,27 @@ enum pvr_xfb_vertex_count_ref_id {
+    PVR_XFB_VERTEX_COUNT_REF_ID_OUTPUT_COUNT_BUFFER_ST_SRC0,
+ };
+ 
++/* PDSC XFB query begin patch IDs */
++enum pvr_xfb_query_begin_patch_id {
++   /** Patch ID for query availability store source 0 */
++   PVR_XFB_QUERY_BEGIN_PATCH_ID_AVAILABILITY_ST_SRC0,
++
++   /** Patch ID for query result store source 0 */
++   PVR_XFB_QUERY_BEGIN_PATCH_ID_RESULT_ST_SRC0,
++
++   /** Patch ID for the open segment scale: -1 if transform feedback is
++    * active, 0 otherwise.
++    */
++   PVR_XFB_QUERY_BEGIN_PATCH_ID_OPEN_SEGMENT_SCALE,
++};
++
++/* PDSC XFB query begin reference IDs */
++enum pvr_xfb_query_begin_ref_id {
++   /** Ref ID for query availability store source 0 */
++   PVR_XFB_QUERY_BEGIN_REF_ID_AVAILABILITY_ST_SRC0,
++
++   /** Ref ID for query result store source 0 */
++   PVR_XFB_QUERY_BEGIN_REF_ID_RESULT_ST_SRC0,
++};
++
+ #endif /* PVR_IFACE_H */
+diff --git a/src/imagination/pdsc/pdsc_precomp.c b/src/imagination/pdsc/pdsc_precomp.c
+index 44b59ffc..3d72fe1d 100644
+--- a/src/imagination/pdsc/pdsc_precomp.c
++++ b/src/imagination/pdsc/pdsc_precomp.c
+@@ -30,6 +30,7 @@ struct pdsc_precomp_info {
+ };
+ #include "programs/pdsc_xfb_end.h"
+ #include "programs/pdsc_xfb_init.h"
++#include "programs/pdsc_xfb_query_begin.h"
+ #include "programs/pdsc_xfb_vertex_count.h"
+ 
+ #define PRECOMP(_name, _feature_variants)    \
+@@ -41,6 +42,7 @@ struct pdsc_precomp_info {
+ static const struct pdsc_precomp_info pdsc_precomp_infos[] = {
+    PRECOMP(xfb_end, 0),
+    PRECOMP(xfb_init, 0),
++   PRECOMP(xfb_query_begin, 0),
+    PRECOMP(xfb_vertex_count, 0),
+ };
+ #undef PRECOMP
+diff --git a/src/imagination/pdsc/programs/pdsc_xfb_query_begin.h b/src/imagination/pdsc/programs/pdsc_xfb_query_begin.h
+new file mode 100644
+index 00000000..3dfbaa6d
+--- /dev/null
++++ b/src/imagination/pdsc/programs/pdsc_xfb_query_begin.h
+@@ -0,0 +1,82 @@
++/*
++ * Copyright © 2026 Imagination Technologies Ltd.
++ *
++ * SPDX-License-Identifier: MIT
++ */
++
++#include "common/pvr_iface.h"
++#include "pdsc/pdsc.h"
++#include "pdsc/pdsc_internal.h"
++#include "util/macros.h"
++
++#include <stdio.h>
++#include <stdint.h>
++
++static inline pdsc_program *pdsc_xfb_query_begin_gen(void *mem_ctx,
++                                                     enum pdsc_feature features)
++{
++   pdsc_program *p = pdsc_program_create(mem_ctx, features, "xfb_query_begin");
++
++   ALLOC_TEMP64(p, tzero);
++   pdsc_limm(p, pdsc_ref_lo32(tzero), pdsc_ref_imm(0));
++   pdsc_limm(p, pdsc_ref_hi32(tzero), pdsc_ref_imm(0));
++
++   ALLOC_CONST32(p,
++                 open_segment_scale,
++                 PVR_XFB_QUERY_BEGIN_PATCH_ID_OPEN_SEGMENT_SCALE);
++
++   ALLOC_TEMP32_ARRAY(p, result, 2);
++   ALLOC_TEMP64(p, scaled);
++
++   ALLOC_TEMP32(p, availability);
++   pdsc_limm(p, availability, pdsc_ref_imm(0));
++
++   char buf[64];
++   pdsc_ref stm_ptemps64[PVR_XFB_MAX_PTEMPS_SETS];
++   for (uint32_t i = 0; i < ARRAY_SIZE(stm_ptemps64); i++) {
++      snprintf(buf, sizeof(buf), "stm_ptemps64__%u", i * 2);
++      stm_ptemps64[i] = pdsc_decl_ptemp64(p, buf, i * 2, true);
++   }
++
++   /* Each transform feedback segment within the query is added to the result
++    * slot when it ends. If the query begins inside a segment, start from minus
++    * the counts already written in it, so that adding the whole segment leaves
++    * only what was written inside the query. The scale is -1 when a segment is
++    * open and 0 otherwise, so the result otherwise starts from zero.
++    */
++   const pdsc_ref seg_words[] = {
++      pdsc_ref_lo32(stm_ptemps64[1]),
++      pdsc_ref_hi32(stm_ptemps64[1]),
++   };
++
++   for (uint32_t i = 0; i < ARRAY_SIZE(seg_words); i++) {
++      pdsc_mad(p, scaled, seg_words[i], open_segment_scale, tzero);
++      pdsc_mov32(p, pdsc_ref_elem32(result, i), pdsc_ref_lo32(scaled));
++   }
++
++   pdsc_instr_t cmp = pdsc_cmp(p, tzero, pdsc_ref_null(), .cop = PDSC_COP_NE);
++   pdsc_setc(p, PDSC_PRED_P0);
++   pdsc_instr_t st = pdsc_st(p,
++                             pdsc_ref_elem32(result, 0),
++                             PVR_XFB_QUERY_BEGIN_REF_ID_RESULT_ST_SRC0,
++                             PVR_XFB_QUERY_BEGIN_PATCH_ID_RESULT_ST_SRC0,
++                             false,
++                             .mods.cc = true);
++   pdsc_src_set(p, cmp, 1, pdsc_src_get(p, st, 0));
++   pdsc_wdf(p);
++
++   cmp = pdsc_cmp(p, tzero, pdsc_ref_null(), .cop = PDSC_COP_NE);
++   pdsc_setc(p, PDSC_PRED_P0);
++   st = pdsc_st(p,
++                availability,
++                PVR_XFB_QUERY_BEGIN_REF_ID_AVAILABILITY_ST_SRC0,
++                PVR_XFB_QUERY_BEGIN_PATCH_ID_AVAILABILITY_ST_SRC0,
++                false,
++                .mods.cc = true);
++   pdsc_src_set(p, cmp, 1, pdsc_src_get(p, st, 0));
++   pdsc_wdf(p);
++
++   pdsc_halt(p);
++
++   return p;
++}
+-- 
+2.47.3
+

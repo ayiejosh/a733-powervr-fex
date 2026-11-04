@@ -1,7 +1,7 @@
-From 730122a276e22ac4e52759cbafb79e9b16c78d7c Mon Sep 17 00:00:00 2001
+From 6b2040d80ba021fa0ff57aa55fcef669a100be67 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sat, 24 Oct 2026 05:31:38 +0800
-Subject: [PATCH 204/269] gallium/pvr: the launcher names the offset the shader
+Subject: [PATCH 204/294] gallium/pvr: the launcher names the offset the shader
  was actually uploaded to
 
 The last placeholder is gone: the PDS launcher's doutu offset is now computed the same way the upload

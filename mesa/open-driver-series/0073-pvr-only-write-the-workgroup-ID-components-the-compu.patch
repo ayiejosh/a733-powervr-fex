@@ -1,8 +1,8 @@
-From d3e4d4d0008096a4bb1c51d03b2446b43d538742 Mon Sep 17 00:00:00 2001
+From b82843ff3d76b297ff596a115901a89ef6ed751f Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sat, 10 Oct 2026 21:20:17 +0800
-Subject: [PATCH 73/98] pvr: only write the workgroup ID components the compute
- shader reads
+Subject: [PATCH 073/294] pvr: only write the workgroup ID components the
+ compute shader reads
 
 The compute PDS program wrote all three workgroup ID coefficients for
 every workgroup (a 64-bit DOUTW for X and Y and a 32-bit one for Z),
@@ -29,7 +29,7 @@ warm shader cache. Gate 44/44.
  2 files changed, 28 insertions(+), 1 deletion(-)
 
 diff --git a/src/imagination/pco/pco_data.h b/src/imagination/pco/pco_data.h
-index 5086033..5ba86f1 100644
+index 50860338..5ba86f17 100644
 --- a/src/imagination/pco/pco_data.h
 +++ b/src/imagination/pco/pco_data.h
 @@ -153,6 +153,9 @@ typedef struct _pco_cs_data {
@@ -43,7 +43,7 @@ index 5086033..5ba86f1 100644
  
  /** PCO image descriptor metadata. */
 diff --git a/src/imagination/vulkan/pvr_arch_pipeline.c b/src/imagination/vulkan/pvr_arch_pipeline.c
-index 39e14fa..d92d9e6 100644
+index 39e14fa2..d92d9e61 100644
 --- a/src/imagination/vulkan/pvr_arch_pipeline.c
 +++ b/src/imagination/vulkan/pvr_arch_pipeline.c
 @@ -749,7 +749,8 @@ static void pvr_pds_compute_program_setup(

@@ -1,7 +1,7 @@
-From 10b3f7d6e5ae4582121ae055f2f4acb8e68602d7 Mon Sep 17 00:00:00 2001
+From a59f56d4b12a5de1f59ccedf016dcbd092100e7d Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sun, 11 Oct 2026 05:32:50 +0800
-Subject: [PATCH 81/98] pvr: free the binding data of a compile attempt that
+Subject: [PATCH 081/294] pvr: free the binding data of a compile attempt that
  spilled
 
 When a stage is compiled again without versioned descriptor checks, its
@@ -15,7 +15,7 @@ path (158 run, 41 pass, the rest not supported) pass.
  1 file changed, 5 insertions(+)
 
 diff --git a/src/imagination/vulkan/pvr_arch_pipeline.c b/src/imagination/vulkan/pvr_arch_pipeline.c
-index f393253..9164bc6 100644
+index f393253f..9164bc63 100644
 --- a/src/imagination/vulkan/pvr_arch_pipeline.c
 +++ b/src/imagination/vulkan/pvr_arch_pipeline.c
 @@ -1092,6 +1092,10 @@ static VkResult pvr_compute_pipeline_compile(

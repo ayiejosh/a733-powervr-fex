@@ -1,7 +1,7 @@
-From b0700b9337d4f9a0f710a0e02eb0e2e2c6be7485 Mon Sep 17 00:00:00 2001
+From b188e651092b2a0b9ccac7cc73ba397f2d21e6fe Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Thu, 8 Oct 2026 13:21:45 +0800
-Subject: [PATCH 29/43] pvr: guard the descriptor set index in
+Subject: [PATCH 029/294] pvr: guard the descriptor set index in
  CmdBindDescriptorSets2KHR
 
 Same missing-guard pattern as the vertex-attribute crash and the vertex-binding clamp:
@@ -30,7 +30,7 @@ stgbuf, vattrib(16) all PASS; glmark2 --validate 27/0.
  1 file changed, 8 insertions(+)
 
 diff --git a/src/imagination/vulkan/pvr_arch_cmd_buffer.c b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
-index b01039a..e2b892f 100644
+index b01039a7..e2b892f6 100644
 --- a/src/imagination/vulkan/pvr_arch_cmd_buffer.c
 +++ b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
 @@ -3043,6 +3043,14 @@ void PVR_PER_ARCH(CmdBindDescriptorSets2KHR)(
@@ -48,3 +48,6 @@ index b01039a..e2b892f 100644
        const struct pvr_descriptor_set_layout *set_layout =
           vk_to_pvr_descriptor_set_layout(
              pipeline_layout->set_layouts[desc_set]);
+-- 
+2.47.3
+

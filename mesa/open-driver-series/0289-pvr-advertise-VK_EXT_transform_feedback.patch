@@ -1,0 +1,130 @@
+From 49007edf72409df4ef54c6991c5c7ec26e360e16 Mon Sep 17 00:00:00 2001
+From: Ashish Chauhan <ashish.chauhan@imgtec.com>
+Date: Thu, 10 Sep 2026 23:34:13 +0100
+Subject: [PATCH 289/294] pvr: advertise VK_EXT_transform_feedback
+
+Signed-off-by: Ashish Chauhan <ashish.chauhan@imgtec.com>
+Reviewed-by: Frank Binns <frank.binns@imgtec.com>
+Part-of: <https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/44385>
+(cherry picked from commit b61ae0073c1846094d4e35ea080be96bdb4a5fde)
+---
+ docs/features.txt                            |  2 +-
+ docs/relnotes/new_features.txt               | 36 ++++++++++++++++++++
+ src/imagination/common/pvr_limits.h          |  2 ++
+ src/imagination/vulkan/pvr_physical_device.c | 16 +++++++++
+ 4 files changed, 55 insertions(+), 1 deletion(-)
+
+diff --git a/docs/features.txt b/docs/features.txt
+index 43dde535..65bb164c 100644
+--- a/docs/features.txt
++++ b/docs/features.txt
+@@ -705,7 +705,7 @@ Khronos extensions that are not part of any Vulkan version:
+   VK_EXT_surface_maintenance1                           DONE (anv, hk, kk, lvp, nvk, panvk, pvr, radv, tu, v3dv, vn)
+   VK_EXT_swapchain_colorspace                           DONE (anv, hk, kk, lvp, nvk, panvk, pvr, radv, tu, v3dv, vn)
+   VK_EXT_swapchain_maintenance1                         DONE (anv, hk, kk, lvp, nvk, panvk, pvr, radv, tu, v3dv, vn)
+-  VK_EXT_transform_feedback                             DONE (anv, hasvk, hk, lvp, nvk, radv, tu, vn)
++  VK_EXT_transform_feedback                             DONE (anv, hasvk, hk, lvp, nvk, pvr, radv, tu, vn)
+   VK_EXT_vertex_attribute_divisor                       DONE (anv, dzn, hasvk, hk, kk, lvp, nvk, panvk, pvr, radv, tu, v3dv, vn)
+   VK_EXT_vertex_attribute_robustness                    DONE (kk, vn)
+   VK_EXT_vertex_input_dynamic_state                     DONE (anv, hk, lvp, nvk, panvk, radv, tu, vn)
+diff --git a/docs/relnotes/new_features.txt b/docs/relnotes/new_features.txt
+index c70574a5..31c12ae6 100644
+--- a/docs/relnotes/new_features.txt
++++ b/docs/relnotes/new_features.txt
+@@ -53,3 +53,39 @@ GL_ARB_texture_rgb10_a2ui on etnaviv/HALTI2
+ VK_EXT_primitive_topology_list_restart on pvr
+ VK_KHR_incremental_present on panvk
+ VK_EXT_swapchain_colorspace on panvk
++VK_KHR_push_descriptor on pvr
++VK_EXT_image_sliced_view_of_3d on pvr
++VK_EXT_image_compression_control on panvk
++VK_KHR_shader_untyped_pointers on HK
++VK_KHR_maintenance10 on HK
++VK_KHR_shader_fma on HK
++VK_EXT_primitive_restart_index on HK
++GL_EXT_color_buffer_float on etnaviv/HALTI5
++GL_EXT_conservative_depth on etnaviv/HALTI5
++GL_EXT_draw_buffers_indexed on etnaviv/HALTI5
++GL_EXT_EGL_image_storage on etnaviv/HALTI5
++GL_EXT_EGL_image_storage_compression on etnaviv/HALTI5
++GL_EXT_shader_integer_mix on etnaviv/HALTI5
++GL_EXT_sRGB_write_control on etnaviv/HALTI5
++GL_EXT_texture_compression_rgtc on etnaviv/HALTI5
++GL_EXT_texture_sRGB_decode on etnaviv/HALTI5
++GL_EXT_texture_sRGB_R8 on etnaviv/HALTI5
++GL_EXT_texture_sRGB_RG8 on etnaviv/HALTI5
++GL_EXT_texture_storage_compression on etnaviv/HALTI5
++GL_MESA_framebuffer_flip_y on etnaviv/HALTI5
++GL_MESA_shader_integer_functions on etnaviv/HALTI5
++GL_OES_draw_buffers_indexed on etnaviv/HALTI5
++GL_OES_EGL_image_external_essl3 on etnaviv/HALTI5
++GLES 3.0 on etnaviv/HALTI5
++VK_QCOM_rotated_copy_commands on Turnip
++VK_KHR_maintenance10 on panvk
++VK_KHR_map_memory2 on v3dv
++VK_KHR_unified_image_layouts on v3dv
++VK_INTEL_shader_integer_functions2 on panvk
++VK_KHR_internally_synchronized_queues on NVK
++VK_KHR_maintenance11 on NVK
++VK_EXT_primitive_restart_index on NVK
++occlusionQueryPrecise on pvr
++EGL_NV_context_priority_realtime on radeonsi
++VK_KHR_maintenance11 on panvk
++VK_EXT_transform_feedback on pvr
+diff --git a/src/imagination/common/pvr_limits.h b/src/imagination/common/pvr_limits.h
+index ffe812fe..e2ec468d 100644
+--- a/src/imagination/common/pvr_limits.h
++++ b/src/imagination/common/pvr_limits.h
+@@ -84,6 +84,8 @@
+ #define PVR_XFB_MAX_PTEMPS_SETS \
+    (PVR_XFB_MAX_BUFFERS * PVR_XFB_PTEMP_ENTRIES_PER_VARYING)
+ #define PVR_XFB_MAX_TOTAL_VARYINGS 128U
++#define PVR_XFB_MAX_DATA_SIZE 512U
++#define PVR_XFB_MAX_DATA_STRIDE 2048U
+ 
+ #define PVR_TEXEL_BUFFER_OFFSET_ALIGNMENT 16U
+ #define PVR_UNIFORM_BUFFER_OFFSET_ALIGNMENT 4U
+diff --git a/src/imagination/vulkan/pvr_physical_device.c b/src/imagination/vulkan/pvr_physical_device.c
+index c100c9ca..d2b172ed 100644
+--- a/src/imagination/vulkan/pvr_physical_device.c
++++ b/src/imagination/vulkan/pvr_physical_device.c
+@@ -238,6 +238,7 @@ static void pvr_physical_device_get_supported_extensions(
+       .EXT_subgroup_size_control = true,
+       .EXT_texel_buffer_alignment = true,
+       .EXT_tooling_info = true,
++      .EXT_transform_feedback = true,
+       .EXT_vertex_attribute_divisor = true,
+       .EXT_zero_initialize_device_memory = true,
+ #ifdef PVR_USE_WSI_PLATFORM
+@@ -537,6 +538,9 @@ static void pvr_physical_device_get_supported_features(
+       /* Vulkan 1.3 / VK_EXT_texel_buffer_alignment */
+       .texelBufferAlignment = true,
+ 
++      /* VK_EXT_transform_feedback */
++      .transformFeedback = true,
++
+       /* Vulkan 1.2 / VK_KHR_buffer_device_address / VK_EXT_buffer_device_address.
+        *
+        * The GPU addresses global memory with a 64-bit device VA, and that is
+@@ -1136,6 +1140,18 @@ static bool pvr_physical_device_get_properties(
+       .maxCustomBorderColorSamplers =
+          get_custom_border_color_samplers(&pdevice->dev_info),
+ 
++      /* EXT_transform_feedback */
++      .maxTransformFeedbackStreams = PVR_XFB_MAX_STREAMS,
++      .maxTransformFeedbackBuffers = PVR_XFB_MAX_BUFFERS,
++      .maxTransformFeedbackBufferSize = UINT32_MAX,
++      .maxTransformFeedbackStreamDataSize = PVR_XFB_MAX_DATA_SIZE,
++      .maxTransformFeedbackBufferDataSize = PVR_XFB_MAX_DATA_SIZE,
++      .maxTransformFeedbackBufferDataStride = PVR_XFB_MAX_DATA_STRIDE,
++      .transformFeedbackQueries = false,
++      .transformFeedbackStreamsLinesTriangles = false,
++      .transformFeedbackRasterizationStreamSelect = false,
++      .transformFeedbackDraw = true,
++
+       /* VK_EXT_physical_device_drm */
+       .drmHasPrimary = pdevice->has_primary,
+       .drmPrimaryMajor = (int64_t) major(pdevice->primary_devid),
+-- 
+2.47.3
+

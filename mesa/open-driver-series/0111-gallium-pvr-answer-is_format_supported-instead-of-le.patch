@@ -1,7 +1,7 @@
-From ebba60699bf418c33f4a22f3fa5875b48630bb34 Mon Sep 17 00:00:00 2001
+From af88096378f9eba070576d55e94e0e5f030cf026 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Fri, 16 Oct 2026 05:39:41 +0800
-Subject: [PATCH 111/269] gallium/pvr: answer is_format_supported instead of
+Subject: [PATCH 111/294] gallium/pvr: answer is_format_supported instead of
  leaving it NULL
 
 The state tracker calls is_format_supported unconditionally in a 32-format loop

@@ -1,7 +1,7 @@
-From d14b076dd87aa8ca1838ba8bb5dcd576728b8a23 Mon Sep 17 00:00:00 2001
+From ceafcc3ae1e9481b4cb5572fab24d621192e3853 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Fri, 23 Oct 2026 21:03:05 +0800
-Subject: [PATCH 190/269] gallium/pvr: render submission path; allocator
+Subject: [PATCH 190/294] gallium/pvr: render submission path; allocator
  honours alignment; PBE address constraint
 
 Builds the full render path on top of the working submit:

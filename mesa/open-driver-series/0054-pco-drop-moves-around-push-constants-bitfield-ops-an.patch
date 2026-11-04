@@ -1,8 +1,8 @@
-From c17346143f94a98bdbe6dc5546f02b4a0cf13789 Mon Sep 17 00:00:00 2001
+From 9903b3b41e42f7d282e42e20f2143e06401641be Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sat, 10 Oct 2026 01:54:28 +0800
-Subject: [PATCH 54/98] pco: drop moves around push constants, bitfield ops and
- shifted adds
+Subject: [PATCH 054/294] pco: drop moves around push constants, bitfield ops
+ and shifted adds
 
 Three translation-time savings:
 
@@ -26,7 +26,7 @@ cstpi 119 -> 121 M inv/s. All correctness checks unchanged.
  1 file changed, 52 insertions(+)
 
 diff --git a/src/imagination/pco/pco_trans_nir.c b/src/imagination/pco/pco_trans_nir.c
-index 3cecfda..726e186 100644
+index 3cecfdab..726e1860 100644
 --- a/src/imagination/pco/pco_trans_nir.c
 +++ b/src/imagination/pco/pco_trans_nir.c
 @@ -1034,6 +1034,13 @@ static pco_instr *trans_load_common_store(trans_ctx *tctx,

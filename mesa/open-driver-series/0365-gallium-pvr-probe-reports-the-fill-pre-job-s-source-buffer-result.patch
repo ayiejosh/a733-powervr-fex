@@ -1,0 +1,46 @@
+From 76cbdda29c2d74056a8e2e3cdbec9541ac08b5e7 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sat, 31 Oct 2026 11:06:27 +0800
+Subject: [PATCH] gallium/pvr: probe reports the fill pre-job's source-buffer
+ result and isolates background pointers
+
+Adds the source-buffer histogram after a pre-job (to prove a preceding clear pass
+actually ran before the next submission) and stream overrides for the background
+object pointers (PVR_PROBE_TQ_COPY_BGND0/BGND0U/BGND1), used together with the
+texture-DMA overrides to determine which PDS program the firmware consumes as an
+address for the transfer copy replay.
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c | 17 +++++++++++++++++
+ 1 file changed, 17 insertions(+)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index 392f2c47..c89d141c 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -6250,6 +6250,23 @@ tq_copy_check(int fd, struct pipe_screen *pscreen)
+          pvr_job_submit_transfer_sync(vm, cargs.handle, pre_stream, pre_len, 2000);
+ 
+       printf("tqcopy:        pre-job %s\n", pre_ok ? "COMPLETED" : "sync did not signal");
++      {
++         const uint32_t *sp = srcbo.map;
++         uint32_t ns = 0, ncle = 0, npoi = 0, noth = 0;
++
++         for (uint32_t i = 0; i < buf_size / 4; i++) {
++            if (sp[i] == TQ_FILL_PATTERN)
++               ns++;
++            else if (sp[i] == clearval)
++               ncle++;
++            else if (sp[i] == poison)
++               npoi++;
++            else
++               noth++;
++         }
++         printf("tqcopy:        pre-job src: pattern=%u clear=%u poison=%u other=%u\n",
++                ns, ncle, npoi, noth);
++      }
+    }
+ 
+    completed = pvr_job_submit_transfer_sync(vm, cargs.handle, stream, stream_len, 2000);
+-- 
+2.47.3
+

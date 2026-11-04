@@ -1,0 +1,94 @@
+From 495e7671215a0ec2dea71d93be976508f04f92ce Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Wed, 4 Nov 2026 11:10:32 +0800
+Subject: [PATCH] pco/usclib: read stride texture state as a stride texture
+
+textureSize(), textureQueryLevels() and the base level read image word 1
+with the IMAGE_WORD1 layout for every texture type. Stride (linear)
+textures lay that word out differently: num_mip_levels sits in the bits
+that are baselevel for the other types, and the stride in the bits that
+are depth and num_mip_levels. A linear image with one level therefore
+read as base level 1, and textureSize() returned half its size.
+
+Linear images are what imported dma-bufs are, so every shared buffer was
+affected: Firefox (WebRender on zink) normalises texel coordinates by
+textureSize(), and drew a WebGL canvas into the bottom-left quarter with
+smeared edges.
+
+Check the texture type in word 0 and unpack word 1 as STRIDE_IMAGE_WORD1
+for stride textures: their level count comes from that layout, their base
+level is 0 and their depth 1.
+---
+ src/imagination/pco/usclib/tex.cl | 35 +++++++++++++++++++++++++++++--
+ 1 file changed, 33 insertions(+), 2 deletions(-)
+
+diff --git a/src/imagination/pco/usclib/tex.cl b/src/imagination/pco/usclib/tex.cl
+index 58ada4d0..74e34343 100644
+--- a/src/imagination/pco/usclib/tex.cl
++++ b/src/imagination/pco/usclib/tex.cl
+@@ -14,10 +14,35 @@
+ #include "util/u_math.h"
+ 
+ 
++/* Stride (linear) textures lay out image word 1 differently: num_mip_levels sits where baselevel is
++ * for the other types, and the stride where depth and num_mip_levels are. Linear images are what
++ * imported dma-bufs are, so reading them as a twiddled image made textureSize() of a shared buffer
++ * half its size (num_mip_levels 1 read as baselevel 1).
++ */
++static bool
++tex_state_is_stride(uint4 tex_state)
++{
++   uint32_t texstate_image_word0[] = {tex_state.x, tex_state.y};
++   struct ROGUE_TEXSTATE_IMAGE_WORD0 texstate_image_struct;
++
++   ROGUE_TEXSTATE_IMAGE_WORD0_unpack(texstate_image_word0, &texstate_image_struct);
++
++   return texstate_image_struct.textype == ROGUE_TEXSTATE_TEXTYPE_STRIDE;
++}
++
+ uint
+ usclib_tex_state_levels(uint4 tex_state)
+ {
+    uint32_t texstate_image_word1[] = {tex_state.z, tex_state.w};
++
++   if (tex_state_is_stride(tex_state)) {
++      struct ROGUE_TEXSTATE_STRIDE_IMAGE_WORD1 texstate_stride_struct;
++
++      ROGUE_TEXSTATE_STRIDE_IMAGE_WORD1_unpack(texstate_image_word1, &texstate_stride_struct);
++
++      return texstate_stride_struct.num_mip_levels;
++   }
++
+    struct ROGUE_TEXSTATE_IMAGE_WORD1 texstate_image_struct;
+ 
+    ROGUE_TEXSTATE_IMAGE_WORD1_unpack(texstate_image_word1, &texstate_image_struct);
+@@ -71,11 +96,14 @@ usclib_tex_state_size(uint4 tex_state, uint num_comps, enum glsl_sampler_dim dim
+    ROGUE_TEXSTATE_IMAGE_WORD0_unpack(texstate_image_word0, &texstate_image_struct0);
+    ROGUE_TEXSTATE_IMAGE_WORD1_unpack(texstate_image_word1, &texstate_image_struct1);
+ 
+-   lod += texstate_image_struct1.baselevel;
++   bool stride = tex_state_is_stride(tex_state);
++
++   if (!stride)
++      lod += texstate_image_struct1.baselevel;
+ 
+    uint3 size_comps = (uint3)(texstate_image_struct0.width + 1,
+                               texstate_image_struct0.height + 1,
+-                              texstate_image_struct1.depth + 1);
++                              stride ? 1 : texstate_image_struct1.depth + 1);
+ 
+    if (is_array)
+       --num_comps;
+@@ -99,6 +127,9 @@ usclib_tex_state_base_level(uint4 tex_state)
+    uint32_t texstate_image_word1[] = {tex_state.z, tex_state.w};
+    struct ROGUE_TEXSTATE_IMAGE_WORD1 texstate_image_struct;
+ 
++   if (tex_state_is_stride(tex_state))
++      return 0;
++
+    ROGUE_TEXSTATE_IMAGE_WORD1_unpack(texstate_image_word1, &texstate_image_struct);
+ 
+    return texstate_image_struct.baselevel;
+-- 
+2.47.3
+

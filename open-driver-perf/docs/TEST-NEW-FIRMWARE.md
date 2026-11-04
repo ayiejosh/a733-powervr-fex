@@ -69,3 +69,18 @@ sudo systemctl start display-manager
 ```
 After any experiment that **patched the firmware or tampered with the GPU** , prefer a clean reboot over a
 hot module swap - the reboot path is reliable, the hot swap has this crash window.
+
+## Recovering the open driver after repeated driver swaps (2026-10-27)
+
+Repeated manual `unbind`/`bind`/`rmmod`/`insmod` cycles can leave the GPU clock/power state such that the
+open `powervr` probe reads **BVNC 0.0.0.0** and fails with
+`Direct firmware load for powervr/rogue_0.0.0.0_v1.fw failed` - the module loads but never binds, and Vulkan
+then fails enumeration. Recovery without a reboot (now built into `tools/verify/switch-safe.sh open`):
+load the vendor module once (`modprobe pvrsrvkm`, which re-initialises the clocks through its platform init),
+remove it, and load `powervr` again. If that still fails, a clean reboot is the reliable fallback.
+
+`tools/verify/switch-safe.sh open` now: removes any stale unbound `powervr` module first, retries through a
+vendor probe cycle with the GPU's `power/control` reset to `auto`, and - if the open driver still will not
+bind - restores the vendor stack and desktop before aborting, so a failed experiment never leaves the board
+headless. The observed failure after many manual swaps was `rogue_0.0.0.0` (BVNC read as zero); only a clean
+reboot restored the open stack.

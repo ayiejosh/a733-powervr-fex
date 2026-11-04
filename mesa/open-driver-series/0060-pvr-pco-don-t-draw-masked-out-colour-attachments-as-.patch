@@ -1,8 +1,8 @@
-From 283b0387cb4ed892d2fe60a580340d3d799fff87 Mon Sep 17 00:00:00 2001
+From 8b79f165987ffd965e429eeacf374df94e40d4d5 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sat, 10 Oct 2026 09:47:39 +0800
-Subject: [PATCH 60/98] pvr/pco: don't draw masked-out colour attachments as an
- opaque pass
+Subject: [PATCH 060/294] pvr/pco: don't draw masked-out colour attachments as
+ an opaque pass
 
 A colour attachment with a static colorWriteMask of 0 is left unwritten:
 nir_lower_blend drops its store and sets no framebuffer-fetch flag, so the
@@ -25,7 +25,7 @@ cases) matches d253e35.
  3 files changed, 13 insertions(+)
 
 diff --git a/src/imagination/pco/pco_data.h b/src/imagination/pco/pco_data.h
-index 8243e91..44f0f82 100644
+index 8243e914..44f0f824 100644
 --- a/src/imagination/pco/pco_data.h
 +++ b/src/imagination/pco/pco_data.h
 @@ -113,6 +113,11 @@ typedef struct _pco_fs_data {
@@ -41,7 +41,7 @@ index 8243e91..44f0f82 100644
  
     pco_range sample_locations;
 diff --git a/src/imagination/pco/pco_nir.c b/src/imagination/pco/pco_nir.c
-index cb5dd25..221cf65 100644
+index cb5dd259..221cf653 100644
 --- a/src/imagination/pco/pco_nir.c
 +++ b/src/imagination/pco/pco_nir.c
 @@ -294,6 +294,7 @@ static void gather_fs_data(nir_shader *nir, pco_data *data)
@@ -53,7 +53,7 @@ index cb5dd25..221cf65 100644
     data->fs.uses.sample_shading |= nir->info.fs.uses_sample_shading;
     data->fs.uses.sample_shading |= data->fs.uses.sample_locations;
 diff --git a/src/imagination/vulkan/pvr_arch_pipeline.c b/src/imagination/vulkan/pvr_arch_pipeline.c
-index 82093ca..60832f6 100644
+index 82093ca7..60832f6a 100644
 --- a/src/imagination/vulkan/pvr_arch_pipeline.c
 +++ b/src/imagination/vulkan/pvr_arch_pipeline.c
 @@ -2305,6 +2305,13 @@ static void pvr_init_fs_blend(pco_data *data,

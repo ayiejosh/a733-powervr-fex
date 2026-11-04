@@ -1,7 +1,7 @@
-From e244141ce33542384109acebc7713ba9738a1c7e Mon Sep 17 00:00:00 2001
+From 5b5b330b2e7a050e920a39693bd00907858caa85 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sat, 17 Oct 2026 10:25:56 +0800
-Subject: [PATCH 163/269] gallium/pvr: the PBE clip bounds, in inclusive pixels
+Subject: [PATCH 163/294] gallium/pvr: the PBE clip bounds, in inclusive pixels
 
   csb: PBE clip: inclusive pixels (whole 0,0..799,599; offset 10,20..109,69; overhang clamped; zero
        extent does not wrap)

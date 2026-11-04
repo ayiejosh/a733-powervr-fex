@@ -1,7 +1,7 @@
-From b67b05adbd615beb810546b3367b7d759d2915da Mon Sep 17 00:00:00 2001
+From 21c32bec430acfbe380f4cb74a9e61f2f0b65508 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sat, 10 Oct 2026 15:42:02 +0800
-Subject: [PATCH 67/98] pco: fold constant trailing channels of 8-bit UNORM
+Subject: [PATCH 067/294] pco: fold constant trailing channels of 8-bit UNORM
  pixel outputs
 
 The pck that packs a pixel output issues once per packed channel, and
@@ -33,7 +33,7 @@ CTS (5062 + 9170 + 838 + 282 cases): identical to before; gate 44/44.
  3 files changed, 121 insertions(+)
 
 diff --git a/src/imagination/pco/pco_internal.h b/src/imagination/pco/pco_internal.h
-index 87ed03c..4c541c7 100644
+index 87ed03c0..4c541c73 100644
 --- a/src/imagination/pco/pco_internal.h
 +++ b/src/imagination/pco/pco_internal.h
 @@ -1838,6 +1838,7 @@ bool pco_nir_lower_tex(nir_shader *shader, pco_data *data, pco_ctx *ctx);
@@ -45,7 +45,7 @@ index 87ed03c..4c541c7 100644
  bool pco_nir_prop_access(nir_shader *shader);
  bool pco_nir_pvi(nir_shader *shader, pco_vs_data *vs);
 diff --git a/src/imagination/pco/pco_nir.c b/src/imagination/pco/pco_nir.c
-index 221cf65..afe6593 100644
+index 221cf653..afe65935 100644
 --- a/src/imagination/pco/pco_nir.c
 +++ b/src/imagination/pco/pco_nir.c
 @@ -1309,6 +1309,13 @@ void pco_postprocess_nir(pco_ctx *ctx, nir_shader *nir, pco_data *data)
@@ -63,7 +63,7 @@ index 221cf65..afe6593 100644
  
     /* Temporary: lower phi undefs to zero because at this stage we don't want to
 diff --git a/src/imagination/pco/pco_nir_pvfio.c b/src/imagination/pco/pco_nir_pvfio.c
-index d6e21f0..90dff3e 100644
+index d6e21f00..90dff3e1 100644
 --- a/src/imagination/pco/pco_nir_pvfio.c
 +++ b/src/imagination/pco/pco_nir_pvfio.c
 @@ -19,10 +19,12 @@

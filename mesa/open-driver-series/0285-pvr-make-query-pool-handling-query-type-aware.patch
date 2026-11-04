@@ -1,0 +1,379 @@
+From b2feeb4b007fd9786a99c1daab016b8b56a565ba Mon Sep 17 00:00:00 2001
+From: Ashish Chauhan <ashish.chauhan@imgtec.com>
+Date: Tue, 29 Sep 2026 14:54:28 +0100
+Subject: [PATCH 285/294] pvr: make query pool handling query type aware
+
+Signed-off-by: Ashish Chauhan <ashish.chauhan@imgtec.com>
+Acked-by: Frank Binns <frank.binns@imgtec.com>
+Part-of: <https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/44385>
+(cherry picked from commit 98367764a4423ad3582d47b850333f2b4bbcfd6b)
+---
+ src/imagination/vulkan/pvr_arch_cmd_buffer.c |   6 +-
+ src/imagination/vulkan/pvr_arch_cmd_query.c  |  59 ++++++---
+ src/imagination/vulkan/pvr_cmd_buffer.h      |   3 +
+ src/imagination/vulkan/pvr_common.h          |   5 +
+ src/imagination/vulkan/pvr_query.c           | 132 ++++++++++++++-----
+ src/imagination/vulkan/pvr_query.h           |   1 +
+ 6 files changed, 157 insertions(+), 49 deletions(-)
+
+diff --git a/src/imagination/vulkan/pvr_arch_cmd_buffer.c b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
+index 3ea140a3..694d5e3c 100644
+--- a/src/imagination/vulkan/pvr_arch_cmd_buffer.c
++++ b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
+@@ -3088,8 +3088,10 @@ VkResult pvr_arch_cmd_buffer_start_sub_cmd(struct pvr_cmd_buffer *cmd_buffer,
+       }
+       sub_cmd->gfx.view_index_wanted = sub_cmd->gfx.multiview_enabled;
+ 
+-      if (state->vis_test_enabled)
+-         sub_cmd->gfx.query_pool = state->query_pool;
++      if (state->vis_test_enabled) {
++         sub_cmd->gfx.query_pool =
++            state->query_pools[PVR_QUERY_POOL_INDEX_OCCLUSION];
++      }
+ 
+       pvr_arch_reset_graphics_dirty_state(cmd_buffer, true);
+ 
+diff --git a/src/imagination/vulkan/pvr_arch_cmd_query.c b/src/imagination/vulkan/pvr_arch_cmd_query.c
+index 308a9fc4..a7d01638 100644
+--- a/src/imagination/vulkan/pvr_arch_cmd_query.c
++++ b/src/imagination/vulkan/pvr_arch_cmd_query.c
+@@ -161,17 +161,12 @@ pvr_cmd_buffer_state_get_view_count(const struct pvr_cmd_buffer_state *state)
+    return view_count;
+ }
+ 
+-void PVR_PER_ARCH(CmdBeginQuery)(VkCommandBuffer commandBuffer,
+-                                 VkQueryPool queryPool,
+-                                 uint32_t query,
+-                                 VkQueryControlFlags flags)
++static void pvr_occlusion_query_begin(struct pvr_cmd_buffer *cmd_buffer,
++                                      struct pvr_query_pool *pool,
++                                      uint32_t query)
+ {
+-   VK_FROM_HANDLE(pvr_cmd_buffer, cmd_buffer, commandBuffer);
+    struct pvr_cmd_buffer_state *state = &cmd_buffer->state;
+    uint32_t view_count = 1;
+-   VK_FROM_HANDLE(pvr_query_pool, pool, queryPool);
+-
+-   PVR_CHECK_COMMAND_BUFFER_BUILDING_STATE(cmd_buffer);
+ 
+    /* Occlusion queries can't be nested. */
+    assert(!state->vis_test_enabled);
+@@ -206,7 +201,7 @@ void PVR_PER_ARCH(CmdBeginQuery)(VkCommandBuffer commandBuffer,
+       view_count = pvr_cmd_buffer_state_get_view_count(state);
+    }
+ 
+-   state->query_pool = pool;
++   state->query_pools[PVR_QUERY_POOL_INDEX_OCCLUSION] = pool;
+    state->vis_test_enabled = true;
+    state->vis_reg = query;
+    state->dirty.vis_test = true;
+@@ -217,15 +212,49 @@ void PVR_PER_ARCH(CmdBeginQuery)(VkCommandBuffer commandBuffer,
+    }
+ }
+ 
+-void PVR_PER_ARCH(CmdEndQuery)(VkCommandBuffer commandBuffer,
+-                               VkQueryPool queryPool,
+-                               uint32_t query)
++static void pvr_occlusion_query_end(struct pvr_cmd_buffer *cmd_buffer)
++{
++   cmd_buffer->state.vis_test_enabled = false;
++   cmd_buffer->state.dirty.vis_test = true;
++}
++
++void PVR_PER_ARCH(CmdBeginQueryIndexedEXT)(VkCommandBuffer commandBuffer,
++                                           VkQueryPool queryPool,
++                                           uint32_t query,
++                                           VkQueryControlFlags flags,
++                                           uint32_t index)
+ {
+    VK_FROM_HANDLE(pvr_cmd_buffer, cmd_buffer, commandBuffer);
+-   struct pvr_cmd_buffer_state *state = &cmd_buffer->state;
++   VK_FROM_HANDLE(pvr_query_pool, pool, queryPool);
+ 
+    PVR_CHECK_COMMAND_BUFFER_BUILDING_STATE(cmd_buffer);
+ 
+-   state->vis_test_enabled = false;
+-   state->dirty.vis_test = true;
++   switch (pool->query_type) {
++   case VK_QUERY_TYPE_OCCLUSION:
++      pvr_occlusion_query_begin(cmd_buffer, pool, query);
++      break;
++
++   default:
++      UNREACHABLE("unsupported query type");
++   }
++}
++
++void PVR_PER_ARCH(CmdEndQueryIndexedEXT)(VkCommandBuffer commandBuffer,
++                                         VkQueryPool queryPool,
++                                         uint32_t query,
++                                         uint32_t index)
++{
++   VK_FROM_HANDLE(pvr_cmd_buffer, cmd_buffer, commandBuffer);
++   VK_FROM_HANDLE(pvr_query_pool, pool, queryPool);
++
++   PVR_CHECK_COMMAND_BUFFER_BUILDING_STATE(cmd_buffer);
++
++   switch (pool->query_type) {
++   case VK_QUERY_TYPE_OCCLUSION:
++      pvr_occlusion_query_end(cmd_buffer);
++      break;
++
++   default:
++      UNREACHABLE("unsupported query type");
++   }
+ }
+diff --git a/src/imagination/vulkan/pvr_cmd_buffer.h b/src/imagination/vulkan/pvr_cmd_buffer.h
+index ec4f3fdf..23f49f6c 100644
+--- a/src/imagination/vulkan/pvr_cmd_buffer.h
++++ b/src/imagination/vulkan/pvr_cmd_buffer.h
+@@ -566,6 +566,9 @@ struct pvr_cmd_buffer_state {
+ 
+    const struct pvr_query_pool *query_pool;
+    struct pvr_cmd_buffer_xfb_state xfb_state;
++
++   /* Query pool pointers indexed by query type */
++   const struct pvr_query_pool *query_pools[PVR_QUERY_POOL_INDEX_COUNT];
+    bool vis_test_enabled;
+    uint32_t vis_reg;
+ 
+diff --git a/src/imagination/vulkan/pvr_common.h b/src/imagination/vulkan/pvr_common.h
+index 0b4f16bf..ed5df72c 100644
+--- a/src/imagination/vulkan/pvr_common.h
++++ b/src/imagination/vulkan/pvr_common.h
+@@ -255,4 +255,9 @@ struct pvr_pds_upload {
+ 
+ VK_DEFINE_NONDISP_HANDLE_CASTS(pvr_event, base, VkEvent, VK_OBJECT_TYPE_EVENT)
+ 
++enum pvr_query_pool_index {
++   PVR_QUERY_POOL_INDEX_OCCLUSION,
++   PVR_QUERY_POOL_INDEX_COUNT,
++};
++
+ #endif /* PVR_COMMON_H */
+diff --git a/src/imagination/vulkan/pvr_query.c b/src/imagination/vulkan/pvr_query.c
+index 42366841..a188d171 100644
+--- a/src/imagination/vulkan/pvr_query.c
++++ b/src/imagination/vulkan/pvr_query.c
+@@ -46,18 +46,32 @@
+ #include "vk_log.h"
+ #include "vk_object.h"
+ 
+-VkResult pvr_CreateQueryPool(VkDevice _device,
+-                             const VkQueryPoolCreateInfo *pCreateInfo,
+-                             const VkAllocationCallbacks *pAllocator,
+-                             VkQueryPool *pQueryPool)
++static VkResult pvr_occlusion_query_pool_setup(struct pvr_device *device,
++                                               struct pvr_query_pool *pool)
+ {
+-   VK_FROM_HANDLE(pvr_device, device, _device);
+    const uint32_t core_count = device->pdevice->dev_runtime_info.core_count;
+-   const uint32_t query_size = pCreateInfo->queryCount * sizeof(uint32_t);
+-   struct pvr_query_pool *pool;
+    uint64_t alloc_size;
+-   VkResult result;
++   uint32_t result_size;
++
++   /* Occlusion queries return 1 result per query. */
++   result_size = pool->query_count * sizeof(uint32_t);
++   pool->result_stride = ALIGN_POT(result_size, ROGUE_OQUERY_ALIGN);
+ 
++   /* Each Phantom writes to a separate offset within the vis test heap so
++    * allocate space for the total number of Phantoms.
++    */
++   alloc_size = (uint64_t)pool->result_stride * core_count;
++
++   return pvr_bo_suballoc(&device->suballoc_vis_test,
++                          alloc_size,
++                          ROGUE_OQUERY_ALIGN,
++                          false,
++                          &pool->result_buffer);
++}
++
++static VkResult pvr_query_pool_setup(struct pvr_device *device,
++                                     struct pvr_query_pool *pool)
++{
+    /* Vulkan 1.0 supports only occlusion, timestamp, and pipeline statistics
+     * query.
+     * We don't currently support timestamp queries.
+@@ -66,7 +80,46 @@ VkResult pvr_CreateQueryPool(VkDevice _device,
+     * VkPhysicalDeviceFeatures->pipelineStatisticsQuery = false.
+     */
+    assert(!device->vk.enabled_features.pipelineStatisticsQuery);
+-   assert(pCreateInfo->queryType == VK_QUERY_TYPE_OCCLUSION);
++
++   switch (pool->query_type) {
++   case VK_QUERY_TYPE_OCCLUSION:
++      return pvr_occlusion_query_pool_setup(device, pool);
++
++   default:
++      UNREACHABLE("Unsupported query type");
++   }
++}
++
++static inline void
++pvr_occlusion_query_pool_cleanup(const struct pvr_query_pool *pool)
++{
++   pvr_bo_suballoc_free(pool->result_buffer);
++}
++
++static inline void pvr_query_pool_cleanup(const struct pvr_query_pool *pool)
++{
++   if (!pool)
++      return;
++
++   switch (pool->query_type) {
++   case VK_QUERY_TYPE_OCCLUSION:
++      pvr_occlusion_query_pool_cleanup(pool);
++      break;
++
++   default:
++      break;
++   }
++}
++
++VkResult pvr_CreateQueryPool(VkDevice _device,
++                             const VkQueryPoolCreateInfo *pCreateInfo,
++                             const VkAllocationCallbacks *pAllocator,
++                             VkQueryPool *pQueryPool)
++{
++   VK_FROM_HANDLE(pvr_device, device, _device);
++   struct pvr_query_pool *pool;
++   uint32_t query_size;
++   VkResult result;
+ 
+    pool = vk_object_alloc(&device->vk,
+                           pAllocator,
+@@ -75,20 +128,11 @@ VkResult pvr_CreateQueryPool(VkDevice _device,
+    if (!pool)
+       return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+ 
+-   pool->result_stride = ALIGN_POT(query_size, ROGUE_OQUERY_ALIGN);
+-
+    pool->query_count = pCreateInfo->queryCount;
++   pool->query_type = pCreateInfo->queryType;
++   query_size = pCreateInfo->queryCount * sizeof(uint32_t);
+ 
+-   /* Each Phantom writes to a separate offset within the vis test heap so
+-    * allocate space for the total number of Phantoms.
+-    */
+-   alloc_size = (uint64_t)pool->result_stride * core_count;
+-
+-   result = pvr_bo_suballoc(&device->suballoc_vis_test,
+-                            alloc_size,
+-                            ROGUE_OQUERY_ALIGN,
+-                            false,
+-                            &pool->result_buffer);
++   result = pvr_query_pool_setup(device, pool);
+    if (result != VK_SUCCESS)
+       goto err_free_pool;
+ 
+@@ -98,14 +142,14 @@ VkResult pvr_CreateQueryPool(VkDevice _device,
+                             false,
+                             &pool->availability_buffer);
+    if (result != VK_SUCCESS)
+-      goto err_free_result_buffer;
++      goto err_query_pool_cleanup;
+ 
+    *pQueryPool = pvr_query_pool_to_handle(pool);
+ 
+    return VK_SUCCESS;
+ 
+-err_free_result_buffer:
+-   pvr_bo_suballoc_free(pool->result_buffer);
++err_query_pool_cleanup:
++   pvr_query_pool_cleanup(pool);
+ 
+ err_free_pool:
+    vk_object_free(&device->vk, pAllocator, pool);
+@@ -124,7 +168,7 @@ void pvr_DestroyQueryPool(VkDevice _device,
+       return;
+ 
+    pvr_bo_suballoc_free(pool->availability_buffer);
+-   pvr_bo_suballoc_free(pool->result_buffer);
++   pvr_query_pool_cleanup(pool);
+ 
+    vk_object_free(&device->vk, pAllocator, pool);
+ }
+@@ -194,6 +238,23 @@ static inline void pvr_write_query_to_buffer(uint8_t *buffer,
+    }
+ }
+ 
++static void
++pvr_occlusion_query_pool_get_result(struct pvr_device *device,
++                                    const struct pvr_query_pool *pool,
++                                    uint32_t query_idx,
++                                    uint64_t *count_out)
++{
++   volatile uint32_t *query_results =
++      pvr_bo_suballoc_get_map_addr(pool->result_buffer);
++   const uint32_t core_count = device->pdevice->dev_runtime_info.core_count;
++   uint64_t count = 0;
++
++   for (uint32_t i = 0; i < core_count; i++)
++      count += query_results[pool->result_stride * i + query_idx];
++
++   *count_out = count;
++}
++
+ VkResult pvr_GetQueryPoolResults(VkDevice _device,
+                                  VkQueryPool queryPool,
+                                  uint32_t firstQuery,
+@@ -207,8 +268,8 @@ VkResult pvr_GetQueryPoolResults(VkDevice _device,
+    VK_FROM_HANDLE(pvr_device, device, _device);
+    VG(volatile uint32_t *available =
+          pvr_bo_suballoc_get_map_addr(pool->availability_buffer));
+-   volatile uint32_t *query_results =
+-      pvr_bo_suballoc_get_map_addr(pool->result_buffer);
++   VG(volatile uint32_t *query_results =
++      pvr_bo_suballoc_get_map_addr(pool->result_buffer));
+    const uint32_t core_count = device->pdevice->dev_runtime_info.core_count;
+    uint8_t *data = (uint8_t *)pData;
+    VkResult result = VK_SUCCESS;
+@@ -229,19 +290,26 @@ VkResult pvr_GetQueryPoolResults(VkDevice _device,
+    }
+ 
+    for (uint32_t i = 0; i < queryCount; i++) {
+-      bool is_available = pvr_query_is_available(pool, firstQuery + i);
+-      uint64_t count = 0;
++      const uint32_t query_idx = firstQuery + i;
++      bool is_available = pvr_query_is_available(pool, query_idx);
++      uint64_t count;
+ 
+       if (flags & VK_QUERY_RESULT_WAIT_BIT && !is_available) {
+-         result = pvr_wait_for_available(device, pool, firstQuery + i);
++         result = pvr_wait_for_available(device, pool, query_idx);
+          if (result != VK_SUCCESS)
+             return result;
+ 
+          is_available = true;
+       }
+ 
+-      for (uint32_t j = 0; j < core_count; j++)
+-         count += query_results[pool->result_stride * j + firstQuery + i];
++      switch (pool->query_type) {
++      case VK_QUERY_TYPE_OCCLUSION:
++         pvr_occlusion_query_pool_get_result(device, pool, query_idx, &count);
++         break;
++
++      default:
++         UNREACHABLE("Unsupported query type");
++      }
+ 
+       if (is_available || (flags & VK_QUERY_RESULT_PARTIAL_BIT))
+          pvr_write_query_to_buffer(data, flags, 0, count);
+diff --git a/src/imagination/vulkan/pvr_query.h b/src/imagination/vulkan/pvr_query.h
+index 1b34299e..179e0927 100644
+--- a/src/imagination/vulkan/pvr_query.h
++++ b/src/imagination/vulkan/pvr_query.h
+@@ -28,6 +28,7 @@ struct pvr_query_pool {
+     */
+    uint32_t result_stride;
+ 
++   VkQueryType query_type;
+    uint32_t query_count;
+ 
+    struct pvr_suballoc_bo *result_buffer;
+-- 
+2.47.3
+

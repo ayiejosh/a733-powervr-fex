@@ -1,7 +1,7 @@
-From 28deb4c42be8f0b28629494bdf8d463ab4495d12 Mon Sep 17 00:00:00 2001
+From 9d16f2ee6934196da7c7e8aadd0ec64869834077 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sat, 10 Oct 2026 08:10:22 +0800
-Subject: [PATCH 59/98] pvr: faster and correct buffer copies
+Subject: [PATCH 059/294] pvr: faster and correct buffer copies
 
 pvr_cmd_copy_buffer_region() had three problems:
 
@@ -30,7 +30,7 @@ the 5062-case selection are unchanged vs d253e35.
  1 file changed, 26 insertions(+), 7 deletions(-)
 
 diff --git a/src/imagination/vulkan/rogue/pvr_blit.c b/src/imagination/vulkan/rogue/pvr_blit.c
-index b492972..2f465e0 100644
+index b4929724..2f465e07 100644
 --- a/src/imagination/vulkan/rogue/pvr_blit.c
 +++ b/src/imagination/vulkan/rogue/pvr_blit.c
 @@ -1422,7 +1422,7 @@ static VkResult pvr_cmd_copy_buffer_region(struct pvr_cmd_buffer *cmd_buffer,

@@ -1,7 +1,7 @@
-From 8187b200353eb016f0946b8d8d8b03d2944b60c5 Mon Sep 17 00:00:00 2001
+From c9df0b1d100924f0f74c0a910f132d594850a1b2 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Thu, 8 Oct 2026 05:35:37 +0800
-Subject: [PATCH 16/43] pvr: report real input-attachment limit (4 -> 8),
+Subject: [PATCH 016/294] pvr: report real input-attachment limit (4 -> 8),
  probed not assumed
 
 maxPerStageDescriptorInputAttachments was 4 - the Vulkan minimum, with no backing constant
@@ -27,7 +27,7 @@ linfilter all PASS; glmark2 --validate still 0 failures / 27 pass.
  1 file changed, 6 insertions(+), 2 deletions(-)
 
 diff --git a/src/imagination/vulkan/pvr_physical_device.c b/src/imagination/vulkan/pvr_physical_device.c
-index 96ecacd..84c91a1 100644
+index 96ecacd5..84c91a10 100644
 --- a/src/imagination/vulkan/pvr_physical_device.c
 +++ b/src/imagination/vulkan/pvr_physical_device.c
 @@ -764,7 +764,11 @@ static bool pvr_physical_device_get_properties(
@@ -52,3 +52,6 @@ index 96ecacd..84c91a1 100644
  
        /* Vertex Shader Limits */
        .maxVertexInputAttributes = 16U,
+-- 
+2.47.3
+

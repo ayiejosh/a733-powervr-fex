@@ -1,7 +1,7 @@
-From 38081339697e0b55497bac4f9830381fff5c7951 Mon Sep 17 00:00:00 2001
+From de4822839fef7e6541a9fd88c83e9ea77e3b7668 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sat, 24 Oct 2026 22:01:10 +0800
-Subject: [PATCH 215/269] gallium/pvr: the VS attribute shader compiles - the
+Subject: [PATCH 215/294] gallium/pvr: the VS attribute shader compiles - the
  missing piece was pco_data, not SPIR-V
 
 The handoff's next step was "build the VS from SPIR-V so the input carries the metadata pco's

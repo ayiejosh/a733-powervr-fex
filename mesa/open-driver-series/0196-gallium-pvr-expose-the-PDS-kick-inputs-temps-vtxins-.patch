@@ -1,7 +1,7 @@
-From 6bd1a1e28706c8d4d502141d5317ed395d827dbe Mon Sep 17 00:00:00 2001
+From 72259ac2b8783ecfdd47a4c67fdec947c802a2a7 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sat, 24 Oct 2026 03:23:05 +0800
-Subject: [PATCH 196/269] gallium/pvr: expose the PDS kick inputs (temps,
+Subject: [PATCH 196/294] gallium/pvr: expose the PDS kick inputs (temps,
  vtxins) from the compiled shader
 
 The PDS kick program is built from two numbers that live in pco's per-function record: the temps the

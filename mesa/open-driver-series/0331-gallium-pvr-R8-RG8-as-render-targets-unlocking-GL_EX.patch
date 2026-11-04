@@ -1,0 +1,62 @@
+From b75dcca161918ed29bf07d04d728335e74c5e73f Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Thu, 29 Oct 2026 19:43:56 +0800
+Subject: [PATCH] gallium/pvr: R8/RG8 as render targets, unlocking
+ GL_EXT_texture_rg
+
+Mesa gates the ES2 GL_EXT_texture_rg advertisement on R8/RG8 being renderable (the extension table
+probes those formats with RENDER_TARGET|SAMPLER_VIEW), so the driver held the extension back and any
+GL_R8/GL_RG8 texture upload failed with GL_INVALID_VALUE - sampling them read black. Allow the two
+single/double-channel formats as colour targets: the PBE already writes them with the generic
+U8x4 packmode and the twiddled layout, and the resource code needs nothing new.
+
+Verified with zink as the reference:
+- GL_EXT_texture_rg is now advertised; glTexImage2D(GL_R8/GL_RG8) succeeds (was INVALID_VALUE);
+- R8 and RG8 sampling match zink exactly (pixel 60 00 00 ff / 60 9f 00 ff, same checksum);
+- clearing R8/RG8 render targets and reading back in their native format matches zink
+  ((255,0) and (255,128)), new open-perf/rt8test.c;
+- full gltri gate 49/49, rttest PASS, 0 MMU faults.
+Known limitation (pre-existing): glReadPixels from an R8/RG8 FBO with a different read format goes
+through Mesa's format-converting blit, which this driver refuses - read in the native format or fix
+the blit separately.
+---
+ src/gallium/drivers/pvr_native/pvr_draw.c   | 7 ++++++-
+ src/gallium/drivers/pvr_native/pvr_screen.c | 3 ++-
+ 2 files changed, 8 insertions(+), 2 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_draw.c b/src/gallium/drivers/pvr_native/pvr_draw.c
+index 0f6c974b..909d87c3 100644
+--- a/src/gallium/drivers/pvr_native/pvr_draw.c
++++ b/src/gallium/drivers/pvr_native/pvr_draw.c
+@@ -1100,8 +1100,13 @@ draw_pack_color(enum pipe_format format, const union pipe_color_union *c)
+ static bool
+ draw_format_ok(enum pipe_format f)
+ {
++   /* Every 8-bit colour target the PBE can write with the generic U8x4 packmode: the 8888 set
++    * plus the single/double-channel formats, which ES2 needs as render targets only so that
++    * EXT_texture_rg is advertised (Mesa gates it on R8/RG8 being renderable, table
++    * st_extension_format_mapping); rendering them works the same through the twiddled path. */
+    return f == PIPE_FORMAT_R8G8B8A8_UNORM || f == PIPE_FORMAT_B8G8R8A8_UNORM ||
+-          f == PIPE_FORMAT_R8G8B8X8_UNORM || f == PIPE_FORMAT_B8G8R8X8_UNORM;
++          f == PIPE_FORMAT_R8G8B8X8_UNORM || f == PIPE_FORMAT_B8G8R8X8_UNORM ||
++          f == PIPE_FORMAT_R8_UNORM || f == PIPE_FORMAT_R8G8_UNORM;
+ }
+ 
+ /* The vertex attribute fetch program and its data segment for the bound vertex elements. */
+diff --git a/src/gallium/drivers/pvr_native/pvr_screen.c b/src/gallium/drivers/pvr_native/pvr_screen.c
+index 42a03c49..35164778 100644
+--- a/src/gallium/drivers/pvr_native/pvr_screen.c
++++ b/src/gallium/drivers/pvr_native/pvr_screen.c
+@@ -106,7 +106,8 @@ pvr_is_format_supported(UNUSED struct pipe_screen *pscreen,
+    if ((bindings & (PIPE_BIND_RENDER_TARGET | PIPE_BIND_DISPLAY_TARGET | PIPE_BIND_SCANOUT |
+                     PIPE_BIND_SHARED)) &&
+        format != PIPE_FORMAT_R8G8B8A8_UNORM && format != PIPE_FORMAT_B8G8R8A8_UNORM &&
+-       format != PIPE_FORMAT_R8G8B8X8_UNORM && format != PIPE_FORMAT_B8G8R8X8_UNORM)
++       format != PIPE_FORMAT_R8G8B8X8_UNORM && format != PIPE_FORMAT_B8G8R8X8_UNORM &&
++       format != PIPE_FORMAT_R8_UNORM && format != PIPE_FORMAT_R8G8_UNORM)
+       return false;
+    if ((bindings & PIPE_BIND_DEPTH_STENCIL) &&
+        format != PIPE_FORMAT_Z16_UNORM && format != PIPE_FORMAT_Z24X8_UNORM &&
+-- 
+2.47.3
+

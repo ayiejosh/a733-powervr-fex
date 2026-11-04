@@ -1,0 +1,264 @@
+From 54adf97a7ad76faa0d1442c4acfa985c7bc33ffa Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sun, 11 Oct 2026 04:11:20 +0800
+Subject: [PATCH 03/10] pvr: cache load op programs across dynamic renders
+
+Every vkCmdBeginRendering set up a load op, compiled its fragment shader
+with the whole pco pipeline and uploaded the USC and PDS programs. The
+shader only depends on the clear and load masks, the formats and the MRT
+resources of the render targets involved (clear colours come in at draw
+time), so keep up to 16 on the device, keyed by everything
+pvr_uscgen_loadop() reads. When the cache is full a load op gets its own
+programs, as before.
+
+glmark2-es2 through zink, off-screen 800x600, FPS of two runs each,
+before -> after: build 352/365 -> 400/394, texture 547/578 -> 578/584,
+effect2d 232/225 -> 241/240, the others unchanged.
+
+CTS: as for the previous commits, identical to before.
+---
+ src/imagination/vulkan/pvr_arch_device.c |   6 +-
+ src/imagination/vulkan/pvr_arch_mrt.c    | 137 ++++++++++++++++++++++-
+ src/imagination/vulkan/pvr_device.h      |   6 +
+ src/imagination/vulkan/pvr_mrt.h         |   8 ++
+ 4 files changed, 154 insertions(+), 3 deletions(-)
+
+diff --git a/src/imagination/vulkan/pvr_arch_device.c b/src/imagination/vulkan/pvr_arch_device.c
+index 1e2d552..d70df95 100644
+--- a/src/imagination/vulkan/pvr_arch_device.c
++++ b/src/imagination/vulkan/pvr_arch_device.c
+@@ -26,6 +26,7 @@
+ #include "pvr_instance.h"
+ #include "pvr_job_render.h"
+ #include "pvr_macros.h"
++#include "pvr_mrt.h"
+ #include "pvr_physical_device.h"
+ #include "pvr_query.h"
+ #include "pvr_queue.h"
+@@ -928,6 +929,9 @@ VkResult PVR_PER_ARCH(create_device)(struct pvr_physical_device *pdevice,
+    list_inithead(&device->render_states);
+    pvr_rt_dataset_cache_init(device);
+ 
++   simple_mtx_init(&device->load_op_cache_mtx, mtx_plain);
++   device->load_op_cache = NULL;
++
+    *pDevice = pvr_device_to_handle(device);
+ 
+    return VK_SUCCESS;
+@@ -1020,7 +1024,7 @@ void PVR_PER_ARCH(destroy_device)(struct pvr_device *device,
+ 
+    /* After the render states above, which hand their datasets to the cache. */
+    pvr_rt_dataset_cache_finish(device);
+-
++   pvr_arch_mrt_load_op_cache_finish(device);
+    pvr_arch_border_color_table_finish(device);
+    pvr_robustness_buffer_finish(device);
+    pvr_spm_finish_scratch_buffer_store(device);
+diff --git a/src/imagination/vulkan/pvr_arch_mrt.c b/src/imagination/vulkan/pvr_arch_mrt.c
+index 122acda..3971d64 100644
+--- a/src/imagination/vulkan/pvr_arch_mrt.c
++++ b/src/imagination/vulkan/pvr_arch_mrt.c
+@@ -296,6 +296,137 @@ pvr_rendering_info_needs_load(const struct pvr_dynamic_render_info *dr_info)
+    return false;
+ }
+ 
++#define PVR_LOAD_OP_CACHE_MAX 16U
++
++/* Everything pvr_uscgen_loadop() reads. */
++struct pvr_load_op_cache_key {
++   uint16_t rt_clear_mask;
++   uint16_t rt_load_mask;
++   uint16_t rt_2d_view_3d_mask;
++   uint16_t unresolved_msaa_mask;
++   int32_t depth_clear_to_reg;
++   VkFormat dest_vk_format[PVR_LOAD_OP_CLEARS_LOADS_MAX_RTS];
++   struct usc_mrt_resource mrt_resources[PVR_LOAD_OP_CLEARS_LOADS_MAX_RTS];
++};
++
++struct pvr_load_op_cache_entry {
++   struct pvr_load_op_cache_key key;
++   struct pvr_suballoc_bo *usc_frag_prog_bo;
++   struct pvr_pds_upload pds_frag_prog;
++   struct pvr_pds_upload pds_tex_state_prog;
++   uint32_t temps_count;
++   uint32_t num_tile_buffers;
++   uint32_t const_shareds_count;
++   uint32_t shareds_count;
++};
++
++struct pvr_load_op_cache {
++   uint32_t count;
++   struct pvr_load_op_cache_entry entries[PVR_LOAD_OP_CACHE_MAX];
++};
++
++static void pvr_load_op_cache_key_init(const struct pvr_load_op *load_op,
++                                       struct pvr_load_op_cache_key *key)
++{
++   const struct usc_mrt_setup *mrt_setup =
++      load_op->clears_loads_state.mrt_setup;
++   const int32_t depth_idx = load_op->clears_loads_state.depth_clear_to_reg;
++
++   memset(key, 0, sizeof(*key));
++   key->rt_clear_mask = load_op->clears_loads_state.rt_clear_mask;
++   key->rt_load_mask = load_op->clears_loads_state.rt_load_mask;
++   key->rt_2d_view_3d_mask = load_op->clears_loads_state.rt_2d_view_3d_mask;
++   key->unresolved_msaa_mask = load_op->clears_loads_state.unresolved_msaa_mask;
++   key->depth_clear_to_reg = depth_idx;
++
++   u_foreach_bit (rt_idx, key->rt_clear_mask | key->rt_load_mask) {
++      key->dest_vk_format[rt_idx] =
++         load_op->clears_loads_state.dest_vk_format[rt_idx];
++      key->mrt_resources[rt_idx] = mrt_setup->mrt_resources[rt_idx];
++   }
++
++   if (depth_idx != PVR_NO_DEPTH_CLEAR_TO_REG)
++      key->mrt_resources[depth_idx] = mrt_setup->mrt_resources[depth_idx];
++}
++
++/* pvr_arch_load_op_shader_generate(), reusing the programs of an earlier load
++ * op with the same shader inputs. When the cache is full the load op gets its
++ * own programs, as before.
++ */
++static VkResult pvr_load_op_shader_get(struct pvr_device *device,
++                                       const VkAllocationCallbacks *alloc,
++                                       struct pvr_load_op *load_op)
++{
++   struct pvr_load_op_cache_key key;
++   pvr_load_op_cache_key_init(load_op, &key);
++
++   simple_mtx_lock(&device->load_op_cache_mtx);
++
++   struct pvr_load_op_cache *cache = device->load_op_cache;
++   for (uint32_t i = 0; cache && i < cache->count; i++) {
++      const struct pvr_load_op_cache_entry *entry = &cache->entries[i];
++      if (memcmp(&entry->key, &key, sizeof(key)))
++         continue;
++
++      load_op->usc_frag_prog_bo = entry->usc_frag_prog_bo;
++      load_op->pds_frag_prog = entry->pds_frag_prog;
++      load_op->pds_tex_state_prog = entry->pds_tex_state_prog;
++      load_op->temps_count = entry->temps_count;
++      load_op->num_tile_buffers = entry->num_tile_buffers;
++      load_op->const_shareds_count = entry->const_shareds_count;
++      load_op->shareds_count = entry->shareds_count;
++      load_op->progs_cached = true;
++
++      simple_mtx_unlock(&device->load_op_cache_mtx);
++      return VK_SUCCESS;
++   }
++
++   VkResult result = pvr_arch_load_op_shader_generate(device, alloc, load_op);
++   if (result != VK_SUCCESS) {
++      simple_mtx_unlock(&device->load_op_cache_mtx);
++      return result;
++   }
++
++   if (!cache) {
++      cache = vk_zalloc(&device->vk.alloc,
++                        sizeof(*cache),
++                        8,
++                        VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
++      device->load_op_cache = cache;
++   }
++
++   if (cache && cache->count < PVR_LOAD_OP_CACHE_MAX) {
++      cache->entries[cache->count++] = (struct pvr_load_op_cache_entry){
++         .key = key,
++         .usc_frag_prog_bo = load_op->usc_frag_prog_bo,
++         .pds_frag_prog = load_op->pds_frag_prog,
++         .pds_tex_state_prog = load_op->pds_tex_state_prog,
++         .temps_count = load_op->temps_count,
++         .num_tile_buffers = load_op->num_tile_buffers,
++         .const_shareds_count = load_op->const_shareds_count,
++         .shareds_count = load_op->shareds_count,
++      };
++      load_op->progs_cached = true;
++   }
++
++   simple_mtx_unlock(&device->load_op_cache_mtx);
++   return VK_SUCCESS;
++}
++
++void pvr_arch_mrt_load_op_cache_finish(struct pvr_device *device)
++{
++   struct pvr_load_op_cache *cache = device->load_op_cache;
++
++   for (uint32_t i = 0; cache && i < cache->count; i++) {
++      pvr_bo_suballoc_free(cache->entries[i].pds_tex_state_prog.pvr_bo);
++      pvr_bo_suballoc_free(cache->entries[i].pds_frag_prog.pvr_bo);
++      pvr_bo_suballoc_free(cache->entries[i].usc_frag_prog_bo);
++   }
++
++   vk_free(&device->vk.alloc, cache);
++   simple_mtx_destroy(&device->load_op_cache_mtx);
++}
++
+ static VkResult pvr_mrt_load_op_init(struct pvr_device *device,
+                                      const VkAllocationCallbacks *alloc,
+                                      const struct pvr_render_pass_info *rp_info,
+@@ -356,8 +487,7 @@ static VkResult pvr_mrt_load_op_init(struct pvr_device *device,
+    }
+ 
+    load_op->clears_loads_state.mrt_setup = &dr_info->hw_render.init_setup;
+-
+-   result = pvr_arch_load_op_shader_generate(device, alloc, load_op);
++   result = pvr_load_op_shader_get(device, alloc, load_op);
+    if (result != VK_SUCCESS) {
+       vk_free2(&device->vk.alloc, alloc, load_op);
+       return result;
+@@ -374,6 +504,9 @@ static VkResult pvr_mrt_load_op_init(struct pvr_device *device,
+ 
+ static void pvr_load_op_fini(struct pvr_load_op *load_op)
+ {
++   if (load_op->progs_cached)
++      return;
++
+    pvr_bo_suballoc_free(load_op->pds_tex_state_prog.pvr_bo);
+    pvr_bo_suballoc_free(load_op->pds_frag_prog.pvr_bo);
+    pvr_bo_suballoc_free(load_op->usc_frag_prog_bo);
+diff --git a/src/imagination/vulkan/pvr_device.h b/src/imagination/vulkan/pvr_device.h
+index cec8d67..0e5b6a2 100644
+--- a/src/imagination/vulkan/pvr_device.h
++++ b/src/imagination/vulkan/pvr_device.h
+@@ -189,6 +189,12 @@ struct pvr_device {
+    simple_mtx_t rt_cache_mtx;
+    struct list_head rt_cache;
+    uint32_t rt_cache_count;
++
++   /* Load op programs reused across renders (dynamic rendering sets up a load
++    * op, and so compiles its shader, for every render).
++    */
++   simple_mtx_t load_op_cache_mtx;
++   struct pvr_load_op_cache *load_op_cache;
+ };
+ 
+ struct pvr_device_memory {
+diff --git a/src/imagination/vulkan/pvr_mrt.h b/src/imagination/vulkan/pvr_mrt.h
+index 249a913..d8888a5 100644
+--- a/src/imagination/vulkan/pvr_mrt.h
++++ b/src/imagination/vulkan/pvr_mrt.h
+@@ -104,6 +104,9 @@ struct usc_mrt_setup {
+ struct pvr_load_op {
+    bool is_hw_object;
+ 
++   /* The programs below belong to pvr_device::load_op_cache. */
++   bool progs_cached;
++
+    struct pvr_suballoc_bo *usc_frag_prog_bo;
+    uint32_t const_shareds_count;
+    uint32_t shareds_count;
+@@ -228,6 +231,11 @@ void PVR_PER_ARCH(mrt_load_op_state_cleanup)(const struct pvr_device *device,
+ #   define pvr_arch_mrt_load_op_state_cleanup \
+       PVR_PER_ARCH(mrt_load_op_state_cleanup)
+ 
++void PVR_PER_ARCH(mrt_load_op_cache_finish)(struct pvr_device *device);
++
++#   define pvr_arch_mrt_load_op_cache_finish \
++      PVR_PER_ARCH(mrt_load_op_cache_finish)
++
+ #endif /* PVR_PER_ARCH */
+ 
+ #endif /* PVR_MRT_H */
+-- 
+2.47.3
+

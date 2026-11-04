@@ -1,0 +1,120 @@
+From f8d5701144737dfa5f02af3ccd4a06dc4d908da3 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Tue, 27 Oct 2026 23:55:45 +0800
+Subject: [PATCH] pvr: keep a batched buffer copy's clip box inside the
+ destination buffer
+
+Batched small buffer copies (0095) draw both buffers as R32 images with
+8 KiB rows and run one clip blit over the bounding box of all copied
+rects, loading and storing the whole box. When a copy crosses a row
+boundary the box spans full rows, so a copy near the end of a buffer
+made the GPU load and store up to a row past the buffer's end: it
+faulted on memory past the allocation and the copy lost data, and memory
+past the buffer but inside its allocation could be rewritten.
+
+Pass the destination buffer's size down and refuse a batch, or a merge
+into an existing batch, whose box would end past it; those copies take
+the plain path, which touches only the copied bytes.
+
+Edge test (vkcopyedge: a 400-byte copy ending at the end of the
+destination buffer, 7 buffer sizes): before, 5 of 7 sizes lost 175-390
+bytes and the firmware logged a page fault; after, all 7 copy exactly
+with no fault. CTS copy_and_blit buffer_to_buffer, fill_and_update_buffer,
+buffer_marker and memory pipeline_barrier transfer cases: 144 pass, 218
+not supported, 0 fail. glmark2 buffer subdata scene 177/180 -> 164/172
+FPS (copies near a buffer's end are no longer batched), map scene
+unchanged.
+---
+ src/imagination/vulkan/rogue/pvr_blit.c | 27 ++++++++++++++++++++++++-
+ 1 file changed, 26 insertions(+), 1 deletion(-)
+
+diff --git a/src/imagination/vulkan/rogue/pvr_blit.c b/src/imagination/vulkan/rogue/pvr_blit.c
+index 164c1ebe..09cacc84 100644
+--- a/src/imagination/vulkan/rogue/pvr_blit.c
++++ b/src/imagination/vulkan/rogue/pvr_blit.c
+@@ -1450,6 +1450,7 @@ static bool pvr_try_batch_buffer_copy(struct pvr_cmd_buffer *cmd_buffer,
+                                       VkDeviceSize src_offset,
+                                       pvr_dev_addr_t dst_addr,
+                                       VkDeviceSize dst_offset,
++                                      VkDeviceSize dst_size,
+                                       VkDeviceSize size)
+ {
+    const uint32_t texel = sizeof(uint32_t);
+@@ -1481,6 +1482,24 @@ static bool pvr_try_batch_buffer_copy(struct pvr_cmd_buffer *cmd_buffer,
+       d += w;
+    }
+ 
++   /* The clip blit loads and stores its whole box, which spans full rows when a copy crosses a row
++    * boundary: that box must stay inside the destination buffer, or the GPU writes (and faults on)
++    * memory past its end. Copies whose box would not fit take the plain path.
++    */
++   {
++      int32_t x0 = INT32_MAX, y0 = INT32_MAX, x1 = 0, y1 = 0;
++
++      for (uint32_t i = 0; i < num_pieces; i++) {
++         const VkRect2D *dr = &pieces[i].dst_rect;
++         x0 = MIN2(x0, dr->offset.x);
++         y0 = MIN2(y0, dr->offset.y);
++         x1 = MAX2(x1, dr->offset.x + (int32_t)dr->extent.width);
++         y1 = MAX2(y1, dr->offset.y + (int32_t)dr->extent.height);
++      }
++      if (((uint64_t)(y1 - 1) * row + x1) * texel > dst_size)
++         return false;
++   }
++
+    struct pvr_sub_cmd *sub_cmd = cmd_buffer->state.current_sub_cmd;
+    struct pvr_transfer_cmd *transfer_cmd = NULL;
+    if (sub_cmd && sub_cmd->type == PVR_SUB_CMD_TYPE_TRANSFER &&
+@@ -1520,7 +1539,8 @@ static bool pvr_try_batch_buffer_copy(struct pvr_cmd_buffer *cmd_buffer,
+          y1 = MAX2(y1, dr->offset.y + dr->extent.height);
+       }
+ 
+-      if ((uint64_t)(x1 - x0) * (y1 - y0) * texel > PVR_BUFFER_BATCH_MAX_BOX_BYTES)
++      if ((uint64_t)(x1 - x0) * (y1 - y0) * texel > PVR_BUFFER_BATCH_MAX_BOX_BYTES ||
++          ((uint64_t)(y1 - 1) * row + x1) * texel > dst_size)
+          transfer_cmd = NULL;
+    }
+    if (!transfer_cmd) {
+@@ -1583,6 +1603,7 @@ static VkResult pvr_cmd_copy_buffer_region(struct pvr_cmd_buffer *cmd_buffer,
+                                            VkDeviceSize src_offset,
+                                            pvr_dev_addr_t dst_addr,
+                                            VkDeviceSize dst_offset,
++                                           VkDeviceSize dst_size,
+                                            VkDeviceSize size,
+                                            uint32_t fill_data,
+                                            bool is_fill)
+@@ -1594,6 +1615,7 @@ static VkResult pvr_cmd_copy_buffer_region(struct pvr_cmd_buffer *cmd_buffer,
+                                              src_offset,
+                                              dst_addr,
+                                              dst_offset,
++                                             dst_size,
+                                              size))
+       return VK_SUCCESS;
+    while (offset < size) {
+@@ -1747,6 +1769,7 @@ void pvr_rogue_CmdUpdateBuffer(VkCommandBuffer commandBuffer,
+                               0,
+                               dst->dev_addr,
+                               dstOffset,
++                              dst->vk.size,
+                               dataSize,
+                               0U,
+                               false);
+@@ -1770,6 +1793,7 @@ void pvr_rogue_CmdCopyBuffer2(VkCommandBuffer commandBuffer,
+                                     pCopyBufferInfo->pRegions[i].srcOffset,
+                                     dst->dev_addr,
+                                     pCopyBufferInfo->pRegions[i].dstOffset,
++                                    dst->vk.size,
+                                     pCopyBufferInfo->pRegions[i].size,
+                                     0U,
+                                     false);
+@@ -1811,6 +1835,7 @@ void pvr_rogue_CmdFillBuffer(VkCommandBuffer commandBuffer,
+                               0,
+                               dst->dev_addr,
+                               dstOffset,
++                              dst->vk.size,
+                               fillSize,
+                               data,
+                               true);
+-- 
+2.47.3
+

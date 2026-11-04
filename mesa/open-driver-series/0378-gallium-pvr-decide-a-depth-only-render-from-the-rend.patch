@@ -1,0 +1,40 @@
+From 279e598469fad063af3e488d8a2620aed0d8c249 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sun, 1 Nov 2026 15:40:30 +0800
+Subject: [PATCH 378/378] gallium/pvr: decide a depth-only render from the
+ render, not the framebuffer
+
+pvr_draw_flush() treated every render as depth-only when the bound
+framebuffer had no colour buffer. A blit (glGenerateMipmap) or the
+materialize of a deferred colour clear is a render into another target
+that can run while such a framebuffer is bound, for example during a
+shadow-map depth pass: it dropped its colour output (empty-tile PBE
+state, clear background), so the mip levels or the cleared texture were
+never written. Take a render as depth-only only when its depth buffer is
+the framebuffer's.
+
+Fixes: c97ee6bd ("gallium/pvr: depth-only renders drop the colour target, not clear it")
+---
+ src/gallium/drivers/pvr_native/pvr_draw.c | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_draw.c b/src/gallium/drivers/pvr_native/pvr_draw.c
+index 80152736..e6472579 100644
+--- a/src/gallium/drivers/pvr_native/pvr_draw.c
++++ b/src/gallium/drivers/pvr_native/pvr_draw.c
+@@ -2144,8 +2144,10 @@ pvr_draw_flush(struct pvr_context *ctx)
+    sc[1] = d->rt_h;
+ 
+    /* Depth-only framebuffer (shadow's depth pass): the colour target is a scratch one, so the
+-    * PBE must drop all colour writes instead of clearing/storing a full extra target. */
+-   const bool zonly = ctx->fb.nr_cbufs == 0 && ctx->fb.zsbuf.texture != NULL;
++    * PBE must drop all colour writes instead of clearing/storing a full extra target. Only for the
++    * framebuffer's own render: a blit or a materialize can run while it is bound. */
++   const bool zonly = ctx->fb.nr_cbufs == 0 && ctx->fb.zsbuf.texture != NULL &&
++                      d->zs == ctx->fb.zsbuf.texture;
+    /* MRT: every colour attachment of the framebuffer is written by its own PBE emit words in the
+     * EOT program. v1 requires them to share the first attachment's format (the background program
+     * emits a single pixel value); a mixed set falls back to attachment 0 with a warning. */
+-- 
+2.47.3
+

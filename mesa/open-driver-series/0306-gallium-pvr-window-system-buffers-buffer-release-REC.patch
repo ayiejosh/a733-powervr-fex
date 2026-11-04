@@ -1,0 +1,201 @@
+From 51b1bbb2ab000db70f791f805afaf26a7e19be6e Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 01:02:25 +0800
+Subject: [PATCH 306/306] gallium/pvr: window-system buffers, buffer release,
+ RECT renderbuffers
+
+- resource_get_handle exports a resource as a dma-buf FD or KMS handle
+  (linear stride, LINEAR modifier) and resource_from_handle imports a
+  linear dma-buf into the GPU address space. Without them DRI3 called a
+  NULL hook and every X11 client crashed in eglMakeCurrent.
+- resource_release submits pending draws (the flush waits for the render)
+  and then releases. The hook was NULL, so deleting a GL buffer crashed.
+- PIPE_TEXTURE_RECT takes the same linear layout as TEXTURE_2D. The state
+  tracker creates renderbuffers as RECT on this screen, so every
+  renderbuffer allocation failed and framebuffers with one were
+  incomplete.
+
+glmark2-es2 now starts on the native driver; its cube build scene renders.
+---
+ src/gallium/drivers/pvr_native/pvr_context.c  | 10 +++
+ src/gallium/drivers/pvr_native/pvr_resource.c | 81 ++++++++++++++++++-
+ src/gallium/drivers/pvr_native/pvr_resource.h |  8 ++
+ src/gallium/drivers/pvr_native/pvr_screen.c   |  2 +
+ 4 files changed, 100 insertions(+), 1 deletion(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_context.c b/src/gallium/drivers/pvr_native/pvr_context.c
+index d1abb5d5..9272f69f 100644
+--- a/src/gallium/drivers/pvr_native/pvr_context.c
++++ b/src/gallium/drivers/pvr_native/pvr_context.c
+@@ -184,6 +184,15 @@ pvr_set_framebuffer_state(struct pipe_context *pctx,
+    }
+ }
+ 
++/* A buffer the state tracker releases may still be read by draws not yet submitted: submit them
++ * (the flush waits for the render) before the resource goes. */
++static void
++pvr_resource_release(struct pipe_context *pctx, struct pipe_resource *prsc)
++{
++   pvr_draw_flush(pvr_context(pctx));
++   u_default_resource_release(pctx, prsc);
++}
++
+ static void
+ pvr_set_constant_buffer(struct pipe_context *pctx, mesa_shader_stage shader, uint index,
+                         const struct pipe_constant_buffer *buf)
+@@ -780,6 +789,7 @@ pvr_context_create(struct pipe_screen *pscreen, UNUSED void *priv,
+    ctx->base.set_sampler_views = pvr_set_sampler_views;
+    ctx->base.set_framebuffer_state = pvr_set_framebuffer_state;
+    ctx->base.set_constant_buffer = pvr_set_constant_buffer;
++   ctx->base.resource_release = pvr_resource_release;
+    ctx->base.set_vertex_buffers = pvr_set_vertex_buffers;
+    ctx->base.bind_vertex_elements_state = pvr_bind_vertex_elements_state;
+    ctx->base.create_vertex_elements_state = pvr_create_vertex_elements_state;
+diff --git a/src/gallium/drivers/pvr_native/pvr_resource.c b/src/gallium/drivers/pvr_native/pvr_resource.c
+index 033d70d7..addfb88a 100644
+--- a/src/gallium/drivers/pvr_native/pvr_resource.c
++++ b/src/gallium/drivers/pvr_native/pvr_resource.c
+@@ -2,6 +2,11 @@
+  * SPDX-License-Identifier: MIT
+  */
+ #include <inttypes.h>
++#include <fcntl.h>
++#include <unistd.h>
++#include <xf86drm.h>
++#include "drm-uapi/drm_fourcc.h"
++#include "frontend/winsys_handle.h"
+ 
+ #include "pvr_resource.h"
+ 
+@@ -27,6 +32,7 @@ pvr_resource_layout(const struct pipe_resource *templ, uint32_t *stride,
+       return true;
+ 
+    case PIPE_TEXTURE_2D:
++   case PIPE_TEXTURE_RECT: /* renderbuffers, when the state tracker picks RECT */
+       *stride = util_format_get_stride(templ->format, templ->width0);
+       *size = (uint64_t)*stride * templ->height0;
+       return true;
+@@ -49,7 +55,7 @@ pvr_resource_create(struct pipe_screen *pscreen, const struct pipe_resource *tem
+       return NULL;
+    }
+ 
+-   if (templ->target == PIPE_TEXTURE_2D && templ->depth0 != 1) {
++   if (templ->target != PIPE_BUFFER && templ->depth0 != 1) {
+       mesa_logd("pvr: refusing a 2D resource with depth");
+       return NULL;
+    }
+@@ -104,6 +110,79 @@ fail:
+    return NULL;
+ }
+ 
++/* Window-system buffers. Every resource is linear, so a handle is the BO plus the row stride and
++ * the LINEAR modifier. */
++bool
++pvr_resource_get_handle(struct pipe_screen *pscreen, UNUSED struct pipe_context *pctx,
++                        struct pipe_resource *prsc, struct winsys_handle *whandle,
++                        UNUSED unsigned usage)
++{
++   struct pvr_screen *screen = pvr_screen(pscreen);
++   struct pvr_resource *res = pvr_resource(prsc);
++
++   whandle->stride = res->stride;
++   whandle->offset = 0;
++   whandle->modifier = DRM_FORMAT_MOD_LINEAR;
++   switch (whandle->type) {
++   case WINSYS_HANDLE_TYPE_KMS:
++      whandle->handle = res->bo.handle;
++      return true;
++   case WINSYS_HANDLE_TYPE_FD: {
++      int fd = -1;
++      if (drmPrimeHandleToFD(screen->fd, res->bo.handle, DRM_CLOEXEC | DRM_RDWR, &fd) != 0)
++         return false;
++      whandle->handle = fd;
++      return true;
++   }
++   default:
++      return false;
++   }
++}
++
++struct pipe_resource *
++pvr_resource_from_handle(struct pipe_screen *pscreen, const struct pipe_resource *templ,
++                         struct winsys_handle *whandle, UNUSED unsigned usage)
++{
++   struct pvr_screen *screen = pvr_screen(pscreen);
++   struct pvr_resource *res;
++   uint32_t handle;
++
++   if (whandle->type != WINSYS_HANDLE_TYPE_FD || (templ->target != PIPE_TEXTURE_2D && templ->target != PIPE_TEXTURE_RECT) ||
++       whandle->offset != 0 ||
++       (whandle->modifier != DRM_FORMAT_MOD_INVALID &&
++        whandle->modifier != DRM_FORMAT_MOD_LINEAR) ||
++       !screen->vm_valid)
++      return NULL;
++   const off_t size = lseek(whandle->handle, 0, SEEK_END);
++   if (size <= 0 || (uint64_t)whandle->stride * templ->height0 > (uint64_t)size)
++      return NULL;
++   if (drmPrimeFDToHandle(screen->fd, whandle->handle, &handle) != 0)
++      return NULL;
++   res = CALLOC_STRUCT(pvr_resource);
++   if (!res)
++      return NULL;
++   res->base = *templ;
++   res->base.screen = pscreen;
++   pipe_reference_init(&res->base.reference, 1);
++   res->stride = whandle->stride;
++   res->bo.handle = handle;
++   res->bo.size = size;
++   res->dev_size = size;
++   res->dev_addr = pvr_vm_alloc(&screen->vm, res->dev_size, screen->vm.general.page_size);
++   if (res->dev_addr == 0)
++      goto fail_bo;
++   if (!pvr_vm_map(&screen->vm, res->dev_addr, res->bo.handle, res->dev_size))
++      goto fail_addr;
++   return &res->base;
++fail_addr:
++   pvr_vm_free(&screen->vm, res->dev_addr, res->dev_size);
++   res->dev_addr = 0;
++fail_bo:
++   pvr_bo_destroy(screen->fd, &res->bo);
++   FREE(res);
++   return NULL;
++}
++
+ void
+ pvr_resource_destroy(struct pipe_screen *pscreen, struct pipe_resource *prsc)
+ {
+diff --git a/src/gallium/drivers/pvr_native/pvr_resource.h b/src/gallium/drivers/pvr_native/pvr_resource.h
+index 247b892d..bac5b415 100644
+--- a/src/gallium/drivers/pvr_native/pvr_resource.h
++++ b/src/gallium/drivers/pvr_native/pvr_resource.h
+@@ -39,6 +39,14 @@ struct pipe_resource *pvr_resource_create(struct pipe_screen *pscreen,
+ 
+ void pvr_resource_destroy(struct pipe_screen *pscreen, struct pipe_resource *prsc);
+ 
++struct winsys_handle;
++bool pvr_resource_get_handle(struct pipe_screen *pscreen, struct pipe_context *pctx,
++                             struct pipe_resource *prsc, struct winsys_handle *whandle,
++                             unsigned usage);
++struct pipe_resource *pvr_resource_from_handle(struct pipe_screen *pscreen,
++                                               const struct pipe_resource *templ,
++                                               struct winsys_handle *whandle, unsigned usage);
++
+ static inline struct pvr_resource *
+ pvr_resource(struct pipe_resource *prsc)
+ {
+diff --git a/src/gallium/drivers/pvr_native/pvr_screen.c b/src/gallium/drivers/pvr_native/pvr_screen.c
+index d61017ab..d0216913 100644
+--- a/src/gallium/drivers/pvr_native/pvr_screen.c
++++ b/src/gallium/drivers/pvr_native/pvr_screen.c
+@@ -320,6 +320,8 @@ pvr_screen_create(int fd, const struct pipe_screen_config *config,
+    screen->base.context_create = pvr_context_create;
+    screen->base.resource_create = pvr_resource_create;
+    screen->base.resource_destroy = pvr_resource_destroy;
++   screen->base.resource_get_handle = pvr_resource_get_handle;
++   screen->base.resource_from_handle = pvr_resource_from_handle;
+ 
+    return &screen->base;
+ }
+-- 
+2.47.3
+

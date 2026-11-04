@@ -1,7 +1,7 @@
-From 93353345c897331d5d18275184309cbd7a9ea2b2 Mon Sep 17 00:00:00 2001
+From d5173caecbdd33e0654d17e966930d4e98606d4a Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Fri, 23 Oct 2026 20:13:24 +0800
-Subject: [PATCH 188/269] gallium/pvr: the failure is the context or hwrt
+Subject: [PATCH 188/294] gallium/pvr: the failure is the context or hwrt
  lookup, not the stream
 
 Three discriminating experiments against the real kernel:

@@ -1,7 +1,7 @@
-From b65685c6552a43d6eb7ce7f20fe1f73140a8d78f Mon Sep 17 00:00:00 2001
+From 658ecb7c424de76337215daab0270fbcce86ce87 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sun, 11 Oct 2026 11:29:39 +0800
-Subject: [PATCH 90/98] pco: skip empty blocks when stepping between
+Subject: [PATCH 090/294] pco: skip empty blocks when stepping between
  instruction groups
 
 pco_next_igrp() and pco_prev_igrp() returned the first or last group of the
@@ -15,7 +15,7 @@ already does.
  1 file changed, 2 insertions(+), 2 deletions(-)
 
 diff --git a/src/imagination/pco/pco_internal.h b/src/imagination/pco/pco_internal.h
-index 86527c0..092fdb5 100644
+index 86527c0d..092fdb59 100644
 --- a/src/imagination/pco/pco_internal.h
 +++ b/src/imagination/pco/pco_internal.h
 @@ -1602,7 +1602,7 @@ static inline pco_igrp *pco_next_igrp(pco_igrp *igrp)

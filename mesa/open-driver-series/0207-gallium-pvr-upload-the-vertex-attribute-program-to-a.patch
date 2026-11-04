@@ -1,7 +1,7 @@
-From 11339b9728a6ef01b43df72a13c870c490928e09 Mon Sep 17 00:00:00 2001
+From b0bc69d77756ca378759ad46f81d40d703668d01 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sat, 24 Oct 2026 07:42:55 +0800
-Subject: [PATCH 207/269] gallium/pvr: upload the vertex attribute program to a
+Subject: [PATCH 207/294] gallium/pvr: upload the vertex attribute program to a
  device address
 
 The 12-byte vertex-fetch program now has an address a PDS state update can name:

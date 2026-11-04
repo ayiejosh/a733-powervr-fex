@@ -1,7 +1,8 @@
-From 95a5042e4b51a7c06e576d8095a48923de1b203a Mon Sep 17 00:00:00 2001
+From cde792746f6bab4eda9b854500c51290a38670b9 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sun, 11 Oct 2026 11:29:39 +0800
-Subject: [PATCH 93/98] pvr: zero the unused words of render target descriptors
+Subject: [PATCH 093/294] pvr: zero the unused words of render target
+ descriptors
 
 pvr_arch_init_mrt_desc() set intermediate_size and the used valid_mask
 words only, so priority and the other valid_mask words kept whatever was in
@@ -18,7 +19,7 @@ removes the per-render shader compile.
  1 file changed, 5 insertions(+)
 
 diff --git a/src/imagination/vulkan/pvr_arch_mrt.c b/src/imagination/vulkan/pvr_arch_mrt.c
-index 3971d64..89f2286 100644
+index 3971d64d..89f2286f 100644
 --- a/src/imagination/vulkan/pvr_arch_mrt.c
 +++ b/src/imagination/vulkan/pvr_arch_mrt.c
 @@ -88,6 +88,11 @@ void pvr_arch_init_mrt_desc(VkFormat format, struct usc_mrt_desc *desc)

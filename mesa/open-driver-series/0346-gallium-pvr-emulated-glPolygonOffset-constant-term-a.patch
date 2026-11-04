@@ -1,0 +1,105 @@
+From 483a48909c6077d93d38874777a229a008c0fda1 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 30 Oct 2026 07:19:06 +0800
+Subject: [PATCH] gallium/pvr: emulated glPolygonOffset (constant term) and
+ EXT_polygon_offset_clamp
+
+glPolygonOffset is ES2 core and was silently ignored: the driver emitted no depth-bias table, so the
+rasterizer state's offset_units/offset_scale never reached the hardware. The hardware path itself is
+currently unusable - with the depth-bias table wired up, enabling ISP_CTL.dbias_is_int (which the
+reference sets unconditionally) makes the firmware never complete the render, and the probe shows the
+same hang even with the table/base untouched. So implement the part that can be exact a different way:
+
+- the constant term of GL's offset (units * r, r = smallest resolvable depth difference for the depth
+  format) is applied to the TA's viewport depth transform for the draw. The viewport z words are
+  post-projection, so adding the bias there is an exact constant window-depth shift - the same depth
+  the hardware bias would add.
+- the clamp value (rs->offset_clamp) clamps that bias, so caps.polygon_offset_clamp and
+  GL_EXT_polygon_offset_clamp are honest (extension list 70 -> 71).
+- the hardware dbenable bit is now off, so the unresolved hardware path cannot add unknown bias.
+
+Docs: tools/verify/ has the probe. Known limitation, documented: the slope-factor term
+(factor * max depth slope) is not applied - constant-term offsets (most shadow-mapping usage) are
+exact; sloped geometry uses only the constant part. The hardware path is parked with captures showing
+the reference always packs ISP_CTL 0x80135000 (bit 20 set) yet our identical word hangs the firmware.
+
+Verified: new probe draws a depth 0.25 quad over a 0.5 clear: without offset it passes, with units
++40000 it is rejected, with -40000 it passes - byte-identical to zink; with clamp 0.1 the +40000 case
+passes again, also matching zink. Full gate green (gltri 49, mip 28, rttest PASS, rt8test, MRT 2/4,
+instancing, sRGB, 0 faults).
+---
+ src/gallium/drivers/pvr_native/pvr_csb.c    |  4 +++-
+ src/gallium/drivers/pvr_native/pvr_draw.c   | 21 ++++++++++++++++++++-
+ src/gallium/drivers/pvr_native/pvr_screen.c |  2 ++
+ 3 files changed, 25 insertions(+), 2 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_csb.c b/src/gallium/drivers/pvr_native/pvr_csb.c
+index 3c95b437..7cba250a 100644
+--- a/src/gallium/drivers/pvr_native/pvr_csb.c
++++ b/src/gallium/drivers/pvr_native/pvr_csb.c
+@@ -1275,7 +1275,9 @@ pvr_csb_emit_ta_ispctl(struct pvr_csb *csb,
+       /* Depth BIAS, per the field's documented meaning - not depth test. offset_tri is
+        * gallium's triangle polygon-offset enable, the counterpart of the reference's
+        * depth_bias.enable with a triangle object type. */
+-      .dbenable = !discard && rast != NULL && rast->offset_tri,
++      /* Depth BIAS off: the hardware path needs the integer bias equation, which hangs this
++       * firmware - glPolygonOffset is emulated as a viewport depth shift in pvr_draw_3d instead. */
++      .dbenable = false,
+       .scenable = !discard,
+       .tagwritedisable = discard || !have_fragment_shader,
+    };
+diff --git a/src/gallium/drivers/pvr_native/pvr_draw.c b/src/gallium/drivers/pvr_native/pvr_draw.c
+index ddb947b2..3868a829 100644
+--- a/src/gallium/drivers/pvr_native/pvr_draw.c
++++ b/src/gallium/drivers/pvr_native/pvr_draw.c
+@@ -1687,6 +1687,25 @@ pvr_draw_3d(struct pvr_context *ctx, const struct pipe_draw_info *info,
+    if (rs != NULL && (rs->cull_face == PIPE_FACE_FRONT || rs->cull_face == PIPE_FACE_BACK))
+       cullmode = (rs->front_ccw ^ (rs->cull_face == PIPE_FACE_FRONT)) ? ROGUE_TA_CULLMODE_CULL_CW
+                                                                       : ROGUE_TA_CULLMODE_CULL_CCW;
++   /* glPolygonOffset, constant term: shift the window depth by units * r (r = the smallest
++    * resolvable depth difference for the depth format). The hardware depth-bias int mode is still
++    * unresolved (it hangs the render), so the constant term is applied through the viewport depth
++    * transform instead; the slope-factor term is not applied (documented limitation). */
++   struct pvr_viewport_words vp_off = vp;
++   if (d->zs != NULL && rs != NULL && rs->offset_tri) {
++      /* glPolygonOffset, constant term. The hardware's depth-bias mode is still unresolved (its
++       * integer bias equation hangs this firmware), so the constant term - units * r, r being the
++       * smallest resolvable depth difference for the depth format - is applied through the viewport
++       * depth transform, which the TA applies after projection: an exact constant window-depth shift.
++       * The slope-factor term (factor * max depth slope) is not applied; documented limitation. */
++      const int zf = draw_zls_format(d->zs->format);
++      const float r = zf == ROGUE_CR_ZLS_FORMAT_TYPE_24BITINT ? 1.0f / 16777215.0f
++                                                              : 1.0f / 65535.0f;
++      float bias = rs->offset_units * r;
++      if (rs->offset_clamp > 0.0f)
++         bias = CLAMP(bias, -rs->offset_clamp, rs->offset_clamp);
++      vp_off.a2 = fui(uif(vp.a2) + bias);
++   }
+    const struct ROGUE_TA_STATE_PPP_CTRL ppp_ctrl = {
+       .cullmode = cullmode,
+       .clip_mode = ROGUE_TA_CLIP_MODE_FRONT_REAR,
+@@ -1713,7 +1732,7 @@ pvr_draw_3d(struct pvr_context *ctx, const struct pipe_draw_info *info,
+                                      0) ||
+        (coeff && !pvr_csb_emit_ta_pds_base(&block, PVR_PDS_BASE_VARYING, fsv->coeff_offset)) ||
+        !pvr_csb_emit_ta_pds_base(&block, PVR_PDS_BASE_UNIFORMDATA, fu_dwords ? fu_data : 0) ||
+-       !pvr_csb_emit_ta_region_clip(&block, &clip) || !pvr_csb_emit_ta_viewport(&block, &vp) ||
++       !pvr_csb_emit_ta_region_clip(&block, &clip) || !pvr_csb_emit_ta_viewport(&block, &vp_off) ||
+        !pvr_csb_emit_ta_wclamp(&block, PVR_TA_WCLAMP_MIN_W) ||
+        !pvr_csb_emit_ta_output_sel(&block, &outsel) ||
+        !pvr_csb_emit_ta_varying(&block, &varying0, &varying1) ||
+diff --git a/src/gallium/drivers/pvr_native/pvr_screen.c b/src/gallium/drivers/pvr_native/pvr_screen.c
+index 1076d72b..e7e0e80b 100644
+--- a/src/gallium/drivers/pvr_native/pvr_screen.c
++++ b/src/gallium/drivers/pvr_native/pvr_screen.c
+@@ -299,6 +299,8 @@ pvr_screen_create(int fd, const struct pipe_screen_config *config,
+       /* TPU anisoctl supports x2..x16; the sampler descriptor previously hardcoded DISABLED. */
+       caps->anisotropic_filter = true;
+       caps->max_texture_anisotropy = 16.0f;
++      /* The emulated polygon offset applies the clamp value, so the clamped variant is honest. */
++      caps->polygon_offset_clamp = true;
+       /* Multiple render targets: the PBE writes one emit per attachment (EOT program) and the
+        * fragment variant maps data0..3. ES3 needs 4; v1 requires a shared format (see flush). */
+       caps->max_render_targets = 4;
+-- 
+2.47.3
+

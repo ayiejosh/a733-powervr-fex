@@ -1,0 +1,385 @@
+From 2b6837a31ae3e3beaa6ea728a8502879c7d639b8 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 00:47:28 +0800
+Subject: [PATCH 305/306] gallium/pvr: uniforms on the native draw path
+
+GL uniforms (constant buffer 0, vec4 slots) are loaded as pco push
+constants:
+- load_uniform becomes load_push_constant at the byte offset, before pco
+  lowering; the push-constant range gets shared registers after the
+  shader's own.
+- Per draw, constant buffer 0 is copied into the general arena and a PDS
+  descriptor upload program DMAs it into the shared registers: through
+  TA TEXUNICODEBASE/UNIFORMDATABASE for the fragment stage, and a
+  VDMCTRL_PDS_STATE0..2 block (new pvr_csb_emit_vdm_pds_state) for the
+  vertex stage.
+- set_constant_buffer keeps buffer 0 of both stages.
+
+Without this, a fixed-function vertex program (state.matrix.mvp) failed to
+translate and the state tracker retried it forever. gltri GLTRI_UNIFORM=1
+(fragment uniform colour) and GLTRI_VSU=1 (vertex uniform scale) match
+zink.
+---
+ src/gallium/drivers/pvr_native/pvr_context.c |  22 +++-
+ src/gallium/drivers/pvr_native/pvr_context.h |   3 +
+ src/gallium/drivers/pvr_native/pvr_csb.c     |  31 +++++
+ src/gallium/drivers/pvr_native/pvr_csb.h     |   7 ++
+ src/gallium/drivers/pvr_native/pvr_draw.c    | 119 ++++++++++++++++++-
+ src/gallium/drivers/pvr_native/pvr_shader.c  |  31 +++++
+ src/gallium/drivers/pvr_native/pvr_shader.h  |   6 +
+ 7 files changed, 213 insertions(+), 6 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_context.c b/src/gallium/drivers/pvr_native/pvr_context.c
+index 1b64e32d..d1abb5d5 100644
+--- a/src/gallium/drivers/pvr_native/pvr_context.c
++++ b/src/gallium/drivers/pvr_native/pvr_context.c
+@@ -185,10 +185,24 @@ pvr_set_framebuffer_state(struct pipe_context *pctx,
+ }
+ 
+ static void
+-pvr_set_constant_buffer(UNUSED struct pipe_context *pctx,
+-                        UNUSED mesa_shader_stage shader, UNUSED uint index,
+-                        UNUSED const struct pipe_constant_buffer *buf)
++pvr_set_constant_buffer(struct pipe_context *pctx, mesa_shader_stage shader, uint index,
++                        const struct pipe_constant_buffer *buf)
+ {
++   struct pvr_context *ctx = pvr_context(pctx);
++   struct pipe_constant_buffer *cb;
++
++   if (index != 0 || (shader != MESA_SHADER_VERTEX && shader != MESA_SHADER_FRAGMENT))
++      return;
++   cb = &ctx->cb0[shader == MESA_SHADER_FRAGMENT];
++   if (buf == NULL) {
++      pipe_resource_reference(&cb->buffer, NULL);
++      memset(cb, 0, sizeof(*cb));
++      return;
++   }
++   pipe_resource_reference(&cb->buffer, buf->buffer);
++   cb->buffer_offset = buf->buffer_offset;
++   cb->buffer_size = buf->buffer_size;
++   cb->user_buffer = buf->user_buffer;
+ }
+ 
+ static void
+@@ -712,6 +726,8 @@ pvr_context_destroy(struct pipe_context *pctx)
+    pvr_draw_destroy(ctx);
+    pvr_compute_state_finish(ctx->compute);
+    util_unreference_framebuffer_state(&ctx->fb);
++   pipe_resource_reference(&ctx->cb0[0].buffer, NULL);
++   pipe_resource_reference(&ctx->cb0[1].buffer, NULL);
+    FREE(ctx);
+ }
+ 
+diff --git a/src/gallium/drivers/pvr_native/pvr_context.h b/src/gallium/drivers/pvr_native/pvr_context.h
+index 57b6e662..ad65a007 100644
+--- a/src/gallium/drivers/pvr_native/pvr_context.h
++++ b/src/gallium/drivers/pvr_native/pvr_context.h
+@@ -49,6 +49,9 @@ struct pvr_context {
+    const struct pipe_depth_stencil_alpha_state *dsa;
+    const struct pipe_rasterizer_state *rasterizer;
+ 
++   /* Constant buffer 0 of the vertex and fragment stages: the uniforms (pvr_draw.c). */
++   struct pipe_constant_buffer cb0[2];
++
+    /* The compute fallback's GPU resources and compute context, built on the first draw. */
+    struct pvr_compute_state *compute;
+    /* The TA/3D draw path (pvr_draw.c), built on the first draw it can take. */
+diff --git a/src/gallium/drivers/pvr_native/pvr_csb.c b/src/gallium/drivers/pvr_native/pvr_csb.c
+index b9e88847..c6701f3b 100644
+--- a/src/gallium/drivers/pvr_native/pvr_csb.c
++++ b/src/gallium/drivers/pvr_native/pvr_csb.c
+@@ -295,6 +295,37 @@ pvr_vdm_cam_size(const struct pvr_device_info *dev_info, uint32_t vs_output_size
+  * executed sets vs_data_addr_present and vs_other_present, and then carries STATE2 (PDS data
+  * address), STATE3 (PDS code address), STATE4 (output size) and STATE5 (allocation sizes). A
+  * stream with only STATE2 is a fetch program that never starts a vertex shader. */
++bool
++pvr_csb_emit_vdm_pds_state(struct pvr_csb *csb, uint32_t usc_shared_dwords,
++                           uint64_t pds_data_addr, uint32_t pds_data_dwords,
++                           uint64_t pds_code_addr)
++{
++   const struct ROGUE_VDMCTRL_PDS_STATE0 state0 = {
++      ROGUE_VDMCTRL_PDS_STATE0_header,
++      .usc_target = ROGUE_VDMCTRL_USC_TARGET_ALL,
++      .usc_common_size = DIV_ROUND_UP(usc_shared_dwords * 4,
++                                      ROGUE_VDMCTRL_PDS_STATE0_USC_COMMON_SIZE_UNIT_SIZE),
++      .pds_data_size = DIV_ROUND_UP(pds_data_dwords * 4,
++                                    ROGUE_VDMCTRL_PDS_STATE0_PDS_DATA_SIZE_UNIT_SIZE),
++   };
++   const struct ROGUE_VDMCTRL_PDS_STATE1 state1 = {
++      .pds_data_addr = pds_data_addr,
++      .sd_type = ROGUE_VDMCTRL_SD_TYPE_NONE,
++   };
++   const struct ROGUE_VDMCTRL_PDS_STATE2 state2 = { .pds_code_addr = pds_code_addr };
++   uint32_t *dw = pvr_csb_emit(csb, ROGUE_VDMCTRL_PDS_STATE0_length +
++                                       ROGUE_VDMCTRL_PDS_STATE1_length +
++                                       ROGUE_VDMCTRL_PDS_STATE2_length);
++   if (dw == NULL)
++      return false;
++   ROGUE_VDMCTRL_PDS_STATE0_pack(dw, &state0);
++   dw += ROGUE_VDMCTRL_PDS_STATE0_length;
++   ROGUE_VDMCTRL_PDS_STATE1_pack(dw, &state1);
++   dw += ROGUE_VDMCTRL_PDS_STATE1_length;
++   ROGUE_VDMCTRL_PDS_STATE2_pack(dw, &state2);
++   return true;
++}
++
+ bool
+ pvr_csb_emit_vdm_state(struct pvr_csb *csb, bool cut_index_enable,
+                        uint32_t cut_index, const struct pvr_vdm_vs *vs,
+diff --git a/src/gallium/drivers/pvr_native/pvr_csb.h b/src/gallium/drivers/pvr_native/pvr_csb.h
+index 41797178..ac17d86d 100644
+--- a/src/gallium/drivers/pvr_native/pvr_csb.h
++++ b/src/gallium/drivers/pvr_native/pvr_csb.h
+@@ -142,6 +142,13 @@ struct pvr_vdm_vs {
+  * `vs` may be NULL (no vertex state at all) or carry only pds_data_addr (data address without the
+  * code half). The lengths and the packets are derived from the same presence flags, so the stream
+  * cannot claim packets it does not carry. */
++/* VDMCTRL_PDS_STATE0..2: the vertex stage's descriptor (uniform) program, run before the vertex
++ * shader to fill its shared registers, as the reference's pvr_emit_dirty_pds_state. The data and
++ * code addresses are PDS-heap offsets; usc_shared_dwords is the vertex shader's shared count. */
++bool pvr_csb_emit_vdm_pds_state(struct pvr_csb *csb, uint32_t usc_shared_dwords,
++                                uint64_t pds_data_addr, uint32_t pds_data_dwords,
++                                uint64_t pds_code_addr);
++
+ bool pvr_csb_emit_vdm_state(struct pvr_csb *csb, bool cut_index_enable,
+                             uint32_t cut_index, const struct pvr_vdm_vs *vs,
+                             uint32_t *words_out);
+diff --git a/src/gallium/drivers/pvr_native/pvr_draw.c b/src/gallium/drivers/pvr_native/pvr_draw.c
+index 14331c93..2ee3f628 100644
+--- a/src/gallium/drivers/pvr_native/pvr_draw.c
++++ b/src/gallium/drivers/pvr_native/pvr_draw.c
+@@ -331,6 +331,110 @@ draw_coeff_program(struct pvr_screen *scr, struct pvr_shader *fs, const struct p
+    return fs->coeff_offset != 0;
+ }
+ 
++/* A stage's uniform program for this draw: constant buffer 0 copied into the general arena and a
++ * PDS descriptor program that DMAs its first uniform_dwords dwords into the shader's shared
++ * registers (the reference's push-constant buffer, PVR_BUFFER_TYPE_PUSH_CONSTS). Offsets out are
++ * PDS-heap offsets. A shader without uniforms gets none and returns true with *data_dwords 0. */
++static bool
++draw_uniform_program(struct pvr_context *ctx, struct pvr_draw_state *d,
++                     const struct pvr_shader *sh, unsigned stage, uint32_t *code_off,
++                     uint32_t *data_off, uint32_t *data_dwords, uint32_t *temps)
++{
++   struct pvr_screen *scr = draw_screen(ctx);
++   const struct pipe_constant_buffer *cb = &ctx->cb0[stage];
++   const uint64_t pds_base = scr->vm.heaps[DRM_PVR_HEAP_PDS_CODE_DATA].base;
++   struct pvr_pds_descriptor_program_input din = { 0 };
++   struct pvr_pds_info info = { 0 };
++   uint64_t uaddr, code_addr = 0, data_addr = 0;
++   const uint8_t *src = NULL;
++   bool ok = true;
++
++   *data_dwords = 0;
++   *temps = 0;
++   if (sh->uniform_dwords == 0)
++      return true;
++
++   /* The uniform values. */
++   unsigned avail = 0;
++   if (cb->user_buffer != NULL) {
++      src = cb->user_buffer;
++      avail = cb->buffer_size;
++   } else if (cb->buffer != NULL) {
++      struct pvr_resource *res = pvr_resource(cb->buffer);
++      if (res->bo.map == NULL && !pvr_bo_map(scr->fd, &res->bo))
++         return false;
++      src = (const uint8_t *)res->bo.map + cb->buffer_offset;
++      avail = cb->buffer_size;
++   }
++   const unsigned bytes = sh->uniform_dwords * 4;
++   uint8_t *u = arena_alloc(&d->gen, bytes, 16, &uaddr);
++   if (u == NULL)
++      return false;
++   memset(u, 0, bytes);
++   if (src != NULL)
++      memcpy(u, src, MIN2(bytes, avail));
++
++   /* The descriptor program and its data segment. */
++   din.buffer_count = 1;
++   din.buffers[0] = (struct pvr_pds_buffer){
++      .type = PVR_BUFFER_TYPE_PUSH_CONSTS,
++      .size_in_dwords = sh->uniform_dwords,
++      .destination = sh->uniform_dst,
++   };
++   info.entries_size_in_bytes = 1024;
++   info.entries = calloc(1, info.entries_size_in_bytes);
++   if (info.entries == NULL)
++      return false;
++   pvr_pds_generate_descriptor_upload_program(&din, NULL, &info);
++   uint32_t *code = arena_alloc(&d->pds, MAX2(info.code_size_in_dwords, 1) * 4, 64, &code_addr);
++   uint32_t *data = arena_alloc(&d->pds, MAX2(info.data_size_in_dwords, 1) * 4, 64, &data_addr);
++   if (code == NULL || data == NULL) {
++      free(info.entries);
++      return false;
++   }
++   pvr_pds_generate_descriptor_upload_program(&din, code, &info);
++   memset(data, 0, info.data_size_in_dwords * 4);
++   const uint8_t *entry = (const uint8_t *)info.entries;
++   const uint8_t *end = entry + MIN2(info.entries_written_size_in_bytes, info.entries_size_in_bytes);
++   while (ok && entry + sizeof(struct pvr_const_map_entry) <= end) {
++      const struct pvr_const_map_entry *hdr = (const void *)entry;
++      switch (hdr->type) {
++      case PVR_PDS_CONST_MAP_ENTRY_TYPE_SPECIAL_BUFFER: {
++         const struct pvr_const_map_entry_special_buffer *e = (const void *)entry;
++         if (e->buffer_type != PVR_BUFFER_TYPE_PUSH_CONSTS) {
++            ok = false;
++            break;
++         }
++         memcpy(&data[e->const_offset], &uaddr, 8);
++         entry += sizeof(*e);
++         break;
++      }
++      case PVR_PDS_CONST_MAP_ENTRY_TYPE_LITERAL32: {
++         const struct pvr_const_map_entry_literal32 *e = (const void *)entry;
++         data[e->const_offset] = e->literal_value;
++         entry += sizeof(*e);
++         break;
++      }
++      case PVR_PDS_CONST_MAP_ENTRY_TYPE_LITERAL64: {
++         const struct pvr_const_map_entry_literal64 *e = (const void *)entry;
++         memcpy(&data[e->const_offset], &e->literal_value, 8);
++         entry += sizeof(*e);
++         break;
++      }
++      default:
++         mesa_loge("pvr: draw: no uniform-program patch rule for const-map entry type %u",
++                   hdr->type);
++         ok = false;
++      }
++   }
++   *code_off = code_addr - pds_base;
++   *data_off = data_addr - pds_base;
++   *data_dwords = info.data_size_in_dwords;
++   *temps = info.temps_required;
++   free(info.entries);
++   return ok;
++}
++
+ /* The background object for a clear colour: a constant-colour fragment program. */
+ static uint64_t
+ draw_bg_program(struct pvr_context *ctx, struct pvr_draw_state *d, uint32_t color)
+@@ -605,6 +709,12 @@ pvr_draw_3d(struct pvr_context *ctx, const struct pipe_draw_info *info,
+    const bool coeff = draw_coeff_program(scr, fsv, vs, flat_first);
+    if (!coeff && (fsv->uses_z || fsv->uses_w || fsv->varyings_read))
+       return false;
++   /* Uniforms of both stages. */
++   uint32_t vu_code = 0, vu_data = 0, vu_dwords = 0, vu_temps = 0;
++   uint32_t fu_code = 0, fu_data = 0, fu_dwords = 0, fu_temps = 0;
++   if (!draw_uniform_program(ctx, d, vs, 0, &vu_code, &vu_data, &vu_dwords, &vu_temps) ||
++       !draw_uniform_program(ctx, d, fsv, 1, &fu_code, &fu_data, &fu_dwords, &fu_temps))
++      return false;
+    /* TA state block. */
+    uint64_t ta_addr;
+    uint32_t *ta = arena_alloc(&d->gen, 256, 64, &ta_addr);
+@@ -635,7 +745,8 @@ pvr_draw_3d(struct pvr_context *ctx, const struct pipe_draw_info *info,
+    const struct pvr_pds_sizes pds_sizes = {
+       .varying_dwords = coeff ? fsv->coeff_data_dwords : 0,
+       .usc_varying_dwords = fsv->coeffs,
+-      .temp_count = coeff ? fsv->coeff_temps : 0,
++      .uniform_dwords = fu_dwords,
++      .temp_count = MAX2(coeff ? fsv->coeff_temps : 0, fu_temps),
+       .usc_shared_count = fsv->shareds,
+    };
+    const struct pipe_viewport_state *pv = &ctx->viewports[0];
+@@ -669,10 +780,10 @@ pvr_draw_3d(struct pvr_context *ctx, const struct pipe_draw_info *info,
+        !pvr_csb_emit_ta_isp_a(&block, &ispa) || !pvr_csb_emit_ta_isp_b(&block, &ispb) ||
+        !pvr_csb_emit_ta_isp_dbsc(&block, &dbsc) ||
+        !pvr_csb_emit_ta_pds_base(&block, PVR_PDS_BASE_SHADER, fsv->pds_offset) ||
+-       !pvr_csb_emit_ta_pds_base(&block, PVR_PDS_BASE_TEXUNICODE, 0) ||
++       !pvr_csb_emit_ta_pds_base(&block, PVR_PDS_BASE_TEXUNICODE, fu_dwords ? fu_code : 0) ||
+        !pvr_csb_emit_ta_pds_sizeinfo(&block, &pds_sizes, true, 0) ||
+        (coeff && !pvr_csb_emit_ta_pds_base(&block, PVR_PDS_BASE_VARYING, fsv->coeff_offset)) ||
+-       !pvr_csb_emit_ta_pds_base(&block, PVR_PDS_BASE_UNIFORMDATA, 0) ||
++       !pvr_csb_emit_ta_pds_base(&block, PVR_PDS_BASE_UNIFORMDATA, fu_dwords ? fu_data : 0) ||
+        !pvr_csb_emit_ta_region_clip(&block, &clip) || !pvr_csb_emit_ta_viewport(&block, &vp) ||
+        !pvr_csb_emit_ta_wclamp(&block, PVR_TA_WCLAMP_MIN_W) ||
+        !pvr_csb_emit_ta_output_sel(&block, &outsel) ||
+@@ -718,6 +829,8 @@ pvr_draw_3d(struct pvr_context *ctx, const struct pipe_draw_info *info,
+    uint32_t vdm_words = 0;
+    pvr_vdm_cam_size(&scr->dev_info, vs->vtxouts, true, &vdm_vs.cam_size, &vdm_vs.max_instances);
+    if (!pvr_csb_emit_ppp_state(&d->ctrl, ta_addr, pvr_csb_size(&block) / 4) ||
++       (vu_dwords && !pvr_csb_emit_vdm_pds_state(&d->ctrl, vs->shareds, vu_data, vu_dwords,
++                                                  vu_code)) ||
+        !pvr_csb_emit_vdm_state(&d->ctrl, false, 0, &vdm_vs, &vdm_words) ||
+        !pvr_csb_emit_index_list(&d->ctrl, idx_addr, draws[0].count, 1, isize, topo) ||
+        pvr_csb_overflowed(&d->ctrl))
+diff --git a/src/gallium/drivers/pvr_native/pvr_shader.c b/src/gallium/drivers/pvr_native/pvr_shader.c
+index 56284bb0..c205d2d7 100644
+--- a/src/gallium/drivers/pvr_native/pvr_shader.c
++++ b/src/gallium/drivers/pvr_native/pvr_shader.c
+@@ -98,6 +98,24 @@ pvr_shader_alloc_sysval(pco_range *ranges, unsigned *counter, unsigned location,
+    *counter += count;
+ }
+ 
++/* GL uniforms arrive as load_uniform with base and offset in vec4 slots (the state tracker's
++ * unpacked layout of constant buffer 0). pco has no load_uniform; it loads Vulkan push constants
++ * from shared registers, so each uniform load becomes a push-constant load at the byte offset. */
++static bool
++pvr_shader_lower_uniform(struct nir_builder *b, nir_intrinsic_instr *intr, UNUSED void *data)
++{
++   if (intr->intrinsic != nir_intrinsic_load_uniform)
++      return false;
++   b->cursor = nir_before_instr(&intr->instr);
++   nir_def *offset = nir_imul_imm(b, nir_iadd_imm(b, intr->src[0].ssa, nir_intrinsic_base(intr)),
++                                  16);
++   nir_def *load = nir_load_push_constant(b, intr->def.num_components, intr->def.bit_size,
++                                          offset, .base = 0,
++                                          .range = nir_intrinsic_range(intr) * 16);
++   nir_def_replace(&intr->def, load);
++   return true;
++}
++
+ /* Fragment inputs, as the Vulkan driver's pvr_alloc_fs_varyings: z/w first, then each varying slot
+  * in location order, ROGUE_USC_COEFFICIENT_SET_SIZE coefficient registers per component. */
+ static void
+@@ -290,6 +308,9 @@ pvr_shader_create_with(struct nir_shader *nir, pco_ctx *ctx, enum pipe_format co
+       shader->vtxins = data.common.vtxins;
+    }
+    shader->vtxouts = data.vs.vtxouts;
++   shader->uniform_dwords = data.common.push_consts.range.count;
++   shader->uniform_dst = data.common.push_consts.range.start;
++   shader->shareds = data.common.shareds;
+    if (nir->info.stage == MESA_SHADER_VERTEX) {
+       for (unsigned l = 0; l < ARRAY_SIZE(shader->varyings); l++) {
+          shader->varyings[l].start = data.vs.varyings[l].start;
+@@ -619,9 +640,19 @@ pvr_shader_compile_data(pco_ctx *ctx, struct nir_shader *nir, pco_data *data,
+             var->data.location = FRAG_RESULT_DATA0;
+       }
+    }
++   NIR_PASS(_, nir, nir_shader_intrinsics_pass, pvr_shader_lower_uniform,
++            nir_metadata_control_flow, NULL);
+    pco_preprocess_nir(ctx, nir, data);
+    pco_lower_nir(ctx, nir, data);
+    pco_postprocess_nir(ctx, nir, data);
++   /* Push constants (the lowered uniforms) live in shared registers after any the shader has. An
++    * indirect access reads the whole buffer the shader declares. */
++   if (data->common.push_consts.used > 0) {
++      const unsigned count = data->common.push_consts.used == ~0U ? nir->num_uniforms * 4
++                                                                  : data->common.push_consts.used;
++      data->common.push_consts.range = (pco_range){ .start = data->common.shareds, .count = count };
++      data->common.shareds += count;
++   }
+ 
+    if (nir->info.stage == MESA_SHADER_VERTEX)
+       pvr_shader_init_vs_alloc(nir, data);
+diff --git a/src/gallium/drivers/pvr_native/pvr_shader.h b/src/gallium/drivers/pvr_native/pvr_shader.h
+index 7456c08c..b0cc910b 100644
+--- a/src/gallium/drivers/pvr_native/pvr_shader.h
++++ b/src/gallium/drivers/pvr_native/pvr_shader.h
+@@ -90,6 +90,12 @@ struct pvr_shader {
+    unsigned f32_smooth, f32_flat, f32_npc;
+    bool uses_z, uses_w;
+ 
++   /* Uniforms (constant buffer 0, vec4 slots as the state tracker lays them out) are loaded as
++    * push constants: the first uniform_dwords dwords of the buffer go to shared registers from
++    * uniform_dst on, by a PDS descriptor program the draw path builds. */
++   unsigned uniform_dwords;
++   unsigned uniform_dst;
++
+    /* Draw-path coefficient program of this fragment variant, for the vertex shader it was built
+     * against (pvr_draw.c). */
+    const struct pvr_shader *coeff_vs;
+-- 
+2.47.3
+

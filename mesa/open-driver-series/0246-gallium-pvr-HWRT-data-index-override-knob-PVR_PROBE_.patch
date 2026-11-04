@@ -1,7 +1,7 @@
-From f82a4fd4f3fef0b56c237ba549dfb6805fa04c6b Mon Sep 17 00:00:00 2001
+From 218535d7828c5fa38b4b3bfcdb71e6e1baf39cd5 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sun, 25 Oct 2026 09:47:27 +0800
-Subject: [PATCH 246/269] gallium/pvr: HWRT data-index override knob
+Subject: [PATCH 246/294] gallium/pvr: HWRT data-index override knob
  (PVR_PROBE_HWRT_IDX) - negative
 
 The probe can now force the job's hwrt.data_index (0 or 1 for the double-buffered dataset). Submitting

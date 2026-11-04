@@ -1,7 +1,7 @@
-From afc13d84084a1285a53888d024ed10507e52588a Mon Sep 17 00:00:00 2001
+From a80c8b0eef45827611d3c529be0bf88f0de86b8e Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sun, 25 Oct 2026 04:16:11 +0800
-Subject: [PATCH 232/269] gallium/pvr: fill the fragment stream's
+Subject: [PATCH 232/294] gallium/pvr: fill the fragment stream's
  ISP/background scalars; firmware tiles-in-flight now matches
 
 The firmware trace showed the 3D kick's setup computing all-zero partition state for our job:

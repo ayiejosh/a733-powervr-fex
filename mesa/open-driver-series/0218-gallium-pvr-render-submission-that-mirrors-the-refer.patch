@@ -1,7 +1,7 @@
-From b1c775a23617ee179d257c748a7eee5109716174 Mon Sep 17 00:00:00 2001
+From 51b602a0c22c8cdb43bf2e7e5cdd5671fce5d90f Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sat, 24 Oct 2026 23:16:52 +0800
-Subject: [PATCH 218/269] gallium/pvr: render submission that mirrors the
+Subject: [PATCH 218/294] gallium/pvr: render submission that mirrors the
  reference's, and what the GPU did with it
 
 Ran the assembled draw on the real open kernel driver (desktop down, one 512x512 draw, board

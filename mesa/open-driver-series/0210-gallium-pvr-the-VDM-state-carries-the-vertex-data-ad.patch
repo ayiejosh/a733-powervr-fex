@@ -1,7 +1,7 @@
-From 4fe075b20918c627186cdf8bcfbe122e26f6ac4c Mon Sep 17 00:00:00 2001
+From 0da2ef04fbbfd14b933d0c4987e16afa87298227 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sat, 24 Oct 2026 08:14:03 +0800
-Subject: [PATCH 210/269] gallium/pvr: the VDM state carries the vertex data
+Subject: [PATCH 210/294] gallium/pvr: the VDM state carries the vertex data
  address
 
 The last wire for milestone 2, and it is visible in the stream: the VDM state block grew from 1 dword to

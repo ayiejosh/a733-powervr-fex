@@ -1,0 +1,83 @@
+From 98efc56aad8d7740597d67c3c9d7084d40a57641 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 30 Oct 2026 18:06:57 +0800
+Subject: [PATCH] gallium/pvr: probe copy replay bisection knobs (stream
+ select, fill control, morph/hybrid)
+
+Adds the pieces the copy-replay bisection needed and records the result in code comments:
+- PVR_PROBE_TQ_COPY_STREAM selects a stream from a multi-stream capture;
+- the fill job's pixel-event program and USC kernel are installed too, so the known-good fill
+  stream can be replayed through the same path as a control (it passes: 4096/4096 pattern);
+- PVR_PROBE_TQ_COPY_MORPH moves selected fill-stream fields toward the copy job's values, and
+  PVR_PROBE_TQ_COPY_HYBRID does the reverse on the copy stream.
+
+Bisection result: morphing the fill stream to the copy values keeps it writing until isp_render=2 is
+applied, and the copy stream starts writing once background words are zeroed, isp_render=3 is set,
+the clear register holds a pattern AND isp_bgobjvals is zero (hybrid mask 55/63 pass; masks keeping
+isp_bgobjvals=0x300 fail). So the copy job's background-tag path (enablebgtag) is the part our replay
+does not reproduce correctly; the plain TQ write path works. Probe-only, env-gated.
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c | 33 ++++++++++++++++++++++
+ 1 file changed, 33 insertions(+)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index 2c22783b..61f96506 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -5931,6 +5931,22 @@ tq_copy_check(int fd, struct pipe_screen *pscreen)
+    }
+    close(tfd);
+ 
++   if (getenv("PVR_PROBE_TQ_COPY_MORPH") != NULL) {
++      /* Bisection: replay the fill stream but move selected fields to the copy job's values.
++       * bits: 1 = pixel-event offsets, 2 = bgnd0, 4 = bgnd1, 8 = bgnd3, 16 = isp_bgobjvals,
++       *       32 = isp_render, 64 = isp_aa. */
++      uint32_t *w = (uint32_t *)stream;
++      uint32_t m = (uint32_t)strtoul(getenv("PVR_PROBE_TQ_COPY_MORPH"), NULL, 0);
++
++      if (m & 1U) { w[39] = 0x26a0; w[40] = 0x2680; }   /* ev_code / ev_data */
++      if (m & 2U) { w[2] = 0x41000; w[3] = 0x1e40; }    /* bgnd0 */
++      if (m & 4U) { w[4] = 0; w[5] = 0x2640; }          /* bgnd1 */
++      if (m & 8U) { w[6] = 0x10001; w[7] = 0x01000000; }/* bgnd3 */
++      if (m & 16U) w[28] = 0x300;                       /* isp_bgobjvals */
++      if (m & 32U) w[41] = 2;                           /* isp_render */
++      if (m & 64U) w[37] = 0;                           /* isp_aa */
++   }
++
+    if (getenv("PVR_PROBE_TQ_COPY_HYBRID") != NULL) {
+       /* Experiment: make the copy job write like the fill job (background words zeroed, clear
+        * pattern set) and optionally copy fill's isp_render/isp_aa values, to find what blocks the
+@@ -5979,6 +5995,17 @@ tq_copy_check(int fd, struct pipe_screen *pscreen)
+       printf("tqcopy:        FAIL: cannot map PDS program page\n");
+       goto out_bo;
+    }
++   /* Fill job's pixel-event program (stream 0, used for the control run): data at PDS+0x2600,
++    * code at 0x2620, USC fill kernel at 0x5c00 (all from the same capture). */
++   {
++      uint32_t fill_data[5] = { 0x00005c00, 0x00000000,
++                                (uint32_t)((dst_addr >> 2) & 0xffffffffu), 0x00081a20, 0x90000002 };
++      static const uint32_t fill_code[2] = { 0xf0040101, 0xf4000002 };
++      static const uint32_t fill_kernel[4] = { 0xc280a048, 0x01804080, 0xff000088, 0xfffffff2 };
++
++      memcpy((uint8_t *)pdsbo.map + (0x2600 - 0x1000), fill_data, sizeof(fill_data));
++      memcpy((uint8_t *)pdsbo.map + (0x2620 - 0x1000), fill_code, sizeof(fill_code));
++   }
+    memcpy((uint8_t *)pdsbo.map + (0x1e40 - 0x1000), texdata_code, sizeof(texdata_code));
+    memcpy((uint8_t *)pdsbo.map + (0x2680 - 0x1000), ev_data, sizeof(ev_data));
+    memcpy((uint8_t *)pdsbo.map + (0x26a0 - 0x1000), ev_code, sizeof(ev_code));
+@@ -6049,6 +6076,12 @@ tq_copy_check(int fd, struct pipe_screen *pscreen)
+       goto out_bo;
+    }
+    memcpy((uint8_t *)uscbo.map + (0x7340 - 0x5000), usc_copy, sizeof(usc_copy));
++   {
++      /* Fill job's USC kernel (stream 0 control runs) at USC+0x5c00. */
++      static const uint32_t fill_kernel[4] = { 0xc280a048, 0x01804080, 0xff000088, 0xfffffff2 };
++
++      memcpy((uint8_t *)uscbo.map + (0x5c00 - 0x5000), fill_kernel, sizeof(fill_kernel));
++   }
+    {
+       static const uint32_t usc_fillkernel[4] = { 0xc280a048, 0x01804080, 0xff000088, 0xfffffff2 };
+ 
+-- 
+2.47.3
+

@@ -1,8 +1,8 @@
-From 4ff860d36c81817731b1b82df355171f2c379a60 Mon Sep 17 00:00:00 2001
+From 9e1759e4f590dd39371be2b9d318ef67a482eb54 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Thu, 8 Oct 2026 03:04:48 +0800
-Subject: [PATCH 06/43] pvr: report real sampler limits (16 -> 32), probed not
- assumed
+Subject: [PATCH 006/294] pvr: report real sampler limits (16 -> 32), probed
+ not assumed
 
 maxPerStageDescriptorSamplers / maxPerStageDescriptorSampledImages were 16 - the Vulkan
 minimum, not the silicon's limit - and the per-set values were derived as 3*16. On this part
@@ -29,7 +29,7 @@ failures / 27 pass.
  1 file changed, 8 insertions(+), 4 deletions(-)
 
 diff --git a/src/imagination/vulkan/pvr_physical_device.c b/src/imagination/vulkan/pvr_physical_device.c
-index 08e31c0..ca92d6c 100644
+index 08e31c06..ca92d6ca 100644
 --- a/src/imagination/vulkan/pvr_physical_device.c
 +++ b/src/imagination/vulkan/pvr_physical_device.c
 @@ -752,19 +752,23 @@ static bool pvr_physical_device_get_properties(
@@ -60,3 +60,6 @@ index 08e31c0..ca92d6c 100644
        .maxDescriptorSetStorageImages = 3U * 4U,
        .maxDescriptorSetInputAttachments = 4U,
  
+-- 
+2.47.3
+

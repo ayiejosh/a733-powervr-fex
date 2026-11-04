@@ -1,0 +1,49 @@
+From c03a5859e9e1429e3a26c22a86a5d5f8a863dea6 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Thu, 29 Oct 2026 12:03:45 +0800
+Subject: [PATCH] gallium/pvr: refuse B5G6R5 textures so they convert to
+ RGBX8/RGBA8
+
+The TPU decode of 16-bit packed colour formats reads back black on this hardware (R8/RG8 too,
+which stay accepted and are a known limitation): a GL_RGB/UNSIGNED_SHORT_5_6_5 texture sampled
+through the native driver returned black while zink returned the expected texels. Refuse
+B5G6R5 for sampler bindings on top of the existing "formats the draw path can use" rule, so the
+state tracker converts RGB565 textures to RGBX8/RGBA8 like it already does for RGB8.
+
+That also fixes the handoff's mipmapped-non-renderable-format gap for this case: the converted
+texture is a renderable 8888 format, so it gets the twiddled mip chain with GPU-generated levels
+instead of keeping level 0 only.
+
+Verified against zink: plain RGB565 sampling and a CPU-uploaded RGB565 mip chain (256x256,
+9 levels, minified) both give identical sample checksums; the full gltri gate (49 mode runs)
+passes; full native glmark2 0 errors, 0 MMU faults.
+---
+ src/gallium/drivers/pvr_native/pvr_screen.c | 12 +++++++++---
+ 1 file changed, 9 insertions(+), 3 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_screen.c b/src/gallium/drivers/pvr_native/pvr_screen.c
+index 1a11ccd7..42a03c49 100644
+--- a/src/gallium/drivers/pvr_native/pvr_screen.c
++++ b/src/gallium/drivers/pvr_native/pvr_screen.c
+@@ -93,9 +93,15 @@ pvr_is_format_supported(UNUSED struct pipe_screen *pscreen,
+       return false;
+ 
+    /* Only what the draw path can use, so the state tracker converts the rest (RGB8 textures to
+-    * RGBX8, integer vertex attributes to float) instead of handing over formats it then rejects. */
+-   if ((bindings & PIPE_BIND_SAMPLER_VIEW) && !util_format_is_depth_or_stencil(format) &&
+-       !pvr_draw_texture_format_supported(format))
++    * RGBX8, integer vertex attributes to float) instead of handing over formats it then rejects.
++    * B5G6R5 is refused explicitly on top of that: the TPU decode of 16-bit packed colour reads
++    * back black on this hardware, so the state tracker converts RGB565 textures to RGBX8/RGBA8
++    * instead (which also gives them working mip chains, since the converted target formats are
++    * twiddled with GPU-generated levels). R8/RG8 are left accepted but their TPU decode is
++    * unverified - a known limitation. */
++   if ((bindings & PIPE_BIND_SAMPLER_VIEW) &&
++       (format == PIPE_FORMAT_B5G6R5_UNORM ||
++        (!util_format_is_depth_or_stencil(format) && !pvr_draw_texture_format_supported(format))))
+       return false;
+    if ((bindings & (PIPE_BIND_RENDER_TARGET | PIPE_BIND_DISPLAY_TARGET | PIPE_BIND_SCANOUT |
+                     PIPE_BIND_SHARED)) &&
+-- 
+2.47.3
+

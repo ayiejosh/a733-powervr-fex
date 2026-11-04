@@ -1,0 +1,73 @@
+From 2af8a7c1132cda3230e687951422ff674f5beea9 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 01:17:11 +0800
+Subject: [PATCH] gallium/pvr: GL clip-space depth, no fragment pixel merging
+
+- The vertex shader lowers GL clip z ([-w, w]) to the hardware range
+  ([0, w]) with nir_lower_clip_halfz, and the depth viewport maps [0, 1]
+  to [near, far]. Before, the near half of the depth range was clipped:
+  a triangle with one vertex at z = -2 drew nothing instead of its
+  visible part. gltri GLTRI_Z clip cases now match zink pixel for pixel.
+- Fragment and partial-render jobs set DISABLE_PIXELMERGE, as the
+  reference always does.
+---
+ src/gallium/drivers/pvr_native/pvr_draw.c   | 3 ++-
+ src/gallium/drivers/pvr_native/pvr_shader.c | 5 +++++
+ src/gallium/drivers/pvr_native/pvr_vm.c     | 4 +++-
+ 3 files changed, 10 insertions(+), 2 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_draw.c b/src/gallium/drivers/pvr_native/pvr_draw.c
+index 2ee3f628..acc4cd1b 100644
+--- a/src/gallium/drivers/pvr_native/pvr_draw.c
++++ b/src/gallium/drivers/pvr_native/pvr_draw.c
+@@ -753,7 +753,8 @@ pvr_draw_3d(struct pvr_context *ctx, const struct pipe_draw_info *info,
+    const struct pvr_viewport_words vp = {
+       .a0 = fui(pv->translate[0]), .m0 = fui(pv->scale[0]),
+       .a1 = fui(pv->translate[1]), .m1 = fui(pv->scale[1]),
+-      .a2 = fui(pv->translate[2]), .m2 = fui(pv->scale[2]),
++      /* z arrives in [0, 1] (nir_lower_clip_halfz): depth = near + z * (far - near). */
++      .a2 = fui(pv->translate[2] - pv->scale[2]), .m2 = fui(2.0f * pv->scale[2]),
+    };
+    const struct ROGUE_TA_STATE_VARYING0 varying0 = {
+       .f32_linear = vs->f32_smooth, .f32_flat = vs->f32_flat, .f32_npc = vs->f32_npc,
+diff --git a/src/gallium/drivers/pvr_native/pvr_shader.c b/src/gallium/drivers/pvr_native/pvr_shader.c
+index c205d2d7..d9b94e34 100644
+--- a/src/gallium/drivers/pvr_native/pvr_shader.c
++++ b/src/gallium/drivers/pvr_native/pvr_shader.c
+@@ -642,6 +642,11 @@ pvr_shader_compile_data(pco_ctx *ctx, struct nir_shader *nir, pco_data *data,
+    }
+    NIR_PASS(_, nir, nir_shader_intrinsics_pass, pvr_shader_lower_uniform,
+             nir_metadata_control_flow, NULL);
++   /* GL clip space has z in [-w, w]; the hardware clips to [0, w], as Vulkan does. Without this
++    * the near half of the depth range is clipped away (pvr_draw.c maps the depth viewport to
++    * match). */
++   if (nir->info.stage == MESA_SHADER_VERTEX)
++      NIR_PASS(_, nir, nir_lower_clip_halfz);
+    pco_preprocess_nir(ctx, nir, data);
+    pco_lower_nir(ctx, nir, data);
+    pco_postprocess_nir(ctx, nir, data);
+diff --git a/src/gallium/drivers/pvr_native/pvr_vm.c b/src/gallium/drivers/pvr_native/pvr_vm.c
+index 0d4d2bd2..9cc33178 100644
+--- a/src/gallium/drivers/pvr_native/pvr_vm.c
++++ b/src/gallium/drivers/pvr_native/pvr_vm.c
+@@ -747,7 +747,7 @@ pvr_job_submit_render(struct pvr_vm *vm, uint32_t context_handle,
+       .context_handle = context_handle,
+       .cmd_stream = (uint64_t)(uintptr_t)frag_stream,
+       .cmd_stream_len = frag_len,
+-      .flags = DRM_PVR_SUBMIT_JOB_FRAG_CMD_PARTIAL_RENDER,
++      .flags = DRM_PVR_SUBMIT_JOB_FRAG_CMD_PARTIAL_RENDER | DRM_PVR_SUBMIT_JOB_FRAG_CMD_DISABLE_PIXELMERGE,
+       .sync_ops = { .stride = sizeof(pr_ops[0]), .count = ARRAY_SIZE(pr_ops),
+                     .array = (__u64)(uintptr_t)pr_ops },
+       .hwrt = { .set_handle = hwrt_set_handle,
+@@ -760,6 +760,8 @@ pvr_job_submit_render(struct pvr_vm *vm, uint32_t context_handle,
+       .context_handle = context_handle,
+       .cmd_stream = (uint64_t)(uintptr_t)frag_stream,
+       .cmd_stream_len = frag_len,
++      /* As the reference, which always disables it ("enable pixel merging when it is safe"). */
++      .flags = DRM_PVR_SUBMIT_JOB_FRAG_CMD_DISABLE_PIXELMERGE,
+       .sync_ops = { .stride = sizeof(frag_ops[0]), .count = ARRAY_SIZE(frag_ops),
+                     .array = (__u64)(uintptr_t)frag_ops },
+       .hwrt = { .set_handle = hwrt_set_handle,
+-- 
+2.47.3
+

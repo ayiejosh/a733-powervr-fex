@@ -1,0 +1,216 @@
+From 5323b619957a2ef49ae00f7d836a65f522adfd66 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sun, 1 Nov 2026 18:46:28 +0800
+Subject: [PATCH] gallium/pvr: apply the scissor to draws
+
+pvr_set_scissor_states() was a no-op, so glScissor did not restrict
+draws: a scissored draw wrote the whole target.
+
+Apply it the way the Vulkan driver does
+(pvr_setup_isp_depth_bias_scissor_state). ISPCTL scenable was already
+set, and every draw used entry 0 of a one-entry scissor table at
+CR_ISP_SCISSOR_BASE (the whole target). The open render now keeps a
+table of IPF SCISSOR_WORD_0/1 pairs (minimum in bits 31:16, exclusive
+maximum in bits 15:0). Entry 0 stays the whole target, for draws
+without the scissor test. A draw with the rasterizer's scissor test on
+clamps the box to the target, finds or adds it in the table and sets
+its index as ISPDBSC scindex; as in the reference, its TA region clip
+is narrowed to the region-clip tiles of the box. A scissor change does
+not end the render: the TA state block differs, so the draw emits a
+new PPP state.
+
+The flush copies the table into the render's slot of the general
+arena, where the single entry was written before, so the table stays
+unchanged until that render has completed. A draw with a new box when
+the table already holds 64 ends the render first. A draw whose clamped
+box is empty draws nothing and is dropped before it opens a render
+(the reference packs a zero rectangle instead).
+
+Not fixed here: a scissored or colour-masked glClear. The driver sets
+neither clear_scissored nor clear_masked, so st clears with a quad draw
+(scissor test off). That quad does not draw reliably, from separate
+vertex-input bugs: st's clear vertex shader reads VERT_ATTRIB_POS, which
+pco does not lower, and a vec4 input fed 3 components gets no w = 1.
+These two do not explain every failing case yet.
+
+Tested on the GPU: scissor_probe cases S1, S3, S4, S6 and S8 fail
+without this change and pass with it; S2 (scissor off after on) passes
+on both. Gate: ALL GROUPS PASS. glmark2 (bench31
+harness) 803/804 against 804 without it (one more run without it read
+795 while a build ran).
+---
+ src/gallium/drivers/pvr_native/pvr_context.c | 12 +++-
+ src/gallium/drivers/pvr_native/pvr_context.h |  3 +
+ src/gallium/drivers/pvr_native/pvr_draw.c    | 59 +++++++++++++++++---
+ 3 files changed, 65 insertions(+), 9 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_context.c b/src/gallium/drivers/pvr_native/pvr_context.c
+index 681d7d8c..579af1ab 100644
+--- a/src/gallium/drivers/pvr_native/pvr_context.c
++++ b/src/gallium/drivers/pvr_native/pvr_context.c
+@@ -798,9 +798,17 @@ pvr_create_sampler_view(struct pipe_context *pctx, struct pipe_resource *texture
+    return view;
+ }
+ 
++/* Recorded only: a scissor change between draws does not end the render (each draw indexes the
++ * render's scissor table, pvr_draw_3d). */
++static void
++pvr_set_scissor_states(struct pipe_context *p, unsigned start_slot, unsigned num_scissors,
++                       const struct pipe_scissor_state *scissors)
++{
++   if (start_slot == 0 && num_scissors > 0)
++      pvr_context(p)->scissor = scissors[0];
++}
++
+ /* State the draw path does not consume yet: accepted so the state tracker can set it. */
+-static void pvr_set_scissor_states(UNUSED struct pipe_context *p, UNUSED unsigned s, UNUSED unsigned n,
+-                                   UNUSED const struct pipe_scissor_state *st) {}
+ static void pvr_set_blend_color(struct pipe_context *p, const struct pipe_blend_color *c)
+ {
+    pvr_context(p)->blend_color = *c;
+diff --git a/src/gallium/drivers/pvr_native/pvr_context.h b/src/gallium/drivers/pvr_native/pvr_context.h
+index df847132..2eddcdd5 100644
+--- a/src/gallium/drivers/pvr_native/pvr_context.h
++++ b/src/gallium/drivers/pvr_native/pvr_context.h
+@@ -69,6 +69,9 @@ struct pvr_context {
+ 
+    unsigned nr_viewports;
+    struct pipe_viewport_state viewports[PIPE_MAX_VIEWPORTS];
++   /* Scissor box of viewport 0 (the only one); pvr_draw_3d applies it when the rasterizer
++    * enables the scissor test. */
++   struct pipe_scissor_state scissor;
+ 
+    unsigned nr_vertex_buffers;
+    struct pipe_vertex_buffer vertex_buffers[PIPE_MAX_ATTRIBS];
+diff --git a/src/gallium/drivers/pvr_native/pvr_draw.c b/src/gallium/drivers/pvr_native/pvr_draw.c
+index e6472579..bfde46c1 100644
+--- a/src/gallium/drivers/pvr_native/pvr_draw.c
++++ b/src/gallium/drivers/pvr_native/pvr_draw.c
+@@ -174,6 +174,13 @@ struct pvr_draw_state {
+    struct pipe_resource *rt;
+    unsigned rt_level;
+    uint32_t rt_w, rt_h;
++   /* The open render's scissor table, the IPF SCISSOR_WORD_0/1 pair per entry (minimum in the high
++    * half, exclusive maximum in the low half), indexed by each draw's ISPDBSC scindex. Entry 0 is
++    * the whole target, for draws without the scissor test. The flush copies it into the render's
++    * general arena, which is not rewritten before the render completes. */
++#define PVR_DRAW_SCISSORS 64
++   uint32_t sc[PVR_DRAW_SCISSORS][2];
++   unsigned nsc;
+ 
+    bool clear_valid;
+    uint32_t clear_color;
+@@ -1477,11 +1484,24 @@ draw_open(struct pvr_context *ctx, struct pvr_draw_state *d, struct pipe_resourc
+    }
+    d->rt_w = w;
+    d->rt_h = h;
++   d->sc[0][0] = w;
++   d->sc[0][1] = h;
++   d->nsc = 1;
+    d->ndraws = 0;
+    d->open = true;
+    return true;
+ }
+ 
++/* The index of a scissor table entry of the open render (d->nsc: not in the table). */
++static unsigned
++draw_scissor_find(const struct pvr_draw_state *d, const uint32_t *words)
++{
++   unsigned i = 0;
++   while (i < d->nsc && (d->sc[i][0] != words[0] || d->sc[i][1] != words[1]))
++      i++;
++   return i;
++}
++
+ /* The colour target the framebuffer renders into: colour buffer 0, or for a depth-only framebuffer
+  * a scratch colour target of its size. */
+ static struct pipe_resource *
+@@ -1583,6 +1603,20 @@ pvr_draw_3d(struct pvr_context *ctx, const struct pipe_draw_info *info,
+    if (ctx->rasterizer != NULL && ctx->rasterizer->cull_face == PIPE_FACE_FRONT_AND_BACK &&
+        u_reduced_prim(info->mode) == MESA_PRIM_TRIANGLES)
+       return true;
++   /* The scissor box, clamped to the target (the render's size), or the whole target without the
++    * scissor test. An empty box passes no pixel: the draw is dropped before it opens a render (the
++    * reference packs a zero rectangle instead). */
++   const bool scissor = ctx->rasterizer != NULL && ctx->rasterizer->scissor;
++   uint32_t sx0 = 0, sy0 = 0, sx1 = ctx->fb.width, sy1 = ctx->fb.height;
++   if (scissor) {
++      sx0 = MIN2(ctx->scissor.minx, sx1);
++      sy0 = MIN2(ctx->scissor.miny, sy1);
++      sx1 = MIN2(ctx->scissor.maxx, sx1);
++      sy1 = MIN2(ctx->scissor.maxy, sy1);
++      if (sx0 >= sx1 || sy0 >= sy1)
++         return true;
++   }
++   const uint32_t sc_words[2] = { sx0 << 16 | sx1, sy0 << 16 | sy1 };
+ 
+    if (ctx->draw == NULL)
+       ctx->draw = calloc(1, sizeof(struct pvr_draw_state));
+@@ -1672,11 +1706,20 @@ pvr_draw_3d(struct pvr_context *ctx, const struct pipe_draw_info *info,
+       return false;
+ 
+    const unsigned level = draw_fb_level(ctx);
+-   if (d->open && !draw_open_is_fb(ctx, d, rt))
++   /* A new scissor box when the render's scissor table is full ends the render too. */
++   if (d->open && (!draw_open_is_fb(ctx, d, rt) ||
++                   (scissor && d->nsc == PVR_DRAW_SCISSORS &&
++                    draw_scissor_find(d, sc_words) == d->nsc)))
+       pvr_draw_flush(ctx);
+    if (!d->open && !draw_open(ctx, d, rt, level, ctx->fb.width, ctx->fb.height,
+                                     ctx->fb.zsbuf.texture))
+       return false;
++   unsigned scindex = 0;
++   if (scissor && (scindex = draw_scissor_find(d, sc_words)) == d->nsc) {
++      d->sc[d->nsc][0] = sc_words[0];
++      d->sc[d->nsc][1] = sc_words[1];
++      d->nsc++;
++   }
+ 
+    /* Vertex fetch program. */
+    uint64_t vcode, vdata;
+@@ -1730,7 +1773,8 @@ pvr_draw_3d(struct pvr_context *ctx, const struct pipe_draw_info *info,
+       .sop2 = ROGUE_TA_ISPB_STENCILOP_KEEP,
+       .sop3 = ROGUE_TA_ISPB_STENCILOP_KEEP,
+    };
+-   const struct ROGUE_TA_STATE_ISPDBSC dbsc = { 0 };
++   /* ISPCTL scenable is set, so the ISP rejects the pixels outside this table entry. */
++   const struct ROGUE_TA_STATE_ISPDBSC dbsc = { .scindex = scindex };
+    const struct pvr_pds_sizes pds_sizes = {
+       .varying_dwords = coeff ? fsv->coeff_data_dwords : 0,
+       .usc_varying_dwords = fsv->coeffs,
+@@ -1786,8 +1830,10 @@ pvr_draw_3d(struct pvr_context *ctx, const struct pipe_draw_info *info,
+       .vtxsize = vs->vtxouts, .rhw_pres = fsv->uses_w, .tsp_unclamped_z_pres = fsv->uses_z,
+       .psprite_size_pres = true,
+    };
++   /* As the reference: the TA keeps the draw out of the region-clip tiles outside the scissor box
++    * (the whole target without the scissor test, as d->rt_w/rt_h are the framebuffer's here). */
+    struct pvr_region_clip clip;
+-   pvr_region_clip_from_rect(0, 0, d->rt_w, d->rt_h, 16, &clip);
++   pvr_region_clip_from_rect(sx0, sy0, sx1 - sx0, sy1 - sy0, scr->region_clip_align, &clip);
+    pvr_csb_init(&block, ta, 256, 0);
+    if (!pvr_csb_emit_ta_state_header(&block, &pres) ||
+        !pvr_csb_emit_ta_ispctl(&block, NULL, true, &ispctl) ||
+@@ -2119,7 +2165,7 @@ pvr_draw_flush(struct pvr_context *ctx)
+       pvr_resource(ctx->fb.zsbuf.texture)->write_seq++;
+    uint64_t term_addr = 0, sc_addr = 0;
+    uint32_t *term = arena_alloc(&d->gen, 64, 64, &term_addr);
+-   uint32_t *sc = arena_alloc(&d->gen, 16, 16, &sc_addr);
++   uint32_t *sc = arena_alloc(&d->gen, d->nsc * sizeof(d->sc[0]), 16, &sc_addr);
+    if (term == NULL || sc == NULL)
+       goto done;
+ 
+@@ -2139,9 +2185,8 @@ pvr_draw_flush(struct pvr_context *ctx)
+           !pvr_csb_emit_stream_terminate(&d->ctrl) || pvr_csb_overflowed(&d->ctrl))
+          goto done;
+    }
+-   /* One full-target scissor rectangle (IPF SCISSOR_WORD_0/1). */
+-   sc[0] = d->rt_w;
+-   sc[1] = d->rt_h;
++   /* The scissor table the draws index (CR_ISP_SCISSOR_BASE, below). */
++   memcpy(sc, d->sc, d->nsc * sizeof(d->sc[0]));
+ 
+    /* Depth-only framebuffer (shadow's depth pass): the colour target is a scratch one, so the
+     * PBE must drop all colour writes instead of clearing/storing a full extra target. Only for the
+-- 
+2.47.3
+

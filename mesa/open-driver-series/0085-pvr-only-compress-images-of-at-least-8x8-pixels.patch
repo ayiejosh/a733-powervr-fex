@@ -1,7 +1,7 @@
-From 46c46b3d5e1b57b0019bfc83164301268d11f805 Mon Sep 17 00:00:00 2001
+From a113da074d1947eefe0d4d62a070c935bb03bf23 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sun, 11 Oct 2026 08:08:32 +0800
-Subject: [PATCH 85/98] pvr: only compress images of at least 8x8 pixels
+Subject: [PATCH 085/294] pvr: only compress images of at least 8x8 pixels
 
 A TFBC block takes a full slot in place, so an image whose twiddled
 extent is narrower or shorter than 8 pixels (5x1 pads to 8x1, 32 bytes)
@@ -13,7 +13,7 @@ be compressed.
  1 file changed, 3 insertions(+)
 
 diff --git a/src/imagination/vulkan/pvr_image.c b/src/imagination/vulkan/pvr_image.c
-index f55c70a..932531e 100644
+index f55c70a2..932531ed 100644
 --- a/src/imagination/vulkan/pvr_image.c
 +++ b/src/imagination/vulkan/pvr_image.c
 @@ -334,6 +334,9 @@ void pvr_image_init(struct pvr_device *device,

@@ -1,0 +1,68 @@
+From 58f072833d0226458375099137c96786ab1ac669 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sun, 1 Nov 2026 19:57:27 +0800
+Subject: [PATCH 380/381] gallium/pvr: move vertex inputs below
+ VERT_ATTRIB_GENERIC0 to generic slots
+
+pco lowers vertex shader inputs only at VERT_ATTRIB_GENERIC0..15, the
+locations the Vulkan driver uses, and leaves any other input load unlowered.
+GLES programs only use generic locations, but the state tracker's built-in
+vertex shaders read VERT_ATTRIB_POS. One of them draws the quad of every
+scissored or colour-masked glClear (the driver sets neither clear_scissored nor
+clear_masked), so those clears read a garbage position and wrote nothing.
+
+Move such inputs to free generic locations before pco runs. The attribute
+fetch follows driver_location, so the vertex data mapping is unchanged.
+---
+ src/gallium/drivers/pvr_native/pvr_shader.c | 27 ++++++++++++++++++++-
+ 1 file changed, 26 insertions(+), 1 deletion(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_shader.c b/src/gallium/drivers/pvr_native/pvr_shader.c
+index c7c942e7..101e5a9c 100644
+--- a/src/gallium/drivers/pvr_native/pvr_shader.c
++++ b/src/gallium/drivers/pvr_native/pvr_shader.c
+@@ -56,6 +56,29 @@ pvr_shader_alloc_range(pco_range *ranges, unsigned *counter, nir_variable *var,
+    *counter += slots * dwords_each;
+ }
+ 
++/* pco lowers vertex inputs only at VERT_ATTRIB_GENERIC0..15 (the Vulkan locations) and leaves any
++ * other load unlowered, so the shader reads garbage. GLES programs only use generic locations, but
++ * the state tracker's built-in vertex shaders (the clear quad of a scissored or colour-masked
++ * glClear) read VERT_ATTRIB_POS. Move such inputs to free generic locations. The attribute fetch
++ * follows driver_location, so it is unchanged. */
++static void
++pvr_shader_vs_inputs_to_generic(struct nir_shader *nir)
++{
++   uint32_t used = 0;
++   nir_foreach_shader_in_variable (var, nir) {
++      if (var->data.location >= VERT_ATTRIB_GENERIC0 && var->data.location <= VERT_ATTRIB_GENERIC15)
++         used |= BITFIELD_BIT(var->data.location - VERT_ATTRIB_GENERIC0);
++   }
++   nir_foreach_shader_in_variable (var, nir) {
++      if (var->data.location < 0 || var->data.location >= VERT_ATTRIB_GENERIC0 ||
++          used == BITFIELD_MASK(16))
++         continue;
++      const unsigned slot = ffs(~used) - 1;
++      used |= BITFIELD_BIT(slot);
++      var->data.location = VERT_ATTRIB_GENERIC0 + slot;
++   }
++}
++
+ /* Before pco_preprocess/lower: only the formats. pco_nir_pvi() runs inside lowering and decides
+  * which attributes to synthesise from attrib_formats[]; a location with no format is skipped and
+  * its loads stay unlowered, which is the silent failure this project paid two rounds for. */
+@@ -684,8 +707,10 @@ pvr_shader_compile_data(pco_ctx *ctx, struct nir_shader *nir, pco_data *data,
+    /* Order matters and is copied from the Vulkan driver's pipeline creation. Getting it
+     * wrong yields a plausible binary rather than an error. The vertex maps are split around
+     * lowering because pco's lowering both consumes the formats and adds outputs. */
+-   if (nir->info.stage == MESA_SHADER_VERTEX)
++   if (nir->info.stage == MESA_SHADER_VERTEX) {
++      pvr_shader_vs_inputs_to_generic(nir);
+       pvr_shader_init_vs_formats(nir, data);
++   }
+ 
+    /* GL's single colour output arrives as FRAG_RESULT_COLOR; pco and the output map work on
+     * DATA0..7, as the Vulkan driver's shaders do. */
+-- 
+2.47.3
+

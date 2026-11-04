@@ -1,0 +1,94 @@
+From 80e008916fdb600bc4d0c7ee321b4a2107975d0c Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sun, 1 Nov 2026 11:54:37 +0800
+Subject: [PATCH 375/378] gallium/pvr: decide the depth load/store from the
+ render's draws
+
+pvr_draw_flush() chose the ZLS setup from ctx->dsa, the depth/stencil
+state bound when the render is flushed. Binding a DSA state does not
+flush, and st binds the next framebuffer's DSA before the framebuffer
+change flushes the render, so the choice followed whatever was bound
+last: a render whose draws test and write depth and whose last draw
+disables depth (a scene, then an overlay), or that is ended by binding a
+target without depth, skipped the depth load and store, and its depth
+was never stored. Track whether any draw of the render tests or writes
+depth and decide from that.
+
+A depth clear the render records is no longer lost either:
+- a render that clears depth and only tests it (depth writes off)
+  stores the buffer, as the cleared depth exists only on chip;
+- a render that clears depth and never tests it hands the clear to the
+  next render or reader of the buffer, as a deferred clear-only render
+  does, instead of dropping it.
+
+Fixes: 6e9baf84 ("gallium/pvr: only touch the depth buffer when the render uses it")
+---
+ src/gallium/drivers/pvr_native/pvr_draw.c | 17 ++++++++++++++---
+ 1 file changed, 14 insertions(+), 3 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_draw.c b/src/gallium/drivers/pvr_native/pvr_draw.c
+index efcb2bcd..d0ec3cdf 100644
+--- a/src/gallium/drivers/pvr_native/pvr_draw.c
++++ b/src/gallium/drivers/pvr_native/pvr_draw.c
+@@ -182,6 +182,9 @@ struct pvr_draw_state {
+    struct pipe_resource *zs;
+    bool zclear_valid;
+    float zclear;
++   /* Some draw of the render tests / writes depth: the ZLS decision is per render, and the DSA
++    * bound when it is flushed may be another one (3D scene, then a depth-off overlay). */
++   bool depth_tested, depth_written;
+ 
+    /* Caches. */
+    /* End-of-tile programs, per target set (addresses and formats). Each entry is a compiled USC
+@@ -1455,6 +1458,7 @@ draw_open(struct pvr_context *ctx, struct pvr_draw_state *d, struct pipe_resourc
+    if (d->zs)
+       draw_use(d, d->zs);
+    d->zclear_valid = false;
++   d->depth_tested = d->depth_written = false;
+    /* A deferred clear of the target or depth buffer is where this render starts. */
+    struct pvr_resource *rres = pvr_resource(rt);
+    if (rres->clear_pending && level == 0) {
+@@ -1706,6 +1710,8 @@ pvr_draw_3d(struct pvr_context *ctx, const struct pipe_draw_info *info,
+    /* Depth test and write from the depth/stencil state; the PIPE_FUNC_* order is the TA's. */
+    const struct pipe_depth_stencil_alpha_state *dsa = ctx->dsa;
+    const bool depth = d->zs != NULL && dsa != NULL && dsa->depth_enabled;
++   d->depth_tested |= depth;
++   d->depth_written |= depth && dsa->depth_writemask;
+    const struct ROGUE_TA_STATE_ISPA ispa = {
+       .objtype = ROGUE_TA_OBJTYPE_TRIANGLE,
+       /* As the reference picks it: discard is punch-through, a shader that reads the target
+@@ -2241,8 +2247,7 @@ pvr_draw_flush(struct pvr_context *ctx)
+     * or a materialized clear (deferred depth clear that has to be realized now). A depth-attached
+     * target with depth test off used to load and store the whole depth buffer per render (2.2x on
+     * drawbench2's depth-attached fill). */
+-   const bool depth_used =
+-      d->zs != NULL && ((ctx->dsa != NULL && ctx->dsa->depth_enabled) || zonly || d->no_defer);
++   const bool depth_used = d->zs != NULL && (d->depth_tested || zonly || d->no_defer);
+    if (depth_used) {
+       const struct pvr_resource *zr = pvr_resource(d->zs);
+       const int zf = draw_zls_format(d->zs->format);
+@@ -2257,7 +2262,8 @@ pvr_draw_flush(struct pvr_context *ctx)
+       const uint32_t zheight = zr->twiddled ? zr->phys_height : d->zs->height0;
+       const uint32_t zstride = zr->twiddled ? (uint32_t)((uint64_t)zr->stride * zr->phys_height)
+                                             : (uint32_t)zr->dev_size;
+-      const bool zstore = zonly || d->no_defer || (ctx->dsa != NULL && ctx->dsa->depth_writemask);
++      /* A clear this render realizes is stored too: the buffer in memory is its only copy after. */
++      const bool zstore = zonly || d->no_defer || d->depth_written || d->zclear_valid;
+       if (!pvr_frag_static_stream_set_zls(fstream, flen, &scr->dev_info, zf, zr->dev_addr,
+                                           zwidth, zheight, !d->zclear_valid, zstore,
+                                           bgdepth, zstride, zr->twiddled, zonly))
+@@ -2265,6 +2271,11 @@ pvr_draw_flush(struct pvr_context *ctx)
+       frag_flags |= DRM_PVR_SUBMIT_JOB_FRAG_CMD_DEPTHBUFFER;
+       /* The deferred clear is realized by this render. */
+       pvr_resource(d->zs)->zclear_pending = false;
++   } else if (d->zclear_valid && d->zs) {
++      /* A render that clears depth but never tests it leaves the clear to the next render or reader
++       * of the buffer, as a clear-only render does. */
++      pvr_resource(d->zs)->zclear_pending = true;
++      pvr_resource(d->zs)->zclear = d->zclear;
+    }
+    ((uint32_t *)fstream)[2] = (uint32_t)sc_addr; /* isp_scissor_base after the 2-dword header */
+    ((uint32_t *)fstream)[3] = (uint32_t)(sc_addr >> 32);
+-- 
+2.47.3
+

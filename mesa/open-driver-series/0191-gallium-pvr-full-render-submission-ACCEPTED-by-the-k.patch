@@ -1,7 +1,7 @@
-From b48e52a254af19af6e7e004cde4dcae483697334 Mon Sep 17 00:00:00 2001
+From de498d4233242f6f56eff81568f467728bf81c7c Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Fri, 23 Oct 2026 23:19:17 +0800
-Subject: [PATCH 191/269] gallium/pvr: full render submission ACCEPTED by the
+Subject: [PATCH 191/294] gallium/pvr: full render submission ACCEPTED by the
  kernel on the real GPU
 
 A complete render pass now goes through the kernel and is accepted:

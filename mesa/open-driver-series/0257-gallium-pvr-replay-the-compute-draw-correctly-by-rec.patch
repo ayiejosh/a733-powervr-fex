@@ -1,7 +1,7 @@
-From 218263b952f58190850001c0a2aa10168edce0f4 Mon Sep 17 00:00:00 2001
+From a31610c36b7edf981f3c0ef882e1262f056d44d4 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Mon, 26 Oct 2026 02:12:53 +0800
-Subject: [PATCH 257/269] gallium/pvr: replay the compute draw correctly by
+Subject: [PATCH 257/294] gallium/pvr: replay the compute draw correctly by
  reconstructing the compile-time literal pool
 
 The missing piece for the replayed compute jobs was pco's compile-time literal pool: the descriptor PDS

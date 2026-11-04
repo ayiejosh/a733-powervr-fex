@@ -1,7 +1,7 @@
-From ca679a7085aed8020c19310adf0eebd8347ef327 Mon Sep 17 00:00:00 2001
+From 9fd629ed3b9da68db0477e2cffd445806355152f Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sat, 24 Oct 2026 07:35:49 +0800
-Subject: [PATCH 206/269] gallium/pvr: build the vertex attribute program
+Subject: [PATCH 206/294] gallium/pvr: build the vertex attribute program
  (milestone 1 of the design)
 
 This is the piece that turns "the TA has a draw" into "the TA can read vertices": the PDS program that

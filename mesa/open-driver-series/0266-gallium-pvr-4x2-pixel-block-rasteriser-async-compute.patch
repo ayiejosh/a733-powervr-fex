@@ -1,7 +1,7 @@
-From 8d5559c1d6fc5d934db604b76eced6a29ccca16b Mon Sep 17 00:00:00 2001
+From 8e04dffb8961525a41a2ab989bdb7b48ddef43f7 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Mon, 26 Oct 2026 22:08:18 +0800
-Subject: [PATCH 266/269] gallium/pvr: 4x2 pixel-block rasteriser + async
+Subject: [PATCH 266/294] gallium/pvr: 4x2 pixel-block rasteriser + async
  compute submit - fallback draws 7x faster
 
 The compute fallback was GPU-bound on the per-thread parameter reads (measured: a shader with compile-time

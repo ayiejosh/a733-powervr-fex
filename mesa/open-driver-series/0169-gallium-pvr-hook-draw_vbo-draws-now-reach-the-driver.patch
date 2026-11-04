@@ -1,7 +1,7 @@
-From dd7ccbcca706ebaac576732d43857335d43426b7 Mon Sep 17 00:00:00 2001
+From 54ddf4cf9c15671d7d9d2f33900480dd7c35d8a6 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sat, 17 Oct 2026 12:30:39 +0800
-Subject: [PATCH 169/269] gallium/pvr: hook draw_vbo - draws now reach the
+Subject: [PATCH 169/294] gallium/pvr: hook draw_vbo - draws now reach the
  driver, and are recorded not executed
 
   context: draws REACH the driver and are recorded (mode 4, 36 vertices at 3) - and are NOT executed:

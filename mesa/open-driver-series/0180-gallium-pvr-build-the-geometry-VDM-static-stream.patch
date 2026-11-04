@@ -1,7 +1,7 @@
-From fbe781dbd9210ee08d3a30c79e11f9c66a2532f9 Mon Sep 17 00:00:00 2001
+From 0ddf44a30825a137ee9fc83ea3abe9024c856d3e Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Fri, 23 Oct 2026 13:00:19 +0800
-Subject: [PATCH 180/269] gallium/pvr: build the geometry (VDM) static stream
+Subject: [PATCH 180/294] gallium/pvr: build the geometry (VDM) static stream
 
 The fragment static stream was the piece already verified byte-for-byte; the geometry job's stream did
 not exist. This adds pvr_geom_static_stream(), mirroring the working Vulkan driver's

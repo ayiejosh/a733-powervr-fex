@@ -1,7 +1,7 @@
-From 475930f11a38e31a460c4a98c791bcd4307c3ce2 Mon Sep 17 00:00:00 2001
+From f2c22bc5fc6dc4ee88aa8119bb029fe9d0bb043f Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sun, 11 Oct 2026 06:16:17 +0800
-Subject: [PATCH 83/98] pco: preload up to 256 dwords of uniform buffer data
+Subject: [PATCH 083/294] pco: preload up to 256 dwords of uniform buffer data
 
 64 dwords per buffer left part of glmark2's jellyfish vertex uniforms
 (three matrices and a dozen scalars and vectors, padded) in memory. The
@@ -17,7 +17,7 @@ loops/indexing/graphicsfuzz list (6428): identical to before.
  1 file changed, 2 insertions(+), 2 deletions(-)
 
 diff --git a/src/imagination/pco/pco_nir.c b/src/imagination/pco/pco_nir.c
-index f12cbf9..b554e7a 100644
+index f12cbf93..b554e7aa 100644
 --- a/src/imagination/pco/pco_nir.c
 +++ b/src/imagination/pco/pco_nir.c
 @@ -1321,8 +1321,8 @@ remat_load_const(nir_builder *b, nir_instr *instr, UNUSED void *cb_data)

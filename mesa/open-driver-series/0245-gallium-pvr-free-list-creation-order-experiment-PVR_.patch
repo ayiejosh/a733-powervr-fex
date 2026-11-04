@@ -1,7 +1,7 @@
-From b738448511178199d7d0fc26e07f133cd547e654 Mon Sep 17 00:00:00 2001
+From b8bf54d4d9737652ebe0f6d161a3343f7685abbe Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sun, 25 Oct 2026 07:12:58 +0800
-Subject: [PATCH 245/269] gallium/pvr: free-list creation order experiment
+Subject: [PATCH 245/294] gallium/pvr: free-list creation order experiment
  (PVR_PROBE_FL_GLOBAL_FIRST, negative)
 
 The reference creates its device-wide (global) free list at device init, before the per-render-target

@@ -1,0 +1,30 @@
+From 80dacfb8eb1e9c0ad071a10868ae0e3e1c91173d Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Thu, 29 Oct 2026 19:05:20 +0800
+Subject: [PATCH] Revert "gallium/pvr: blit renders skip the full-target
+ background load"
+
+This reverts commit be642a471b7674edd981b4843b11c18a4e4f1665.
+---
+ src/gallium/drivers/pvr_native/pvr_draw.c | 5 ++---
+ 1 file changed, 2 insertions(+), 3 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_draw.c b/src/gallium/drivers/pvr_native/pvr_draw.c
+index 25c5debd..0f6c974b 100644
+--- a/src/gallium/drivers/pvr_native/pvr_draw.c
++++ b/src/gallium/drivers/pvr_native/pvr_draw.c
+@@ -1816,9 +1816,8 @@ pvr_draw_flush(struct pvr_context *ctx)
+       goto done;
+    uint64_t bgnd[3], pr_bgnd[3];
+    /* Without a clear, the background reloads what the target held. A depth-only render drops the
+-    * colour writes anyway, and a blit's fullscreen quad covers the whole target, so both use the
+-    * (cheap) clear background instead of a full-target load. */
+-   if (d->clear_valid || zonly || d->load_src != NULL || !draw_load_program(ctx, d, bgnd))
++    * colour writes anyway, so it uses the (cheap) clear background instead of a full-target load. */
++   if (d->clear_valid || zonly || !draw_load_program(ctx, d, bgnd))
+       pvr_csb_pds_bgnd_words((uint32_t)bg, (uint32_t)bg, (uint32_t)bg, 0, 0, 0, bgnd);
+    memcpy(pr_bgnd, bgnd, sizeof(bgnd));
+    pvr_frag_static_stream_fill_bgnd(fstream, sizeof(fstream), d->bct_addr, bgnd, pr_bgnd);
+-- 
+2.47.3
+

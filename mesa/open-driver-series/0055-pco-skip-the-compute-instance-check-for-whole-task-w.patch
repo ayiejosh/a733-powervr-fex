@@ -1,7 +1,7 @@
-From 243a4cd7c0d37952c92889e53f6131c5982d56a6 Mon Sep 17 00:00:00 2001
+From 8fff2298c0671d90cb228987cae3ee76afdc893f Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sat, 10 Oct 2026 02:00:33 +0800
-Subject: [PATCH 55/98] pco: skip the compute instance check for whole-task
+Subject: [PATCH 055/294] pco: skip the compute instance check for whole-task
  workgroups
 
 Compute workgroups are launched padded to a multiple of
@@ -21,7 +21,7 @@ workgroups are identical to the previous build; other checks unchanged.
  1 file changed, 10 insertions(+)
 
 diff --git a/src/imagination/pco/pco_nir_compute.c b/src/imagination/pco/pco_nir_compute.c
-index c4c5cee..564c28e 100644
+index c4c5cee8..564c28e0 100644
 --- a/src/imagination/pco/pco_nir_compute.c
 +++ b/src/imagination/pco/pco_nir_compute.c
 @@ -10,6 +10,7 @@

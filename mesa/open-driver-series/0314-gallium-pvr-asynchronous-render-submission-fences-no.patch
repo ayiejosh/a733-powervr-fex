@@ -1,0 +1,553 @@
+From 80a81de84f9b5d0674990bd38931a5eb4668588d Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 03:43:21 +0800
+Subject: [PATCH 314/314] gallium/pvr: asynchronous render submission, fences,
+ no PR wait
+
+- Renders are submitted without waiting: two slots each hold one render's
+  transient memory (general and PDS arenas, control stream), the syncobj
+  it signals and references to every resource it uses, and a slot is
+  waited for only when reused. A CPU map submits the open render if it
+  uses the resource and waits only for the last render that did; data
+  sets are evicted only when idle.
+- Real fences: flush returns a syncobj copy of the last render's fence and
+  fence_finish waits on it (glFinish used to return at once).
+- The fragment job no longer waits on the partial-render job, as the
+  reference: the kernel keeps a context's fragment jobs in order, and the
+  dependency cost a scheduler round trip between TA and 3D (firmware
+  trace: 1039 -> 768 ticks).
+- Drop trace-hook comments 0303 left behind in the Vulkan job code.
+
+Multi-render scenes gain most (glmark2 desktop 52 -> 73, 146 -> 193).
+---
+ src/gallium/drivers/pvr_native/pvr_context.c  |  13 +-
+ src/gallium/drivers/pvr_native/pvr_draw.c     | 136 ++++++++++++++++--
+ src/gallium/drivers/pvr_native/pvr_draw.h     |   8 +-
+ src/gallium/drivers/pvr_native/pvr_probe.c    |   4 +-
+ src/gallium/drivers/pvr_native/pvr_screen.c   |  49 ++++++-
+ src/gallium/drivers/pvr_native/pvr_screen.h   |   2 +
+ src/gallium/drivers/pvr_native/pvr_vm.c       |  24 ++--
+ src/gallium/drivers/pvr_native/pvr_vm.h       |   3 +-
+ src/imagination/vulkan/pvr_arch_job_render.c  |   4 -
+ .../winsys/powervr/pvr_drm_job_render.c       |   6 -
+ 10 files changed, 206 insertions(+), 43 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_context.c b/src/gallium/drivers/pvr_native/pvr_context.c
+index 0697fc06..cffc2896 100644
+--- a/src/gallium/drivers/pvr_native/pvr_context.c
++++ b/src/gallium/drivers/pvr_native/pvr_context.c
+@@ -38,8 +38,8 @@ pvr_transfer_map(struct pipe_context *pctx, struct pipe_resource *pres,
+    struct pvr_resource *res = pvr_resource(pres);
+    /* Submit the open render only if it uses this resource (renders are waited for when
+     * submitted, so nothing older is in flight). */
+-   if (!(usage & PIPE_MAP_UNSYNCHRONIZED) && pvr_draw_resource_busy(pvr_context(pctx), res))
+-      pvr_draw_flush(pvr_context(pctx));
++   if (!(usage & PIPE_MAP_UNSYNCHRONIZED))
++      pvr_draw_resource_sync(pvr_context(pctx), res);
+    struct pvr_transfer *trans;
+    uint64_t offset;
+ 
+@@ -110,11 +110,16 @@ pvr_transfer_flush_region(UNUSED struct pipe_context *pctx,
+  * created. There is no command stream to submit yet, so there is genuinely nothing to
+  * do, and no fence is produced - which is the correct answer for "nothing pending". */
+ static void
+-pvr_flush(struct pipe_context *pctx, UNUSED struct pipe_fence_handle **fence,
+-          UNUSED unsigned flags)
++pvr_flush(struct pipe_context *pctx, struct pipe_fence_handle **fence, UNUSED unsigned flags)
+ {
+    struct pvr_context *ctx = pvr_context(pctx);
+    pvr_draw_flush(ctx);
++   if (fence != NULL) {
++      struct pipe_fence_handle *f =
++         pvr_fence_create(pvr_screen(pctx->screen), pvr_draw_last_sync(ctx));
++      pctx->screen->fence_reference(pctx->screen, fence, NULL);
++      *fence = f;
++   }
+    /* Completes any asynchronous compute-fallback draws (PVR_COMPUTE_ASYNC). */
+    pvr_compute_flush(ctx->compute);
+ }
+diff --git a/src/gallium/drivers/pvr_native/pvr_draw.c b/src/gallium/drivers/pvr_native/pvr_draw.c
+index 0c09324c..3f508732 100644
+--- a/src/gallium/drivers/pvr_native/pvr_draw.c
++++ b/src/gallium/drivers/pvr_native/pvr_draw.c
+@@ -8,6 +8,7 @@
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
++#include <xf86drm.h>
+ 
+ #include "pvr_draw.h"
+ #include "pvr_bo.h"
+@@ -69,6 +70,7 @@ struct pvr_draw_load {
+ };
+ 
+ #define PVR_DRAW_HWRT_CACHE 4
++#define PVR_DRAW_SLOTS 2
+ 
+ struct pvr_draw_state {
+    bool ready, failed;
+@@ -99,6 +101,19 @@ struct pvr_draw_state {
+    struct pvr_draw_arena pds; /* PDS heap: per-draw vertex programs */
+    struct pvr_bo ctrl_bo;
+    uint64_t ctrl_addr;
++   /* Renders are submitted without waiting. Each of PVR_DRAW_SLOTS slots holds the transient
++    * memory above for one render, the syncobj that render signals and references to the
++    * resources it uses; a slot is waited for only when it is reused (gen/pds/ctrl_bo above are
++    * the open render's slot). Same-context renders complete in submission order. */
++   struct pvr_draw_slot {
++      struct pvr_draw_arena gen, pds;
++      struct pvr_bo ctrl_bo;
++      uint64_t ctrl_addr;
++      uint32_t sync, seq;
++      struct pipe_resource **refs;
++      unsigned nrefs, cap;
++   } slots[PVR_DRAW_SLOTS];
++   unsigned cur_slot;
+    struct pvr_csb ctrl;
+    struct pvr_bo bct_bo;
+    uint64_t bct_addr;
+@@ -163,6 +178,49 @@ arena_alloc(struct pvr_draw_arena *a, uint32_t size, uint32_t align, uint64_t *a
+    return (uint8_t *)a->bo.map + at;
+ }
+ 
++/* Waits for a slot's render and drops what it held. */
++static void
++draw_slot_idle(struct pvr_screen *scr, struct pvr_draw_slot *s)
++{
++   if (s->sync != 0) {
++      if (drmSyncobjWait(scr->fd, &s->sync, 1, INT64_MAX, 0, NULL) != 0)
++         mesa_loge("pvr: draw: waiting for a render failed");
++      drmSyncobjDestroy(scr->fd, s->sync);
++      s->sync = 0;
++   }
++   for (unsigned i = 0; i < s->nrefs; i++)
++      pipe_resource_reference(&s->refs[i], NULL);
++   s->nrefs = 0;
++}
++
++static void
++draw_idle(struct pvr_context *ctx, struct pvr_draw_state *d)
++{
++   for (unsigned i = 0; i < PVR_DRAW_SLOTS; i++)
++      draw_slot_idle(draw_screen(ctx), &d->slots[i]);
++}
++
++/* The open render uses this resource: it keeps it alive and a CPU access waits for it. */
++static void
++draw_use(struct pvr_draw_state *d, struct pipe_resource *pres)
++{
++   struct pvr_resource *res = pvr_resource(pres);
++   struct pvr_draw_slot *s = &d->slots[d->cur_slot];
++   if (res->render_seq == d->seq)
++      return;
++   res->render_seq = d->seq;
++   if (s->nrefs == s->cap) {
++      const unsigned cap = MAX2(16, s->cap * 2);
++      struct pipe_resource **refs = realloc(s->refs, cap * sizeof(*refs));
++      if (refs == NULL)
++         return;
++      s->refs = refs;
++      s->cap = cap;
++   }
++   s->refs[s->nrefs] = NULL;
++   pipe_resource_reference(&s->refs[s->nrefs++], pres);
++}
++
+ static bool
+ draw_init(struct pvr_context *ctx, struct pvr_draw_state *d)
+ {
+@@ -200,6 +258,21 @@ draw_init(struct pvr_context *ctx, struct pvr_draw_state *d)
+                                        &d->pdscode.bo);
+    if (d->pdscode.addr == 0 || !pvr_bo_map(scr->fd, &d->pdscode.bo))
+       return false;
++   d->slots[0] = (struct pvr_draw_slot){ .gen = d->gen, .pds = d->pds, .ctrl_bo = d->ctrl_bo,
++                                          .ctrl_addr = d->ctrl_addr };
++   for (unsigned i = 1; i < PVR_DRAW_SLOTS; i++) {
++      struct pvr_draw_slot *sl = &d->slots[i];
++      if (!draw_general_bo(scr, ARENA_GENERAL_SIZE, DRM_PVR_BO_ALLOW_CPU_USERSPACE_ACCESS,
++                           &sl->gen.bo, &sl->gen.addr, true) ||
++          !draw_general_bo(scr, CTRL_SIZE, DRM_PVR_BO_ALLOW_CPU_USERSPACE_ACCESS, &sl->ctrl_bo,
++                           &sl->ctrl_addr, true))
++         return false;
++      sl->pds.addr = pvr_vm_heap_alloc(&scr->vm, DRM_PVR_HEAP_PDS_CODE_DATA, ARENA_PDS_SIZE, 4096,
++                                       &sl->pds.bo);
++      if (sl->pds.addr == 0 || !pvr_bo_map(scr->fd, &sl->pds.bo))
++         return false;
++   }
++   d->cur_slot = 0;
+    d->failed = false;
+    d->ready = true;
+    return true;
+@@ -254,8 +327,10 @@ draw_hwrt(struct pvr_context *ctx, struct pvr_draw_state *d, uint32_t w, uint32_
+          if (d->hwrt[i].dset == 0 || (e->dset != 0 && d->hwrt[i].last_use < e->last_use))
+             e = &d->hwrt[i];
+       }
+-      if (e->dset != 0)
++      if (e->dset != 0) {
++         draw_idle(ctx, d);
+          draw_hwrt_free(scr, e);
++      }
+       if (!pvr_hwrt_sizes(&scr->dev_info, w, h, 1, 1, &sz))
+          return false;
+       sizes[0] = sz.tpc_size;
+@@ -633,7 +708,7 @@ draw_tex_binding(struct pvr_context *ctx, unsigned stage, unsigned u, uint32_t *
+       return false;
+    struct pvr_resource *res = pvr_resource(view->texture);
+    if (ctx->draw != NULL)
+-      res->render_seq = ctx->draw->seq;
++      draw_use(ctx->draw, view->texture);
+    const unsigned char view_swz[4] = { view->swizzle_r, view->swizzle_g, view->swizzle_b,
+                                        view->swizzle_a };
+    struct pvr_tex_desc tex = {
+@@ -944,7 +1019,7 @@ draw_vertex_program(struct pvr_context *ctx, struct pvr_draw_state *d, struct pv
+          return false;
+       vb_addr[el->vertex_buffer_index] =
+          pvr_resource(vb->buffer.resource)->dev_addr + vb->buffer_offset;
+-      pvr_resource(vb->buffer.resource)->render_seq = d->seq;
++      draw_use(d, vb->buffer.resource);
+       vb_stride[el->vertex_buffer_index] = el->src_stride;
+       dmas[i] = (struct pvr_pds_vertex_dma){
+          .offset = el->src_offset,
+@@ -996,16 +1071,27 @@ draw_open(struct pvr_context *ctx, struct pvr_draw_state *d, struct pipe_resourc
+ {
+    if (!draw_hwrt(ctx, d, w, h))
+       return false;
++   /* The next slot: its previous render must be done before its memory is rewritten. */
++   {
++      const unsigned next = (d->cur_slot + 1) % PVR_DRAW_SLOTS;
++      struct pvr_draw_slot *sl = &d->slots[next];
++      draw_slot_idle(draw_screen(ctx), sl);
++      d->cur_slot = next;
++      d->gen = sl->gen;
++      d->pds = sl->pds;
++      d->ctrl_bo = sl->ctrl_bo;
++      d->ctrl_addr = sl->ctrl_addr;
++   }
+    d->gen.used = 0;
+    d->pds.used = 0;
+    pvr_csb_init(&d->ctrl, d->ctrl_bo.map, d->ctrl_bo.size, PVR_CSB_LINK_DWORDS);
+    pipe_resource_reference(&d->rt, rt);
+    d->seq++;
+-   pvr_resource(rt)->render_seq = d->seq;
++   draw_use(d, rt);
+    struct pipe_resource *zs = ctx->fb.zsbuf.texture;
+    pipe_resource_reference(&d->zs, zs && draw_zls_format(zs->format) >= 0 ? zs : NULL);
+    if (d->zs)
+-      pvr_resource(d->zs)->render_seq = d->seq;
++      draw_use(d, d->zs);
+    d->zclear_valid = false;
+    d->rt_w = w;
+    d->rt_h = h;
+@@ -1244,7 +1330,7 @@ pvr_draw_3d(struct pvr_context *ctx, const struct pipe_draw_info *info,
+          memcpy(p, (const uint8_t *)info->index.user + draws[0].start * info->index_size,
+                 draws[0].count * info->index_size);
+       } else {
+-         pvr_resource(info->index.resource)->render_seq = d->seq;
++         draw_use(d, info->index.resource);
+          idx_addr = pvr_resource(info->index.resource)->dev_addr +
+                     (uint64_t)draws[0].start * info->index_size;
+       }
+@@ -1321,10 +1407,32 @@ pvr_draw_note_zclear(struct pvr_context *ctx, float depth)
+    return true;
+ }
+ 
+-bool
+-pvr_draw_resource_busy(struct pvr_context *ctx, const struct pvr_resource *res)
++void
++pvr_draw_resource_sync(struct pvr_context *ctx, const struct pvr_resource *res)
++{
++   struct pvr_draw_state *d = ctx->draw;
++   if (d == NULL || res->render_seq == 0)
++      return;
++   if (d->open && res->render_seq == d->seq)
++      pvr_draw_flush(ctx);
++   for (unsigned i = 0; i < PVR_DRAW_SLOTS; i++) {
++      if (d->slots[i].sync != 0 && d->slots[i].seq == res->render_seq)
++         draw_slot_idle(draw_screen(ctx), &d->slots[i]);
++   }
++}
++
++uint32_t
++pvr_draw_last_sync(struct pvr_context *ctx)
+ {
+-   return ctx->draw != NULL && ctx->draw->open && res->render_seq == ctx->draw->seq;
++   struct pvr_draw_state *d = ctx->draw;
++   uint32_t best = 0, seq = 0;
++   for (unsigned i = 0; d != NULL && i < PVR_DRAW_SLOTS; i++) {
++      if (d->slots[i].sync != 0 && d->slots[i].seq >= seq) {
++         best = d->slots[i].sync;
++         seq = d->slots[i].seq;
++      }
++   }
++   return best;
+ }
+ 
+ void
+@@ -1409,8 +1517,10 @@ pvr_draw_flush(struct pvr_context *ctx)
+    ((uint32_t *)fstream)[2] = (uint32_t)sc_addr; /* isp_scissor_base after the 2-dword header */
+    ((uint32_t *)fstream)[3] = (uint32_t)(sc_addr >> 32);
+ 
+-   if (!pvr_job_submit_render(&scr->vm, d->gctx.handle, gstream, glen, fstream, flen, d->cur_hwrt->dset, d->cur_hwrt->rt_data_idx, frag_flags))
+-      mesa_loge("pvr: draw: the render did not complete (%u draws)", d->ndraws);
++   if (!pvr_job_submit_render(&scr->vm, d->gctx.handle, gstream, glen, fstream, flen, d->cur_hwrt->dset, d->cur_hwrt->rt_data_idx, frag_flags,
++                              &d->slots[d->cur_slot].sync))
++      mesa_loge("pvr: draw: the render was not submitted (%u draws)", d->ndraws);
++   d->slots[d->cur_slot].seq = d->seq;
+    d->cur_hwrt->rt_data_idx ^= 1;
+ 
+ done:
+@@ -1427,10 +1537,14 @@ pvr_draw_destroy(struct pvr_context *ctx)
+    if (ctx->draw == NULL)
+       return;
+    pvr_draw_flush(ctx);
++   draw_idle(ctx, ctx->draw);
+    for (unsigned i = 0; i < PVR_DRAW_HWRT_CACHE; i++) {
+       if (ctx->draw->hwrt[i].dset != 0)
+          draw_hwrt_free(draw_screen(ctx), &ctx->draw->hwrt[i]);
+    }
++   draw_idle(ctx, ctx->draw);
++   for (unsigned i = 0; i < PVR_DRAW_SLOTS; i++)
++      free(ctx->draw->slots[i].refs);
+    pipe_resource_reference(&ctx->draw->scratch_rt, NULL);
+    pipe_resource_reference(&ctx->draw->black, NULL);
+    /* shortcut: the other GPU objects of the draw path are released with the VM at screen
+diff --git a/src/gallium/drivers/pvr_native/pvr_draw.h b/src/gallium/drivers/pvr_native/pvr_draw.h
+index 0452a7ed..02299807 100644
+--- a/src/gallium/drivers/pvr_native/pvr_draw.h
++++ b/src/gallium/drivers/pvr_native/pvr_draw.h
+@@ -28,9 +28,13 @@ void pvr_draw_destroy(struct pvr_context *ctx);
+ /* Records a full depth clear for the render a colour clear just opened; false if not possible. */
+ bool pvr_draw_note_zclear(struct pvr_context *ctx, float depth);
+ 
+-/* Whether the open render uses this resource, so a CPU access has to submit it first. */
++/* Before a CPU access: submits the open render if it uses the resource, then waits for the
++ * last render that used it. */
+ struct pvr_resource;
+-bool pvr_draw_resource_busy(struct pvr_context *ctx, const struct pvr_resource *res);
++void pvr_draw_resource_sync(struct pvr_context *ctx, const struct pvr_resource *res);
++
++/* The syncobj of the latest submitted render (0: none in flight). */
++uint32_t pvr_draw_last_sync(struct pvr_context *ctx);
+ 
+ /* Whether a sampler view of this format has a texture state layout. */
+ bool pvr_draw_texture_format_supported(enum pipe_format format);
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index c7389625..87c21d3c 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -922,7 +922,7 @@ real_job_done:
+                pvr_csb_emit_stream_terminate(&tcsb);
+                done = dlen > 0 && dfrag_len > 0 &&
+                       pvr_job_submit_render(vm, gpu_ctx.handle, dfw_buf, dlen, dfrag,
+-                                            dfrag_len, dset_handle, 0, 0);
++                                            dfrag_len, dset_handle, 0, 0, NULL);
+                printf("hwrt:          empty-control-stream render %s\n",
+                       done ? "COMPLETED" : "DID NOT complete in 2 s - the firmware is stalling "
+                                           "submissions, not the draw state");
+@@ -1425,7 +1425,7 @@ real_job_done:
+                   printf("hwrt:          geometry-only (draw stream) %s\n",
+                          gdone ? "COMPLETED" : "did not complete in 2 s");
+                } else if (pvr_job_submit_render(vm, gpu_ctx.handle, gstream, glen, fstream, f2,
+-                                         dset_handle, 0, 0)) {
++                                         dset_handle, 0, 0, NULL)) {
+                   uint32_t changed = 0;
+                   unsigned waited_us = 0;
+ 
+diff --git a/src/gallium/drivers/pvr_native/pvr_screen.c b/src/gallium/drivers/pvr_native/pvr_screen.c
+index 6e64e31f..de3a9c08 100644
+--- a/src/gallium/drivers/pvr_native/pvr_screen.c
++++ b/src/gallium/drivers/pvr_native/pvr_screen.c
+@@ -25,6 +25,8 @@
+ #include "drm-uapi/pvr_drm.h"
+ 
+ #include "util/u_memory.h"
++#include "util/u_inlines.h"
++#include "util/os_time.h"
+ #include "util/os_file.h"
+ #include "util/log.h"
+ #include "util/macros.h"
+@@ -116,13 +118,49 @@ pvr_is_format_supported(UNUSED struct pipe_screen *pscreen,
+  * wait for - which makes the honest implementation "release whatever we were holding
+  * and clear the caller's pointer". It is reached unconditionally: st's throttle
+  * teardown calls it for every ring slot on every context destruction. */
++/* A fence is a syncobj holding a copy of the fence of the last render submitted before it. */
++struct pipe_fence_handle {
++   struct pipe_reference reference;
++   uint32_t syncobj;
++};
++
++struct pipe_fence_handle *
++pvr_fence_create(struct pvr_screen *screen, uint32_t render_sync)
++{
++   struct pipe_fence_handle *f = CALLOC_STRUCT(pipe_fence_handle);
++   if (f == NULL)
++      return NULL;
++   pipe_reference_init(&f->reference, 1);
++   if (drmSyncobjCreate(screen->fd, render_sync ? 0 : DRM_SYNCOBJ_CREATE_SIGNALED,
++                        &f->syncobj) != 0 ||
++       (render_sync && drmSyncobjTransfer(screen->fd, f->syncobj, 0, render_sync, 0, 0) != 0)) {
++      if (f->syncobj)
++         drmSyncobjDestroy(screen->fd, f->syncobj);
++      FREE(f);
++      return NULL;
++   }
++   return f;
++}
++
+ static void
+-pvr_fence_reference(UNUSED struct pipe_screen *pscreen,
+-                    struct pipe_fence_handle **ptr,
+-                    UNUSED struct pipe_fence_handle *fence)
++pvr_fence_reference(struct pipe_screen *pscreen, struct pipe_fence_handle **ptr,
++                    struct pipe_fence_handle *fence)
++{
++   struct pipe_fence_handle *old = *ptr;
++   if (pipe_reference(old ? &old->reference : NULL, fence ? &fence->reference : NULL)) {
++      drmSyncobjDestroy(pvr_screen(pscreen)->fd, old->syncobj);
++      FREE(old);
++   }
++   *ptr = fence;
++}
++
++static bool
++pvr_fence_finish(struct pipe_screen *pscreen, UNUSED struct pipe_context *pctx,
++                 struct pipe_fence_handle *fence, uint64_t timeout)
+ {
+-   if (ptr)
+-      *ptr = NULL;
++   const int64_t deadline = timeout == OS_TIMEOUT_INFINITE ? INT64_MAX
++                                                           : os_time_get_absolute_timeout(timeout);
++   return drmSyncobjWait(pvr_screen(pscreen)->fd, &fence->syncobj, 1, deadline, 0, NULL) == 0;
+ }
+ 
+ static void
+@@ -345,6 +383,7 @@ pvr_screen_create(int fd, const struct pipe_screen_config *config,
+    }
+ 
+    screen->base.fence_reference = pvr_fence_reference;
++   screen->base.fence_finish = pvr_fence_finish;
+    screen->base.context_create = pvr_context_create;
+    screen->base.resource_create = pvr_resource_create;
+    screen->base.resource_destroy = pvr_resource_destroy;
+diff --git a/src/gallium/drivers/pvr_native/pvr_screen.h b/src/gallium/drivers/pvr_native/pvr_screen.h
+index f64f95cb..fa8a763f 100644
+--- a/src/gallium/drivers/pvr_native/pvr_screen.h
++++ b/src/gallium/drivers/pvr_native/pvr_screen.h
+@@ -54,4 +54,6 @@ pvr_screen(struct pipe_screen *pscreen)
+    return (struct pvr_screen *)pscreen;
+ }
+ 
++struct pipe_fence_handle *pvr_fence_create(struct pvr_screen *screen, uint32_t render_sync);
++
+ #endif /* PVR_SCREEN_H */
+diff --git a/src/gallium/drivers/pvr_native/pvr_vm.c b/src/gallium/drivers/pvr_native/pvr_vm.c
+index 6cc31123..dc50e0ba 100644
+--- a/src/gallium/drivers/pvr_native/pvr_vm.c
++++ b/src/gallium/drivers/pvr_native/pvr_vm.c
+@@ -678,7 +678,8 @@ bool
+ pvr_job_submit_render(struct pvr_vm *vm, uint32_t context_handle,
+                       const void *geom_stream, uint32_t geom_len,
+                       const void *frag_stream, uint32_t frag_len,
+-                      uint32_t hwrt_set_handle, uint32_t hwrt_data_index, uint32_t frag_flags)
++                      uint32_t hwrt_set_handle, uint32_t hwrt_data_index, uint32_t frag_flags,
++                      uint32_t *done_out)
+ {
+    /* Geometry and fragment jobs are different job types, so the kernel does not order them against
+     * each other; the reference chains them with syncobjs and submits THREE jobs: geometry, a
+@@ -719,12 +720,10 @@ pvr_job_submit_render(struct pvr_vm *vm, uint32_t context_handle,
+       .handle = pr_sync,
+       .flags = DRM_PVR_SYNC_OP_FLAG_SIGNAL | DRM_PVR_SYNC_OP_FLAG_HANDLE_TYPE_SYNCOBJ,
+    };
++   /* No wait on the partial-render job, as the reference: the kernel keeps fragment jobs of a
++    * context in submission order, and an explicit dependency costs a scheduler round trip between
++    * the geometry and fragment passes. done_sync is what the caller waits on. */
+    frag_ops[0] = (struct drm_pvr_sync_op){
+-      .handle = pr_sync,
+-      .flags = DRM_PVR_SYNC_OP_FLAG_WAIT | DRM_PVR_SYNC_OP_FLAG_HANDLE_TYPE_SYNCOBJ,
+-   };
+-   /* done_sync is what the caller waits on: the fragment job has to signal it. */
+-   frag_ops[1] = (struct drm_pvr_sync_op){
+       .handle = done_sync,
+       .flags = DRM_PVR_SYNC_OP_FLAG_SIGNAL | DRM_PVR_SYNC_OP_FLAG_HANDLE_TYPE_SYNCOBJ,
+    };
+@@ -763,7 +762,7 @@ pvr_job_submit_render(struct pvr_vm *vm, uint32_t context_handle,
+       .cmd_stream_len = frag_len,
+       /* As the reference, which always disables it ("enable pixel merging when it is safe"). */
+       .flags = DRM_PVR_SUBMIT_JOB_FRAG_CMD_DISABLE_PIXELMERGE | frag_flags,
+-      .sync_ops = { .stride = sizeof(frag_ops[0]), .count = ARRAY_SIZE(frag_ops),
++      .sync_ops = { .stride = sizeof(frag_ops[0]), .count = 1,
+                     .array = (__u64)(uintptr_t)frag_ops },
+       .hwrt = { .set_handle = hwrt_set_handle,
+                 .data_index = getenv("PVR_PROBE_HWRT_IDX")
+@@ -782,10 +781,19 @@ pvr_job_submit_render(struct pvr_vm *vm, uint32_t context_handle,
+       mesa_logi("pvr: geometry job %s", geom_done ? "COMPLETED" : "did not complete in 500 ms");
+    }
+ 
++   /* With done_out the caller owns the completion syncobj and waits when it needs to. */
++   if (done_out != NULL) {
++      drmSyncobjDestroy(vm->fd, pr_sync);
++      drmSyncobjDestroy(vm->fd, geom_sync);
++      if (submitted)
++         *done_out = done_sync;
++      else
++         drmSyncobjDestroy(vm->fd, done_sync);
++      return submitted;
++   }
+    completed = submitted && pvr_syncobj_wait(vm, done_sync, 2000);
+    if (submitted && !completed)
+       mesa_loge("pvr: the render job did not signal completion within 2 s");
+-
+    drmSyncobjDestroy(vm->fd, done_sync);
+    drmSyncobjDestroy(vm->fd, pr_sync);
+    drmSyncobjDestroy(vm->fd, geom_sync);
+diff --git a/src/gallium/drivers/pvr_native/pvr_vm.h b/src/gallium/drivers/pvr_native/pvr_vm.h
+index 4ddd4aac..31270d93 100644
+--- a/src/gallium/drivers/pvr_native/pvr_vm.h
++++ b/src/gallium/drivers/pvr_native/pvr_vm.h
+@@ -175,7 +175,8 @@ bool pvr_job_submit_frag_sync(struct pvr_vm *vm, uint32_t context_handle,
+ bool pvr_job_submit_render(struct pvr_vm *vm, uint32_t context_handle,
+                             const void *geom_stream, uint32_t geom_len,
+                             const void *frag_stream, uint32_t frag_len,
+-                            uint32_t hwrt_set_handle, uint32_t hwrt_data_index, uint32_t frag_flags);
++                            uint32_t hwrt_set_handle, uint32_t hwrt_data_index, uint32_t frag_flags,
++                           uint32_t *done_out);
+ bool pvr_job_submit(struct pvr_vm *vm, uint32_t context_handle, uint32_t job_type,
+                     const void *cmd_stream, uint32_t cmd_stream_len,
+                     uint32_t hwrt_set_handle, uint32_t hwrt_data_index);
+diff --git a/src/imagination/vulkan/pvr_arch_job_render.c b/src/imagination/vulkan/pvr_arch_job_render.c
+index 3e2d847b..b56315c2 100644
+--- a/src/imagination/vulkan/pvr_arch_job_render.c
++++ b/src/imagination/vulkan/pvr_arch_job_render.c
+@@ -1393,10 +1393,6 @@ static void pvr_render_job_ws_fragment_pr_init_based_on_fragment_state(
+       pvr_frag_km_stream_pbe_reg_words_offset(dev_info);
+    const uint32_t eot_data_addr_byte_offset =
+       pvr_frag_km_stream_pds_eot_data_addr_offset(dev_info);
+-   /* ponytail: PVR_CSB_OFFSETS - the reference's own offset arithmetic, so the gallium driver's numbers
+-    * can be diffed against it instead of against my transcription of the helper. */
+-   /* ponytail: PVR_CSB_TAIL - dump the bytes from the EOT offset to the end of the stream, plus the two
+-    * length values, which is everything round 82 could not answer by reading. */
+ 
+    const uint32_t view_index =
+       job->view_state.force_pds_pixel_event_data_offset_zero
+diff --git a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c
+index 46e7fd2b..ccce234f 100644
+--- a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c
++++ b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c
+@@ -607,14 +607,8 @@ VkResult pvr_drm_winsys_render_submit(
+    if (submit_info->has_fragment_job)
+       jobs_args[2].sync_ops.count = num_frag_syncs;
+ 
+-   /* ponytail: PVR_JOB_TRACE - hardware jobs per submit, to compare clients. */
+ 
+-   /* ponytail: PVR_CSB_DUMP - hexdump the STATIC command streams a working driver submits.
+-    * fw_stream is an inline byte array, so this needs no buffer mapping. This is ground truth for the
+-    * gallium driver's missing job assembly, which otherwise has nothing to copy from. */
+ 
+-   /* ponytail: PVR_VK_GEOM_ONLY - submit only the geometry job, so the firmware trace of a
+-    * geometry-only TA kick from the working client can be compared with the native probe's. */
+ 
+    /* Returns VK_ERROR_OUT_OF_DEVICE_MEMORY to match pvrsrv. */
+    return pvr_ioctlf(drm_ws->base.render_fd,
+-- 
+2.47.3
+

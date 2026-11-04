@@ -1,0 +1,46 @@
+From 23a753d456f530b3ee7bd8bb2f6a18077e622872 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sun, 11 Oct 2026 05:17:47 +0800
+Subject: [PATCH 06/10] pvr: reuse the SPM scratch buffer for renders that need
+ less
+
+The device keeps one SPM scratch buffer for all render states (only one
+partial render runs at a time) but reused it only for a render needing
+exactly the same size. Renders of different sizes, as in render to
+texture, then freed and allocated a framebuffer-sized buffer every time
+they alternated: in glmark2's shadow scene about two 3.6 ms CREATE_BOs
+plus the unmap and close per frame. A larger buffer works just as well,
+so reuse it when it is big enough.
+
+glmark2-es2 through zink, off-screen 800x600, FPS of two runs each,
+before -> after: shadow 66/63 -> 149/149, desktop blur 35/35 -> 50/50,
+refract 22/22 -> 27/27, terrain 11/11 -> 12/12.
+
+CTS: TFBC list (9170), dynamic_rendering sample (6745), 5062 list,
+synchronization (1718), loops/indexing/graphicsfuzz list (6428):
+identical to before.
+---
+ src/imagination/vulkan/pvr_spm.c | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/src/imagination/vulkan/pvr_spm.c b/src/imagination/vulkan/pvr_spm.c
+index 4e9f0ba..4b17dd3 100644
+--- a/src/imagination/vulkan/pvr_spm.c
++++ b/src/imagination/vulkan/pvr_spm.c
+@@ -182,9 +182,11 @@ VkResult pvr_spm_scratch_buffer_get_buffer(
+     * PR on the whole device until completion.
+     * Thus we can safely use the same scratch buffer across multiple
+     * framebuffers as the scratch buffer is only used during PRs and only one PR
+-    * can ever be executed at any one time.
++    * can ever be executed at any one time. For the same reason a buffer larger
++    * than needed will do: renders of different sizes would otherwise free and
++    * allocate one every time they alternate.
+     */
+-   if (store->head_ref && store->head_ref->size == size) {
++   if (store->head_ref && store->head_ref->size >= size) {
+       buffer = store->head_ref;
+    } else {
+       VkResult result;
+-- 
+2.47.3
+

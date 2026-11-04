@@ -1,8 +1,8 @@
-From 5fd7b28b939d9aff5497cab1ac5f3a87cc19a687 Mon Sep 17 00:00:00 2001
+From d87387d12bf8da8d266e20c225fffce1cdbdeebb Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sun, 11 Oct 2026 08:08:32 +0800
-Subject: [PATCH 84/98] pvr: keep the pixels around a partial render area of a
- TFBC image
+Subject: [PATCH 084/294] pvr: keep the pixels around a partial render area of
+ a TFBC image
 
 The PBE store of a TFBC attachment writes whole 8x8 blocks, so with a
 partial render area the pixels around the area have to be loaded first.
@@ -39,7 +39,7 @@ too.
  4 files changed, 104 insertions(+), 54 deletions(-)
 
 diff --git a/src/imagination/vulkan/pvr_arch_cmd_buffer.c b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
-index 0cb207e..3c399aa 100644
+index 0cb207e9..3c399aae 100644
 --- a/src/imagination/vulkan/pvr_arch_cmd_buffer.c
 +++ b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
 @@ -1683,6 +1683,26 @@ pvr_render_needs_fbc_load(const struct pvr_cmd_buffer *cmd_buffer,
@@ -185,7 +185,7 @@ index 0cb207e..3c399aa 100644
  
           if (pass->multiview_enabled) {
 diff --git a/src/imagination/vulkan/pvr_arch_hw_pass.c b/src/imagination/vulkan/pvr_arch_hw_pass.c
-index 8e4eaca..955a27e 100644
+index 8e4eacad..955a27e5 100644
 --- a/src/imagination/vulkan/pvr_arch_hw_pass.c
 +++ b/src/imagination/vulkan/pvr_arch_hw_pass.c
 @@ -32,6 +32,7 @@
@@ -214,7 +214,7 @@ index 8e4eaca..955a27e 100644
  
     if (*use_render_init) {
 diff --git a/src/imagination/vulkan/pvr_arch_pass.c b/src/imagination/vulkan/pvr_arch_pass.c
-index ab02134..b6303af 100644
+index ab02134f..b6303af6 100644
 --- a/src/imagination/vulkan/pvr_arch_pass.c
 +++ b/src/imagination/vulkan/pvr_arch_pass.c
 @@ -427,6 +427,20 @@ pvr_render_may_need_fbc_load(const struct pvr_render_pass *pass,
@@ -302,7 +302,7 @@ index ab02134..b6303af 100644
     }
  
 diff --git a/src/imagination/vulkan/rogue/pvr_blit.c b/src/imagination/vulkan/rogue/pvr_blit.c
-index c049076..5451253 100644
+index c0490763..54512538 100644
 --- a/src/imagination/vulkan/rogue/pvr_blit.c
 +++ b/src/imagination/vulkan/rogue/pvr_blit.c
 @@ -2221,7 +2221,7 @@ static void pvr_clear_attachments(struct pvr_cmd_buffer *cmd_buffer,

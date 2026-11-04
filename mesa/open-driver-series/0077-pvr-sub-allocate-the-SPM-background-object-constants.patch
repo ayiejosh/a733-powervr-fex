@@ -1,7 +1,7 @@
-From 2dca74589ce8b529f946a8230a3ba54dfabd9011 Mon Sep 17 00:00:00 2001
+From f760b19ce1b933b71f3fee2ce60882eeb2d3a3ef Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sun, 11 Oct 2026 04:11:20 +0800
-Subject: [PATCH 77/98] pvr: sub-allocate the SPM background object constants
+Subject: [PATCH 077/294] pvr: sub-allocate the SPM background object constants
 
 pvr_spm_init_bgobj_state() allocated a buffer object for a few hundred
 bytes of constants per render. With dynamic rendering that is one
@@ -21,7 +21,7 @@ CTS: as for the previous commits, identical to before.
  3 files changed, 12 insertions(+), 13 deletions(-)
 
 diff --git a/src/imagination/vulkan/pvr_arch_spm.c b/src/imagination/vulkan/pvr_arch_spm.c
-index 5d1bcd9..5c2883c 100644
+index 5d1bcd95..5c2883cc 100644
 --- a/src/imagination/vulkan/pvr_arch_spm.c
 +++ b/src/imagination/vulkan/pvr_arch_spm.c
 @@ -694,7 +694,7 @@ pvr_spm_setup_texture_state_words(struct pvr_device *device,
@@ -76,7 +76,7 @@ index 5d1bcd9..5c2883c 100644
     return result;
  }
 diff --git a/src/imagination/vulkan/pvr_spm.c b/src/imagination/vulkan/pvr_spm.c
-index 5e66a69..9bc8e4d 100644
+index 5e66a692..9bc8e4d6 100644
 --- a/src/imagination/vulkan/pvr_spm.c
 +++ b/src/imagination/vulkan/pvr_spm.c
 @@ -221,5 +221,5 @@ void pvr_spm_finish_bgobj_state(struct pvr_device *device,
@@ -87,7 +87,7 @@ index 5e66a69..9bc8e4d 100644
 +   pvr_bo_suballoc_free(spm_bgobj_state->consts_buffer);
  }
 diff --git a/src/imagination/vulkan/pvr_spm.h b/src/imagination/vulkan/pvr_spm.h
-index d9fccdb..5af66fb 100644
+index d9fccdb6..5af66fb1 100644
 --- a/src/imagination/vulkan/pvr_spm.h
 +++ b/src/imagination/vulkan/pvr_spm.h
 @@ -75,7 +75,7 @@ struct pvr_spm_eot_state {

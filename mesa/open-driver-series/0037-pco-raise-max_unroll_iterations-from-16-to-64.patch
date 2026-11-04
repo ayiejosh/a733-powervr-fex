@@ -1,7 +1,7 @@
-From c2bde574c21f0ee7b320395561d4dd5f9caa27d2 Mon Sep 17 00:00:00 2001
+From 41f9b2d380e92825b2aa89162ddccbdb87890f94 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Thu, 8 Oct 2026 23:01:58 +0800
-Subject: [PATCH 37/43] pco: raise max_unroll_iterations from 16 to 64
+Subject: [PATCH 037/294] pco: raise max_unroll_iterations from 16 to 64
 
 Measured on the Radxa Cubie A7A (PowerVR BXM-4-64): the open driver executes
 shader loops ~5x slower than the vendor driver, and the discontinuity is exactly at
@@ -44,7 +44,7 @@ loop sizes measured. Upstream-worthy.
  2 files changed, 2 insertions(+), 2 deletions(-)
 
 diff --git a/src/imagination/pco/pco_nir.c b/src/imagination/pco/pco_nir.c
-index 38f158b..8822523 100644
+index 38f158be..88225230 100644
 --- a/src/imagination/pco/pco_nir.c
 +++ b/src/imagination/pco/pco_nir.c
 @@ -82,7 +82,7 @@ static const nir_shader_compiler_options nir_options = {
@@ -57,7 +57,7 @@ index 38f158b..8822523 100644
  
     .io_options = nir_io_vectorizer_ignores_types,
 diff --git a/src/imagination/vulkan/pvr_arch_pipeline.c b/src/imagination/vulkan/pvr_arch_pipeline.c
-index b0e896a..54fde59 100644
+index b0e896ad..54fde59a 100644
 --- a/src/imagination/vulkan/pvr_arch_pipeline.c
 +++ b/src/imagination/vulkan/pvr_arch_pipeline.c
 @@ -2670,7 +2670,7 @@ static void pvr_setup_descriptors(pco_data *data,
@@ -69,3 +69,6 @@ index b0e896a..54fde59 100644
        data->common.spill_info = (pco_range){
           .start = data->common.shareds,
           .count = 3,
+-- 
+2.47.3
+

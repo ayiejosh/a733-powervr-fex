@@ -1,7 +1,7 @@
-From fd933a18014a991055fbe58a8b0996f991471c5e Mon Sep 17 00:00:00 2001
+From dff27fc5cd12a33b69bdc20ce188152e63de3161 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sat, 10 Oct 2026 19:41:38 +0800
-Subject: [PATCH 71/98] pco: swap imadd32/imul32 multiplicands to read pooled
+Subject: [PATCH 071/294] pco: swap imadd32/imul32 multiplicands to read pooled
  literals
 
 imadd32 and imul32 multiply src0 by src1, but neither the literal pool
@@ -28,7 +28,7 @@ weston-simple-egl + vkcube: OK.
  2 files changed, 14 insertions(+), 2 deletions(-)
 
 diff --git a/src/imagination/pco/pco_const_imms.c b/src/imagination/pco/pco_const_imms.c
-index 8c70399..de6ad37 100644
+index 8c70399c..de6ad372 100644
 --- a/src/imagination/pco/pco_const_imms.c
 +++ b/src/imagination/pco/pco_const_imms.c
 @@ -178,6 +178,9 @@ static bool blocks_src_swap(pco_instr *const *defs, pco_ref ref)
@@ -56,7 +56,7 @@ index 8c70399..de6ad37 100644
  
           ok[psrc->val] = false;
 diff --git a/src/imagination/pco/pco_legalize.c b/src/imagination/pco/pco_legalize.c
-index 7763f33..f18aab8 100644
+index 7763f334..f18aab81 100644
 --- a/src/imagination/pco/pco_legalize.c
 +++ b/src/imagination/pco/pco_legalize.c
 @@ -102,7 +102,8 @@ static bool src_mods_supported(const pco_instr *instr,

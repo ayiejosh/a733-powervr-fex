@@ -1,0 +1,36 @@
+From 2a77f280ea72d24c86031652883f4e87dde01763 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 30 Oct 2026 18:32:19 +0800
+Subject: [PATCH 358/359] gallium/pvr: probe copy replay uses the copy job's
+ DMA space content
+
+The replay had been installing the fill job's DMA space words (0xdc0007ff / 0x2400) since an earlier
+revert; the copy job's captured content is 0xec0007ff / 0x22400. With the capture's address encodings
+verified numerically - word 3 low 22 bits are source>>18 (matches both the base and the +0x800000
+shifted runs) and word 9 moves by destination delta<<3 - the replay now uses the copy variant matching
+its mapped source/destination. The job still syncs without writing, so the background-tag execution
+context remains the open piece (rounds 152-153); this just removes a wrong input from the experiment.
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index 61f96506..1f0c01a2 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -6061,8 +6061,11 @@ tq_copy_check(int fd, struct pipe_screen *pscreen)
+       goto out_bo;
+    }
+    {
++      /* Copy job's DMA space content (captured from the reference's copy branch). M[3] low bits
++       * hold source>>18, M[9] tracks the destination address; both match the addresses mapped
++       * below (src 0x80000b7000, dst 0x80000bb000). */
+       static const uint32_t dma_state[20] = {
+-         0xc0002d84, 0x00011ffc, 0xdc0007ff, 0x10200002, 0, 0, 0, 0, 0, 0x00002400,
++         0xc0002d84, 0x00011ffc, 0xec0007ff, 0x10200002, 0, 0, 0, 0, 0, 0x00022400,
+          0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+       };
+ 
+-- 
+2.47.3
+

@@ -1,0 +1,449 @@
+From 28c30f2cdd7e63995ac7ed2c9d9f12f8bdaa303d Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Thu, 29 Oct 2026 23:26:45 +0800
+Subject: [PATCH] gallium/pvr: cube maps - six twiddled faces with per-face mip
+ chains
+
+Cube maps are ES2 core and this driver refused PIPE_TEXTURE_CUBE outright (Mesa reported "Bad
+t->Target in _mesa_test_texobj_completeness" and glTexImage2D failed), while the hardware supports
+them natively. This adds them:
+
+- Layout: a cube is six 2D twiddled faces, face-major, each face carrying its own mip chain down to
+  1x1 when the texture is mipmapped, with the faces strided by a page-aligned layer size - exactly the
+  layout the reference's pvr_image_plane_setup_mip_levels produces (its layer_size includes the whole
+  padded chain because the hardware computes face strides that way).
+- Texture descriptor: TEXTYPE_CUBE with IMAGE_WORD1.depth = faces - 1 (5), and the per-face stride in
+  the pco image metadata's PCO_IMAGE_META_LAYER_SIZE word (the reference's info->layer_size); the
+  image metadata lives right after the image state words in the combined image-sampler binding.
+- Transfers: a face is selected by the transfer box's z. Uploads and readbacks reuse the existing
+  "GPU blit through a linear staging resource" path, which now carries a layer for both its render
+  target and its background source (the target address is layer * layer_size past the level, and a
+  face is read back as a 2D image at that address).
+- glGenerateMipmap generates each face's chain separately through the same layered blit.
+- caps->max_texture_cube_levels follows the maximum 2D texture size; cube formats are limited to the
+  8-bit RGBA/BGRA/RGBX/BGRX set the PBE can write (anything else is still refused honestly).
+
+Verified against zink with open-perf/cube_probe.c and cube_mip.c:
+- six distinctly coloured faces sampled with the six axis directions give exactly the face colours on
+  both drivers (red/green/blue/yellow/magenta/cyan);
+- the same cube after glGenerateMipmap sampled with NEAREST_MIPMAP_NEAREST at high minification keeps
+  every face's colour on both drivers - the per-face mip chain and face stride are right.
+Full gate green: 49 gltri modes (all native glGetError 0x0), 28 mip modes, rttest PASS
+(bad=0/262144), rt8test unchanged, MRT/sRGB/instancing/extension tests unchanged, 0 MMU faults.
+---
+ src/gallium/drivers/pvr_native/pvr_context.c  | 39 +++++++++++++-----
+ src/gallium/drivers/pvr_native/pvr_csb.c      |  7 +++-
+ src/gallium/drivers/pvr_native/pvr_csb.h      |  5 +++
+ src/gallium/drivers/pvr_native/pvr_draw.c     | 40 +++++++++++++++++--
+ src/gallium/drivers/pvr_native/pvr_draw.h     |  3 +-
+ src/gallium/drivers/pvr_native/pvr_resource.c | 40 +++++++++++++++++--
+ src/gallium/drivers/pvr_native/pvr_resource.h | 12 ++++++
+ src/gallium/drivers/pvr_native/pvr_screen.c   | 11 ++++-
+ 8 files changed, 135 insertions(+), 22 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_context.c b/src/gallium/drivers/pvr_native/pvr_context.c
+index cab2b5a0..ae3b1987 100644
+--- a/src/gallium/drivers/pvr_native/pvr_context.c
++++ b/src/gallium/drivers/pvr_native/pvr_context.c
+@@ -52,14 +52,18 @@ pvr_transfer_map(struct pipe_context *pctx, struct pipe_resource *pres,
+     * written by the ZLS. */
+    if (res->twiddled) {
+       struct pvr_context *ctx = pvr_context(pctx);
++      /* A cube map is mapped one face at a time: the box's z selects the face. */
++      const unsigned layer = res->cube ? (unsigned)box->z : 0;
+       if (util_format_is_depth_or_stencil(pres->format) || level > pres->last_level ||
+-          box->depth != 1) {
++          box->depth != 1 || (res->cube && box->z >= 6)) {
+          mesa_loge("pvr: transfer_map on twiddled depth or level %u of %u is not supported", level,
+                    pres->last_level);
+          return NULL;
+       }
+       struct pipe_resource templ = *pres;
+       templ.bind = PIPE_BIND_RENDER_TARGET | PIPE_BIND_SAMPLER_VIEW | PIPE_BIND_LINEAR;
++      templ.target = PIPE_TEXTURE_2D;
++      templ.array_size = 1;
+       templ.width0 = u_minify(pres->width0, level);
+       templ.height0 = u_minify(pres->height0, level);
+       templ.last_level = 0;
+@@ -71,11 +75,14 @@ pvr_transfer_map(struct pipe_context *pctx, struct pipe_resource *pres,
+       const bool whole = (usage & PIPE_MAP_DISCARD_WHOLE_RESOURCE) ||
+                          ((usage & PIPE_MAP_DISCARD_RANGE) && box->x == 0 && box->y == 0 &&
+                           box->width == (int)templ.width0 && box->height == (int)templ.height0);
+-      if (!whole && !pvr_draw_blit(ctx, staging, 0, pres, level, false)) {
++      if (!whole && !pvr_draw_blit(ctx, staging, 0, 0, pres, level, layer, false)) {
+          pipe_resource_reference(&staging, NULL);
+          return NULL;
+       }
+-      void *map = pvr_transfer_map(pctx, staging, 0, usage & ~PIPE_MAP_UNSYNCHRONIZED, box,
++      struct pipe_box sbox = *box;
++      sbox.z = 0;
++      sbox.depth = 1;
++      void *map = pvr_transfer_map(pctx, staging, 0, usage & ~PIPE_MAP_UNSYNCHRONIZED, &sbox,
+                                    out_transfer);
+       if (map == NULL) {
+          pipe_resource_reference(&staging, NULL);
+@@ -84,6 +91,7 @@ pvr_transfer_map(struct pipe_context *pctx, struct pipe_resource *pres,
+       struct pvr_transfer *t = (struct pvr_transfer *)*out_transfer;
+       pipe_resource_reference(&t->base.resource, pres);
+       t->base.level = level;
++      t->base.box = *box;
+       t->staging = staging;
+       return map;
+    }
+@@ -131,9 +139,12 @@ pvr_transfer_unmap(struct pipe_context *pctx, struct pipe_transfer *transfer)
+ {
+    struct pvr_transfer *trans = (struct pvr_transfer *)transfer;
+    if (trans->staging != NULL) {
+-      if (trans->base.usage & PIPE_MAP_WRITE)
+-         pvr_draw_blit(pvr_context(pctx), trans->base.resource, trans->base.level,
+-                       trans->staging, 0, false);
++      if (trans->base.usage & PIPE_MAP_WRITE) {
++         const struct pvr_resource *res = pvr_resource(trans->base.resource);
++         const unsigned layer = res->cube ? (unsigned)trans->base.box.z : 0;
++         pvr_draw_blit(pvr_context(pctx), trans->base.resource, trans->base.level, layer,
++                       trans->staging, 0, 0, false);
++      }
+       pipe_resource_reference(&trans->staging, NULL);
+    }
+    pipe_resource_reference(&trans->base.resource, NULL);
+@@ -807,12 +818,16 @@ pvr_resource_copy_region(struct pipe_context *pctx, struct pipe_resource *dst, u
+                          unsigned dstx, unsigned dsty, unsigned dstz, struct pipe_resource *src,
+                          unsigned src_level, const struct pipe_box *box)
+ {
++   const bool dst_cube = dst->target == PIPE_TEXTURE_CUBE;
++   const bool src_cube = src->target == PIPE_TEXTURE_CUBE;
+    if (dst->target != PIPE_BUFFER && src->target != PIPE_BUFFER && dstx == 0 && dsty == 0 &&
+-       dstz == 0 && box->x == 0 && box->y == 0 && box->z == 0 && box->depth == 1 &&
++       (!dst_cube ? dstz == 0 : dstz < 6) && box->x == 0 && box->y == 0 &&
++       (!src_cube ? box->z == 0 : box->z < 6) && box->depth == 1 &&
+        dst->format == src->format &&
+        box->width == (int)u_minify(src->width0, src_level) &&
+        box->height == (int)u_minify(src->height0, src_level) &&
+-       pvr_draw_blit(pvr_context(pctx), dst, dst_level, src, src_level, false))
++       pvr_draw_blit(pvr_context(pctx), dst, dst_level, dst_cube ? dstz : 0, src, src_level,
++                     src_cube ? (unsigned)box->z : 0, false))
+       return;
+    util_resource_copy_region(pctx, dst, dst_level, dstx, dsty, dstz, src, src_level, box);
+ }
+@@ -884,9 +899,13 @@ pvr_generate_mipmap(struct pipe_context *pctx, struct pipe_resource *pres,
+ {
+    if (format != pres->format)
+       return false;
++   const struct pvr_resource *res = pvr_resource(pres);
++   const unsigned faces = res->cube ? 6 : 1;
+    for (unsigned l = base_level + 1; l <= MIN2(last_level, pres->last_level); l++) {
+-      if (!pvr_draw_blit(pvr_context(pctx), pres, l, pres, l - 1, true))
+-         return false;
++      for (unsigned f = 0; f < faces; f++) {
++         if (!pvr_draw_blit(pvr_context(pctx), pres, l, f, pres, l - 1, f, true))
++            return false;
++      }
+    }
+    return true;
+ }
+diff --git a/src/gallium/drivers/pvr_native/pvr_csb.c b/src/gallium/drivers/pvr_native/pvr_csb.c
+index 871ba27f..937c76a7 100644
+--- a/src/gallium/drivers/pvr_native/pvr_csb.c
++++ b/src/gallium/drivers/pvr_native/pvr_csb.c
+@@ -1377,7 +1377,9 @@ pvr_csb_emit_tex_desc(struct pvr_csb *csb, const struct pvr_tex_desc *desc)
+                           (desc->twiddled ? ROGUE_TEXSTATE_IMAGE_WORD1_length
+                                           : ROGUE_TEXSTATE_STRIDE_IMAGE_WORD1_length);
+    struct ROGUE_TEXSTATE_IMAGE_WORD0 word0 = {
+-      .textype = desc->twiddled ? ROGUE_TEXSTATE_TEXTYPE_2D : ROGUE_TEXSTATE_TEXTYPE_STRIDE,
++      .textype = desc->cube ? ROGUE_TEXSTATE_TEXTYPE_CUBE
++                : desc->twiddled ? ROGUE_TEXSTATE_TEXTYPE_2D
++                                 : ROGUE_TEXSTATE_TEXTYPE_STRIDE,
+       .texformat = desc->components,
+       .width = desc->width - 1,
+       .height = desc->height - 1,
+@@ -1408,7 +1410,8 @@ pvr_csb_emit_tex_desc(struct pvr_csb *csb, const struct pvr_tex_desc *desc)
+       .num_mip_levels = MAX2(desc->num_levels, 1),
+       .mipmaps_present = desc->num_levels > 1,
+       .baselevel = desc->base_level,
+-      .depth = 0,
++      /* Cube: the face count goes in the array-layer field (faces - 1, the reference's rule). */
++      .depth = desc->layers > 0 ? desc->layers - 1 : 0,
+       .alpha_msb = desc->alpha_msb,
+       .border = false,
+       .frame_buffer_compression = false,
+diff --git a/src/gallium/drivers/pvr_native/pvr_csb.h b/src/gallium/drivers/pvr_native/pvr_csb.h
+index 96893703..d6ea11c6 100644
+--- a/src/gallium/drivers/pvr_native/pvr_csb.h
++++ b/src/gallium/drivers/pvr_native/pvr_csb.h
+@@ -233,6 +233,11 @@ struct pvr_tex_desc {
+     * the TPU needs this to know the stored channel order when it decodes sRGB. */
+    bool alpha_msb;
+ 
++   /* Cube map: TEXTYPE_CUBE with the face count in IMAGE_WORD1.depth (faces - 1), sampled with the
++    * hardware's direction-to-face selection. */
++   bool cube;
++   uint32_t layers;
++
+    /* A twiddled mip chain: levels sampled (0 or 1: none) and the first one. width/height are
+     * level 0's then. */
+    uint32_t num_levels;
+diff --git a/src/gallium/drivers/pvr_native/pvr_draw.c b/src/gallium/drivers/pvr_native/pvr_draw.c
+index bd41e989..43555d28 100644
+--- a/src/gallium/drivers/pvr_native/pvr_draw.c
++++ b/src/gallium/drivers/pvr_native/pvr_draw.c
+@@ -89,6 +89,10 @@ struct pvr_draw_eot {
+ 
+ struct pvr_draw_state {
+    bool ready, failed;
++   /* Cube faces: the render target and the load source may be one face of a cube map (a transfer
++    * blit), addressed at face * layer_size past the level. */
++   unsigned rt_layer;
++   unsigned load_src_layer;
+    /* The heap carveouts with the firmware's static programs (VDM sync, pixel event, fence): the
+     * TA reads them at every kick. */
+    struct pvr_static_memory sm;
+@@ -785,8 +789,9 @@ draw_tex_binding(struct pvr_context *ctx, unsigned stage, unsigned u, uint32_t *
+    }
+    if (smp == NULL)
+       smp = &nearest;
++   const bool cube_view = view != NULL && view->target == PIPE_TEXTURE_CUBE;
+    if (view == NULL || view->texture == NULL ||
+-       (view->target != PIPE_TEXTURE_2D && view->target != PIPE_TEXTURE_RECT) ||
++       (!cube_view && view->target != PIPE_TEXTURE_2D && view->target != PIPE_TEXTURE_RECT) ||
+        !pvr_format_layout_from_pipe(view->format, &layout))
+       return false;
+    struct pvr_resource *res = pvr_resource(view->texture);
+@@ -805,6 +810,13 @@ draw_tex_binding(struct pvr_context *ctx, unsigned stage, unsigned u, uint32_t *
+       tex.num_levels = last - first + 1;
+       tex.base_level = first;
+    }
++   if (cube_view) {
++      /* The whole cube: six faces from base_array_layer, the hardware selects by direction. */
++      tex.cube = true;
++      tex.layers = 6;
++      tex.addr = pvr_resource_level_addr_layer(res, chain ? 0 : first,
++                                               MIN2(view->u.tex.first_layer, 5));
++   }
+    util_format_compose_swizzles(layout.swizzle, view_swz, tex.swizzle);
+    struct pvr_sampler_desc sd = {
+       .wrap_s = smp->wrap_s,
+@@ -832,6 +844,11 @@ draw_tex_binding(struct pvr_context *ctx, unsigned stage, unsigned u, uint32_t *
+    pvr_csb_init(&csb, out, ROGUE_NUM_TEXSTATE_DWORDS * 4, 0);
+    if (!pvr_csb_emit_tex_desc(&csb, &tex) || csb.overflowed)
+       return false;
++   if (cube_view) {
++      /* Image metadata follows the image state words: layer size (the face stride) is meta word 0
++       * (PCO_IMAGE_META_LAYER_SIZE). */
++      out[ROGUE_NUM_TEXSTATE_DWORDS + PCO_IMAGE_META_LAYER_SIZE] = res->layer_size;
++   }
+    pvr_csb_init(&csb, out + 2 * ROGUE_NUM_TEXSTATE_DWORDS, ROGUE_NUM_TEXSTATE_DWORDS * 4, 0);
+    return pvr_csb_emit_sampler_desc(&csb, &sd) && !csb.overflowed;
+ }
+@@ -1022,6 +1039,15 @@ draw_load_program(struct pvr_context *ctx, struct pvr_draw_state *d, uint64_t bg
+    struct pvr_tex_desc tex;
+    draw_level_desc(rt, src_level, layout.components, &tex);
+    memcpy(tex.swizzle, layout.swizzle, sizeof(tex.swizzle));
++   /* A cube face is read as a 2D image of its own: address at the face, no cube textype, no
++    * layer stride (the level sizes inside a face are the same chain the 2D case uses). */
++   if (d->load_src_layer != 0) {
++      tex.addr = pvr_resource_level_addr_layer(rt, src_level, d->load_src_layer);
++      tex.cube = false;
++      tex.layers = 0;
++      tex.num_levels = 0;
++      tex.base_level = 0;
++   }
+    const struct pvr_sampler_desc smp = {
+       .wrap_s = PIPE_TEX_WRAP_CLAMP_TO_EDGE,
+       .wrap_t = PIPE_TEX_WRAP_CLAMP_TO_EDGE,
+@@ -1289,6 +1315,8 @@ draw_open(struct pvr_context *ctx, struct pvr_draw_state *d, struct pipe_resourc
+    }
+    d->gen.used = 0;
+    d->pds.used = 0;
++   d->rt_layer = 0;
++   d->load_src_layer = 0;
+    pvr_csb_init(&d->ctrl, d->ctrl_bo.map, d->ctrl_bo.size, PVR_CSB_LINK_DWORDS);
+    pipe_resource_reference(&d->rt, rt);
+    d->rt_level = level;
+@@ -1753,7 +1781,8 @@ pvr_draw_clear_depth(struct pvr_context *ctx, float depth)
+ 
+ bool
+ pvr_draw_blit(struct pvr_context *ctx, struct pipe_resource *dst, unsigned dst_level,
+-              struct pipe_resource *src, unsigned src_level, bool gen)
++              unsigned dst_layer, struct pipe_resource *src, unsigned src_level,
++              unsigned src_layer, bool gen)
+ {
+    struct pvr_draw_state *d = ctx->draw;
+    const uint32_t w = u_minify(dst->width0, dst_level), h = u_minify(dst->height0, dst_level);
+@@ -1770,6 +1799,8 @@ pvr_draw_blit(struct pvr_context *ctx, struct pipe_resource *dst, unsigned dst_l
+    if (!draw_init(ctx, d) || !draw_open(ctx, d, dst, dst_level, w, h, NULL))
+       return false;
+    d->clear_valid = false; /* a deferred clear of dst is overwritten */
++   d->rt_layer = dst_layer;
++   d->load_src_layer = src_layer;
+    draw_use(d, src);
+    pipe_resource_reference(&d->load_src, src);
+    d->load_src_level = src_level;
+@@ -1889,11 +1920,12 @@ pvr_draw_flush(struct pvr_context *ctx)
+    const bool fb_render =
+       !zonly && nr_fb > 1 && d->rt == ctx->fb.cbufs[0].texture &&
+       d->rt_level == ctx->fb.cbufs[0].level;
++   const uint64_t rt_addr = pvr_resource_level_addr_layer(rt, d->rt_level, d->rt_layer);
+    if (zonly) {
+-      eot_addrs[0] = pvr_resource_level_addr(rt, d->rt_level);
++      eot_addrs[0] = rt_addr;
+       eot_formats[0] = fmt;
+    } else {
+-      eot_addrs[0] = pvr_resource_level_addr(rt, d->rt_level);
++      eot_addrs[0] = rt_addr;
+       eot_formats[0] = fmt;
+       if (fb_render) {
+          nr_attach = nr_fb;
+diff --git a/src/gallium/drivers/pvr_native/pvr_draw.h b/src/gallium/drivers/pvr_native/pvr_draw.h
+index 755d4912..e33a12e7 100644
+--- a/src/gallium/drivers/pvr_native/pvr_draw.h
++++ b/src/gallium/drivers/pvr_native/pvr_draw.h
+@@ -35,7 +35,8 @@ bool pvr_draw_clear_depth(struct pvr_context *ctx, float depth);
+  * formats; same extent, or with gen the next smaller mip level, each pixel the 2x2 average): one
+  * render whose background reads src. Asynchronous; a CPU map of dst waits for it. */
+ bool pvr_draw_blit(struct pvr_context *ctx, struct pipe_resource *dst, unsigned dst_level,
+-                   struct pipe_resource *src, unsigned src_level, bool gen);
++                   unsigned dst_layer, struct pipe_resource *src, unsigned src_level,
++                   unsigned src_layer, bool gen);
+ 
+ /* Records a full depth clear for the render a colour clear just opened; false if not possible. */
+ bool pvr_draw_note_zclear(struct pvr_context *ctx, float depth);
+diff --git a/src/gallium/drivers/pvr_native/pvr_resource.c b/src/gallium/drivers/pvr_native/pvr_resource.c
+index 77bcb2d8..bb79c92c 100644
+--- a/src/gallium/drivers/pvr_native/pvr_resource.c
++++ b/src/gallium/drivers/pvr_native/pvr_resource.c
+@@ -56,17 +56,20 @@ pvr_resource_create(struct pipe_screen *pscreen, const struct pipe_resource *tem
+    uint32_t stride = 0;
+    uint64_t size = 0;
+ 
+-   if (templ->array_size != 1 || templ->nr_samples > 1) {
++   const bool cube = templ->target == PIPE_TEXTURE_CUBE;
++   if ((!cube && templ->array_size != 1) || (cube && templ->array_size != 6) ||
++       templ->nr_samples > 1) {
+       mesa_logd("pvr: refusing an arrayed/multisampled resource");
+       return NULL;
+    }
+ 
+-   if (templ->target != PIPE_BUFFER && templ->depth0 != 1) {
++   if (!cube && templ->target != PIPE_BUFFER && templ->depth0 != 1) {
+       mesa_logd("pvr: refusing a 2D resource with depth");
+       return NULL;
+    }
+ 
+    bool twiddled = false, fbc = false;
++   uint32_t layer_size = 0;
+ 
+    uint32_t phys_width = 0, phys_height = 0;
+    uint64_t fbc_header_size = 0;
+@@ -84,7 +87,36 @@ pvr_resource_create(struct pipe_screen *pscreen, const struct pipe_resource *tem
+    const bool mips = templ->target == PIPE_TEXTURE_2D && templ->last_level > 0;
+    unsigned last_level = 0;
+    uint32_t level_offset[PIPE_MAX_TEXTURE_LEVELS] = { 0 };
+-   if (mips && rt_format && !(templ->bind & bind_linear) && !screen->no_twiddle) {
++   if (cube) {
++      /* A cube map is six 2D twiddled faces, face-major: each face carries its own mip chain (down
++       * to 1x1, as the hardware expects the whole chain when mipmapped) and the faces are strided
++       * by the page-aligned layer size, which the texture descriptor passes as the image meta's
++       * layer size. The reference's pvr_image_plane_setup_mip_levels lays an array out this way. */
++      if (!rt_format || (templ->bind & bind_linear) || screen->no_twiddle) {
++         mesa_logd("pvr: refusing a cube map in a format/layout the hardware cannot use");
++         return NULL;
++      }
++      const unsigned cpp = util_format_get_blocksize(fmt);
++      twiddled = true;
++      last_level = templ->last_level;
++      phys_width = util_next_power_of_two(templ->width0);
++      phys_height = util_next_power_of_two(templ->height0);
++      stride = cpp * phys_width;
++      if (last_level > 0) {
++         for (unsigned l = 0;; l++) {
++            if (l < PIPE_MAX_TEXTURE_LEVELS)
++               level_offset[l] = (uint32_t)size;
++            size += (uint64_t)cpp * u_minify(phys_width, l) * u_minify(phys_height, l);
++            if (u_minify(phys_width, l) == 1 && u_minify(phys_height, l) == 1)
++               break;
++         }
++      } else {
++         level_offset[0] = 0;
++         size = (uint64_t)stride * phys_height;
++      }
++      layer_size = ALIGN_POT((uint32_t)size, 4096);
++      size = (uint64_t)layer_size * 6;
++   } else if (mips && rt_format && !(templ->bind & bind_linear) && !screen->no_twiddle) {
+       /* A mip chain is twiddled whatever the bind flags (the GPU uploads and generates its
+        * levels), laid out as the Vulkan driver's pvr_image_plane_setup_mip_levels: power-of-two
+        * levels back to back, and the hardware expects room for the full chain down to 1x1.
+@@ -164,6 +196,8 @@ pvr_resource_create(struct pipe_screen *pscreen, const struct pipe_resource *tem
+    res->twiddled = twiddled;
+    res->phys_width = phys_width;
+    res->phys_height = phys_height;
++   res->cube = cube;
++   res->layer_size = layer_size;
+    res->fbc = fbc;
+    res->fbc_header_size = fbc_header_size;
+ 
+diff --git a/src/gallium/drivers/pvr_native/pvr_resource.h b/src/gallium/drivers/pvr_native/pvr_resource.h
+index b31a921d..5e2c2279 100644
+--- a/src/gallium/drivers/pvr_native/pvr_resource.h
++++ b/src/gallium/drivers/pvr_native/pvr_resource.h
+@@ -43,6 +43,11 @@ struct pvr_resource {
+    bool twiddled;
+    uint32_t phys_width, phys_height;
+ 
++   /* Cube map: six faces, face-major, each face carrying its own mip chain. layer_size is the
++    * page-aligned stride between faces (the hardware's PCO_IMAGE_META_LAYER_SIZE). */
++   bool cube;
++   uint32_t layer_size;
++
+    /* Lossless TFBC: twiddled colour targets are PBE-compressed 8x8 blocks, with an 8-byte header
+     * per block stored below the data. data_addr points past the header area. */
+    bool fbc;
+@@ -118,4 +123,11 @@ pvr_resource_level_addr(const struct pvr_resource *res, unsigned level)
+    return res->data_addr + res->level_offset[level];
+ }
+ 
++/* Address of one face of a cube map (layer 0 for 2D resources, where layer_size is 0). */
++static inline uint64_t
++pvr_resource_level_addr_layer(const struct pvr_resource *res, unsigned level, unsigned layer)
++{
++   return pvr_resource_level_addr(res, level) + (uint64_t)layer * res->layer_size;
++}
++
+ #endif /* PVR_RESOURCE_H */
+diff --git a/src/gallium/drivers/pvr_native/pvr_screen.c b/src/gallium/drivers/pvr_native/pvr_screen.c
+index cce7aa3b..b46d3b8e 100644
+--- a/src/gallium/drivers/pvr_native/pvr_screen.c
++++ b/src/gallium/drivers/pvr_native/pvr_screen.c
+@@ -78,13 +78,20 @@ pvr_get_device_vendor(struct pipe_screen *pscreen)
+ static bool
+ pvr_is_format_supported(UNUSED struct pipe_screen *pscreen,
+                         enum pipe_format format,
+-                        UNUSED enum pipe_texture_target target,
++                        enum pipe_texture_target target,
+                         unsigned sample_count,
+                         unsigned storage_sample_count,
+                         unsigned bindings)
+ {
+    const struct util_format_description *desc;
+ 
++   /* Cube maps are six twiddled faces in a plain 8-bit format; other targets are refused (the state
++    * tracker converts where it can, or the allocation fails honestly). */
++   if (target == PIPE_TEXTURE_CUBE &&
++       format != PIPE_FORMAT_R8G8B8A8_UNORM && format != PIPE_FORMAT_B8G8R8A8_UNORM &&
++       format != PIPE_FORMAT_R8G8B8X8_UNORM && format != PIPE_FORMAT_B8G8R8X8_UNORM)
++      return false;
++
+    if (sample_count > 1 || storage_sample_count > 1)
+       return false;
+ 
+@@ -267,7 +274,7 @@ pvr_screen_create(int fd, const struct pipe_screen_config *config,
+       /* Varying vec4 slots between stages. ES2 needs 8; each one is one DOUTI iterator of the
+        * coefficient program (pvr_draw.c), well under PVR_MAXIMUM_ITERATIONS. */
+       caps->max_varyings = 16;
+-      caps->max_texture_cube_levels = 0;
++      caps->max_texture_cube_levels = util_logbase2(caps->max_texture_2d_size) + 1;
+       caps->max_texture_3d_levels = 0;
+       caps->max_texture_array_layers = 1;
+       /* Any extent samples and renders (twiddled levels are padded to powers of two). */
+-- 
+2.47.3
+

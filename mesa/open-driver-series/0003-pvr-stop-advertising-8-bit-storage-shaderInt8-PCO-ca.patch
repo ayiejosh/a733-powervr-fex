@@ -1,7 +1,7 @@
-From 2552f0bc004e9463772092c2eeda9acab76f1466 Mon Sep 17 00:00:00 2001
+From 17cb514cac1cf1339711f7516b0b00d16996e0ab Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Thu, 8 Oct 2026 01:44:34 +0800
-Subject: [PATCH 03/43] pvr: stop advertising 8-bit storage/shaderInt8 - PCO
+Subject: [PATCH 003/294] pvr: stop advertising 8-bit storage/shaderInt8 - PCO
  cannot compile them
 
 Same over-claim class as shaderFloat16, but worse: those shaders cannot compile at all.
@@ -33,7 +33,7 @@ Vulkan clients.
  2 files changed, 19 insertions(+), 4 deletions(-)
 
 diff --git a/src/imagination/vulkan/pvr_physical_device.c b/src/imagination/vulkan/pvr_physical_device.c
-index 197e461..eea1e61 100644
+index 197e461c..eea1e616 100644
 --- a/src/imagination/vulkan/pvr_physical_device.c
 +++ b/src/imagination/vulkan/pvr_physical_device.c
 @@ -338,16 +338,16 @@ static void pvr_physical_device_get_supported_features(
@@ -58,7 +58,7 @@ index 197e461..eea1e61 100644
        .shaderInputAttachmentArrayDynamicIndexing = true,
        .shaderUniformTexelBufferArrayDynamicIndexing = true,
 diff --git a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c
-index 321bdbc..c9a6c15 100644
+index 321bdbcf..c9a6c155 100644
 --- a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c
 +++ b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c
 @@ -34,6 +34,8 @@
@@ -90,3 +90,6 @@ index 321bdbc..c9a6c15 100644
     /* Returns VK_ERROR_OUT_OF_DEVICE_MEMORY to match pvrsrv. */
     return pvr_ioctlf(drm_ws->base.render_fd,
                       DRM_IOCTL_PVR_SUBMIT_JOBS,
+-- 
+2.47.3
+

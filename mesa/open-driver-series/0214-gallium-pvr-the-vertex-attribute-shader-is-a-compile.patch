@@ -1,7 +1,7 @@
-From 77ba029c31744efdc36eacd4e260570c7b142737 Mon Sep 17 00:00:00 2001
+From bdfbc8fb05bbb23be7a6ce50f6a4b7daacb61234 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sat, 24 Oct 2026 09:14:06 +0800
-Subject: [PATCH 214/269] gallium/pvr: the vertex-attribute shader is a
+Subject: [PATCH 214/294] gallium/pvr: the vertex-attribute shader is a
  compiler problem, not a wiring problem
 
 Tried the metadata route: declaring the input as a nir_variable (nir_var_shader_in, location 0,

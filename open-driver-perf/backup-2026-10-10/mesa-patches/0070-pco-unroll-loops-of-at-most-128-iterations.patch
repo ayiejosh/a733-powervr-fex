@@ -1,0 +1,43 @@
+From f4afa138bc8491f12af4c0d35735aff4b753e7f8 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sat, 10 Oct 2026 19:41:38 +0800
+Subject: [PATCH 70/73] pco: unroll loops of at most 128 iterations
+
+max_unroll_iterations also scales NIR's unroll size budget (26 times the
+iteration limit). With 1024, CTS synchronization tests that copy a
+64x64x8 image in a single invocation had two nested 64-iteration loops
+unrolled into ~41k instructions, and pco_trans_nir_vec(), whose search
+for each source's parent is a backward linear scan, then spent over 15
+minutes in pipeline creation (98 cases of
+dEQP-VK.synchronization.op.*.(read|write)_image_*.image_64x64x8_r32_sfloat).
+
+With 128 those cases compile in ~0.5 s and pass. Every benchmark shader
+(vkrender, vkheavy, cstp/cstpf/cstpi, vkmany, internal shaders included)
+compiles to the same binary.
+
+CTS (synchronization list 1718 + 5062 + 9170 + 838 + 282 cases) was run
+with this and the other three commits of this series applied: identical
+to before, except one case that ran into the kernel's 500 ms job timeout
+(memory.pipeline_barrier.graphics.host_write_vertex_buffer.1048576_vertex_buffer_stride_2,
+which passes in 20+ other runs; kernel timeout recovery bug). weston +
+weston-simple-egl + vkcube: OK.
+---
+ src/imagination/pco/pco_nir.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/imagination/pco/pco_nir.c b/src/imagination/pco/pco_nir.c
+index afe6593..1f3043b 100644
+--- a/src/imagination/pco/pco_nir.c
++++ b/src/imagination/pco/pco_nir.c
+@@ -82,7 +82,7 @@ static const nir_shader_compiler_options nir_options = {
+ 
+    .lower_helper_invocation = true,
+ 
+-   .max_unroll_iterations = 1024,
++   .max_unroll_iterations = 128,
+    .max_samples = 4,
+ 
+    .io_options = nir_io_vectorizer_ignores_types,
+-- 
+2.47.3
+

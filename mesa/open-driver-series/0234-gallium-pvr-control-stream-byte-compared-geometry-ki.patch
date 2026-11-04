@@ -1,7 +1,7 @@
-From c46856e7fa88edaee243a2a35d89b53104c89fd5 Mon Sep 17 00:00:00 2001
+From 178e930c29732a8db5ff7376ee078e9a4c42def4 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sun, 25 Oct 2026 04:37:13 +0800
-Subject: [PATCH 234/269] gallium/pvr: control stream byte-compared; geometry
+Subject: [PATCH 234/294] gallium/pvr: control stream byte-compared; geometry
  kick fails even with no vertex program
 
 Two bisect results from the round-19 A/B baseline:

@@ -1,7 +1,7 @@
-From 9e3a1d9295f7a98b784d8b8e5c6f746b82c27af8 Mon Sep 17 00:00:00 2001
+From 91ffb0752543475969df993351b3d3e95e6ea2ac Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sat, 24 Oct 2026 22:22:16 +0800
-Subject: [PATCH 216/269] gallium/pvr: full VDM vertex state, and the same
+Subject: [PATCH 216/294] gallium/pvr: full VDM vertex state, and the same
  state reproduces a captured draw
 
 Captured the working Vulkan driver's geometry control stream for one draw (PVR_DEBUG=cs, open

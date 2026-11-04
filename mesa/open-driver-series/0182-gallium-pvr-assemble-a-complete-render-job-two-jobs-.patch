@@ -1,7 +1,7 @@
-From 1c8b7b27fb0364250b7353fcff638ffb66d34076 Mon Sep 17 00:00:00 2001
+From 4db0eda8245ace04f464ed9aca12d0e518acefa3 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Fri, 23 Oct 2026 13:46:39 +0800
-Subject: [PATCH 182/269] gallium/pvr: assemble a complete render job (two
+Subject: [PATCH 182/294] gallium/pvr: assemble a complete render job (two
  jobs, one submit)
 
 A render pass is TWO kernel jobs - geometry then fragment - in ONE submit, and the driver only had a

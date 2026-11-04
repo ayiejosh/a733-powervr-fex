@@ -1,0 +1,117 @@
+From 0e0471f764f2d8145e88943e8542bcbcca736d60 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Thu, 29 Oct 2026 13:43:13 +0800
+Subject: [PATCH] gallium/pvr: upload USC/PDS programs from bump-allocated heap
+ chunks
+
+Every fragment, end-of-tile and load program upload allocated a fresh VM-heap BO and never freed
+it, so a scene that rebuilds programs (terrain regenerates its mip chain every frame and misses the
+EOT cache on most blits) leaked kernel BOs and heap address space for as long as it ran - the
+allocation count reached ~3300 BOs in a two-second terrain run, with the heap eventually filling up.
+Upload the bytes from a per-heap chunk instead: one mapping, bump-allocated, chunk doubling when it
+fills (the old chunk's handle is dropped rather than freed so offsets already handed out stay valid).
+
+Terrain's ioctl count drops 24022 -> 16896 (~30%) and its FPS is unchanged (18 -> 19, the scene is
+GPU/firmware bound); the point is bounded memory instead of a leak. Full gltri gate passes (49 mode
+runs), 0 MMU faults.
+---
+ src/gallium/drivers/pvr_native/pvr_draw.c   | 52 ++++++++++++++++-----
+ src/gallium/drivers/pvr_native/pvr_screen.h |  9 ++++
+ 2 files changed, 49 insertions(+), 12 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_draw.c b/src/gallium/drivers/pvr_native/pvr_draw.c
+index d83cf154..0f6c974b 100644
+--- a/src/gallium/drivers/pvr_native/pvr_draw.c
++++ b/src/gallium/drivers/pvr_native/pvr_draw.c
+@@ -398,28 +398,56 @@ draw_hwrt(struct pvr_context *ctx, struct pvr_draw_state *d, uint32_t w, uint32_
+    return true;
+ }
+ 
++/* Bump-allocated program bytes in a per-heap chunk; returns the heap-relative offset or 0. */
++static uint64_t
++draw_prog_upload(struct pvr_screen *scr, struct pvr_prog_arena *a, uint16_t heap_id,
++                 const void *bytes, unsigned size)
++{
++   size = ALIGN_POT(size, 16);
++   if (scr->vm.heaps[heap_id].size == 0 || size == 0)
++      return 0;
++   if (a->bo.map == NULL || (uint64_t)a->used + size > a->size) {
++      const uint32_t want = MAX2(ALIGN_POT(size, 4096),
++                                 a->size ? MIN2(a->size * 2, 8u << 20) : (256u << 10));
++      struct pvr_bo bo = { 0 };
++      uint64_t addr = pvr_vm_heap_alloc(&scr->vm, heap_id, want, 4096, &bo);
++      if (addr == 0) {
++         /* The heap is smaller than the chunk: fall back to the exact-size allocation. */
++         addr = pvr_vm_heap_alloc(&scr->vm, heap_id, size, 16, &bo);
++         if (addr == 0 || !pvr_bo_map(scr->fd, &bo))
++            return 0;
++         memcpy(bo.map, bytes, size);
++         return addr - scr->vm.heaps[heap_id].base;
++      }
++      if (!pvr_bo_map(scr->fd, &bo))
++         return 0;
++      /* ponytail: the previous chunk's handle is dropped, not freed, so the offsets already
++       * handed out stay valid (the kernel keeps the mapping until the process exits); chunks
++       * double, so a session drops only a handful. */
++      a->bo = bo;
++      a->addr = addr;
++      a->base = scr->vm.heaps[heap_id].base;
++      a->size = want;
++      a->used = 0;
++   }
++   const uint64_t at = a->addr + a->used;
++   memcpy((uint8_t *)a->bo.map + a->used, bytes, size);
++   a->used += size;
++   return at - a->base;
++}
++
+ /* USC code into the USC heap; returns the heap-relative offset or 0. */
+ static uint32_t
+ draw_upload_usc(struct pvr_screen *scr, const void *code, unsigned size)
+ {
+-   struct pvr_bo bo = { 0 };
+-   const uint64_t addr = pvr_vm_heap_alloc(&scr->vm, DRM_PVR_HEAP_USC_CODE, size, 16, &bo);
+-   if (addr == 0 || !pvr_bo_map(scr->fd, &bo))
+-      return 0;
+-   memcpy(bo.map, code, size);
+-   return (uint32_t)(addr - scr->vm.heaps[DRM_PVR_HEAP_USC_CODE].base);
++   return (uint32_t)draw_prog_upload(scr, &scr->usc_arena, DRM_PVR_HEAP_USC_CODE, code, size);
+ }
+ 
+ /* Persistent PDS bytes into the PDS heap; returns the heap-relative offset or 0. */
+ static uint64_t
+ draw_upload_pds(struct pvr_screen *scr, const void *bytes, unsigned size)
+ {
+-   struct pvr_bo bo = { 0 };
+-   const uint64_t addr = pvr_vm_heap_alloc(&scr->vm, DRM_PVR_HEAP_PDS_CODE_DATA, size, 16, &bo);
+-   if (addr == 0 || !pvr_bo_map(scr->fd, &bo))
+-      return 0;
+-   memcpy(bo.map, bytes, size);
+-   return addr - scr->vm.heaps[DRM_PVR_HEAP_PDS_CODE_DATA].base;
++   return draw_prog_upload(scr, &scr->pds_arena, DRM_PVR_HEAP_PDS_CODE_DATA, bytes, size);
+ }
+ 
+ /* A fragment program: USC code plus its PDS kick program (data + code contiguous). */
+diff --git a/src/gallium/drivers/pvr_native/pvr_screen.h b/src/gallium/drivers/pvr_native/pvr_screen.h
+index fc068036..0e05e6b5 100644
+--- a/src/gallium/drivers/pvr_native/pvr_screen.h
++++ b/src/gallium/drivers/pvr_native/pvr_screen.h
+@@ -52,6 +52,15 @@ struct pvr_screen {
+    /* PVR_NATIVE_DEBUG=no_twiddle,no_fbc: linear (or uncompressed) render targets, read once. */
+    bool no_twiddle, no_fbc;
+ 
++   /* USC code and PDS bytes are uploaded once per program and then referenced by heap-relative
++    * address for the life of the context; bump-allocating them from a chunk keeps that at one
++    * mapping instead of a BO per program (terrain re-uploads an EOT program on most mip blits). */
++   struct pvr_prog_arena {
++      struct pvr_bo bo;
++      uint64_t addr, base;
++      uint32_t used, size;
++   } usc_arena, pds_arena;
++
+    /* Released buffer resources kept mapped (CPU and GPU) for reuse: the stream uploader replaces
+     * its 1 MiB buffer about once a frame with client arrays, and a new BO costs a kernel
+     * allocation, a VM map, an mmap and its page faults. A released resource is idle (renders hold
+-- 
+2.47.3
+

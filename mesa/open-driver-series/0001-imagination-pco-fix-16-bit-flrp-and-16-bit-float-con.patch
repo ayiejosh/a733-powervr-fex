@@ -1,7 +1,7 @@
-From b288374407d8f16ac8a8f3a5447cb2155a5ec2a7 Mon Sep 17 00:00:00 2001
+From 08c9ca24b7dbd9e0778a9a6cde8a26309c2b4432 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Tue, 6 Oct 2026 22:46:48 +0800
-Subject: [PATCH 01/43] imagination/pco: fix 16-bit flrp and 16-bit float
+Subject: [PATCH 001/294] imagination/pco: fix 16-bit flrp and 16-bit float
  conversions; build dril for wayland
 
 Three fixes needed to run real workloads (glmark2) on the open PowerVR
@@ -51,7 +51,7 @@ Also drops the PVR_JOB_LIMIT diagnostic from pvr_drm_job_render.c.
  create mode 100644 src/imagination/pco/pco_nir_16bit_io.c
 
 diff --git a/include/drm-uapi/pvr_drm.h b/include/drm-uapi/pvr_drm.h
-index ccf6c21..cd4724d 100644
+index ccf6c211..cd4724da 100644
 --- a/include/drm-uapi/pvr_drm.h
 +++ b/include/drm-uapi/pvr_drm.h
 @@ -536,10 +536,21 @@ struct drm_pvr_ioctl_dev_query_args {
@@ -79,7 +79,7 @@ index ccf6c21..cd4724d 100644
  /**
   * struct drm_pvr_ioctl_create_bo_args - Arguments for %DRM_IOCTL_PVR_CREATE_BO
 diff --git a/src/imagination/common/pvr_limits.h b/src/imagination/common/pvr_limits.h
-index 010c320..ea419a2 100644
+index 010c3207..ea419a28 100644
 --- a/src/imagination/common/pvr_limits.h
 +++ b/src/imagination/common/pvr_limits.h
 @@ -34,6 +34,16 @@
@@ -100,7 +100,7 @@ index 010c320..ea419a2 100644
  #define PVR_MAX_NEG_OFFSCREEN_OFFSET 4096U
  #define PVR_MAX_MULTIVIEW 6U
 diff --git a/src/imagination/pco/meson.build b/src/imagination/pco/meson.build
-index c902a17..0c48cfd 100644
+index c902a17d..0c48cfdf 100644
 --- a/src/imagination/pco/meson.build
 +++ b/src/imagination/pco/meson.build
 @@ -16,6 +16,7 @@ libpowervr_compiler_files = files(
@@ -112,7 +112,7 @@ index c902a17..0c48cfd 100644
    'pco_nir_compute.c',
    'pco_nir_io.c',
 diff --git a/src/imagination/pco/pco_internal.h b/src/imagination/pco/pco_internal.h
-index 326111b..d3e3318 100644
+index 326111b1..d3e3318e 100644
 --- a/src/imagination/pco/pco_internal.h
 +++ b/src/imagination/pco/pco_internal.h
 @@ -1828,6 +1828,7 @@ bool pco_nir_lower_vs_intrinsics(nir_shader *shader);
@@ -124,7 +124,7 @@ index 326111b..d3e3318 100644
  bool pco_nir_lower_shared_io_to_global(nir_shader *shader, unsigned usc_slots);
  bool pco_nir_lower_subgroups(nir_shader *shader);
 diff --git a/src/imagination/pco/pco_nir.c b/src/imagination/pco/pco_nir.c
-index 2ef8106..38f158b 100644
+index 2ef81062..38f158be 100644
 --- a/src/imagination/pco/pco_nir.c
 +++ b/src/imagination/pco/pco_nir.c
 @@ -54,6 +54,10 @@ static const nir_shader_compiler_options nir_options = {
@@ -298,7 +298,7 @@ index 2ef8106..38f158b 100644
   *
 diff --git a/src/imagination/pco/pco_nir_16bit_io.c b/src/imagination/pco/pco_nir_16bit_io.c
 new file mode 100644
-index 0000000..0a447d7
+index 00000000..0a447d78
 --- /dev/null
 +++ b/src/imagination/pco/pco_nir_16bit_io.c
 @@ -0,0 +1,182 @@
@@ -485,7 +485,7 @@ index 0000000..0a447d7
 +   return progress;
 +}
 diff --git a/src/imagination/pco/pco_trans_nir.c b/src/imagination/pco/pco_trans_nir.c
-index 6dde9d2..fcedd27 100644
+index 6dde9d20..fcedd276 100644
 --- a/src/imagination/pco/pco_trans_nir.c
 +++ b/src/imagination/pco/pco_trans_nir.c
 @@ -80,7 +80,22 @@ static void split_dest_comps(trans_ctx *tctx, pco_instr *instr, pco_ref dest)
@@ -660,7 +660,7 @@ index 6dde9d2..fcedd27 100644
        printf("Unsupported alu instruction: \"");
        nir_print_instr(&alu->instr, stdout);
 diff --git a/src/imagination/vulkan/pvr_arch_cmd_buffer.c b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
-index f21b320..4ada520 100644
+index f21b3202..4ada5203 100644
 --- a/src/imagination/vulkan/pvr_arch_cmd_buffer.c
 +++ b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
 @@ -558,7 +558,6 @@ static VkResult pvr_sub_cmd_gfx_per_job_fragment_programs_create_and_upload(
@@ -828,7 +828,7 @@ index f21b320..4ada520 100644
     struct pvr_cmd_buffer_state *state = &cmd_buffer->state;
     VkResult result;
 diff --git a/src/imagination/vulkan/pvr_arch_device.c b/src/imagination/vulkan/pvr_arch_device.c
-index af9d698..78c03e8 100644
+index af9d6980..78c03e85 100644
 --- a/src/imagination/vulkan/pvr_arch_device.c
 +++ b/src/imagination/vulkan/pvr_arch_device.c
 @@ -647,6 +647,21 @@ pvr_device_init_view_index_init_programs(struct pvr_device *device)
@@ -878,7 +878,7 @@ index af9d698..78c03e8 100644
     pvr_arch_device_finish_spm_load_state(device);
     pvr_device_finish_graphics_static_clear_state(device);
 diff --git a/src/imagination/vulkan/pvr_arch_job_render.c b/src/imagination/vulkan/pvr_arch_job_render.c
-index bf96f55..025a05b 100644
+index bf96f552..025a05ba 100644
 --- a/src/imagination/vulkan/pvr_arch_job_render.c
 +++ b/src/imagination/vulkan/pvr_arch_job_render.c
 @@ -1140,6 +1140,29 @@ static void pvr_frag_state_stream_init(struct pvr_render_ctx *ctx,
@@ -912,7 +912,7 @@ index bf96f55..025a05b 100644
        value.sample_pos = true;
        value.process_empty_tiles = job->process_empty_tiles;
 diff --git a/src/imagination/vulkan/pvr_arch_pipeline.c b/src/imagination/vulkan/pvr_arch_pipeline.c
-index d7a37a6..98416ef 100644
+index d7a37a6b..98416eff 100644
 --- a/src/imagination/vulkan/pvr_arch_pipeline.c
 +++ b/src/imagination/vulkan/pvr_arch_pipeline.c
 @@ -1168,6 +1168,28 @@ pvr_compute_pipeline_init(struct pvr_device *device,
@@ -1000,7 +1000,7 @@ index d7a37a6..98416ef 100644
                               allocator,
                               sizeof(*gfx_pipeline),
 diff --git a/src/imagination/vulkan/pvr_bo.c b/src/imagination/vulkan/pvr_bo.c
-index 629c4f8..445f756 100644
+index 629c4f81..445f756c 100644
 --- a/src/imagination/vulkan/pvr_bo.c
 +++ b/src/imagination/vulkan/pvr_bo.c
 @@ -31,6 +31,9 @@
@@ -1029,7 +1029,7 @@ index 629c4f8..445f756 100644
                                             size,
                                             alignment,
 diff --git a/src/imagination/vulkan/pvr_device.c b/src/imagination/vulkan/pvr_device.c
-index 57d843b..8c5f8be 100644
+index 57d843b1..8c5f8bea 100644
 --- a/src/imagination/vulkan/pvr_device.c
 +++ b/src/imagination/vulkan/pvr_device.c
 @@ -30,6 +30,11 @@
@@ -1269,7 +1269,7 @@ index 57d843b..8c5f8be 100644
                         VkBuffer _buffer,
                         const VkAllocationCallbacks *pAllocator)
 diff --git a/src/imagination/vulkan/pvr_device.h b/src/imagination/vulkan/pvr_device.h
-index 7e64292..ba46b9b 100644
+index 7e642923..ba46b9bf 100644
 --- a/src/imagination/vulkan/pvr_device.h
 +++ b/src/imagination/vulkan/pvr_device.h
 @@ -134,6 +134,30 @@ struct pvr_device {
@@ -1304,7 +1304,7 @@ index 7e64292..ba46b9b 100644
  
     struct pvr_bo_store *bo_store;
 diff --git a/src/imagination/vulkan/pvr_physical_device.c b/src/imagination/vulkan/pvr_physical_device.c
-index 860f43d..e2579f4 100644
+index 860f43df..e2579f4a 100644
 --- a/src/imagination/vulkan/pvr_physical_device.c
 +++ b/src/imagination/vulkan/pvr_physical_device.c
 @@ -123,9 +123,20 @@ void pvr_physical_device_free_pipeline_cache(
@@ -1635,7 +1635,7 @@ index 860f43d..e2579f4 100644
     pvr_physical_device_get_supported_features(&pdevice->dev_info,
                                                &supported_features);
 diff --git a/src/imagination/vulkan/winsys/powervr/pvr_drm.c b/src/imagination/vulkan/winsys/powervr/pvr_drm.c
-index eac0a01..a952fc3 100644
+index eac0a012..a952fc30 100644
 --- a/src/imagination/vulkan/winsys/powervr/pvr_drm.c
 +++ b/src/imagination/vulkan/winsys/powervr/pvr_drm.c
 @@ -131,6 +131,13 @@ static VkResult pvr_drm_override_quirks(struct pvr_drm_winsys *drm_ws,
@@ -1653,7 +1653,7 @@ index eac0a01..a952fc3 100644
  #define PVR_QUIRKS(x) \
     x(48545) \
 diff --git a/src/imagination/vulkan/winsys/powervr/pvr_drm_bo.c b/src/imagination/vulkan/winsys/powervr/pvr_drm_bo.c
-index 15d4299..1fae7c3 100644
+index 15d4299f..1fae7c37 100644
 --- a/src/imagination/vulkan/winsys/powervr/pvr_drm_bo.c
 +++ b/src/imagination/vulkan/winsys/powervr/pvr_drm_bo.c
 @@ -177,6 +177,9 @@ static uint64_t pvr_drm_get_alloc_flags(uint32_t ws_flags)
@@ -1667,7 +1667,7 @@ index 15d4299..1fae7c3 100644
  }
  
 diff --git a/src/imagination/vulkan/winsys/pvr_winsys.h b/src/imagination/vulkan/winsys/pvr_winsys.h
-index 90b2292..30f48db 100644
+index 90b22924..30f48dbd 100644
 --- a/src/imagination/vulkan/winsys/pvr_winsys.h
 +++ b/src/imagination/vulkan/winsys/pvr_winsys.h
 @@ -102,6 +102,18 @@ enum pvr_winsys_bo_type {
@@ -1690,7 +1690,7 @@ index 90b2292..30f48db 100644
   * \brief Flag passed to #pvr_winsys_ops.buffer_create to indicate that, when
   * the buffer is mapped to the GPU using #pvr_winsys.vma_map, it should be
 diff --git a/src/meson.build b/src/meson.build
-index c36f44b..e8aad3e 100644
+index c36f44b1..e8aad3e5 100644
 --- a/src/meson.build
 +++ b/src/meson.build
 @@ -161,7 +161,10 @@ if with_egl
@@ -1705,3 +1705,6 @@ index c36f44b..e8aad3e 100644
      subdir('gallium/targets/dril')
    endif
  endif
+-- 
+2.47.3
+

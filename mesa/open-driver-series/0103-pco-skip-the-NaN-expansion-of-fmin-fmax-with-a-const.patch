@@ -1,7 +1,7 @@
-From c390cb9de7514fc81d01da7c4e6bacda953e3cb9 Mon Sep 17 00:00:00 2001
+From 8af228538bb31468bfb12b98b6f5926fae94d7e3 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Tue, 13 Oct 2026 23:12:13 +0800
-Subject: [PATCH 103/105] pco: skip the NaN expansion of fmin/fmax with a
+Subject: [PATCH 103/294] pco: skip the NaN expansion of fmin/fmax with a
  constant operand
 
 All hardware comparisons are false when an operand is NaN, so NaN
@@ -24,7 +24,7 @@ texture and shadow.
  2 files changed, 38 insertions(+)
 
 diff --git a/src/imagination/pco/pco_nir_alu.c b/src/imagination/pco/pco_nir_alu.c
-index ba4540d..8c2eab3 100644
+index ba4540d4..8c2eab34 100644
 --- a/src/imagination/pco/pco_nir_alu.c
 +++ b/src/imagination/pco/pco_nir_alu.c
 @@ -17,6 +17,8 @@
@@ -60,7 +60,7 @@ index ba4540d..8c2eab3 100644
        b->fp_math_ctrl = alu->fp_math_ctrl;
        alu->fp_math_ctrl &= ~nir_fp_preserve_nan;
 diff --git a/src/imagination/pco/pco_trans_nir.c b/src/imagination/pco/pco_trans_nir.c
-index 914e1e7..3339b72 100644
+index 914e1e75..3339b720 100644
 --- a/src/imagination/pco/pco_trans_nir.c
 +++ b/src/imagination/pco/pco_trans_nir.c
 @@ -15,6 +15,8 @@

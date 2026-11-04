@@ -1,7 +1,7 @@
-From c0947d140677ad90ffca88b12d2d2f39facecf4b Mon Sep 17 00:00:00 2001
+From 418a960e0c2e53a69e5008493743f49d49271a29 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Fri, 16 Oct 2026 05:26:35 +0800
-Subject: [PATCH 110/269] gallium/pvr: link pco and hand its NIR options to
+Subject: [PATCH 110/294] gallium/pvr: link pco and hand its NIR options to
  gallium
 
 Link libpowervr_compiler - pco, the ~25k-line NIR-based PowerVR compiler - and

@@ -1,7 +1,7 @@
-From 316b9a89b8dfbfb194d0f1eecb47fa4f60364540 Mon Sep 17 00:00:00 2001
+From f108a80dbbad5eb741c6fcac8f18517ae491e02e Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sun, 11 Oct 2026 11:29:39 +0800
-Subject: [PATCH 91/98] pco: keep the execution condition of instructions
+Subject: [PATCH 091/294] pco: keep the execution condition of instructions
  replaced after CF lowering
 
 pco_const_imms and the modifier/vec passes in pco_opt run after control
@@ -16,7 +16,7 @@ condition to the replacement.
  3 files changed, 33 insertions(+), 14 deletions(-)
 
 diff --git a/src/imagination/pco/pco_builder.h b/src/imagination/pco/pco_builder.h
-index 558c4d7..e11a4cb 100644
+index 558c4d79..e11a4cb9 100644
 --- a/src/imagination/pco/pco_builder.h
 +++ b/src/imagination/pco/pco_builder.h
 @@ -467,7 +467,21 @@ static inline bool pco_instr_has_default_exec(pco_instr *instr)
@@ -43,7 +43,7 @@ index 558c4d7..e11a4cb 100644
 +}
  #endif /* PCO_BUILDER_H */
 diff --git a/src/imagination/pco/pco_const_imms.c b/src/imagination/pco/pco_const_imms.c
-index de6ad37..d5b4a81 100644
+index de6ad372..d5b4a819 100644
 --- a/src/imagination/pco/pco_const_imms.c
 +++ b/src/imagination/pco/pco_const_imms.c
 @@ -320,7 +320,9 @@ bool pco_const_imms(pco_shader *shader)
@@ -95,7 +95,7 @@ index de6ad37..d5b4a81 100644
           progress = true;
        }
 diff --git a/src/imagination/pco/pco_opt.c b/src/imagination/pco/pco_opt.c
-index a4d9822..76afe3a 100644
+index a4d9822e..76afe3ac 100644
 --- a/src/imagination/pco/pco_opt.c
 +++ b/src/imagination/pco/pco_opt.c
 @@ -145,6 +145,7 @@ static inline bool pco_opt_prep_mods(pco_shader *shader,

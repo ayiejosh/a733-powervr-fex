@@ -1,7 +1,7 @@
-From ed86b1cee4ec635108208fd51936b96adb27dce4 Mon Sep 17 00:00:00 2001
+From 18a9918e674938fdc015cfd9fa996b6ac7649250 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Mon, 26 Oct 2026 03:22:46 +0800
-Subject: [PATCH 258/269] gallium/pvr: native compute shader compile matches
+Subject: [PATCH 258/294] gallium/pvr: native compute shader compile matches
  the reference byte-for-byte
 
 Started porting the compute (CDM) pipeline natively: pvr_shader_compile_compute() runs the same pco

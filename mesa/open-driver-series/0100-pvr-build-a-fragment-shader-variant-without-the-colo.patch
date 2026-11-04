@@ -1,7 +1,7 @@
-From c87374c4c6f11358c708f8df0dcbeccfccf9846a Mon Sep 17 00:00:00 2001
+From 35ee8f80f4d0a986c09818d9fc2631ecd5e7387f Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Tue, 13 Oct 2026 14:56:01 +0800
-Subject: [PATCH 100/105] pvr: build a fragment shader variant without the
+Subject: [PATCH 100/294] pvr: build a fragment shader variant without the
  colour write enable select
 
 zink makes the colour write enables dynamic state for every pipeline, so every
@@ -47,7 +47,7 @@ draws of one pipeline passes. PVR_DEBUG=noaltfs turns it off.
  7 files changed, 270 insertions(+), 17 deletions(-)
 
 diff --git a/src/imagination/common/pvr_debug.c b/src/imagination/common/pvr_debug.c
-index 696aad8..24a9e29 100644
+index 696aad87..24a9e298 100644
 --- a/src/imagination/common/pvr_debug.c
 +++ b/src/imagination/common/pvr_debug.c
 @@ -42,6 +42,8 @@ static const struct debug_named_value debug_control[] = {
@@ -60,7 +60,7 @@ index 696aad8..24a9e29 100644
  };
  /* clang-format on */
 diff --git a/src/imagination/common/pvr_debug.h b/src/imagination/common/pvr_debug.h
-index 06751c6..a87f4be 100644
+index 06751c63..a87f4be6 100644
 --- a/src/imagination/common/pvr_debug.h
 +++ b/src/imagination/common/pvr_debug.h
 @@ -40,6 +40,7 @@ extern uint32_t PVR_DEBUG;
@@ -72,7 +72,7 @@ index 06751c6..a87f4be 100644
  void pvr_process_debug_variable(void);
  
 diff --git a/src/imagination/pco/pco_data.h b/src/imagination/pco/pco_data.h
-index 241d4a3..6b022fa 100644
+index 241d4a30..6b022fa8 100644
 --- a/src/imagination/pco/pco_data.h
 +++ b/src/imagination/pco/pco_data.h
 @@ -150,6 +150,10 @@ typedef struct _pco_fs_data {
@@ -87,7 +87,7 @@ index 241d4a3..6b022fa 100644
  
  /** PCO compute shader-specific data. */
 diff --git a/src/imagination/vulkan/pvr_arch_cmd_buffer.c b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
-index fb8e8d8..fde135e 100644
+index fb8e8d8f..fde135e7 100644
 --- a/src/imagination/vulkan/pvr_arch_cmd_buffer.c
 +++ b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
 @@ -125,6 +125,25 @@ struct pvr_renderpass_hwsetup_render *pvr_arch_pass_info_get_hw_render(
@@ -289,7 +289,7 @@ index fb8e8d8..fde135e 100644
           &state->pds_fragment_descriptor_data_offset);
        if (result != VK_SUCCESS) {
 diff --git a/src/imagination/vulkan/pvr_arch_pipeline.c b/src/imagination/vulkan/pvr_arch_pipeline.c
-index 3de794b..7013288 100644
+index 3de794bd..70132882 100644
 --- a/src/imagination/vulkan/pvr_arch_pipeline.c
 +++ b/src/imagination/vulkan/pvr_arch_pipeline.c
 @@ -24,6 +24,7 @@
@@ -569,7 +569,7 @@ index 3de794b..7013288 100644
                                        allocator,
                                        &fragment_state->descriptor_state);
 diff --git a/src/imagination/vulkan/pvr_cmd_buffer.h b/src/imagination/vulkan/pvr_cmd_buffer.h
-index 7e384cb..9bbdcb4 100644
+index 7e384cb2..9bbdcb48 100644
 --- a/src/imagination/vulkan/pvr_cmd_buffer.h
 +++ b/src/imagination/vulkan/pvr_cmd_buffer.h
 @@ -458,6 +458,8 @@ struct pvr_cmd_buffer_state {
@@ -582,7 +582,7 @@ index 7e384cb..9bbdcb4 100644
     bool pending_clear_flushing;
     /* The clears of the dynamic render pass being recorded, if it can be folded. */
 diff --git a/src/imagination/vulkan/pvr_pipeline.h b/src/imagination/vulkan/pvr_pipeline.h
-index 69855df..711229b 100644
+index 69855dfa..711229b4 100644
 --- a/src/imagination/vulkan/pvr_pipeline.h
 +++ b/src/imagination/vulkan/pvr_pipeline.h
 @@ -133,6 +133,13 @@ struct pvr_graphics_pipeline {

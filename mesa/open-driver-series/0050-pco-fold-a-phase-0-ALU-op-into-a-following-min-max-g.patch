@@ -1,7 +1,7 @@
-From 0d20f6c11f9782d34ecfbb22921ce4d8a9e28f7b Mon Sep 17 00:00:00 2001
+From f0924d4889f441bffe5511e20519e7c53f4c68f6 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sat, 10 Oct 2026 01:43:26 +0800
-Subject: [PATCH 50/98] pco: fold a phase 0 ALU op into a following min/max
+Subject: [PATCH 050/294] pco: fold a phase 0 ALU op into a following min/max
  group
 
 min/max/select groups move their first operand into ft0 with a phase 0
@@ -24,7 +24,7 @@ Output hashes and vkedge/vkrender checks unchanged.
  1 file changed, 107 insertions(+), 8 deletions(-)
 
 diff --git a/src/imagination/pco/pco_group_instrs.c b/src/imagination/pco/pco_group_instrs.c
-index d5102de..b18f1a3 100644
+index d5102de2..b18f1a37 100644
 --- a/src/imagination/pco/pco_group_instrs.c
 +++ b/src/imagination/pco/pco_group_instrs.c
 @@ -427,24 +427,115 @@ static void try_dual_issue(pco_igrp *igrp,

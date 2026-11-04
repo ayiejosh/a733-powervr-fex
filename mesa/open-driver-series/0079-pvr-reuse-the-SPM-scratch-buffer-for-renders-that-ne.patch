@@ -1,8 +1,8 @@
-From 23a753d456f530b3ee7bd8bb2f6a18077e622872 Mon Sep 17 00:00:00 2001
+From 3aad07da67cebebb2bffcec656164e791871e775 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sun, 11 Oct 2026 05:17:47 +0800
-Subject: [PATCH 79/98] pvr: reuse the SPM scratch buffer for renders that need
- less
+Subject: [PATCH 079/294] pvr: reuse the SPM scratch buffer for renders that
+ need less
 
 The device keeps one SPM scratch buffer for all render states (only one
 partial render runs at a time) but reused it only for a render needing
@@ -24,7 +24,7 @@ identical to before.
  1 file changed, 4 insertions(+), 2 deletions(-)
 
 diff --git a/src/imagination/vulkan/pvr_spm.c b/src/imagination/vulkan/pvr_spm.c
-index 4e9f0ba..4b17dd3 100644
+index 4e9f0ba2..4b17dd34 100644
 --- a/src/imagination/vulkan/pvr_spm.c
 +++ b/src/imagination/vulkan/pvr_spm.c
 @@ -182,9 +182,11 @@ VkResult pvr_spm_scratch_buffer_get_buffer(

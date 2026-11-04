@@ -1,7 +1,7 @@
-From 40486fea9c5c82959b7ffeec10b65540b5917745 Mon Sep 17 00:00:00 2001
+From b5a108a1f6e6a8e69ae959fe86b5d1be2b68ed8f Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sun, 11 Oct 2026 09:00:59 +0800
-Subject: [PATCH 87/98] pco, pvr: make descriptor checks when recording draws
+Subject: [PATCH 087/294] pco, pvr: make descriptor checks when recording draws
  for texture-free shaders
 
 A versioned shader tested at every invocation whether its uniform
@@ -43,7 +43,7 @@ dynamic rendering sample (6745): identical to before. glmark2 --validate:
  9 files changed, 231 insertions(+), 14 deletions(-)
 
 diff --git a/src/compiler/nir/nir_intrinsics.py b/src/compiler/nir/nir_intrinsics.py
-index c80a232..e4c23c2 100644
+index c80a232f..e4c23c28 100644
 --- a/src/compiler/nir/nir_intrinsics.py
 +++ b/src/compiler/nir/nir_intrinsics.py
 @@ -3224,6 +3224,10 @@ intrinsic("alphatst_pco", src_comp=[1, 1, 1], dest_comp=1, flags=[CAN_ELIMINATE,
@@ -58,7 +58,7 @@ index c80a232..e4c23c2 100644
  intrinsic("load_slot_num_pco", dest_comp=1, flags=[CAN_ELIMINATE, CAN_REORDER], bit_sizes=[32])
  
 diff --git a/src/imagination/pco/pco_data.h b/src/imagination/pco/pco_data.h
-index 8b9d43a..31e0b14 100644
+index 8b9d43af..31e0b149 100644
 --- a/src/imagination/pco/pco_data.h
 +++ b/src/imagination/pco/pco_data.h
 @@ -234,6 +234,18 @@ typedef struct _pco_ubo_preload {
@@ -93,7 +93,7 @@ index 8b9d43a..31e0b14 100644
  
     struct {
 diff --git a/src/imagination/pco/pco_internal.h b/src/imagination/pco/pco_internal.h
-index 428f88a..86527c0 100644
+index 428f88a4..86527c0d 100644
 --- a/src/imagination/pco/pco_internal.h
 +++ b/src/imagination/pco/pco_internal.h
 @@ -1866,7 +1866,7 @@ bool pco_nir_version_descriptor_checks(
@@ -106,7 +106,7 @@ index 428f88a..86527c0 100644
  
  /**
 diff --git a/src/imagination/pco/pco_nir_lower_null_descriptors.c b/src/imagination/pco/pco_nir_lower_null_descriptors.c
-index dc587d5..638f27f 100644
+index dc587d53..638f27fd 100644
 --- a/src/imagination/pco/pco_nir_lower_null_descriptors.c
 +++ b/src/imagination/pco/pco_nir_lower_null_descriptors.c
 @@ -348,6 +348,106 @@ static bool ubo_load_extent(nir_intrinsic_instr *intr, struct ubo_extent *ext)
@@ -241,7 +241,7 @@ index dc587d5..638f27f 100644
        nir_deref_instr *deref = remat_deref(&b, descs[i]);
        slow = nir_ior(&b, slow, nir_is_null_descriptor(&b, &deref->def));
 diff --git a/src/imagination/pco/pco_trans_nir.c b/src/imagination/pco/pco_trans_nir.c
-index c770bb8..3c7c7e5 100644
+index c770bb82..3c7c7e52 100644
 --- a/src/imagination/pco/pco_trans_nir.c
 +++ b/src/imagination/pco/pco_trans_nir.c
 @@ -2966,6 +2966,13 @@ static pco_instr *trans_intr(trans_ctx *tctx, nir_intrinsic_instr *intr)
@@ -259,7 +259,7 @@ index c770bb8..3c7c7e5 100644
        assert(tctx->stage == MESA_SHADER_FRAGMENT);
        assert(tctx->shader->data.fs.meta.count > 0);
 diff --git a/src/imagination/vulkan/pds/pvr_pds.h b/src/imagination/vulkan/pds/pvr_pds.h
-index 2f883fb..ef66163 100644
+index 2f883fbd..ef661639 100644
 --- a/src/imagination/vulkan/pds/pvr_pds.h
 +++ b/src/imagination/vulkan/pds/pvr_pds.h
 @@ -929,6 +929,7 @@ struct pvr_pds_descriptor_set {
@@ -271,7 +271,7 @@ index 2f883fb..ef66163 100644
  
  struct pvr_pds_buffer {
 diff --git a/src/imagination/vulkan/pds/pvr_pipeline_pds.c b/src/imagination/vulkan/pds/pvr_pipeline_pds.c
-index 3027d89..a426901 100644
+index 3027d895..a426901a 100644
 --- a/src/imagination/vulkan/pds/pvr_pipeline_pds.c
 +++ b/src/imagination/vulkan/pds/pvr_pipeline_pds.c
 @@ -1618,7 +1618,8 @@ void pvr_pds_generate_descriptor_upload_program(
@@ -285,7 +285,7 @@ index 3027d89..a426901 100644
  
           special_buffer_entry =
 diff --git a/src/imagination/vulkan/pvr_arch_cmd_buffer.c b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
-index 3c399aa..d431f4f 100644
+index 3c399aae..d431f4f4 100644
 --- a/src/imagination/vulkan/pvr_arch_cmd_buffer.c
 +++ b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
 @@ -5760,6 +5760,67 @@ pvr_setup_vertex_buffers(struct pvr_cmd_buffer *cmd_buffer,
@@ -402,7 +402,7 @@ index 3c399aa..d431f4f 100644
              const pco_ubo_preload *preload =
                 &data->common.ubo_preloads[special_buff_entry->buffer_index];
 diff --git a/src/imagination/vulkan/pvr_arch_pipeline.c b/src/imagination/vulkan/pvr_arch_pipeline.c
-index 283cb27..613988f 100644
+index 283cb272..613988f1 100644
 --- a/src/imagination/vulkan/pvr_arch_pipeline.c
 +++ b/src/imagination/vulkan/pvr_arch_pipeline.c
 @@ -584,6 +584,14 @@ static VkResult pvr_pds_descriptor_program_create_and_upload(

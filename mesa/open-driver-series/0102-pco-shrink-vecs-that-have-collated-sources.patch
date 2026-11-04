@@ -1,7 +1,7 @@
-From 37c057cee1e78d6033be20df87bd7bcd8778da72 Mon Sep 17 00:00:00 2001
+From 33f0958a1ee0f2793d0b0c6b8f2987745ea2f6c9 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Tue, 13 Oct 2026 23:12:13 +0800
-Subject: [PATCH 102/105] pco: shrink vecs that have collated sources
+Subject: [PATCH 102/294] pco: shrink vecs that have collated sources
 
 pco_shrink_vecs only trimmed vecs made of single channel sources. A vec
 that mixes in a multi channel source, such as the result of a varying
@@ -24,7 +24,7 @@ explicitly.
  1 file changed, 21 insertions(+), 5 deletions(-)
 
 diff --git a/src/imagination/pco/pco_opt.c b/src/imagination/pco/pco_opt.c
-index 0ed126d..b1d961d 100644
+index 0ed126d9..b1d961d5 100644
 --- a/src/imagination/pco/pco_opt.c
 +++ b/src/imagination/pco/pco_opt.c
 @@ -730,9 +730,7 @@ bool pco_shrink_vecs(pco_shader *shader)

@@ -1,0 +1,88 @@
+From ebfe662ef132c1b5d51d18d8a15656a21e88c7c7 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 30 Oct 2026 12:47:42 +0800
+Subject: [PATCH] gallium/pvr: probe copy replay also installs the captured
+ kickusc programs and DMA space
+
+The copy stream's background state names a PDS shader task at PDS+0x41000 and texture-state DMAs at
+0x2640 (the TQ shader's kickusc program, captured this round: data [0x7340, 8, ...], code f4000002 at
+0x41000 and 0x42000), plus a general-heap DMA space the program DMAs from. The replay now maps a second
+PDS page for those programs, writes a reconstructed texture-state DMA block at 0x2640 and maps a 4 KiB
+DMA space at 0x80000cf000 with the captured TEXSTATE words.
+
+Still not writing: the job submits and syncs but the destination remains zero. The remaining unknown is
+the exact texture-state DMA block (address/size encoding and the source descriptor it DMAs), which the
+captured copy run did not record directly.
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c | 41 ++++++++++++++++++++++
+ 1 file changed, 41 insertions(+)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index d5d32e4a..8d74e85d 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -5865,6 +5865,7 @@ tq_copy_check(int fd, struct pipe_screen *pscreen)
+       .vm_context_handle = vm->context_handle,
+    };
+    struct pvr_bo srcbo = { 0 }, dstbo = { 0 }, pdsbo = { 0 }, uscbo = { 0 };
++   struct pvr_bo pdsbo2 = { 0 }, dmabo = { 0 };
+    uint8_t *stream = NULL;
+    uint32_t stream_len = 0;
+    int tfd = -1;
+@@ -5929,6 +5930,44 @@ tq_copy_check(int fd, struct pipe_screen *pscreen)
+    memcpy((uint8_t *)pdsbo.map + (0x2680 - 0x1000), ev_data, sizeof(ev_data));
+    memcpy((uint8_t *)pdsbo.map + (0x26a0 - 0x1000), ev_code, sizeof(ev_code));
+ 
++   /* The copy stream also names a background shader task at PDS+0x41000 (the TQ shader's
++    * kickusc program; captured) and texture-state DMAs at PDS+0x2640. */
++   if (!pvr_bo_create(fd, 0x4000, 4096, &pdsbo2) ||
++       !pvr_vm_map(vm, pds->base + 0x40000, pdsbo2.handle, pdsbo2.size) ||
++       !pvr_bo_map(fd, &pdsbo2)) {
++      printf("tqcopy:        FAIL: cannot map PDS kickusc page\n");
++      goto out_bo;
++   }
++   {
++      static const uint32_t kick_data[8] = { 0x00007340, 0x00000008, 0, 0, 0, 0, 0, 0 };
++      static const uint32_t kick_code[1] = { 0xf4000002 };
++      static const uint32_t kick_data2[8] = { 0x000073c0, 0x00000008, 0, 0, 0, 0, 0, 0 };
++      static const uint32_t texdata_dma[4] = { 0x000cf000, 0x00000080, 0x90000020, 0 };
++      uint8_t *base = pdsbo2.map;
++
++      memcpy(base + (0x41000 - 0x40000), kick_data, sizeof(kick_data));
++      memcpy(base + (0x41020 - 0x40000), kick_code, sizeof(kick_code));
++      memcpy(base + (0x42000 - 0x40000), kick_data2, sizeof(kick_data2));
++      memcpy(base + (0x42020 - 0x40000), kick_code, sizeof(kick_code));
++      memcpy((uint8_t *)pdsbo.map + (0x2640 - 0x1000), texdata_dma, sizeof(texdata_dma));
++   }
++
++   /* Texture-state DMA space (general heap) the kick program DMAs from. */
++   if (!pvr_bo_create(fd, 0x1000, 4096, &dmabo) ||
++       !pvr_vm_map(vm, 0x80000cf000ULL, dmabo.handle, dmabo.size) ||
++       !pvr_bo_map(fd, &dmabo)) {
++      printf("tqcopy:        FAIL: cannot map DMA space\n");
++      goto out_bo;
++   }
++   {
++      static const uint32_t dma_state[20] = {
++         0xc0002d84, 0x00011ffc, 0xdc0007ff, 0x10200002, 0, 0, 0, 0, 0, 0x00002400,
++         0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
++      };
++
++      memcpy(dmabo.map, dma_state, sizeof(dma_state));
++   }
++
+    if (!pvr_bo_create(fd, 0x2000, 4096, &uscbo) ||
+        !pvr_vm_map(vm, usc->base + 0x5000, uscbo.handle, uscbo.size) ||
+        !pvr_bo_map(fd, &uscbo)) {
+@@ -5975,6 +6014,8 @@ tq_copy_check(int fd, struct pipe_screen *pscreen)
+       drmIoctl(fd, DRM_IOCTL_PVR_DESTROY_CONTEXT, &dargs);
+    }
+    pvr_bo_destroy(fd, &uscbo);
++   pvr_bo_destroy(fd, &dmabo);
++   pvr_bo_destroy(fd, &pdsbo2);
+    pvr_bo_destroy(fd, &pdsbo);
+ out_bo:
+    pvr_bo_destroy(fd, &dstbo);
+-- 
+2.47.3
+

@@ -1,7 +1,7 @@
-From 696bbd670971aa2399993306b853aef0ef0abbb5 Mon Sep 17 00:00:00 2001
+From 2545f90c3e4777e6d474cf78f570dda1a75ed050 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Tue, 13 Oct 2026 01:50:46 +0800
-Subject: [PATCH 099/105] pvr: hold clear-only dynamic render passes until a
+Subject: [PATCH 099/294] pvr: hold clear-only dynamic render passes until a
  later pass uses the image
 
 zink submits a pending glClear as its own render pass when the app switches
@@ -41,7 +41,7 @@ it off.
  6 files changed, 673 insertions(+), 5 deletions(-)
 
 diff --git a/src/imagination/common/pvr_debug.c b/src/imagination/common/pvr_debug.c
-index ada18a9..696aad8 100644
+index ada18a91..696aad87 100644
 --- a/src/imagination/common/pvr_debug.c
 +++ b/src/imagination/common/pvr_debug.c
 @@ -40,6 +40,8 @@ static const struct debug_named_value debug_control[] = {
@@ -54,7 +54,7 @@ index ada18a9..696aad8 100644
  };
  /* clang-format on */
 diff --git a/src/imagination/common/pvr_debug.h b/src/imagination/common/pvr_debug.h
-index fdcfd4a..06751c6 100644
+index fdcfd4a7..06751c63 100644
 --- a/src/imagination/common/pvr_debug.h
 +++ b/src/imagination/common/pvr_debug.h
 @@ -39,6 +39,7 @@ extern uint32_t PVR_DEBUG;
@@ -66,7 +66,7 @@ index fdcfd4a..06751c6 100644
  void pvr_process_debug_variable(void);
  
 diff --git a/src/imagination/vulkan/pvr_arch_cmd_buffer.c b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
-index 29e096f..fb8e8d8 100644
+index 29e096fd..fb8e8d8f 100644
 --- a/src/imagination/vulkan/pvr_arch_cmd_buffer.c
 +++ b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
 @@ -21,6 +21,7 @@
@@ -784,7 +784,7 @@ index 29e096f..fb8e8d8 100644
      * here.
      */
 diff --git a/src/imagination/vulkan/pvr_arch_descriptor_set.c b/src/imagination/vulkan/pvr_arch_descriptor_set.c
-index 4e53459..e959cd6 100644
+index 4e53459b..e959cd62 100644
 --- a/src/imagination/vulkan/pvr_arch_descriptor_set.c
 +++ b/src/imagination/vulkan/pvr_arch_descriptor_set.c
 @@ -99,7 +99,7 @@ write_sampler(const struct pvr_descriptor_set *set,
@@ -868,7 +868,7 @@ index 4e53459..e959cd6 100644
        const struct pvr_descriptor_set_layout *dst_layout = dst_set->layout;
        const struct pvr_descriptor_set_layout_binding *src_binding;
 diff --git a/src/imagination/vulkan/pvr_cmd_buffer.h b/src/imagination/vulkan/pvr_cmd_buffer.h
-index 1c17de5..7e384cb 100644
+index 1c17de5a..7e384cb2 100644
 --- a/src/imagination/vulkan/pvr_cmd_buffer.h
 +++ b/src/imagination/vulkan/pvr_cmd_buffer.h
 @@ -428,6 +428,24 @@ struct pvr_push_constants {
@@ -916,7 +916,7 @@ index 1c17de5..7e384cb 100644
  
     struct ROGUE_TA_STATE_HEADER emit_header;
 diff --git a/src/imagination/vulkan/pvr_descriptor_set.h b/src/imagination/vulkan/pvr_descriptor_set.h
-index 2cd1d7f..8acc670 100644
+index 2cd1d7fd..8acc670c 100644
 --- a/src/imagination/vulkan/pvr_descriptor_set.h
 +++ b/src/imagination/vulkan/pvr_descriptor_set.h
 @@ -82,6 +82,14 @@ struct pvr_descriptor_set {

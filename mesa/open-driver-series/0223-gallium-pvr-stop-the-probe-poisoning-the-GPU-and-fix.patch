@@ -1,7 +1,7 @@
-From 796337efa9126b9758d1fefecd5a6879bd7a9fa8 Mon Sep 17 00:00:00 2001
+From 9a0bebf8026f6f09665472c33bab2f603709ddc0 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sun, 25 Oct 2026 00:54:27 +0800
-Subject: [PATCH 223/269] gallium/pvr: stop the probe poisoning the GPU, and
+Subject: [PATCH 223/294] gallium/pvr: stop the probe poisoning the GPU, and
  fix the free-list roles the trace exposed
 
 Firmware tracing (fw_trace_mask through debugfs) finally shows what the firmware does with our

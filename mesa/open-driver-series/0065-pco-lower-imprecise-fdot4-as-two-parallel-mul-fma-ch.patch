@@ -1,7 +1,7 @@
-From 1fcd0d9ee6d027cd005ef7a29fc274f72a1745ef Mon Sep 17 00:00:00 2001
+From 556c634b3900e25520f67b4e3e44b5ec8a5b4b96 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sat, 10 Oct 2026 14:28:00 +0800
-Subject: [PATCH 65/98] pco: lower imprecise fdot4 as two parallel mul + fma
+Subject: [PATCH 065/294] pco: lower imprecise fdot4 as two parallel mul + fma
  chains
 
 lower_alu_width() turns fdot4 into a serial fmul + 3 ffma chain (4
@@ -20,7 +20,7 @@ identical to before.
  1 file changed, 8 insertions(+)
 
 diff --git a/src/imagination/pco/pco_nir_algebraic.py b/src/imagination/pco/pco_nir_algebraic.py
-index 60e0694..8fef5b3 100644
+index 60e0694d..8fef5b3c 100644
 --- a/src/imagination/pco/pco_nir_algebraic.py
 +++ b/src/imagination/pco/pco_nir_algebraic.py
 @@ -59,6 +59,14 @@ lower_b2b = [

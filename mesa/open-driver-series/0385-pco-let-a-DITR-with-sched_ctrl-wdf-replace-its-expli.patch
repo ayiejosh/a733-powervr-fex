@@ -1,0 +1,146 @@
+From b4f43ffb12e5b989233e53909454cd2069ee2951 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Mon, 2 Nov 2026 13:04:48 +0800
+Subject: [PATCH] pco: let a DITR with sched_ctrl = wdf replace its explicit
+ fence sequence
+
+The pre-RA legalizer gives every DITR/DITRP a post-fence (flush + 2 x br.next +
+wdf, 4 instruction groups) and pco_schedule() adds its own explicit WDF for the
+instruction's DRC source. The vendor compiler instead sets the instruction's
+sched_ctrl field to wdf and emits no fence groups at all: its glmark2 cel
+fragment shader has exactly one control group in 568 B, a DITRP with count = 6,
+coefficient base cf4..27 and sched_ctrl = 2 (wdf), verified by decoding the
+captured USC (open-perf/vendor-usc/captures/shading-cel); the group header and
+instruction word of that first group are byte-identical to the ones pco emits
+after this change.
+
+Emit the same form: build_itr() sets sched_ctrl = wdf on the enhanced
+interpolation DITR/DITRP (the non-enhanced FITR/FITRP have no such field and are
+unchanged - they only ever got pco_schedule()'s explicit WDF, not the
+post-fence), try_legalize_ditr_fence() skips the post-fence when the instruction
+carries it, and pco_schedule() does not add the redundant explicit WDF for those
+instructions. The pre-fence for destination-register reuse is unchanged.
+
+Measured with the offline pco harness and on the board (raw outputs in
+open-perf/tasks/T-2026-11-02-codegen/runs/006-ditr-wdf/):
+
+  cel FS   57 -> 53 groups (728 -> 696 B, control 4 -> 1)
+  bump FS  25 -> 21 groups (264 B);  math FS 23 -> 19 groups (208 B)
+  phong FS 37 -> 33 groups (inferred: -4, same shape as the measured ones)
+  IR: `ditrp.pixel.schedwdf r0..5, drc0, cf4..27, cf0..3, 0x6` - one control
+  group with the same count and coefficient range as the vendor DITRP; no
+  flush/branch/wdf groups remain; no IR validation errors.
+
+Board A/B against the previous build (same session): db2 math 1043.7 -> 1074.6
+fps (+3.0%), bump 1388.3 -> 1378.9 (-0.7%, within run-to-run spread), ilp
+parity; glmark2 bump 1536/1602/1608 -> 1615/1628/1617 fps, shading phong
+678/681/685 -> 679/687/692, cel 571/575/580 -> 574/576/583 (3 interleaved
+rounds); loop/conditionals and the bump normals/height variants within noise.
+
+Correctness: native gate ALL GROUPS PASS (20/20 groups, build identity in the
+gate log); loop (18/217/167 for FragmentLoops 0/64) and conditionals (54) replay
+readbacks identical to the previous build; the two-varying test shader
+(64 64 255 255), the vendor bump FS replay (86 86 86 255) and the shading phong
+replay (5 5 5 255) are pixel-identical across the change (the cel replay renders
+no fragments, so it is codegen evidence only, not pixel evidence). The change
+makes the hardware itself wait for the iteration result, so it is validated by
+that gate+readback+pixel matrix rather than by construction; the Vulkan path
+shares this compiler but was not pixel-validated in this round.
+---
+ src/imagination/pco/pco_legalize.c  | 25 ++++++++++++++++++-------
+ src/imagination/pco/pco_schedule.c  |  8 ++++++++
+ src/imagination/pco/pco_trans_nir.c | 10 ++++++++++
+ 3 files changed, 36 insertions(+), 7 deletions(-)
+
+diff --git a/src/imagination/pco/pco_legalize.c b/src/imagination/pco/pco_legalize.c
+index f4a9422d..ca254ccf 100644
+--- a/src/imagination/pco/pco_legalize.c
++++ b/src/imagination/pco/pco_legalize.c
+@@ -965,7 +965,8 @@ static bool ditr_needs_pre_fence(pco_instr *instr)
+  *
+  * The pre-fence is only inserted when necessary and
+  * ensures no registers are shared with the DITR/DITRP destination.
+- * A post-fence is always inserted.
++ * A post-fence is inserted unless the instruction carries
++ * sched_ctrl = wdf, in which case the hardware performs the wait itself.
+  *
+  * \param[in,out] instr PCO instr.
+  * \return True if progress was made.
+@@ -975,18 +976,28 @@ static bool try_legalize_ditr_fence(pco_instr *instr)
+    if (instr->op != PCO_OP_DITR && instr->op != PCO_OP_DITRP)
+       return false;
+ 
+-   pco_builder b =
+-      pco_builder_create(instr->parent_func, pco_cursor_after_instr(instr));
++   bool progress = false;
+ 
+-   /* Always insert a post-fence to enforce WDF ordering. */
+-   pco_fence(&b);
++   /* A DITR/DITRP with sched_ctrl = wdf has the hardware wait for the
++    * iteration result itself (the form the vendor compiler emits, and the
++    * reason its fragment shaders carry no fence groups around the DITRP), so
++    * no post-fence is needed. Without it, insert one to enforce WDF ordering.
++    */
++   if (pco_instr_get_sched(instr) != PCO_SCHED_WDF) {
++      pco_builder b =
++         pco_builder_create(instr->parent_func, pco_cursor_after_instr(instr));
++      pco_fence(&b);
++      progress = true;
++   }
+ 
+    if (ditr_needs_pre_fence(instr)) {
+-      b.cursor = pco_cursor_before_instr(instr);
++      pco_builder b =
++         pco_builder_create(instr->parent_func, pco_cursor_before_instr(instr));
+       pco_fence(&b);
++      progress = true;
+    }
+ 
+-   return true;
++   return progress;
+ }
+ 
+ /**
+diff --git a/src/imagination/pco/pco_schedule.c b/src/imagination/pco/pco_schedule.c
+index 2577096e..81619f31 100644
+--- a/src/imagination/pco/pco_schedule.c
++++ b/src/imagination/pco/pco_schedule.c
+@@ -33,6 +33,14 @@ bool pco_schedule(pco_shader *shader)
+          if (instr->op == PCO_OP_WDF || instr->op == PCO_OP_IDF)
+             continue;
+ 
++         /* A DITR/DITRP with sched_ctrl = wdf waits for its own iteration
++          * result in hardware (see pco_legalize.c), so the explicit wait the
++          * DRC source below would add is redundant.
++          */
++         if ((instr->op == PCO_OP_DITR || instr->op == PCO_OP_DITRP) &&
++             pco_instr_get_sched(instr) == PCO_SCHED_WDF)
++            continue;
++
+          pco_foreach_instr_src (psrc, instr) {
+             if (!pco_ref_is_drc(*psrc))
+                continue;
+diff --git a/src/imagination/pco/pco_trans_nir.c b/src/imagination/pco/pco_trans_nir.c
+index 526312cf..d443e2a3 100644
+--- a/src/imagination/pco/pco_trans_nir.c
++++ b/src/imagination/pco/pco_trans_nir.c
+@@ -396,6 +396,16 @@ static inline pco_instr *build_itr(pco_builder *b,
+ 
+    pco_instr_set_itr_mode(instr, itr_mode);
+ 
++   /* The enhanced-interpolation forms have a scheduling field: telling the
++    * hardware to wait for the iteration result itself is what the vendor
++    * compiler does, and it is what lets the legalizer drop the explicit
++    * flush/branch fence (pco_legalize.c). The non-enhanced FITR forms have no
++    * such field and are unchanged (they only ever got pco_schedule's explicit
++    * WDF, not the post-fence).
++    */
++   if (d)
++      pco_instr_set_sched(instr, PCO_SCHED_WDF);
++
+    pco_builder_insert_instr(b, instr);
+ 
+    return instr;
+-- 
+2.47.3
+

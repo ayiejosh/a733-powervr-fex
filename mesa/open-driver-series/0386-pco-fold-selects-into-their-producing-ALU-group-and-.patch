@@ -1,0 +1,287 @@
+From edd2b676df94e12c7d17834f81ed528067522853 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Mon, 2 Nov 2026 15:08:41 +0800
+Subject: [PATCH] pco: fold selects into their producing ALU group and drop
+ same-arm selects
+
+A GLSL `if` whose bodies only assign lowers to `bcsel`, and pco gives every
+`O_BCMP` and every `O_BCSEL` a whole instruction group (the select group is
+p0 mbyp + p1 mbyp + p2 tst + p2 movc). glm2's cel fragment shader ends up with
+11 of its 53 groups in that shape. The vendor shader uses the same tst+movc
+model but packs it into phase-2 slots of groups the ALU needs anyway, so the
+machine-level gap is packing, not a different select mechanism.
+
+Two changes close the cheap part of that gap without touching the ISA or the
+maps:
+
+- pco_opt_fold_selects() (pco_opt.c) folds `bcsel(cond, x, x)` to `x`. The arms
+  only become visibly the same value after forward propagation turns both
+  constant arms into the same register, so the pass runs after
+  pco_opt_fwd_prop() and resolves arms through the moves it inserts, so chains
+  fold in one pass. Conditions are pure, so the condition is dropped; the
+  replacement move carries the select's exec condition and the other ALU mods.
+- try_fold_into_next() (pco_group_instrs.c) now also folds a select group whose
+  phase-0 only moves the previous group's result (the same geometry as the
+  existing min/max fold): the producing phase-0-only ALU op runs in phase 0,
+  the other arm stays in the phase-1 slot, and the condition moves from source
+  slot s1 to the free upper slot s4 with the phase-2 mux pointing at it; source
+  and destination group variants are recomputed, and the fold fails closed
+  unless the condition maps legally to that slot. The case where both arms are
+  one group's w0/w1 is not folded - a group has no liveness to drop an arm
+  write.
+
+Measured with the offline pco harness and on the board (raw outputs in
+open-perf/tasks/T-2026-11-02-codegen/runs/009-opt-select/ and 010-select-fold/):
+
+  cel FS    53 -> 49 groups (696 -> 648 code bytes; 48 -> 44 main, control 1)
+            (R1 alone 53 -> 51 / 664 B)
+  conditionals FS, and the rest of the offline shader corpus: byte-identical
+  no_dual_issue A/B: cel 69 -> 67 groups (R1 only; the R2 fold is gated by the
+  same NO_DUAL_ISSUE guard as the min/max fold), conditionals unchanged
+
+Board validation (the folded groups have a new source-slot layout, so the
+group-with-a-fullscreen-quad pixel test is the point): the captured glm2 cel FS
+replay renders 0 77 0 255 - BaseColor.y, 0.3*255 = 77 - on both builds, i.e.
+no visible regression on a render that exercises the folded groups; phong
+5 5 5, loop 18/167, conditionals 54, two-varying 64 64 255 and bump 26 are all
+identical across the change. Native gate ALL GROUPS PASS (20/20); Vulkan gate
+44/44 pass (the Vulkan driver shares this compiler; its gate runner prints only
+failures and the summary). glm2 cel scene +3.6% fps mean (577/578/583 ->
+604/599/598, +4.7 / +3.6 / +2.6% per round, 3 interleaved rounds); loop,
+conditionals, bump, phong and effect2d are within run-to-run noise.
+
+The release build has asserts compiled out and an assert-enabled build trips
+pre-existing builder asserts on pristine sources, so pco_validate() is not part
+of this evidence; the board gate/pixel matrix is what validates the new
+source-slot layout.
+---
+ src/imagination/pco/pco_group_instrs.c | 60 +++++++++++++++-----
+ src/imagination/pco/pco_opt.c          | 77 ++++++++++++++++++++++++++
+ 2 files changed, 124 insertions(+), 13 deletions(-)
+
+diff --git a/src/imagination/pco/pco_group_instrs.c b/src/imagination/pco/pco_group_instrs.c
+index 4d1fa306..a122a1a2 100644
+--- a/src/imagination/pco/pco_group_instrs.c
++++ b/src/imagination/pco/pco_group_instrs.c
+@@ -445,15 +445,22 @@ static bool is_p0_foldable(const pco_instr *instr)
+ 
+ /**
+  * \brief Folds a phase 0-only group into the next group when that group's
+- *        phase 0 only moves the first group's result (e.g. min/max after an
+- *        ALU op): the op then runs in phase 0 and phase 2 reads its ft0.
++ *        phase 0 only moves the first group's result (e.g. min/max or a
++ *        select after an ALU op): the op then runs in phase 0 and phase 2
++ *        reads its ft0.  For a select the condition is kept in the group and
++ *        moved to a free source slot, with the phase 2 mux pointing at it.
+  *
+  * \param[in,out] prev Previous instruction group (removed on success).
+  * \param[in,out] igrp Current instruction group.
++ * \param[in] next_op PCO op the current group was mapped from.
+  * \return True if prev was folded into igrp.
+  */
+-static bool try_fold_into_next(pco_igrp *prev, pco_igrp *igrp)
++static bool try_fold_into_next(pco_igrp *prev, pco_igrp *igrp,
++                               enum pco_op next_op)
+ {
++   bool is_select = next_op == PCO_OP_BCSEL;
++   pco_ref cond = is_select ? igrp->srcs.s[1] : pco_ref_null();
++
+    if (PCO_DEBUG(NO_DUAL_ISSUE))
+       return false;
+ 
+@@ -477,10 +484,21 @@ static bool try_fold_into_next(pco_igrp *prev, pco_igrp *igrp)
+        pco_ref_get_reg_index(igrp->srcs.s[0]) !=
+           pco_ref_get_reg_index(result) ||
+        pco_ref_get_chans(igrp->srcs.s[0]) != pco_ref_get_chans(result) ||
+-       !pco_ref_is_null(igrp->srcs.s[1]) ||
+-       !pco_ref_is_null(igrp->srcs.s[2]) ||
+-       !pco_ref_is_null(igrp->iss.is[0]))
++       !pco_ref_is_null(igrp->srcs.s[2]))
++      return false;
++
++   if (is_select) {
++      /* The condition stays in the group: it must be a plain register and
++       * the phase 2 mux must already read it from a source slot.
++       */
++      if (pco_ref_is_null(cond) || !pco_ref_is_reg(cond) ||
++          pco_ref_has_mods_set(cond) || pco_ref_is_null(igrp->iss.is[0]) ||
++          !upper_src_ok(cond, 1))
++         return false;
++   } else if (!pco_ref_is_null(igrp->srcs.s[1]) ||
++              !pco_ref_is_null(igrp->iss.is[0])) {
+       return false;
++   }
+ 
+    if (igrp->hdr.olchk != prev->hdr.olchk || igrp->hdr.cc != prev->hdr.cc ||
+        igrp->hdr.end != prev->hdr.end || igrp->hdr.atom != prev->hdr.atom ||
+@@ -488,8 +506,9 @@ static bool try_fold_into_next(pco_igrp *prev, pco_igrp *igrp)
+       return false;
+ 
+    /* The other sources are read before the folded op writes back. */
+-   for (unsigned s = 3; s < ARRAY_SIZE(igrp->srcs.s); ++s)
+-      if (refs_overlap(igrp->srcs.s[s], result))
++   for (unsigned s = is_select ? 1 : 3; s < ARRAY_SIZE(igrp->srcs.s); ++s)
++      if (!pco_ref_is_null(igrp->srcs.s[s]) &&
++          refs_overlap(igrp->srcs.s[s], result))
+          return false;
+ 
+    /* Keep the folded op's own write unless igrp overwrites it anyway. */
+@@ -505,8 +524,18 @@ static bool try_fold_into_next(pco_igrp *prev, pco_igrp *igrp)
+    ralloc_steal(igrp, op);
+    ralloc_free(mov);
+ 
+-   for (unsigned s = 0; s < 3; ++s)
+-      igrp->srcs.s[s] = prev->srcs.s[s];
++   igrp->srcs.s[0] = prev->srcs.s[0];
++   igrp->srcs.s[1] = prev->srcs.s[1];
++   igrp->srcs.s[2] = prev->srcs.s[2];
++
++   if (is_select) {
++      /* The folded op needs the lower source slots; keep the condition in a
++       * free upper slot and point the phase 2 mux at it.
++       */
++      igrp->srcs.s[4] = cond;
++      igrp->iss.is[0] = pco_ref_io(PCO_IO_S4);
++   }
++
+    igrp->variant.instr[PCO_OP_PHASE_0] = prev->variant.instr[PCO_OP_PHASE_0];
+ 
+    if (keep_result) {
+@@ -517,6 +546,8 @@ static bool try_fold_into_next(pco_igrp *prev, pco_igrp *igrp)
+ 
+    igrp->variant.hdr = pco_igrp_hdr_variant(igrp);
+    igrp->variant.lower_src = pco_igrp_src_variant(igrp, false);
++   if (is_select)
++      igrp->variant.upper_src = pco_igrp_src_variant(igrp, true);
+    igrp->variant.dest = pco_igrp_dest_variant(igrp);
+ 
+    list_del(&prev->link);
+@@ -668,14 +699,16 @@ bool pco_dual_issue_sched(pco_shader *shader)
+  * \param[in] instr PCO instruction.
+  * \param[out] igrp PCO instruction group.
+  */
+-static void
++static enum pco_op
+ pco_instr_to_igrp(pco_builder *b, pco_instr *instr, pco_igrp *igrp)
+ {
+    struct list_head *next = instr->link.next;
+    struct list_head *end = &pco_cursor_block(b->cursor)->instrs;
++   enum pco_op op = instr->op;
+    pco_map_igrp(igrp, instr);
+    try_dual_issue(igrp, next, end);
+    pco_builder_insert_igrp(b, igrp);
++   return op;
+ }
+ 
+ /**
+@@ -707,9 +740,10 @@ bool pco_group_instrs(pco_shader *shader)
+             if (n == &block->instrs)
+                break;
+             igrp = pco_igrp_create(func);
+-            pco_instr_to_igrp(&b, list_entry(n, pco_instr, link), igrp);
++            enum pco_op op =
++               pco_instr_to_igrp(&b, list_entry(n, pco_instr, link), igrp);
+             if (last)
+-               try_fold_into_next(last, igrp);
++               try_fold_into_next(last, igrp, op);
+             last = igrp;
+          }
+       }
+diff --git a/src/imagination/pco/pco_opt.c b/src/imagination/pco/pco_opt.c
+index 7977c1bb..89010786 100644
+--- a/src/imagination/pco/pco_opt.c
++++ b/src/imagination/pco/pco_opt.c
+@@ -492,6 +492,82 @@ static inline bool pco_opt_fwd_prop(pco_shader *shader)
+    return progress;
+ }
+ 
++/**
++ * \brief Resolves a source through movs inserted by the select folding pass.
++ *
++ * \param[in] writes SSA definition lookup.
++ * \param[in] ref Source reference.
++ * \return The resolved reference.
++ */
++static inline pco_ref fold_resolve_mov(pco_instr **writes, pco_ref ref)
++{
++   while (pco_ref_is_ssa(ref)) {
++      pco_instr *writer = writes[ref.val];
++      if (!writer || writer->op != PCO_OP_MOV || writer->num_srcs != 1)
++         break;
++
++      ref = writer->src[0];
++   }
++
++   return ref;
++}
++
++/**
++ * \brief Folds selects whose two arms are the same value.
++ *
++ * A bcsel picking between the same value on both arms is a copy of that
++ * value, whatever the condition (conditions are pure).  The arms often only
++ * become visibly identical after forward propagation of constants (e.g. two
++ * separate zero literals), so this runs after pco_opt_fwd_prop().  Folds can
++ * enable further folds through the movs inserted here, which is why arms are
++ * resolved through single-source movs while walking the block.
++ *
++ * \param[in,out] shader PCO shader.
++ * \return True if the pass made progress.
++ */
++static inline bool pco_opt_fold_selects(pco_shader *shader)
++{
++   bool progress = false;
++   pco_instr **writes;
++
++   pco_foreach_func_in_shader (func, shader) {
++      writes = rzalloc_array_size(NULL, sizeof(*writes), func->next_ssa);
++
++      pco_foreach_instr_in_func_safe (instr, func) {
++         if (instr->op != PCO_OP_BCSEL)
++            continue;
++
++         pco_ref arm0 = fold_resolve_mov(writes, instr->src[1]);
++         pco_ref arm1 = fold_resolve_mov(writes, instr->src[2]);
++         if (!pco_refs_are_equal(arm0, arm1, true) ||
++             pco_ref_has_mods_set(arm0) || pco_ref_has_mods_set(arm1))
++            continue;
++
++         pco_builder b =
++            pco_builder_create(func, pco_cursor_before_instr(instr));
++         pco_instr *mov = pco_mov(&b, instr->dest[0], arm0);
++         pco_instr_copy_exec_cnd(mov, instr);
++         /* Carry every other ALU mod so a later pass ordering can not lose
++          * them; they are all defaults at pco_opt time today.
++          */
++         pco_instr_set_olchk(mov, pco_instr_get_olchk(instr));
++         pco_instr_set_end(mov, pco_instr_get_end(instr));
++         pco_instr_set_atom(mov, pco_instr_get_atom(instr));
++         pco_instr_set_rpt(mov, pco_instr_get_rpt(instr));
++         pco_instr_delete(instr);
++
++         pco_foreach_instr_dest_ssa (pdest, mov)
++            writes[pdest->val] = mov;
++
++         progress = true;
++      }
++
++      ralloc_free(writes);
++   }
++
++   return progress;
++}
++
+ /**
+  * \brief Tries to propagate a comp instruction referencing hw registers.
+  *
+@@ -579,6 +655,7 @@ bool pco_opt(pco_shader *shader)
+    PCO_PASS(progress, shader, pco_opt_prep_mods, &ctx);
+    PCO_PASS(progress, shader, pco_opt_back_prop);
+    PCO_PASS(progress, shader, pco_opt_fwd_prop);
++   PCO_PASS(progress, shader, pco_opt_fold_selects);
+    /* TODO: Track whether there are any comp instructions referencing hw
+     * registers resulting from the previous passes, and only run
+     * pco_opt_prop_hw_comps if this is the case.
+-- 
+2.47.3
+

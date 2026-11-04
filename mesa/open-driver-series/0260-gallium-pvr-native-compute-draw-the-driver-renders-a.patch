@@ -1,7 +1,7 @@
-From 774b442c11c98d738b3602dc051f14351f2e7ade Mon Sep 17 00:00:00 2001
+From bd16015e2f7cb3020e9640b351cdf8c16faaba1a Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Mon, 26 Oct 2026 04:22:12 +0800
-Subject: [PATCH 260/269] gallium/pvr: native compute draw - the driver renders
+Subject: [PATCH 260/294] gallium/pvr: native compute draw - the driver renders
  a triangle with its own programs and submission
 
 PVR_PROBE_CDM_NATIVE makes the probe do the whole compute draw natively, with no captured reference data:

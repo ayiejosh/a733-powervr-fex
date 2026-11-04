@@ -1,7 +1,7 @@
-From ce9f9bb17f3adc81e2bf800dde40cdebde02019d Mon Sep 17 00:00:00 2001
+From ddc0ab4913a2ed2faa4e9dd341ed5d4bfc67fdb9 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sat, 10 Oct 2026 11:35:34 +0800
-Subject: [PATCH 64/98] pvr: don't zero the 380 KiB transfer submit array on
+Subject: [PATCH 064/294] pvr: don't zero the 380 KiB transfer submit array on
  every transfer
 
 pvr_queue_transfer() zero-initialised struct pvr_transfer_submit, whose
@@ -18,7 +18,7 @@ d253e35; gate 44/44.
  1 file changed, 5 insertions(+), 1 deletion(-)
 
 diff --git a/src/imagination/vulkan/pvr_arch_job_transfer.c b/src/imagination/vulkan/pvr_arch_job_transfer.c
-index bfcd9f2..427479a 100644
+index bfcd9f2b..427479aa 100644
 --- a/src/imagination/vulkan/pvr_arch_job_transfer.c
 +++ b/src/imagination/vulkan/pvr_arch_job_transfer.c
 @@ -5982,7 +5982,10 @@ static VkResult pvr_queue_transfer(struct pvr_transfer_ctx *ctx,

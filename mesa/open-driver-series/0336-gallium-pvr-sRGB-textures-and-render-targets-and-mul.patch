@@ -1,0 +1,446 @@
+From 0db1b4fd15cade3fb9c200c793ec5dab2d5faeb0 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Thu, 29 Oct 2026 22:59:14 +0800
+Subject: [PATCH] gallium/pvr: sRGB textures and render targets, and
+ multi-dword colour outputs
+
+The TPU and PBE both have gamma modes; wiring them up gives ES2's GL_EXT_sRGB (and is the format
+foundation ES3 needs for SRGB8_ALPHA8):
+
+- Sampling: sRGB images get TEXSTATE_IMAGE_WORD0's gamma bit (the reference sets it for sRGB
+  formats). The non-obvious half was TEXSTATE_IMAGE_WORD1's alpha_msb: without it the TPU treats the
+  first memory channel as alpha and leaves it un-decoded, so a sampled sRGB texel came back with red
+  still sRGB-encoded while green/blue were linear (40% error on red only). Setting alpha_msb where the
+  format's fourth channel is W (the reference's vk_format_is_alpha_on_msb rule) fixes the decode.
+- Rendering: colour targets get PBESTATE_REG_WORD0's gamma bit, so the PBE encodes the linear source
+  values on write; the PBE source format for an sRGB bitmap is 16-bit float per channel (the same
+  F16 conversion pco applies to shader outputs), so the background clear packs the clear colour as
+  linear half floats instead of memory-order bytes.
+- Multi-dword colour outputs: an sRGB (16F source) attachment occupies two pixel-output dwords, so
+  the fragment variant's output ranges, the background clear's per-dword stores, the EOT's PBE
+  source_pos and the ISP pixel-output width are all built from a shared "PBE output dwords" count
+  instead of assuming one dword per attachment. This is also the plumbing 16F/32F colour targets need.
+- A deferred clear now keeps the float clear colour on the resource, not only the packed dword: the
+  packed value is right for one format while the deferred render may need the colour in another
+  encoding (this is what made a deferred sRGB clear come out black).
+- Format support: R8G8B8A8_SRGB/B8G8R8A8_SRGB/A8B8G8R8_SRGB as sampler views and render targets;
+  GL_EXT_sRGB is advertised on ES2 now.
+
+Verified against zink with open-perf/srgb_test.c: uploaded sRGB texel bytes (128,64,32) decode to
+(55,13,4) - identical; an sRGB target cleared to linear 0.5 samples back 128 and a 0.25 draw samples
+back 64 - identical. Full gate green: 49 gltri modes (all native glGetError 0x0), 28 mip modes,
+rttest PASS (bad=0/262144), rt8test unchanged, 2/4-attachment and mixed-format MRT unchanged,
+instancing unchanged, 0 MMU faults.
+---
+ src/gallium/drivers/pvr_native/pvr_csb.c      | 31 +++++--
+ src/gallium/drivers/pvr_native/pvr_csb.h      |  8 ++
+ src/gallium/drivers/pvr_native/pvr_draw.c     | 87 +++++++++++++------
+ src/gallium/drivers/pvr_native/pvr_probe.c    |  2 +-
+ src/gallium/drivers/pvr_native/pvr_resource.h |  4 +
+ src/gallium/drivers/pvr_native/pvr_screen.c   |  4 +-
+ src/gallium/drivers/pvr_native/pvr_shader.c   | 14 +--
+ src/gallium/drivers/pvr_native/pvr_shader.h   | 12 +++
+ 8 files changed, 122 insertions(+), 40 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_csb.c b/src/gallium/drivers/pvr_native/pvr_csb.c
+index 3a03f907..3c78589f 100644
+--- a/src/gallium/drivers/pvr_native/pvr_csb.c
++++ b/src/gallium/drivers/pvr_native/pvr_csb.c
+@@ -446,6 +446,9 @@ pvr_format_layout_from_pipe(enum pipe_format format, struct pvr_format_layout *l
+    case PIPE_FORMAT_B8G8R8A8_UNORM:
+    case PIPE_FORMAT_R8G8B8X8_UNORM: /* the description's swizzle reads alpha as 1 */
+    case PIPE_FORMAT_B8G8R8X8_UNORM:
++   case PIPE_FORMAT_R8G8B8A8_SRGB:
++   case PIPE_FORMAT_B8G8R8A8_SRGB:
++   case PIPE_FORMAT_A8B8G8R8_SRGB:
+       layout_out->components = ROGUE_TEXSTATE_FORMAT_U8U8U8U8;
+       break;
+    case PIPE_FORMAT_R8_UNORM:
+@@ -836,7 +839,7 @@ pvr_pbe_memlayout_linear(void)
+ 
+ void
+ pvr_csb_pbe_state_words(uint64_t addr, enum pipe_format format, uint32_t mrt_index,
+-                        bool emptytile, uint32_t words[2])
++                        uint32_t source_pos_dword, bool emptytile, uint32_t words[2])
+ {
+    const struct util_format_description *desc = util_format_description(format);
+    const int chan = util_format_get_first_non_void_channel(format);
+@@ -854,10 +857,11 @@ pvr_csb_pbe_state_words(uint64_t addr, enum pipe_format format, uint32_t mrt_ind
+       .address_high = addr,
+       .source_format = pvr_pbe_source_format_from_pipe(format, true),
+       .mrt_index = mrt_index,
+-      /* Each attachment's pixel data sits at its own output register (the reference maps output
+-       * position 0..3 to START_BIT0/32/64/96), so attachment i reads dword i of the fragment
+-       * output, not dword 0. */
+-      .source_pos = (enum ROGUE_PBESTATE_SOURCE_POS)(mrt_index <= 3 ? mrt_index : 0),
++      /* Where this attachment's pixel data starts in the fragment output, as a dword index: the
++       * reference maps output positions 0..3 to START_BIT0/32/64/96. One-dword formats keep
++       * start == attachment index; a 16F format occupies two dwords, so the next attachment's
++       * start moves by two. */
++      .source_pos = (enum ROGUE_PBESTATE_SOURCE_POS)MIN2(source_pos_dword, 3),
+       .norm = chan >= 0 && desc->channel[chan].normalized,
+    };
+ 
+@@ -943,6 +947,11 @@ pvr_csb_pbe_words(enum pipe_format format, uint32_t stride_bytes, uint32_t width
+       }
+    }
+ 
++   /* sRGB target: the PBE writes the linear source values encoded to sRGB, exactly like the
++    * reference's PBESTATE_REG_WORD0 gamma bit (its pbe_pack_state sets it from the format). */
++   if (util_format_is_srgb(format))
++      reg0.gamma = true;
++
+    /* TFBC: the PBE compresses whole 8x8 blocks, direct addressing (see NATIVE-TFBC-PORT.md). */
+    if (fbc) {
+       reg0.compression = ROGUE_PBESTATE_COMPRESSION_ENABLED;
+@@ -1366,13 +1375,16 @@ pvr_csb_emit_tex_desc(struct pvr_csb *csb, const struct pvr_tex_desc *desc)
+       .minlod = 0,
+       .texformat_compressed = 0,
+       .twocomp_gamma = 0,
++      /* sRGB images are decoded to linear by the TPU; the reference sets the same bit for sRGB
++       * formats (pvr_arch_tex_state's "Gamma" block). */
++      .gamma = desc->gamma ? ROGUE_TEXSTATE_GAMMA_ON : ROGUE_TEXSTATE_GAMMA_OFF,
+    };
+    struct ROGUE_TEXSTATE_STRIDE_IMAGE_WORD1 word1 = {
+       .stride = desc->stride - 1,
+       .texaddr = desc->addr,
+       .num_mip_levels = 0,
+       .mipmaps_present = false,
+-      .alpha_msb = false,
++      .alpha_msb = desc->alpha_msb,
+       .tile_size = false,
+       .index_lookup = false,
+       .frame_buffer_compression = false,
+@@ -1387,7 +1399,7 @@ pvr_csb_emit_tex_desc(struct pvr_csb *csb, const struct pvr_tex_desc *desc)
+       .mipmaps_present = desc->num_levels > 1,
+       .baselevel = desc->base_level,
+       .depth = 0,
+-      .alpha_msb = false,
++      .alpha_msb = desc->alpha_msb,
+       .border = false,
+       .frame_buffer_compression = false,
+       .frame_buffer_compression_addressing_mode = false,
+@@ -1412,6 +1424,11 @@ pvr_csb_emit_tex_desc(struct pvr_csb *csb, const struct pvr_tex_desc *desc)
+       }
+    }
+ 
++   if (getenv("PVR_TEXDBG") != NULL)
++      fprintf(stderr, "TEXDBG comp=%u swiz=%u,%u,%u,%u gamma=%d tw=%d w=%u h=%u\n",
++              (unsigned)desc->components, desc->swizzle[0], desc->swizzle[1], desc->swizzle[2],
++              desc->swizzle[3], (int)desc->gamma, desc->twiddled, desc->width, desc->height);
++
+    dw = pvr_csb_emit(csb, words);
+    if (dw == NULL)
+       return false;
+diff --git a/src/gallium/drivers/pvr_native/pvr_csb.h b/src/gallium/drivers/pvr_native/pvr_csb.h
+index e833ae6c..96893703 100644
+--- a/src/gallium/drivers/pvr_native/pvr_csb.h
++++ b/src/gallium/drivers/pvr_native/pvr_csb.h
+@@ -226,6 +226,13 @@ struct pvr_tex_desc {
+    bool twiddled;
+    bool fbc;
+ 
++   /* sRGB texture: the TPU decodes the stored bytes to linear values. */
++   bool gamma;
++
++   /* Alpha sits in the most significant channel byte (the reference's vk_format_is_alpha_on_msb):
++    * the TPU needs this to know the stored channel order when it decodes sRGB. */
++   bool alpha_msb;
++
+    /* A twiddled mip chain: levels sampled (0 or 1: none) and the first one. width/height are
+     * level 0's then. */
+    uint32_t num_levels;
+@@ -555,6 +562,7 @@ bool pvr_csb_pbe_words(enum pipe_format format, uint32_t stride_bytes, uint32_t
+  * PBE at the render target at end of tile. `words[0]` is STATE_WORD0, `words[1]` STATE_WORD1, the
+  * same layout the reference's pvr_pbe_state_words() produces. */
+ void pvr_csb_pbe_state_words(uint64_t addr, enum pipe_format format, uint32_t mrt_index,
++                             uint32_t source_pos_dword,
+                              bool emptytile, uint32_t words[2]);
+ 
+ /* The PBE (pixel backend) render-target address: PBESTATE_STATE_WORD0 + STATE_WORD1.
+diff --git a/src/gallium/drivers/pvr_native/pvr_draw.c b/src/gallium/drivers/pvr_native/pvr_draw.c
+index 9c8da975..bd41e989 100644
+--- a/src/gallium/drivers/pvr_native/pvr_draw.c
++++ b/src/gallium/drivers/pvr_native/pvr_draw.c
+@@ -59,8 +59,9 @@ struct pvr_draw_pds_prog {
+ };
+ 
+ struct pvr_draw_bg {
+-   uint32_t colors[PVR_MAX_COLOR_ATTACHMENTS];
+-   unsigned nr_outputs;
++   /* One 32-bit pixel-output dword per entry: a 16F colour format occupies two of them. */
++   uint32_t words[PVR_MAX_COLOR_ATTACHMENTS * 2];
++   unsigned nwords;
+    uint64_t pds_offset;
+ };
+ 
+@@ -725,6 +726,7 @@ draw_level_desc(const struct pvr_resource *res, unsigned level,
+                 enum ROGUE_TEXSTATE_FORMAT components, struct pvr_tex_desc *tex)
+ {
+    const bool level0 = level == 0;
++   const struct util_format_description *desc = util_format_description(res->base.format);
+    *tex = (struct pvr_tex_desc){
+       .components = components,
+       .width = level0 ? res->base.width0 : pvr_resource_level_phys_w(res, level),
+@@ -733,6 +735,14 @@ draw_level_desc(const struct pvr_resource *res, unsigned level,
+       .addr = pvr_resource_level_addr(res, level),
+       .twiddled = res->twiddled,
+       .fbc = res->fbc,
++      .gamma = util_format_is_srgb(res->base.format),
++      /* The reference's vk_format_is_alpha_on_msb: an RGBA-order colour format has alpha in the
++       * most significant byte (the 4th channel maps to W); the TPU needs this to place the sRGB
++       * decode correctly (without it the first memory channel is treated as alpha and left
++       * un-decoded). */
++      .alpha_msb = (desc->colorspace == UTIL_FORMAT_COLORSPACE_RGB ||
++                    desc->colorspace == UTIL_FORMAT_COLORSPACE_SRGB) &&
++                   desc->swizzle[3] == PIPE_SWIZZLE_W,
+    };
+ }
+ 
+@@ -896,32 +906,31 @@ draw_uniform_program(struct pvr_context *ctx, struct pvr_draw_state *d,
+  * with one store per output dword. */
+ static uint64_t
+ draw_bg_program(struct pvr_context *ctx, struct pvr_draw_state *d,
+-                const uint32_t *colors, unsigned nr_outputs)
++                const uint32_t *words, unsigned nwords)
+ {
+    struct pvr_screen *scr = draw_screen(ctx);
+    nir_builder b;
+    struct pvr_shader *bg;
+ 
+    for (unsigned i = 0; i < d->nr_bg; i++) {
+-      if (d->bg[i].nr_outputs == nr_outputs &&
+-          !memcmp(d->bg[i].colors, colors, nr_outputs * sizeof(colors[0])))
++      if (d->bg[i].nwords == nwords &&
++          !memcmp(d->bg[i].words, words, nwords * sizeof(words[0])))
+          return d->bg[i].pds_offset;
+    }
+    b = nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, pco_nir_options(), "pvr_bg");
+    b.shader->info.internal = false;
+-   /* One packed colour into each colour attachment's pixel output dword: the EOT emit for
+-    * attachment i reads dword i. */
+-   for (unsigned i = 0; i < nr_outputs; i++)
+-      nir_frag_store_pco(&b, nir_imm_int(&b, (int)colors[i]), .base = i);
++   /* One packed pixel-output dword per store: the EOT emit for attachment i reads the dwords that
++    * attachment's format occupies (one for an 8-bit format, two for 16F). */
++   for (unsigned i = 0; i < nwords; i++)
++      nir_frag_store_pco(&b, nir_imm_int(&b, (int)words[i]), .base = i);
+    nir_jump(&b, nir_jump_return);
+    bg = pvr_shader_create(b.shader, scr->pco_ctx);
+    if (bg == NULL || !draw_upload_fs(scr, bg))
+       return 0;
+    /* shortcut: four cached colours, round robin; the evicted programs stay allocated. */
+-   const unsigned slot = d->nr_bg < ARRAY_SIZE(d->bg) ? d->nr_bg++ : (colors[0] & 3);
+-   d->bg[slot] = (struct pvr_draw_bg){ .nr_outputs = nr_outputs,
+-                                       .pds_offset = bg->pds_offset };
+-   memcpy(d->bg[slot].colors, colors, nr_outputs * sizeof(colors[0]));
++   const unsigned slot = d->nr_bg < ARRAY_SIZE(d->bg) ? d->nr_bg++ : (words[0] & 3);
++   d->bg[slot] = (struct pvr_draw_bg){ .nwords = nwords, .pds_offset = bg->pds_offset };
++   memcpy(d->bg[slot].words, words, nwords * sizeof(words[0]));
+    return bg->pds_offset;
+ }
+ 
+@@ -1049,7 +1058,8 @@ draw_load_program(struct pvr_context *ctx, struct pvr_draw_state *d, uint64_t bg
+  * a PDS pixel-event data segment. */
+ static uint64_t
+ draw_eot_program(struct pvr_context *ctx, struct pvr_draw_state *d, unsigned nr_attachments,
+-                 const uint64_t *rt_addrs, const enum pipe_format *formats, bool zonlyrender)
++                 const uint64_t *rt_addrs, const enum pipe_format *formats,
++                 const uint32_t *start_dwords, bool zonlyrender)
+ {
+    struct pvr_screen *scr = draw_screen(ctx);
+    struct pvr_shader_eot eot = { 0 };
+@@ -1065,7 +1075,8 @@ draw_eot_program(struct pvr_context *ctx, struct pvr_draw_state *d, unsigned nr_
+          return d->eot[i].pds_offset;
+    }
+    for (unsigned i = 0; i < nr_attachments; i++)
+-      pvr_csb_pbe_state_words(rt_addrs[i], formats[i], i, zonlyrender, &state_words[2 * i]);
++      pvr_csb_pbe_state_words(rt_addrs[i], formats[i], i, start_dwords[i], zonlyrender,
++                              &state_words[2 * i]);
+    if (!pvr_shader_eot_create(scr->pco_ctx, &eot, nr_attachments, state_words))
+       return 0;
+    usc_offset = draw_upload_usc(scr, eot.binary, eot.binary_size);
+@@ -1119,6 +1130,12 @@ draw_pbe_pack_format(enum pipe_format format)
+    case PIPE_FORMAT_B5G5R5A1_UNORM:
+    case PIPE_FORMAT_B8G8R8A8_UNORM:
+       return PIPE_FORMAT_R8G8B8A8_UNORM;
++   /* sRGB targets: the PBE's source format is F16 per channel (linear) and its gamma bit encodes on
++    * write, so the clear colour has to be packed as linear half floats in RGBA order. */
++   case PIPE_FORMAT_A8B8G8R8_SRGB:
++   case PIPE_FORMAT_B8G8R8A8_SRGB:
++   case PIPE_FORMAT_R8G8B8A8_SRGB:
++      return PIPE_FORMAT_R16G16B16A16_FLOAT;
+    default:
+       return format;
+    }
+@@ -1142,7 +1159,9 @@ draw_format_ok(enum pipe_format f)
+     * st_extension_format_mapping); rendering them works the same through the twiddled path. */
+    return f == PIPE_FORMAT_R8G8B8A8_UNORM || f == PIPE_FORMAT_B8G8R8A8_UNORM ||
+           f == PIPE_FORMAT_R8G8B8X8_UNORM || f == PIPE_FORMAT_B8G8R8X8_UNORM ||
+-          f == PIPE_FORMAT_R8_UNORM || f == PIPE_FORMAT_R8G8_UNORM;
++          f == PIPE_FORMAT_R8_UNORM || f == PIPE_FORMAT_R8G8_UNORM ||
++          f == PIPE_FORMAT_R8G8B8A8_SRGB || f == PIPE_FORMAT_B8G8R8A8_SRGB ||
++          f == PIPE_FORMAT_A8B8G8R8_SRGB;
+ }
+ 
+ /* The vertex attribute fetch program and its data segment for the bound vertex elements. */
+@@ -1284,6 +1303,7 @@ draw_open(struct pvr_context *ctx, struct pvr_draw_state *d, struct pipe_resourc
+    if (rres->clear_pending && level == 0) {
+       d->clear_valid = true;
+       d->clear_color = rres->clear_color;
++      d->clear_value = rres->clear_value;
+       rres->clear_pending = false;
+    }
+    if (d->zs && pvr_resource(d->zs)->zclear_pending) {
+@@ -1816,6 +1836,7 @@ pvr_draw_flush(struct pvr_context *ctx)
+          if (d->clear_valid) {
+             pvr_resource(d->rt)->clear_pending = true;
+             pvr_resource(d->rt)->clear_color = d->clear_color;
++            pvr_resource(d->rt)->clear_value = d->clear_value;
+          }
+          if (d->zclear_valid && d->zs) {
+             pvr_resource(d->zs)->zclear_pending = true;
+@@ -1883,12 +1904,31 @@ pvr_draw_flush(struct pvr_context *ctx)
+          }
+       }
+    }
+-   const uint64_t eot = draw_eot_program(ctx, d, nr_attach, eot_addrs, eot_formats, zonly);
+-   uint32_t bg_colors[PVR_MAX_COLOR_ATTACHMENTS] = { 0 };
+-   for (unsigned i = 0; i < nr_attach; i++)
+-      if (d->clear_valid)
+-         bg_colors[i] = draw_pack_color(draw_pbe_pack_format(eot_formats[i]), &d->clear_value);
+-   const uint64_t bg = draw_bg_program(ctx, d, bg_colors, zonly ? 1 : nr_attach);
++   /* Pixel-output dword layout: each attachment starts where the previous one's format ends (one
++    * dword for an 8-bit format, two for a 16F one). The fragment variant and the EOT's PBE
++    * source_pos are both built from this same layout. */
++   uint32_t start_dwords[PVR_MAX_COLOR_ATTACHMENTS] = { 0 };
++   uint32_t attach_dwords[PVR_MAX_COLOR_ATTACHMENTS] = { 0 };
++   unsigned total_dwords = 0;
++   for (unsigned i = 0; i < nr_attach; i++) {
++      attach_dwords[i] = pvr_pbe_output_dwords(eot_formats[i]);
++      start_dwords[i] = total_dwords;
++      total_dwords += attach_dwords[i];
++   }
++   const uint64_t eot = draw_eot_program(ctx, d, nr_attach, eot_addrs, eot_formats, start_dwords,
++                                         zonly);
++   /* The background clear writes the clear colour into every colour dword, packed with the PBE's
++    * source format for that attachment (linear half floats for an sRGB target, whose gamma bit then
++    * encodes them; logical channel order otherwise). */
++   uint32_t bg_words[PVR_MAX_COLOR_ATTACHMENTS * 2] = { 0 };
++   const unsigned bg_nwords = zonly ? 1 : total_dwords;
++   for (unsigned i = 0; !zonly && i < nr_attach; i++) {
++      if (!d->clear_valid)
++         continue;
++      const enum pipe_format pack_format = draw_pbe_pack_format(eot_formats[i]);
++      util_format_pack_rgba(pack_format, &bg_words[start_dwords[i]], d->clear_value.f, 1);
++   }
++   const uint64_t bg = draw_bg_program(ctx, d, bg_words, bg_nwords);
+    uint64_t pbe_words[PVR_MAX_COLOR_ATTACHMENTS * 3] = { 0 };
+    if (eot == 0 || bg == 0 || !pvr_csb_pbe_words(eot_formats[0], pvr_resource_level_stride(rt, d->rt_level),
+                                                  d->rt_w, d->rt_h,
+@@ -1936,9 +1976,6 @@ pvr_draw_flush(struct pvr_context *ctx)
+     * clamped to the core minimum of two registers (the reference derives it the same way from
+     * hw_render->output_regs_count). The value sits in bits [0:1] of USC_PIXEL_OUTPUT_CTRL:
+     * 2REGISTERS = 0, 4REGISTERS = 1, 8REGISTERS = 2. */
+-   unsigned total_dwords = 0;
+-   for (unsigned i = 0; i < nr_attach; i++)
+-      total_dwords += DIV_ROUND_UP(util_format_get_blocksize(eot_formats[i]), 4u);
+    const unsigned width_regs = MAX2(util_next_power_of_two(total_dwords), 2u);
+    uint32_t usc_pixel_output_ctrl = 0x00007ff8u & ~0x3u;
+    if (width_regs == 4)
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index cab00387..b366deaa 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -1823,7 +1823,7 @@ probe_place_eot_program(struct pvr_screen *scr, uint64_t rtaddr)
+    uint32_t staging[64] = { 0 };
+    uint32_t usc_offset;
+ 
+-   pvr_csb_pbe_state_words(rtaddr, PIPE_FORMAT_R8G8B8A8_UNORM, 0, state_words);
++   pvr_csb_pbe_state_words(rtaddr, PIPE_FORMAT_R8G8B8A8_UNORM, 0, 0, state_words);
+ 
+    if (!pvr_shader_eot_create(scr->pco_ctx, &eot, 1, state_words)) {
+       printf("hwrt:          could not compile the end-of-tile program\n");
+diff --git a/src/gallium/drivers/pvr_native/pvr_resource.h b/src/gallium/drivers/pvr_native/pvr_resource.h
+index f53af579..b31a921d 100644
+--- a/src/gallium/drivers/pvr_native/pvr_resource.h
++++ b/src/gallium/drivers/pvr_native/pvr_resource.h
+@@ -59,6 +59,10 @@ struct pvr_resource {
+     * else that reads the resource submits it first (pvr_draw_materialize). */
+    bool clear_pending, zclear_pending;
+    uint32_t clear_color;
++   /* The float clear colour the deferred clear was recorded with: the packed dword is only right for
++    * one format, while the deferred render may need it per attachment (sRGB packs 16F source data,
++    * for instance). */
++   union pipe_color_union clear_value;
+    float zclear;
+ 
+    /* The draw path's render sequence number of the last render that used this resource (0:
+diff --git a/src/gallium/drivers/pvr_native/pvr_screen.c b/src/gallium/drivers/pvr_native/pvr_screen.c
+index d890876a..1579f001 100644
+--- a/src/gallium/drivers/pvr_native/pvr_screen.c
++++ b/src/gallium/drivers/pvr_native/pvr_screen.c
+@@ -107,7 +107,9 @@ pvr_is_format_supported(UNUSED struct pipe_screen *pscreen,
+                     PIPE_BIND_SHARED)) &&
+        format != PIPE_FORMAT_R8G8B8A8_UNORM && format != PIPE_FORMAT_B8G8R8A8_UNORM &&
+        format != PIPE_FORMAT_R8G8B8X8_UNORM && format != PIPE_FORMAT_B8G8R8X8_UNORM &&
+-       format != PIPE_FORMAT_R8_UNORM && format != PIPE_FORMAT_R8G8_UNORM)
++       format != PIPE_FORMAT_R8_UNORM && format != PIPE_FORMAT_R8G8_UNORM &&
++       format != PIPE_FORMAT_R8G8B8A8_SRGB && format != PIPE_FORMAT_B8G8R8A8_SRGB &&
++       format != PIPE_FORMAT_A8B8G8R8_SRGB)
+       return false;
+    if ((bindings & PIPE_BIND_DEPTH_STENCIL) &&
+        format != PIPE_FORMAT_Z16_UNORM && format != PIPE_FORMAT_Z24X8_UNORM &&
+diff --git a/src/gallium/drivers/pvr_native/pvr_shader.c b/src/gallium/drivers/pvr_native/pvr_shader.c
+index 929d04ee..c7c942e7 100644
+--- a/src/gallium/drivers/pvr_native/pvr_shader.c
++++ b/src/gallium/drivers/pvr_native/pvr_shader.c
+@@ -292,14 +292,16 @@ pvr_shader_create_with(struct nir_shader *nir, pco_ctx *ctx, const enum pipe_for
+    if (shader == NULL)
+       return NULL;
+    if (nir->info.stage == MESA_SHADER_FRAGMENT) {
++      unsigned output_start = 0;
+       for (unsigned i = 0; i < MIN2(nr_formats, PVR_MAX_COLOR_ATTACHMENTS); i++) {
+-         /* Give each colour output its own pixel-output register (dword): the EOT program's
+-          * per-attachment PBE emit reads that dword by position. The reference does the same
+-          * via usc_mrt_resource output_reg. */
+-         const unsigned dwords =
+-            DIV_ROUND_UP(util_format_get_blocksize(color_formats[i]), 4u);
++         /* Take the next free pixel-output dwords: an 8-bit colour output is one dword, a 16F one
++          * is two. The EOT program's per-attachment PBE emit reads from this position (its
++          * source_pos), matching the reference's usc_mrt_resource output_reg allocation. */
++         const unsigned dwords = pvr_pbe_output_dwords(color_formats[i]);
+          data.fs.output_formats[FRAG_RESULT_DATA0 + i] = color_formats[i];
+-         data.fs.outputs[FRAG_RESULT_DATA0 + i] = (pco_range){ .start = i, .count = dwords };
++         data.fs.outputs[FRAG_RESULT_DATA0 + i] = (pco_range){ .start = output_start,
++                                                              .count = dwords };
++         output_start += dwords;
+       }
+       /* Blending is lowered into the shader (pco runs nir_lower_blend with these). */
+       if (blend != NULL && nr_formats > 0 && color_formats[0] != PIPE_FORMAT_NONE) {
+diff --git a/src/gallium/drivers/pvr_native/pvr_shader.h b/src/gallium/drivers/pvr_native/pvr_shader.h
+index 669ec1de..0748a4e3 100644
+--- a/src/gallium/drivers/pvr_native/pvr_shader.h
++++ b/src/gallium/drivers/pvr_native/pvr_shader.h
+@@ -34,6 +34,18 @@ struct pvr_shader_eot {
+ bool pvr_shader_eot_create(pco_ctx *ctx, struct pvr_shader_eot *eot,
+                            unsigned nr_attachments, const uint32_t *state_words);
+ 
++/* The pixel-output dwords one colour attachment takes: the PBE reads its source data in the
++ * "PBE source format" - an sRGB target's source is 16-bit float per channel (two dwords), everything
++ * else is the target format's own size in dwords. The fragment variant's output ranges and the EOT's
++ * source_pos are both built from this. */
++static inline unsigned
++pvr_pbe_output_dwords(enum pipe_format format)
++{
++   if (util_format_is_srgb(format))
++      return 2;
++   return DIV_ROUND_UP(util_format_get_blocksize(format), 4u);
++}
++
+ /* One compiled shader: the pco shader and the microcode it encoded. */
+ /* A combined image sampler in shared registers: image words, image meta, sampler words, sampler
+  * meta (ROGUE_NUM_TEXSTATE_DWORDS and PCO_*_META_COUNT, four each). */
+-- 
+2.47.3
+

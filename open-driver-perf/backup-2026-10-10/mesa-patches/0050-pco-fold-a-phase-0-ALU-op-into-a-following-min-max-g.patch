@@ -1,0 +1,177 @@
+From 0d20f6c11f9782d34ecfbb22921ce4d8a9e28f7b Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sat, 10 Oct 2026 01:43:26 +0800
+Subject: [PATCH 50/73] pco: fold a phase 0 ALU op into a following min/max
+ group
+
+min/max/select groups move their first operand into ft0 with a phase 0
+mbyp, then test and select in phase 2. When the previous group is a
+lone phase 0 fadd/fmul/fmad/imadd32/iadd32 that produces exactly that
+operand, run the op itself in phase 0 of the min/max group instead:
+phase 2 reads its ft0 and one group disappears.
+
+The op's own register write is kept through w1 (is5 = ft0) unless the
+min/max group overwrites that register anyway. Group lengths and offsets
+are now computed once grouping is final. PCO_DEBUG=no_dual_issue also
+disables this.
+
+BXM-4-64, interleaved A/B x3 against the previous commit:
+  cstpi  83 -> 98 M inv/s (192 -> 161 groups)
+  cstpin 84 -> 97 M inv/s
+Output hashes and vkedge/vkrender checks unchanged.
+---
+ src/imagination/pco/pco_group_instrs.c | 115 +++++++++++++++++++++++--
+ 1 file changed, 107 insertions(+), 8 deletions(-)
+
+diff --git a/src/imagination/pco/pco_group_instrs.c b/src/imagination/pco/pco_group_instrs.c
+index d5102de..b18f1a3 100644
+--- a/src/imagination/pco/pco_group_instrs.c
++++ b/src/imagination/pco/pco_group_instrs.c
+@@ -427,24 +427,115 @@ static void try_dual_issue(pco_igrp *igrp,
+    }
+ }
+ 
++/* Phase 0-only ops whose result can feed phase 2 of the next group. */
++static bool is_p0_foldable(const pco_instr *instr)
++{
++   switch (instr->op) {
++   case PCO_OP_FADD:
++   case PCO_OP_FMUL:
++   case PCO_OP_FMAD:
++   case PCO_OP_IMADD32:
++   case PCO_OP_IADD32:
++      return true;
++   default:
++      return false;
++   }
++}
++
++/**
++ * \brief Folds a phase 0-only group into the next group when that group's
++ *        phase 0 only moves the first group's result (e.g. min/max after an
++ *        ALU op): the op then runs in phase 0 and phase 2 reads its ft0.
++ *
++ * \param[in,out] prev Previous instruction group (removed on success).
++ * \param[in,out] igrp Current instruction group.
++ * \return True if prev was folded into igrp.
++ */
++static bool try_fold_into_next(pco_igrp *prev, pco_igrp *igrp)
++{
++   if (PCO_DEBUG(NO_DUAL_ISSUE))
++      return false;
++
++   if (prev->hdr.alutype != PCO_ALUTYPE_MAIN ||
++       prev->hdr.oporg != PCO_OPORG_P0 || !prev->instrs[PCO_OP_PHASE_0] ||
++       !is_p0_foldable(prev->instrs[PCO_OP_PHASE_0]) ||
++       !dual_dest_ok(prev->dests.w[0]) || !pco_ref_is_null(prev->dests.w[1]))
++      return false;
++
++   for (unsigned s = 3; s < ARRAY_SIZE(prev->srcs.s); ++s)
++      if (!pco_ref_is_null(prev->srcs.s[s]))
++         return false;
++
++   pco_instr *mov = igrp->instrs[PCO_OP_PHASE_0];
++   pco_ref result = prev->dests.w[0];
++   if (igrp->hdr.alutype != PCO_ALUTYPE_MAIN || !mov ||
++       mov->op != PCO_OP_MBYP || mov->src[0].neg || mov->src[0].abs ||
++       !pco_ref_is_reg(igrp->srcs.s[0]) ||
++       pco_ref_get_reg_class(igrp->srcs.s[0]) !=
++          pco_ref_get_reg_class(result) ||
++       pco_ref_get_reg_index(igrp->srcs.s[0]) !=
++          pco_ref_get_reg_index(result) ||
++       pco_ref_get_chans(igrp->srcs.s[0]) != pco_ref_get_chans(result) ||
++       !pco_ref_is_null(igrp->srcs.s[1]) ||
++       !pco_ref_is_null(igrp->srcs.s[2]) ||
++       !pco_ref_is_null(igrp->iss.is[0]))
++      return false;
++
++   if (igrp->hdr.olchk != prev->hdr.olchk || igrp->hdr.cc != prev->hdr.cc ||
++       igrp->hdr.end != prev->hdr.end || igrp->hdr.atom != prev->hdr.atom ||
++       igrp->hdr.rpt != prev->hdr.rpt)
++      return false;
++
++   /* The other sources are read before the folded op writes back. */
++   for (unsigned s = 3; s < ARRAY_SIZE(igrp->srcs.s); ++s)
++      if (refs_overlap(igrp->srcs.s[s], result))
++         return false;
++
++   /* Keep the folded op's own write unless igrp overwrites it anyway. */
++   bool keep_result = !refs_overlap(igrp->dests.w[0], result) &&
++                      !refs_overlap(igrp->dests.w[1], result);
++   if (keep_result && (!pco_ref_is_null(igrp->dests.w[1]) ||
++                       !pco_ref_is_null(igrp->iss.is[5])))
++      return false;
++
++   pco_instr *op = prev->instrs[PCO_OP_PHASE_0];
++   igrp->instrs[PCO_OP_PHASE_0] = op;
++   op->parent_igrp = igrp;
++   ralloc_steal(igrp, op);
++   ralloc_free(mov);
++
++   for (unsigned s = 0; s < 3; ++s)
++      igrp->srcs.s[s] = prev->srcs.s[s];
++   igrp->variant.instr[PCO_OP_PHASE_0] = prev->variant.instr[PCO_OP_PHASE_0];
++
++   if (keep_result) {
++      igrp->iss.is[5] = pco_ref_io(PCO_IO_FT0);
++      igrp->dests.w[1] = result;
++      igrp->hdr.w1p = true;
++   }
++
++   igrp->variant.hdr = pco_igrp_hdr_variant(igrp);
++   igrp->variant.lower_src = pco_igrp_src_variant(igrp, false);
++   igrp->variant.dest = pco_igrp_dest_variant(igrp);
++
++   list_del(&prev->link);
++   return true;
++}
++
+ /**
+  * \brief Converts a PCO instruction to an instruction group.
+  *
+  * \param[in] b PCO builder.
+  * \param[in] instr PCO instruction.
+  * \param[out] igrp PCO instruction group.
+- * \param[in,out] offset_bytes The cumulative shader offset (in bytes).
+  */
+-static void pco_instr_to_igrp(pco_builder *b,
+-                              pco_instr *instr,
+-                              pco_igrp *igrp,
+-                              unsigned *offset_bytes)
++static void
++pco_instr_to_igrp(pco_builder *b, pco_instr *instr, pco_igrp *igrp)
+ {
+    struct list_head *next = instr->link.next;
+    struct list_head *end = &pco_cursor_block(b->cursor)->instrs;
+    pco_map_igrp(igrp, instr);
+    try_dual_issue(igrp, next, end);
+-   calc_lengths(igrp, offset_bytes);
+    pco_builder_insert_igrp(b, igrp);
+ }
+ 
+@@ -477,12 +568,20 @@ bool pco_group_instrs(pco_shader *shader)
+             if (n == &block->instrs)
+                break;
+             igrp = pco_igrp_create(func);
+-            pco_instr_to_igrp(&b, list_entry(n, pco_instr, link), igrp,
+-                              &offset_bytes);
++            pco_instr_to_igrp(&b, list_entry(n, pco_instr, link), igrp);
++            if (last)
++               try_fold_into_next(last, igrp);
+             last = igrp;
+          }
+       }
+ 
++      /* Lengths and offsets once the groups are final. */
++      igrp = NULL;
++      pco_foreach_igrp_in_func (cur, func) {
++         calc_lengths(cur, &offset_bytes);
++         igrp = cur;
++      }
++
+       /* Ensure the final instruction group has a total size and offset
+        * that are a multiple of the icache alignment.
+        */
+-- 
+2.47.3
+

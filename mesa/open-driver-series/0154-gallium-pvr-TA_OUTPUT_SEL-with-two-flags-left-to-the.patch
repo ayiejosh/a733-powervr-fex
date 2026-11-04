@@ -1,7 +1,7 @@
-From c9db43cac3ad864895cbe8bbf2fe5ad164ff1bc5 Mon Sep 17 00:00:00 2001
+From 16a39305ed73ff5b1cb06d7ac77c52c8b22c46ba Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Fri, 16 Oct 2026 21:57:49 +0800
-Subject: [PATCH 154/269] gallium/pvr: TA_OUTPUT_SEL, with two flags left to
+Subject: [PATCH 154/294] gallium/pvr: TA_OUTPUT_SEL, with two flags left to
  the caller on purpose
 
   csb: TA OUTPUT_SEL: scalars and the two 8-bit plane groups survive independently; rhw/z flags

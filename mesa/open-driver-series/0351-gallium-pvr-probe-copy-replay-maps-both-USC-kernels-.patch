@@ -1,0 +1,56 @@
+From 189d18a7cba3a23604887e1592a545e71959dfed Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 30 Oct 2026 13:21:22 +0800
+Subject: [PATCH] gallium/pvr: probe copy replay maps both USC kernels from the
+ aligned bundle
+
+The copy job's pixel-event data names USC task offset 0x5d40 while its kickusc background program
+names 0x7340, so the replay now maps one 16 KiB USC page at USC+0x5000 covering both offsets and
+installs the captured fill-style 16-byte kernel at 0x5d40 and the captured 64-byte copy kernel at
+0x7340. The job still submits and syncs without writing the destination, so the remaining gap is in how
+the kickusc program's task-control data binds the kernel (data word 0/1 = 0x7340/8 in the capture; the
+aligned bundle has the matching kernel bytes).
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c | 15 ++++++++++-----
+ 1 file changed, 10 insertions(+), 5 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index 21eb25cb..564c2568 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -5771,8 +5771,8 @@ tq_fill_check(int fd, struct pipe_screen *pscreen)
+       static const uint32_t usc_fill[4] = { 0xc280a048, 0x01804080, 0xff000088, 0xfffffff2 };
+       const struct pvr_heap *usc = &vm->heaps[DRM_PVR_HEAP_USC_CODE];
+ 
+-      if (!pvr_bo_create(fd, 0x2000, 4096, &uscbo) ||
+-          !pvr_vm_map(vm, usc->base + 0x7000, uscbo.handle, uscbo.size) ||
++      if (!pvr_bo_create(fd, 0x4000, 4096, &uscbo) ||
++          !pvr_vm_map(vm, usc->base + 0x5000, uscbo.handle, uscbo.size) ||
+           !pvr_bo_map(fd, &uscbo)) {
+          printf("tq:            FAIL: cannot map USC program page\n");
+          goto out_bo;
+@@ -5972,13 +5972,18 @@ tq_copy_check(int fd, struct pipe_screen *pscreen)
+       memcpy((uint8_t *)dmabo.map + 0x80, dma_state, sizeof(dma_state));
+    }
+ 
+-   if (!pvr_bo_create(fd, 0x2000, 4096, &uscbo) ||
+-       !pvr_vm_map(vm, usc->base + 0x7000, uscbo.handle, uscbo.size) ||
++   if (!pvr_bo_create(fd, 0x4000, 4096, &uscbo) ||
++       !pvr_vm_map(vm, usc->base + 0x5000, uscbo.handle, uscbo.size) ||
+        !pvr_bo_map(fd, &uscbo)) {
+       printf("tqcopy:        FAIL: cannot map USC program page\n");
+       goto out_bo;
+    }
+-   memcpy((uint8_t *)uscbo.map + (0x7340 - 0x7000), usc_copy, sizeof(usc_copy));
++   memcpy((uint8_t *)uscbo.map + (0x7340 - 0x5000), usc_copy, sizeof(usc_copy));
++   {
++      static const uint32_t usc_fillkernel[4] = { 0xc280a048, 0x01804080, 0xff000088, 0xfffffff2 };
++
++      memcpy((uint8_t *)uscbo.map + (0x5d40 - 0x5000), usc_fillkernel, sizeof(usc_fillkernel));
++   }
+ 
+    completed = pvr_job_submit_transfer_sync(vm, cargs.handle, stream, stream_len, 2000);
+    printf("tqcopy:        copy replay %s (stream %u B, src 0x%llx dst 0x%llx)\n",
+-- 
+2.47.3
+

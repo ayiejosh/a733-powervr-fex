@@ -1,7 +1,7 @@
-From 6262e588d9479ea1dae61af38d6faa09995d607d Mon Sep 17 00:00:00 2001
+From cdaf51a998bbaa1dbd6c8e0e808a259d180cbe40 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Fri, 16 Oct 2026 16:55:01 +0800
-Subject: [PATCH 132/269] gallium/pvr: the region header size, and where it is
+Subject: [PATCH 132/294] gallium/pvr: the region header size, and where it is
  computed
 
 A geometry job's control stream has to reserve the region header before anything is

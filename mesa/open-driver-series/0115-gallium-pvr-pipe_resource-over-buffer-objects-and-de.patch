@@ -1,7 +1,7 @@
-From 946c6baede9485784d574c9c77b21b3332cc8445 Mon Sep 17 00:00:00 2001
+From 56225f9fcf4e87e65932589b2a42a86e01afe645 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Fri, 16 Oct 2026 07:48:03 +0800
-Subject: [PATCH 115/269] gallium/pvr: pipe_resource over buffer objects and
+Subject: [PATCH 115/294] gallium/pvr: pipe_resource over buffer objects and
  device addresses
 
 The driver can now hand out resources: allocate a buffer object, give it a device

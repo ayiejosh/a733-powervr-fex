@@ -1,7 +1,7 @@
-From b331a4cd634c1165824e634eb505be7231089154 Mon Sep 17 00:00:00 2001
+From 8bcb815bcfe039cf3c69aca26f833d5cb7e8d970 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Fri, 16 Oct 2026 18:30:41 +0800
-Subject: [PATCH 142/269] gallium/pvr: join the two halves of the texture
+Subject: [PATCH 142/294] gallium/pvr: join the two halves of the texture
  format layout
 
   csb: format layouts: RGBA8/BGRA8 share U8U8U8U8 but differ in swizzle (0 vs 2); colour

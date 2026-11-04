@@ -1,7 +1,7 @@
-From a62c4871e7e195b93b39891565002c31353a9021 Mon Sep 17 00:00:00 2001
+From 3e97d7529bc7b439498891c903ffe17c71cebda1 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sun, 25 Oct 2026 01:33:06 +0800
-Subject: [PATCH 228/269] gallium/pvr: dummy-fragment experiment; the TA stall
+Subject: [PATCH 228/294] gallium/pvr: dummy-fragment experiment; the TA stall
  is not the fragment stream either
 
 Round twelve ruled out two more suspects for the TA-never-starts stall:

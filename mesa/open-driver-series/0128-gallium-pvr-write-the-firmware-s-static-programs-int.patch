@@ -1,7 +1,7 @@
-From 60c93c25bdad7fdaf8cba68bdf9bbcac13193612 Mon Sep 17 00:00:00 2001
+From eb3cd728751cc2fd88bb565ed1c6492a70944ed8 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Fri, 16 Oct 2026 16:17:56 +0800
-Subject: [PATCH 128/269] gallium/pvr: write the firmware's static programs
+Subject: [PATCH 128/294] gallium/pvr: write the firmware's static programs
  into the carveouts
 
 The GPU expects certain programs to already be sitting at fixed addresses inside the

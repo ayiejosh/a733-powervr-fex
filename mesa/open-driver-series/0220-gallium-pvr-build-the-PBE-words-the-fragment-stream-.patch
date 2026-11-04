@@ -1,7 +1,7 @@
-From f8f96704027bef7645c4574245f9cc757a4ff0c4 Mon Sep 17 00:00:00 2001
+From 53955b7e0a86e91ebdc9a4e88be04fcb6b845fa2 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sun, 25 Oct 2026 00:06:09 +0800
-Subject: [PATCH 220/269] gallium/pvr: build the PBE words the fragment stream
+Subject: [PATCH 220/294] gallium/pvr: build the PBE words the fragment stream
  needs, and trace what the kernel kicks
 
 Kernel-side tracing (temporary prints in the out-of-tree powervr module, reverted after use; logs

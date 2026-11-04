@@ -1,7 +1,7 @@
-From e9d1b2a774615e2c0276f37eafcdf0b7fa0de818 Mon Sep 17 00:00:00 2001
+From 1ffff56a8a7bd0f877567b2b8731bd3a04098c0f Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Thu, 8 Oct 2026 14:05:12 +0800
-Subject: [PATCH 33/43] pvr: teach the winsys submit paths timeline syncobjs
+Subject: [PATCH 033/294] pvr: teach the winsys submit paths timeline syncobjs
  (step 3, behaviour-preserving)
 
 This was the real blocker for the sync-churn work. The queue could not hand a timeline syncobj
@@ -41,7 +41,7 @@ inatt, ubos, stgbuf, vattrib all PASS; glmark2 --validate 27/0; glmark2 score 84
  4 files changed, 51 insertions(+), 57 deletions(-)
 
 diff --git a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_common.h b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_common.h
-index 932ef48..30a257c 100644
+index 932ef483..30a257c4 100644
 --- a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_common.h
 +++ b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_common.h
 @@ -26,6 +26,7 @@
@@ -84,7 +84,7 @@ index 932ef48..30a257c 100644
 +
  #endif /* PVR_DRM_JOB_COMMON_H */
 diff --git a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_compute.c b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_compute.c
-index 381cc49..8970219 100644
+index 381cc49a..8970219e 100644
 --- a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_compute.c
 +++ b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_compute.c
 @@ -195,23 +195,15 @@ VkResult pvr_drm_winsys_compute_submit(
@@ -118,7 +118,7 @@ index 381cc49..8970219 100644
  
     /* Returns VK_ERROR_OUT_OF_DEVICE_MEMORY to match pvrsrv. */
 diff --git a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c
-index 579d119..b8ecc9e 100644
+index 579d119d..b8ecc9e2 100644
 --- a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c
 +++ b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c
 @@ -529,29 +529,20 @@ VkResult pvr_drm_winsys_render_submit(
@@ -188,7 +188,7 @@ index 579d119..b8ecc9e 100644
     }
  
 diff --git a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_transfer.c b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_transfer.c
-index 75ce2f2..2f11a96 100644
+index 75ce2f20..2f11a96f 100644
 --- a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_transfer.c
 +++ b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_transfer.c
 @@ -152,23 +152,15 @@ VkResult pvr_drm_winsys_transfer_submit(
@@ -221,3 +221,6 @@ index 75ce2f2..2f11a96 100644
     }
  
     /* Returns VK_ERROR_OUT_OF_DEVICE_MEMORY to match pvrsrv. */
+-- 
+2.47.3
+

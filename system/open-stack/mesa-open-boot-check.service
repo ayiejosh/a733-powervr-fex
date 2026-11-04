@@ -1,0 +1,13 @@
+[Unit]
+Description=Turn the open Mesa library path off unless the open powervr GPU driver is bound
+# The board boots on the vendor pvrsrvkm: a library path left on by a switch to the open driver must
+# never reach the vendor desktop (its X server and clients would load the open Mesa).
+After=systemd-modules-load.service local-fs.target
+Before=display-manager.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'd=$(readlink /sys/bus/platform/devices/1800000.gpu/driver); [ "$${d##*/}" = powervr ] || /usr/local/sbin/open-stack-libs.sh off'
+
+[Install]
+WantedBy=multi-user.target

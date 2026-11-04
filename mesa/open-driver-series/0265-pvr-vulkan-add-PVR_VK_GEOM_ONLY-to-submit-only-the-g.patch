@@ -1,7 +1,7 @@
-From 2b09bd3ea0454f77cf5e514aad9fd292d9dab084 Mon Sep 17 00:00:00 2001
+From e6c417beea90fcebdc8bdf1cd7ff341fe758b358 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Mon, 26 Oct 2026 17:57:18 +0800
-Subject: [PATCH 265/269] pvr/vulkan: add PVR_VK_GEOM_ONLY to submit only the
+Subject: [PATCH 265/294] pvr/vulkan: add PVR_VK_GEOM_ONLY to submit only the
  geometry job (TA-kick reference)
 
 Debug hook used to capture a firmware trace of the working client's geometry-only TA kick, so it can be

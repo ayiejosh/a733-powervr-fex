@@ -1,8 +1,8 @@
-From a94f4b3f0b80c7ddd58b60f50e9b74126069edc4 Mon Sep 17 00:00:00 2001
+From 8965a2ad106a5b0c2b3cae92e2e01c8f78be5833 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Fri, 9 Oct 2026 08:05:19 +0800
-Subject: [PATCH 42/43] pvr: extend the timeline conversion to FRAG, and fix a
- stale GEOM wait it exposed
+Subject: [PATCH 042/294] pvr: extend the timeline conversion to FRAG, and fix
+ a stale GEOM wait it exposed
 
 Completes the GEOM step and adds FRAG. While doing so it caught an incompleteness in the
 previous commit: there are TWO GEOM waits, not one. The multiview submit path at
@@ -25,7 +25,7 @@ next on the same pattern.
  1 file changed, 9 insertions(+), 5 deletions(-)
 
 diff --git a/src/imagination/vulkan/pvr_arch_queue.c b/src/imagination/vulkan/pvr_arch_queue.c
-index deca71b..67ab290 100644
+index deca71b8..67ab2902 100644
 --- a/src/imagination/vulkan/pvr_arch_queue.c
 +++ b/src/imagination/vulkan/pvr_arch_queue.c
 @@ -362,8 +362,12 @@ pvr_process_graphics_cmd_for_view(struct pvr_device *device,
@@ -62,3 +62,6 @@ index deca71b..67ab290 100644
           };
           result = device->ws->ops->null_job_submit(device->ws, wait_syncs,
                                                     wait_count, &signal);
+-- 
+2.47.3
+

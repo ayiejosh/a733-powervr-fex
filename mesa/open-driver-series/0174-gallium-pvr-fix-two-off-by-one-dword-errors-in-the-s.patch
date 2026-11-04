@@ -1,7 +1,7 @@
-From 239aade2fb15bb111e0d2fce4cbf81ff997850da Mon Sep 17 00:00:00 2001
+From 9436e09baadfd41d464e0b99f823dcd4e930cec5 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sun, 18 Oct 2026 10:08:35 +0800
-Subject: [PATCH 174/269] gallium/pvr: fix two off-by-one-dword errors in the
+Subject: [PATCH 174/294] gallium/pvr: fix two off-by-one-dword errors in the
  static stream placement
 
 The builder now agrees with itself: 368 bytes returned, 368 summed by its own macros, EOT at byte 364.

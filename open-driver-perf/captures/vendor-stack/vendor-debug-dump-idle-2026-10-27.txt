@@ -1,0 +1,306 @@
+------------[ PVR DBG: START (High) ]------------
+OS kernel info: Linux 6.6.98-5-aw2511 #5 SMP Sun Sep 20 04:35:45 UTC 2026 aarch64
+DDK info: Rogue_DDK_Linux_WS rogueddk 24.2@6603887 (release) sunxi_linux
+Time now: 2761294589us
+Services State: OK
+Server Errors: 0
+Connections Device ID:0(128) P24938-V24938-T24938-X, P25109-V25109-T25109-kded6, P25113-V25113-T25113-kwin_x11, P25111-V25111-T25111-ksmserver,
+Connections Device ID:0(128) P25182-V25182-T25182-plasmashell, P25229-V25229-T25229-kaccess, P25230-V25230-T25230-polkit-kde-auth, P25442-V25442-T25442-kdeconnectd,
+Connections Device ID:0(128) P25500-V25500-T25500-DiscoverNotifie, P25524-V25524-T25524-xdg-desktop-por
+------[ Driver Info ]------
+Comparison of UM/KM components: MATCHING
+KM Arch: 64 Bit
+Driver Mode: Native
+UM Connected Clients: 64 Bit
+UM info: 24.2 @  6603887 (release) build options: 0x80020810
+KM info: 24.2 @  6603887 (release) build options: 0x00020810
+Window system: nulldrmws
+Power lock status: Free
+------[ Server Thread Summary ]------
+  pvr_defer_free : Running
+    Number of deferred cleanup items: QUEUED: 00000  CONNECTION : 00000 MMU : 00000 OSMEM : 00000 PMR : 00000
+    Number of deferred cleanup items dropped after retry limit reached : 0
+  pvr_device_wdg : Running
+Active Threads (UM/KM): 1 / 2
+Suspended Threads: 0
+------[ RGX Device ID:0 Start ]------
+------[ RGX Info ]------
+Device Node (Info): 00000000097c61b6 (000000007fd308e8)
+    DevmemHistoryRecordStats - None
+RGX BVNC: 36.56.104.183 (rogue)
+RGX Device State: ACTIVE
+RGX Power State: OFF
+RGX Health Status: OK, Reason: NONE
+FW info: 24.2 @  6603887 (release) build options: 0x80020810
+TRP: HW support - No
+WGP: HW support - No
+RGX HWR State 0x00000001: HWR OK;
+RGX FW Power State: RGXFWIF_POW_OFF (APM enabled: 91 ok, 0 denied, 0 non-idle, 0 retry, 0 other, 91 total. Latency: 10 ms)
+RGX DVFS: 0 frequency changes. Current frequency: 1104.001 MHz (sampled at 2707011888173 ns). FW frequency: 1104.000 MHz.
+RGX FW OS 0 - State: active; Freelists: Ok; Priority: 0; Isolation group: 0;  Time Slice*: 0% (0ms); MTS off;
+RGX Kernel CCB WO:0x338 RO:0x338
+RGX Firmware CCB WO:0x0 RO:0x0
+RGX Kernel CCB commands executed = 2872
+RGX SLR: Forced UFO updates requested = 0
+RGX Errors: WGP:0, TRP:0
+Thread0: FW IRQ count = 2917
+Last sampled IRQ count in LISR = 2917
+FW System config flags = 0x00020000 (Ctx switch options: Medium CSW profile;)
+FW OS config flags = 0x0000000F (Ctx switch: TDM; GEOM; 3D; CDM;)
+ (!) RGX power is down. No registers dumped
+------[ RGX FW Trace Info ]------
+Debug log type: none
+RGX FW thread 0: Trace buffer not yet allocated
+------[ Full CCB Status ]------
+FWCtx 0xC00453C0 (TQ_3D-P24938-T24938-X)
+  `--<Empty>
+FWCtx 0xC0098480 (TQ_3D-P25109-T25109-kded6)
+  `--<Empty>
+FWCtx 0xC00985C0 (TQ_3D-P25109-T25109-kded6)
+  `--<Empty>
+FWCtx 0xC014A980 (TQ_3D-P25113-T25113-kwin_x11)
+  `--<Empty>
+FWCtx 0xC014AAC0 (TQ_3D-P25113-T25113-kwin_x11)
+  `--<Empty>
+FWCtx 0xC019BE80 (TQ_3D-P25111-T25111-ksmserver)
+  `--<Empty>
+FWCtx 0xC01ED000 (TQ_3D-P25111-T25111-ksmserver)
+  `--<Empty>
+FWCtx 0xC024F900 (TQ_3D-P25182-T25182-plasmashe)
+  `--<Empty>
+FWCtx 0xC024FA40 (TQ_3D-P25182-T25182-plasmashe)
+  `--<Empty>
+FWCtx 0xC02A0E00 (TQ_3D-P25229-T25229-kaccess)
+  `--<Empty>
+FWCtx 0xC02F2000 (TQ_3D-P25229-T25229-kaccess)
+  `--<Empty>
+FWCtx 0xC0354300 (TQ_3D-P25230-T25230-polkit-kd)
+  `--<Empty>
+FWCtx 0xC0354440 (TQ_3D-P25230-T25230-polkit-kd)
+  `--<Empty>
+FWCtx 0xC009E780 (TQ_3D-P25442-T25442-kdeconnec)
+  `--<Empty>
+FWCtx 0xC009E8C0 (TQ_3D-P25442-T25442-kdeconnec)
+  `--<Empty>
+FWCtx 0xC00C7C80 (TQ_3D-P25500-T25500-DiscoverN)
+  `--<Empty>
+FWCtx 0xC00C7DC0 (TQ_3D-P25500-T25500-DiscoverN)
+  `--<Empty>
+FWCtx 0xC04F9C00 (TQ_3D-P25524-T25524-xdg-deskt)
+  `--<Empty>
+FWCtx 0xC04F9D00 (TQ_3D-P25524-T25524-xdg-deskt)
+  `--<Empty>
+FWCtx 0xC0045040 (TA-P24938-T24938-X)
+  `--<Empty>
+FWCtx 0xC0045118 (3D-P24938-T24938-X)
+  `--<Empty>
+FWCtx 0xC0098A00 (TA-P25109-T25109-kded6)
+  `--<Empty>
+FWCtx 0xC0098AD8 (3D-P25109-T25109-kded6)
+  `--<Empty>
+FWCtx 0xC019B000 (TA-P25113-T25113-kwin_x11)
+  `--<Empty>
+FWCtx 0xC019B0D8 (3D-P25113-T25113-kwin_x11)
+  `--<Empty>
+FWCtx 0xC01ED400 (TA-P25111-T25111-ksmserver)
+  `--<Empty>
+FWCtx 0xC01ED4D8 (3D-P25111-T25111-ksmserver)
+  `--<Empty>
+FWCtx 0xC02A0000 (TA-P25182-T25182-plasmashell)
+  `--<Empty>
+FWCtx 0xC02A00D8 (3D-P25182-T25182-plasmashell)
+  `--<Empty>
+FWCtx 0xC02F2380 (TA-P25229-T25229-kaccess)
+  `--<Empty>
+FWCtx 0xC02F2458 (3D-P25229-T25229-kaccess)
+  `--<Empty>
+FWCtx 0xC0354880 (TA-P25230-T25230-polkit-kde-a)
+  `--<Empty>
+FWCtx 0xC0354958 (3D-P25230-T25230-polkit-kde-a)
+  `--<Empty>
+FWCtx 0xC009ED00 (TA-P25442-T25442-kdeconnectd)
+  `--<Empty>
+FWCtx 0xC009EDD8 (3D-P25442-T25442-kdeconnectd)
+  `--<Empty>
+FWCtx 0xC046F280 (TA-P25500-T25500-DiscoverNoti)
+  `--<Empty>
+FWCtx 0xC046F358 (3D-P25500-T25500-DiscoverNoti)
+  `--<Empty>
+FWCtx 0xC04F1300 (TA-P25524-T25524-xdg-desktop-)
+  `--<Empty>
+FWCtx 0xC04F13D8 (3D-P25524-T25524-xdg-desktop-)
+  `--<Empty>
+FWCtx 0xC0098700 (CDM-P25109-T25109-kded6)
+  `--<Empty>
+FWCtx 0xC0098880 (CDM-P25109-T25109-kded6)
+  `--<Empty>
+FWCtx 0xC014AC00 (CDM-P25113-T25113-kwin_x11)
+  `--<Empty>
+FWCtx 0xC014AD80 (CDM-P25113-T25113-kwin_x11)
+  `--<Empty>
+FWCtx 0xC01ED100 (CDM-P25111-T25111-ksmserver)
+  `--<Empty>
+FWCtx 0xC01ED280 (CDM-P25111-T25111-ksmserver)
+  `--<Empty>
+FWCtx 0xC024FB80 (CDM-P25182-T25182-plasmashell)
+  `--<Empty>
+FWCtx 0xC024FD00 (CDM-P25182-T25182-plasmashell)
+  `--<Empty>
+FWCtx 0xC02F2100 (CDM-P25229-T25229-kaccess)
+  `--<Empty>
+FWCtx 0xC02F2240 (CDM-P25229-T25229-kaccess)
+  `--<Empty>
+FWCtx 0xC0354580 (CDM-P25230-T25230-polkit-kde-)
+  `--<Empty>
+FWCtx 0xC0354700 (CDM-P25230-T25230-polkit-kde-)
+  `--<Empty>
+FWCtx 0xC009EA00 (CDM-P25442-T25442-kdeconnectd)
+  `--<Empty>
+FWCtx 0xC009EB80 (CDM-P25442-T25442-kdeconnectd)
+  `--<Empty>
+FWCtx 0xC046F000 (CDM-P25500-T25500-DiscoverNot)
+  `--<Empty>
+FWCtx 0xC046F140 (CDM-P25500-T25500-DiscoverNot)
+  `--<Empty>
+FWCtx 0xC04F9E00 (CDM-P25524-T25524-xdg-desktop)
+  `--<Empty>
+FWCtx 0xC04F11C0 (CDM-P25524-T25524-xdg-desktop)
+  `--<Empty>
+------[ RGX Device ID:0 End ]------
+------[ Device ID: 128 - Phys Heaps ]------
+0x00000000d15ba066 -> PdMs: SYSMEM_FW, Type: UMA, -, Usage Flags: 0x40000000 (FW_SHARED), Refs: 4, Free Size: 317603840B, Total Size: 6202085376B
+0x00000000a7a293f0 -> PdMs: SYSMEM, Type: UMA, default, Usage Flags: 0x00000004 (GPU_LOCAL), Refs: 7, Free Size: 317603840B, Total Size: 6202085376B
+PMR Zombie Count: 0, PMR Zombie Count In Cleanup: 0
+PMR Live Count: 1349
+------[ System Summary Device ID:0 ]------
+Device System Power State: OFF
+MaxHWTOut: 500000us, WtTryCt: 10000, WDGTOut(on,off): (10000ms,3600000ms)
+------[ AppHint Settings ]------
+  Build Vars
+    EnableTrustedDeviceAceConfig: N
+    CleanupThreadPriority: 0x00000005
+    WatchdogThreadPriority: 0x00000000
+    HWPerfClientBufferSize: 0x000c0000
+    DevmemHistoryBufSizeLog2: 0x0000000b
+    DevmemHistoryMaxEntries: 0x00002710
+  Module Params
+    none
+  Debug Info Params
+    none
+  Debug Info Params Device ID: 0
+    none
+------[ Active Sync Checkpoints ]------
+(SyncCP Counts: InUse:14 Max:267)
+sw: RM_SWTimeline-X-24938 @0 cur=0
+sw: SemaphoreSwTimeline-kded6-25109 @0 cur=0
+sw: Sparse queue SW timeline-kded6- @0 cur=0
+sw: SemaphoreSwTimeline-n_x11-kwin_ @0 cur=0
+sw: Sparse queue SW timeline-kwin_x @0 cur=0
+sw: SemaphoreSwTimeline-erver-ksmse @0 cur=0
+sw: Sparse queue SW timeline-ksmser @0 cur=0
+sw: SemaphoreSwTimeline-shell-plasm @0 cur=0
+sw: Sparse queue SW timeline-plasma @0 cur=0
+sw: SemaphoreSwTimeline-ccess-kacce @0 cur=0
+sw: Sparse queue SW timeline-kacces @0 cur=0
+sw: SemaphoreSwTimeline-polkit-kde- @0 cur=0
+sw: Sparse queue SW timeline-polkit @0 cur=0
+sw: SemaphoreSwTimeline-nectd-kdeco @0 cur=0
+sw: Sparse queue SW timeline-kdecon @0 cur=0
+sw: SemaphoreSwTimeline-DiscoverNot @0 cur=0
+sw: Sparse queue SW timeline-Discov @0 cur=0
+sw: SemaphoreSwTimeline-xdg-desktop @0 cur=0
+sw: Sparse queue SW timeline-xdg-de @0 cur=0
+------[ Native Fence Sync: timelines ]------
+foreign_sync: @0 ctx=399 refs=1
+rogue-ta3d: @137 ctx=401 refs=9
+ @87: (++) refs=1 fwaddr=0xc0042321 enqueue=1 status=Signalled 87-update fence
+ @92: (++) refs=1 fwaddr=0xc00422f1 enqueue=1 status=Signalled 92-update fence
+ @100: (++) refs=1 fwaddr=0xc0042579 enqueue=1 status=Signalled 100-update fence
+ @105: (++) refs=1 fwaddr=0xc00420c9 enqueue=1 status=Signalled 105-update fence
+ @129: (++) refs=1 fwaddr=0xc0042751 enqueue=1 status=Signalled 129-update fence
+ @132: (++) refs=1 fwaddr=0xc0042279 enqueue=1 status=Signalled 132-update fence
+ @134: (++) refs=1 fwaddr=0xc00422d1 enqueue=1 status=Signalled 134-update fence
+ @136: (++) refs=1 fwaddr=0xc0042459 enqueue=1 status=Signalled 136-update fence
+rogue-tq3d: @0 ctx=402 refs=1
+V3-X-24938: @551 ctx=403 refs=2
+ @550: (++) refs=1 fwaddr=0xc0042789 enqueue=1 status=Signalled 550-es3_DoKickTA_642
+P3-X-24938: @408 ctx=404 refs=3
+ @406: (++) refs=1 fwaddr=0xc0042261 enqueue=1 status=Signalled 406-es3_DoKick3D_641
+ @407: (++) refs=1 fwaddr=0xc00422c1 enqueue=1 status=Signalled 407-es3_DoKick3D_642
+QE-X-24938: @94 ctx=405 refs=1
+rogue-tq3d: @0 ctx=410 refs=1
+rogue-tq3d: @0 ctx=411 refs=1
+rogue-cdm: @0 ctx=412 refs=1
+rogue-cdm: @0 ctx=413 refs=1
+rogue-ta3d: @0 ctx=414 refs=1
+QV-kded6-25109: @1 ctx=418 refs=1
+VV-kded6-25109: @1 ctx=419 refs=1
+PV-kded6-25109: @1 ctx=420 refs=1
+rogue-tq3d: @0 ctx=423 refs=1
+rogue-tq3d: @0 ctx=424 refs=1
+rogue-cdm: @0 ctx=425 refs=1
+rogue-cdm: @0 ctx=426 refs=1
+rogue-ta3d: @0 ctx=427 refs=1
+QV-kwin_x11-25113: @2 ctx=431 refs=2
+ @1: (++) refs=1 fwaddr=0xc00420f9 enqueue=1 status=Signalled 1-TDM
+VV-kwin_x11-25113: @2 ctx=432 refs=2
+ @1: (++) refs=1 fwaddr=0xc0042101 enqueue=1 status=Signalled 1-TA
+PV-kwin_x11-25113: @2 ctx=433 refs=2
+ @1: (++) refs=1 fwaddr=0xc0042109 enqueue=1 status=Signalled 1-3D
+rogue-tq3d: @0 ctx=438 refs=1
+rogue-tq3d: @0 ctx=439 refs=1
+rogue-cdm: @0 ctx=440 refs=1
+rogue-cdm: @0 ctx=441 refs=1
+rogue-ta3d: @0 ctx=442 refs=1
+QV-ksmserver-25111: @1 ctx=446 refs=1
+VV-ksmserver-25111: @1 ctx=447 refs=1
+PV-ksmserver-25111: @1 ctx=448 refs=1
+rogue-tq3d: @0 ctx=449 refs=1
+rogue-tq3d: @0 ctx=450 refs=1
+rogue-cdm: @0 ctx=451 refs=1
+rogue-cdm: @0 ctx=452 refs=1
+rogue-ta3d: @36 ctx=453 refs=1
+QV-plasmashell-25182: @1426 ctx=457 refs=1
+VV-plasmashell-25182: @70 ctx=458 refs=1
+PV-plasmashell-25182: @70 ctx=459 refs=1
+rogue-tq3d: @0 ctx=462 refs=1
+rogue-tq3d: @0 ctx=463 refs=1
+rogue-cdm: @0 ctx=464 refs=1
+rogue-cdm: @0 ctx=465 refs=1
+rogue-ta3d: @0 ctx=466 refs=1
+QV-kaccess-25229: @1 ctx=470 refs=1
+VV-kaccess-25229: @1 ctx=471 refs=1
+PV-kaccess-25229: @1 ctx=472 refs=1
+rogue-tq3d: @0 ctx=475 refs=1
+rogue-tq3d: @0 ctx=476 refs=1
+rogue-cdm: @0 ctx=477 refs=1
+rogue-cdm: @0 ctx=478 refs=1
+rogue-ta3d: @0 ctx=479 refs=1
+QV-gent-1-polkit-kde-auth-25230: @1 ctx=483 refs=1
+VV-gent-1-polkit-kde-auth-25230: @1 ctx=484 refs=1
+PV-gent-1-polkit-kde-auth-25230: @1 ctx=485 refs=1
+rogue-tq3d: @0 ctx=517 refs=1
+rogue-tq3d: @0 ctx=518 refs=1
+rogue-cdm: @0 ctx=519 refs=1
+rogue-cdm: @0 ctx=520 refs=1
+rogue-ta3d: @0 ctx=521 refs=1
+QV-kdeconnectd-25442: @1 ctx=525 refs=1
+VV-kdeconnectd-25442: @1 ctx=526 refs=1
+PV-kdeconnectd-25442: @1 ctx=527 refs=1
+rogue-tq3d: @0 ctx=528 refs=1
+rogue-tq3d: @0 ctx=529 refs=1
+rogue-cdm: @0 ctx=530 refs=1
+rogue-cdm: @0 ctx=531 refs=1
+rogue-ta3d: @0 ctx=532 refs=1
+QV-tifier-DiscoverNotifie-25500: @1 ctx=544 refs=1
+VV-tifier-DiscoverNotifie-25500: @1 ctx=545 refs=1
+PV-tifier-DiscoverNotifie-25500: @1 ctx=546 refs=1
+rogue-tq3d: @0 ctx=565 refs=1
+rogue-tq3d: @0 ctx=566 refs=1
+rogue-cdm: @0 ctx=567 refs=1
+rogue-cdm: @0 ctx=568 refs=1
+rogue-ta3d: @0 ctx=569 refs=1
+QV-al-kde-xdg-desktop-por-25524: @1 ctx=581 refs=1
+VV-al-kde-xdg-desktop-por-25524: @1 ctx=582 refs=1
+PV-al-kde-xdg-desktop-por-25524: @1 ctx=583 refs=1
+------------[ PVR DBG: END ]------------

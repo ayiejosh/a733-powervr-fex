@@ -1,7 +1,7 @@
-From c8523c2f1308a8ab8a9ffad49410385693ccb8c3 Mon Sep 17 00:00:00 2001
+From 38c407b3183cb2028821a42c8acde802e0398b58 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Thu, 8 Oct 2026 02:21:09 +0800
-Subject: [PATCH 05/43] pvr: report the real compute workgroup limits (128 ->
+Subject: [PATCH 005/294] pvr: report the real compute workgroup limits (128 ->
  512), probed not assumed
 
 The driver reported maxComputeWorkGroupInvocations = 128 and maxComputeWorkGroupSize =
@@ -26,7 +26,7 @@ failures / 27 pass.
  1 file changed, 9 insertions(+), 3 deletions(-)
 
 diff --git a/src/imagination/vulkan/pvr_physical_device.c b/src/imagination/vulkan/pvr_physical_device.c
-index 197e461..08e31c0 100644
+index 197e461c..08e31c06 100644
 --- a/src/imagination/vulkan/pvr_physical_device.c
 +++ b/src/imagination/vulkan/pvr_physical_device.c
 @@ -807,10 +807,16 @@ static bool pvr_physical_device_get_properties(
@@ -49,3 +49,6 @@ index 197e461..08e31c0 100644
          [2] = 64U,
        },
  
+-- 
+2.47.3
+

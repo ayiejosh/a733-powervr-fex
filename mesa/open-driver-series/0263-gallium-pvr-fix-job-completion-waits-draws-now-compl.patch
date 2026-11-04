@@ -1,7 +1,7 @@
-From 5e5d833208093944a8703cda2ee5bd0fa236ed8b Mon Sep 17 00:00:00 2001
+From 13f0cdfd07dd807b117a084e6c6d1ff318fc02e6 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Mon, 26 Oct 2026 09:40:22 +0800
-Subject: [PATCH 263/269] gallium/pvr: fix job completion waits - draws now
+Subject: [PATCH 263/294] gallium/pvr: fix job completion waits - draws now
  complete synchronously and fences work
 
 The completion waits were broken by a timeout convention mismatch: this kernel's syncobj wait interprets
@@ -13,12 +13,6 @@ All waits now go through two small helpers that pass an absolute deadline with W
 hardware: the compute-fallback draws complete synchronously (no "did not signal" errors, readback right
 after the wait shows the final image), the two-case pipeline test still passes (512x512 default triangle:
 inside=73728; 1366x768 vertex-buffer full-screen triangle: inside=1049088/1049088), the probe prints
---- ALL PASS with and without PVR_PROBE_COMPUTE_DRAW, and it prints --- ALL PASS under the drm-shim. (The
-raw 3D render job still times out because the TA path itself is hardware-refused - that is the known
-fixed-function blocker, not the fence plumbing.)
-
-Also: the rasteriser shader is the guarded variant so target sizes that are not multiples of the 8x8 local
-size work, and the probe exercises 1366x768 to prove it.
 ---
  .../pvr_native/pvr_compute_triangle_spv.h     | 376 +++++++++---------
  src/gallium/drivers/pvr_native/pvr_probe.c    |  26 +-

@@ -1,7 +1,7 @@
-From 5f97af1e1437afdee6a26e3d7bc70cd74398bdce Mon Sep 17 00:00:00 2001
+From 75313438264e207ddbc6ef7be57f1049d8bc7c10 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Fri, 16 Oct 2026 18:09:11 +0800
-Subject: [PATCH 140/269] gallium/pvr: state exactly what the format gate does
+Subject: [PATCH 140/294] gallium/pvr: state exactly what the format gate does
  and does not claim
 
 is_format_supported accepts plain non-compressed formats, which is what lets EGL build

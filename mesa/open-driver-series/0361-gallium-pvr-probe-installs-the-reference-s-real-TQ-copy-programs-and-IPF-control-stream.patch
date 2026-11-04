@@ -1,0 +1,222 @@
+From 51b209dc01a9cff5e4a91084a905811ba3b8facf Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sat, 31 Oct 2026 10:08:06 +0800
+Subject: [PATCH] gallium/pvr: probe installs the reference's real TQ copy
+ programs and IPF control stream
+
+The copy replay had been launching the wrong TQ fragment shader: the reference
+compiles two shaders in the same run (16 words at USC+0x7340, temps 2, kicked by
+the background-object program at PDS+0x41000; 20 words at USC+0x73c0, temps 4,
+kicked by the IPF control stream's kickusc program at PDS+0x42000), and the probe
+pointed both kickusc programs at 0x7340. The probe now installs the 20-word
+shader and the 0x73c0 task address, the byte-exact IPF control stream (region
+array + primitive block) at the transfer-fragment heap base (isp_mtile_base
+offset 0), the captured no-op texture-unicode program at PDS+0x1e40, the
+texture-state DMA program at PDS+0x2700 as well as 0x2640, and the PDS block the
+control stream names at 0x26c0.
+
+Also adds PVR_PROBE_TQ_COPY_PRE/PRECTL (replay another captured stream through
+the same context first, with a distinguishable clear value, to test whether
+firmware per-context state from an earlier kick matters) and PVR_DUMP_HEAPS.
+
+Even with every captured buffer, the stream and all programs byte-identical the
+copy still stores nothing; the patch is diagnostic, no driver behaviour changes.
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c | 110 ++++++++++++++++++++-
+ src/gallium/drivers/pvr_native/pvr_vm.c    |   5 +
+ 2 files changed, 112 insertions(+), 3 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index fe50b678..5c858a48 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -5873,13 +5873,25 @@ tq_copy_check(int fd, struct pipe_screen *pscreen)
+       0xd3009256, 0x83c1803f, 0x40300010, 0xd3009256, 0x83c4803f, 0x41300010, 0xe400a067, 0x60800854,
+       0x80880880, 0x800200a0, 0x8a37ff6a, 0x00408700, 0xfff32000, 0xffffffff, 0x87808a34, 0x21000041,
+    };
+-   static const uint32_t texdata_code[2] = { 0xf4020000, 0xd3000000 };
++   /* Second TQ fragment shader the reference compiles in the same run: 20 words at USC+0x73c0
++    * (temps 4). The IPF control stream's kickusc program at PDS+0x42000 launches *this* one; the
++    * 16-word 0x7340 shader is the background-object variant (stream bgnd0 = PDS+0x41000). */
++   static const uint32_t usc_copy20[20] = {
++      0x02788004, 0x00200000, 0xf300c057, 0x8040f2b0, 0x00000040, 0x8104ff00, 0x00080060,
++      0x81040000, 0x00080061, 0x80020000, 0xa057ff6a, 0x8044e400, 0x88088062, 0xff00a080,
++      0xff6a8002, 0x87008a36, 0x20000040, 0xfffffff2, 0x87808a34, 0x21000041,
++   };
++   /* Captured unitex "texture unicode" program at PDS+0x1e40 for this copy job: two zero words
++    * (the reference uploads a 2-word no-op here; the shader's inputs come from the texturedata
++    * DMA at PDS+0x2640). */
++   static const uint32_t texdata_code[2] = { 0x00000000, 0x00000000 };
+    struct drm_pvr_ioctl_create_context_args cargs = {
+       .type = DRM_PVR_CTX_TYPE_TRANSFER_FRAG,
+       .vm_context_handle = vm->context_handle,
+    };
+    struct pvr_bo srcbo = { 0 }, dstbo = { 0 }, pdsbo = { 0 }, uscbo = { 0 };
+-   struct pvr_bo pdsbo2 = { 0 }, dmabo = { 0 };
++   struct pvr_bo pdsbo2 = { 0 }, dmabo = { 0 }, csbo = { 0 };
++   const struct pvr_heap *tfrag = &vm->heaps[DRM_PVR_HEAP_TRANSFER_FRAG];
+    uint8_t *stream = NULL;
+    uint32_t stream_len = 0;
+    int tfd = -1;
+@@ -5935,6 +5947,50 @@ tq_copy_check(int fd, struct pipe_screen *pscreen)
+    }
+    close(tfd);
+ 
++   /* Optional pre-job: submit another captured stream through the same context first. */
++   uint8_t *pre_stream = NULL;
++   uint32_t pre_len = 0;
++
++   if (getenv("PVR_PROBE_TQ_COPY_PRE") != NULL) {
++      const unsigned pre_idx = (unsigned)strtoul(getenv("PVR_PROBE_TQ_COPY_PRE"), NULL, 0);
++      int pfd = open(path, O_RDONLY);
++
++      if (pfd >= 0) {
++         uint8_t filebuf[65536];
++         ssize_t got = read(pfd, filebuf, sizeof(filebuf));
++         unsigned idx = 0;
++         size_t pos = 0;
++
++         while (got > 0 && pos + 4 <= (size_t)got) {
++            uint32_t len;
++
++            memcpy(&len, filebuf + pos, sizeof(len));
++            pos += 4;
++            if (len == 0 || len > 4096 || pos + len > (size_t)got)
++               break;
++            if (idx == pre_idx) {
++               pre_stream = malloc(len);
++               if (pre_stream) {
++                  memcpy(pre_stream, filebuf + pos, len);
++                  pre_len = len;
++               }
++               break;
++            }
++            pos += len;
++            idx++;
++         }
++         close(pfd);
++      }
++      printf("tqcopy:        pre-job stream %s (%u B)\n",
++             pre_stream ? "loaded" : "MISSING", pre_len);
++      if (pre_stream != NULL && pre_len >= 128 &&
++          getenv("PVR_PROBE_TQ_COPY_PRECTL") != NULL) {
++         /* Make the pre-job's own write distinguishable from the main job's copy. */
++         ((uint32_t *)pre_stream)[30] =
++            (uint32_t)strtoul(getenv("PVR_PROBE_TQ_COPY_PRECTL"), NULL, 0);
++      }
++   }
++
+    if (getenv("PVR_PROBE_TQ_COPY_MORPH") != NULL) {
+       /* Bisection: replay the fill stream but move selected fields to the copy job's values.
+        * bits: 1 = pixel-event offsets, 2 = bgnd0, 4 = bgnd1, 8 = bgnd3, 16 = isp_bgobjvals,
+@@ -6030,7 +6086,8 @@ tq_copy_check(int fd, struct pipe_screen *pscreen)
+    {
+       uint32_t kick_data[8] = { kick_task, 0x00000008, 0, 0, 0, 0, 0, 0 };
+       static const uint32_t kick_code[1] = { 0xf4000002 };
+-      uint32_t kick_data2[8] = { kick_task, 0x00000008, 0, 0, 0, 0, 0, 0 };
++      /* The reference's second kickusc program (PDS+0x42000) launches the 0x73c0 shader. */
++      uint32_t kick_data2[8] = { 0x000073c0u, 0x00000008, 0, 0, 0, 0, 0, 0 };
+       struct pvr_pds_kickusc_program gen_kick = { 0 };
+       const bool genkick = getenv("PVR_PROBE_TQ_COPY_GENKICK") != NULL;
+       static const uint32_t texdata_dma[4] = { 0x0004b080, 0x00000080, 0x90000014, 0 };
+@@ -6060,6 +6117,9 @@ tq_copy_check(int fd, struct pipe_screen *pscreen)
+          memcpy(base + (0x42020 - 0x40000), kick_code, sizeof(kick_code));
+       }
+       memcpy((uint8_t *)pdsbo.map + (0x2640 - 0x1000), texdata_dma, sizeof(texdata_dma));
++      /* The IPF control stream's TEXTUREDATABASE field names the same DMA burst program at
++       * PDS+0x2700 (state->tex_state_data_offset); install it there too. */
++      memcpy((uint8_t *)pdsbo.map + (0x2700 - 0x1000), texdata_dma, sizeof(texdata_dma));
+    }
+ 
+    /* Texture-state DMA space (general heap) the kick program DMAs from. */
+@@ -6088,6 +6148,7 @@ tq_copy_check(int fd, struct pipe_screen *pscreen)
+       goto out_bo;
+    }
+    memcpy((uint8_t *)uscbo.map + (0x7340 - 0x5000), usc_copy, sizeof(usc_copy));
++   memcpy((uint8_t *)uscbo.map + (0x73c0 - 0x5000), usc_copy20, sizeof(usc_copy20));
+    {
+       /* Fill job's USC kernel (stream 0 control runs) at USC+0x5c00. */
+       static const uint32_t fill_kernel[4] = { 0xc280a048, 0x01804080, 0xff000088, 0xfffffff2 };
+@@ -6109,6 +6170,47 @@ tq_copy_check(int fd, struct pipe_screen *pscreen)
+       }
+    }
+ 
++   /* The transfer job's ISP needs the IPF control stream (region array + primitive block) that the
++    * reference allocates at the base of the transfer-fragment heap; the stream's isp_mtile_base is
++    * the offset of that allocation (0 in every capture). Without it the ISP renders no primitives,
++    * so the TQ shader is never kicked and only the hardware clear path can write (which is exactly
++    * the tag-off behaviour). Captured byte-exact from the same reference run (bundle3). */
++   if (getenv("PVR_PROBE_TQ_COPY_CS") != NULL) {
++      static const uint32_t ipf_cs[80] = {
++         0x00001016, 0x00030f00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
++         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
++         0x000200dc, 0x00000160, 0, 0x002e0000, 0x04430820, 0x14c718a4, 0x00008000, 0x00000001,
++         0x00010000, 0x00000001, 0x00208000, 0x00000001, 0x00210000, 0x00000001, 0x00208000, 0x00000001,
++         0x00210000, 0x00000001, 0x00408000, 0x00000001, 0x00410000, 0x00000001, 0x00042000, 0x00001e40,
++         0x00010411, 0x000026c0, 0x00002700, 0, 0x01000000, 0, 0, 0,
++         0x3f800000, 0, 0, 0x3f000000, 0x3f800000, 0x3f000000, 0, 0x3f000000,
++         0x3f800000, 0x3f000000, 0, 0x3f800000, 0x3f800000, 0x3f800000, 0, 0,
++      };
++      /* PDS block the control stream names at offset 0x26c0 (captured in the same run). */
++      static const uint32_t pds_26c0[8] = { 0x03040000, 0x80000000, 0, 0, 0xf4000004, 0, 0, 0 };
++
++      memcpy((uint8_t *)pdsbo.map + (0x26c0 - 0x1000), pds_26c0, sizeof(pds_26c0));
++      if (tfrag->size == 0) {
++         printf("tqcopy:        FAIL: no transfer-fragment heap to place the IPF control stream\n");
++      } else if (!pvr_bo_create(fd, 0x1000, 4096, &csbo) ||
++                 !pvr_vm_map(vm, tfrag->base, csbo.handle, csbo.size) ||
++                 !pvr_bo_map(fd, &csbo)) {
++         printf("tqcopy:        FAIL: cannot map IPF control stream at 0x%llx\n",
++                (unsigned long long)tfrag->base);
++      } else {
++         memcpy(csbo.map, ipf_cs, sizeof(ipf_cs));
++         printf("tqcopy:        IPF control stream installed at 0x%llx (isp_mtile_base offset 0)\n",
++                (unsigned long long)tfrag->base);
++      }
++   }
++
++   if (pre_stream != NULL) {
++      const bool pre_ok =
++         pvr_job_submit_transfer_sync(vm, cargs.handle, pre_stream, pre_len, 2000);
++
++      printf("tqcopy:        pre-job %s\n", pre_ok ? "COMPLETED" : "sync did not signal");
++   }
++
+    completed = pvr_job_submit_transfer_sync(vm, cargs.handle, stream, stream_len, 2000);
+    printf("tqcopy:        copy replay %s (stream %u B, src 0x%llx dst 0x%llx)\n",
+           completed ? "COMPLETED (sync signalled)" : "sync did not signal in 2 s", stream_len,
+@@ -6165,6 +6267,7 @@ tq_copy_check(int fd, struct pipe_screen *pscreen)
+ 
+       drmIoctl(fd, DRM_IOCTL_PVR_DESTROY_CONTEXT, &dargs);
+    }
++   pvr_bo_destroy(fd, &csbo);
+    pvr_bo_destroy(fd, &uscbo);
+    pvr_bo_destroy(fd, &dmabo);
+    pvr_bo_destroy(fd, &pdsbo2);
+@@ -6174,6 +6277,7 @@ out_bo:
+    pvr_bo_destroy(fd, &srcbo);
+ out_ctx:
+ out:
++   free(pre_stream);
+    free(stream);
+    return ok;
+ }
+diff --git a/src/gallium/drivers/pvr_native/pvr_vm.c b/src/gallium/drivers/pvr_native/pvr_vm.c
+index dc50e0ba..56278868 100644
+--- a/src/gallium/drivers/pvr_native/pvr_vm.c
++++ b/src/gallium/drivers/pvr_native/pvr_vm.c
+@@ -291,6 +291,11 @@ pvr_vm_init(int fd, struct pvr_vm *vm)
+       vm->context_handle = args.handle;
+    }
+ 
++   if (getenv("PVR_DUMP_HEAPS") != NULL) {
++      for (uint32_t i = 0; i < heap_count; i++)
++         fprintf(stderr, "HEAP %u base=0x%" PRIx64 " size=%" PRIu64 "\n", i,
++                 (uint64_t)heaps[i].base, (uint64_t)heaps[i].size);
++   }
+    mesa_logi("pvr: %u heaps; general base 0x%" PRIx64 " size %" PRIu64
+              " carveout %" PRIu64 " usable 0x%" PRIx64 " (%" PRIu64 " bytes), page %u,"
+              " vm_context %u",
+-- 
+2.47.3
+

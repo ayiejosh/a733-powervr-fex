@@ -1,7 +1,7 @@
-From 11bb1217dd797c4f456e43b9a40b84d8886fd2cd Mon Sep 17 00:00:00 2001
+From da85f4da216f06aa0478b5e2fc0cfd026742c0cf Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Fri, 16 Oct 2026 16:27:27 +0800
-Subject: [PATCH 129/269] gallium/pvr: the static context state stream, and why
+Subject: [PATCH 129/294] gallium/pvr: the static context state stream, and why
  it is all zeros
 
 DRM_IOCTL_PVR_CREATE_CONTEXT takes a static context state stream. Its shape is fixed by

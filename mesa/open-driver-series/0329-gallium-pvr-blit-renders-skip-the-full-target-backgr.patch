@@ -1,0 +1,38 @@
+From be642a471b7674edd981b4843b11c18a4e4f1665 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Thu, 29 Oct 2026 14:01:52 +0800
+Subject: [PATCH] gallium/pvr: blit renders skip the full-target background
+ load
+
+A blit (used for mip generation, texture uploads of twiddled targets and get_handle copies) renders a
+fullscreen quad that covers the whole target, but the flush still built the load background program
+that samples the target's previous content - a full-target texture read and PDS load program per
+blit, for pixels that are all overwritten. Use the clear background for blit renders instead, like
+the depth-only path already does.
+
+Measured on the X11/EGL glmark2 harness (same binary for all stacks, perf governor, cores 6-7, two
+runs each): refract 36/36 -> 44/45 FPS (+23%; now level with zink's 47), terrain 20/20 -> 20/21,
+shadow unchanged, full suite 729 -> 745 (+2.2%). Full gltri gate passes 49/49, 0 MMU faults.
+---
+ src/gallium/drivers/pvr_native/pvr_draw.c | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_draw.c b/src/gallium/drivers/pvr_native/pvr_draw.c
+index 0f6c974b..25c5debd 100644
+--- a/src/gallium/drivers/pvr_native/pvr_draw.c
++++ b/src/gallium/drivers/pvr_native/pvr_draw.c
+@@ -1816,8 +1816,9 @@ pvr_draw_flush(struct pvr_context *ctx)
+       goto done;
+    uint64_t bgnd[3], pr_bgnd[3];
+    /* Without a clear, the background reloads what the target held. A depth-only render drops the
+-    * colour writes anyway, so it uses the (cheap) clear background instead of a full-target load. */
+-   if (d->clear_valid || zonly || !draw_load_program(ctx, d, bgnd))
++    * colour writes anyway, and a blit's fullscreen quad covers the whole target, so both use the
++    * (cheap) clear background instead of a full-target load. */
++   if (d->clear_valid || zonly || d->load_src != NULL || !draw_load_program(ctx, d, bgnd))
+       pvr_csb_pds_bgnd_words((uint32_t)bg, (uint32_t)bg, (uint32_t)bg, 0, 0, 0, bgnd);
+    memcpy(pr_bgnd, bgnd, sizeof(bgnd));
+    pvr_frag_static_stream_fill_bgnd(fstream, sizeof(fstream), d->bct_addr, bgnd, pr_bgnd);
+-- 
+2.47.3
+

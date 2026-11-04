@@ -1,7 +1,7 @@
-From 87159cd720fa11b345142f5d162d52c01bcf1550 Mon Sep 17 00:00:00 2001
+From b42ec6331593c46e469e75608d8cfc3d1436a0ab Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Fri, 23 Oct 2026 20:01:57 +0800
-Subject: [PATCH 187/269] gallium/pvr: the stream is NOT what the kernel is
+Subject: [PATCH 187/294] gallium/pvr: the stream is NOT what the kernel is
  rejecting
 
 Three experiments against the real kernel, each narrowing the failure:

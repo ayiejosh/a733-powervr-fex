@@ -1464,3 +1464,60 @@ D. **pco peepholes** (compute 1.7–2× gap) — item 4 below.
 - PR: ayiejosh/a733-powervr-fex #11, single commit, c64e47d -> 8208cdc (push --force-with-lease), title/body updated. Patches 0099-0105 in backup-2026-10-14/.
 - Process: session14/16 took 5.5 h because gate.py rechecks every differing case 3x on both builds; the base build crashed on all 596, one pass took 78 min. Killed by PID. Lesson in memory long-job-hygiene.md.
 - Not re-run on the last tree: the 15-list CTS gate (0105 does not touch compiler/render paths). Debt: ~30 debug getenv trace hooks in the branch diff.
+
+## 2026-10-27 (evening): native DM2/TA blocker broken - it was the native driver's draw data
+
+Method: ioctl-level capture/replay (`tools/pvrcap/`: `pvrcap.c` LD_PRELOAD shim logs every powervr ioctl and dumps
+every mapped CPU-visible buffer at each geometry submit; `replay.py` re-issues a capture in a fresh process, with
+graft/transplant knobs; `verdict.sh` reads the firmware trace for the last TA kick). Replays are faithful: Vulkan
+replay -> TA finished, native replay -> DM2 lockup.
+
+Bisection (each a replay variant):
+- native draw on Vulkan's context + HWRT/free lists: HANG; native context + HWRT running Vulkan's draw data: PASS.
+  -> the blocker is the draw data the native driver builds, not kernel/firmware/MTS/context/HWRT.
+- a terminate-only VDM stream hangs the TA even for the working Vulkan replay: the old "MINIMAL_GEOM" test
+  (round 10) could never pass and was not evidence the TA fails before reading the draw.
+- native PPP/TA blocks and VDM_STATE0 swapped into the working stream: PASS. Left: the vertex program chain.
+
+Root causes (both needed; each alone still hangs - ablated on hardware):
+1. `pvr_vm_map()` did not reserve code-heap pages: the shader stage maps vertex PDS code/data + VS/FS USC at the
+   first usable page of the PDS/USC heaps; the render context then `pvr_vm_heap_alloc()`s the same pages and
+   drm_gpuvm silently replaces the earlier mappings -> the VDM runs a zero-filled buffer as the vertex PDS program.
+   (CPU-side byte compares never saw this: the bytes were right, the GPU mapping was not.)
+2. `pvr_shader_vertex_data()` wrote PDS const-map entries at byte offsets (the map gives dword offsets) and skipped
+   LITERAL32/64 -> DDMAD with base 0, stride 0, control 0. Proof: data segment read `00001000 00000000 0000009f`.
+Fixed in Mesa commit c5f610e9. Native geometry-only probe: TA finished 3/3, no HWR.
+
+Follow-on (commit 60c1f175): PBE linestride was fed bytes instead of pixels (BIF0 fault at RT+0x100040), and the
+render's done_sync was never signalled. Full native render now: Kick TA -> TA finished -> Kick 3D -> 3D finished,
+no fault; GPU writes the whole 512x512 target. Output is all black (no triangle) - next item.
+Board restored to vendor + desktop, 0 kernel faults.
+
+## 2026-10-27 (night): native GL renders a real GL program (PR #12 patches 0297-0299)
+- 0297 scissor table: the probe render drew only the background (ISP scissor base 0 with scissoring on).
+- 0298 draw_vbo -> TA/3D path (pvr_draw.c). A GLES2 program (tools/pvrcap/gltri.c, surfaceless EGL + FBO) renders
+  the same image through MESA_LOADER_DRIVER_OVERRIDE=pvr as through zink (32768 red px on green). Bugs found on the
+  way: index-list addr bits 39:32 dropped; static-program carveouts only mapped by the probe; FS built with
+  z_replicate=0 (depth over colour) and runtime coverage checks reading an unset shared reg (all fragments discarded);
+  gl_FragColor -> DATA0 with output format/range; clear-mask check; ~20 missing pipe_context hooks.
+- 0299 review A7 (PBE address bits 32/33 are encodable) and A9 (texture stride in pixels).
+- Still missing for glmark2 on native GL: varyings, uniforms, textures, depth, blending, culling, load without clear,
+  window-system buffers.
+
+## 2026-10-28 — review queue finished, native GL varyings/uniforms/winsys (PR #12 head 0307)
+
+- Queue: B4/B5 measured no-change; B11 fixed (0301, 15769/15777 windowed submits CPU-waited, 8.7 s of 32 s; subset 206/207 -> 211/211); X11 WSI geometry cache bug fixed (0302); C cleanup done (0303). Gate 44/44, cstest bit-exact, sync CTS sample identical to HEAD.
+- Native GL: varyings (0304: FS coeff alloc, DOUTI coefficient program, TA VARYING0, PDS SIZEINFO units are dwords not bytes), uniforms (0305: load_uniform -> push constants, PDS descriptor programs, VDMCTRL_PDS_STATE for VS), winsys (0306: dma-buf get/from_handle, resource_release, RECT renderbuffers), clip-space z (0307: nir_lower_clip_halfz + depth viewport; partly clipped tris now match zink), DISABLE_PIXELMERGE like the reference.
+- glmark2-es2 now starts natively. build:model=cube renders at 28 FPS (synchronous submit + per-draw program rebuild; not tuned).
+- OPEN: build (horse, 21516 verts) hangs the 3D DM. FW trace: BIF0 page fault, read, req addr ~0x46c0/0x4780, MMU status cat_base 13, tag_id 37 (XE_MEM layout), right after Kick 3D; then HWR. Ruled out: vertex count, overdraw, attrib offsets, depth attach, perspective w, free-list size (64 MiB init still hangs), MLIST size, HWRT args (identical to zink's 800x600 dataset), pixel merge. Bisection: [0,10758) ok, [10758,+10758) hangs, each quarter of the 2nd half ok alone -> accumulated per-render state. Next: decode fragment stream words 248..368 vs zink (region header / pds_bgnd / pr fields), and capture/replay graft zink's frag stream onto the native horse kick.
+- gltri (tools/pvrcap/gltri.c) modes: GLTRI_VARYING, GLTRI_UNIFORM, GLTRI_VSU, GLTRI_MAT, GLTRI_DEPTH, GLTRI_W/H, GLTRI_MANY(+GLTRI_BIG), GLTRI_Z, GLTRI_PERSP, GLTRI_NOFS.
+
+## 2026-10-28 (cont.) — native GL: horse hang fixed, glmark2 fully on the 3D path
+
+Board Mesa commits after 0307 (not yet exported as patch files): 04e0576f, 5755f471, 4d0a5611, 95099c57, 16196a0f, 88930637, 80a81de8.
+
+- Horse hang ROOT CAUSE: native reused HWRT render-target data 0 for every render; after a 3D pass returned its PB pages the next render on the same RT data faulted in IPF_CREQ (BIF0 read ~0x46c0, cat_base 13, tag 0x25 = IPF_CREQ via the vendor DDK rgxdebug.c table). Fix: rotate rt_data_idx after each fragment submit, as Vulkan does. Found by: fw trace snapshot ~1 s after kick (ring buffer), kicks alternated ok/fault with identical PM state.
+- Other fixes on the way to a full run: stream uploader (u_vbuf crash), native integers cap (int uniforms stored as float -> loop hang), honest is_format_supported (RGB8 -> RGBX8 conversion), textures (set 0 binding = unit, 16-dword combined descriptors in shared regs), sampler LOD clamp overflow (NEAREST sampled as linear), HWRT data set cache with real destroy (ENOSPC leak), varying component subsets, face culling, VDM auto-index, depth test + ZLS + GPU depth clear, colour reload background (load op), blending via pco nir_lower_blend + pass type, depth textures, depth-only targets, unbound samplers -> 1x1 black, map-only-when-used, async submit with 2 slots + real fences, no frag->PR wait.
+- gltri modes added: GLTRI_SAMPLE/LINEAR, GLTRI_CULL/CW, GLTRI_LOOP, GLTRI_ZTEST, GLTRI_BLEND, GLTRI_NODRAW; all match zink.
+- Perf analysis (fw trace ticks, build scene): native TA 880 vs zink 1060; native 3D 3240 vs zink 1830. Depth ZLS store costs ~1300 ticks (twiddled ZLS saves ~300); zink's colour target is twiddled + TFBC compressed. Next: TFBC/twiddled colour targets (reuse dd17f331/ff0dfe79 knowledge), twiddled depth + twiddled depth sampling.
+- refract scene: DistanceRenderTarget FBO incomplete (format not offered as RT) -> open.

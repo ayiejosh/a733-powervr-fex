@@ -1,7 +1,7 @@
-From 8f51645eccf09bac4aebbfa5e889d1e7a1aeafe7 Mon Sep 17 00:00:00 2001
+From 2fc4c7b65a9d7f9b79c00e9edd3ad1c3e3876ede Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sun, 25 Oct 2026 00:36:05 +0800
-Subject: [PATCH 222/269] gallium/pvr: per-job end-of-tile program, reference
+Subject: [PATCH 222/294] gallium/pvr: per-job end-of-tile program, reference
  free lists, and a geometry-only bisect
 
 The fragment stream's CR_EVENT_PIXEL_PDS_DATA now names a real per-job pixel-event program

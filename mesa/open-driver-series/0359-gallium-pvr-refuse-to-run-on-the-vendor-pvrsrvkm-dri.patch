@@ -1,0 +1,106 @@
+From 389f595c0e80bc231c6e67415db1f4549ddb1b6f Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 30 Oct 2026 23:48:22 +0800
+Subject: [PATCH 359/359] gallium/pvr: refuse to run on the vendor pvrsrvkm
+ driver (crash guard)
+
+All four hard resets on 2026-10-30 came from a client opening the vendor kernel driver, which
+NULL-dereferences in LinuxServicesConnectionFromFile (Invalid connection data, then
+psConnectionPriv is NULL). Guard both entry points with drmGetVersion():
+- pvr_screen_create() fails with a clear message when the DRM driver name is not 'powervr';
+- pvr-probe checks immediately after open() so a stray run on a vendor-bound board cannot crash the
+  kernel anymore.
+
+Also adds the copy-replay envs used to answer the bg-tag question (PVR_PROBE_TQ_COPY_KEEPCLR keeps
+the stream's clear value, PVR_PROBE_TQ_COPY_DUMP16 prints the first 16 destination dwords).
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c  | 28 ++++++++++++++++++++-
+ src/gallium/drivers/pvr_native/pvr_screen.c | 19 ++++++++++++++
+ 2 files changed, 46 insertions(+), 1 deletion(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index 1f0c01a2..e6ff795e 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -5962,7 +5962,8 @@ tq_copy_check(int fd, struct pipe_screen *pscreen)
+       if (mask & 16U) w[28] = 0;
+       if (mask & 32U) w[41] = 3;
+       if (mask & 64U) w[37] = 0x2500;
+-      w[30] = 0xdeadbeefu;
++      if (getenv("PVR_PROBE_TQ_COPY_KEEPCLR") == NULL)
++         w[30] = 0xdeadbeefu;   /* fill pattern; KEEPCLR leaves the copy stream's clear value */
+    }
+ 
+    /* Patch the pixel-event data: word 2 = destination >> 2, word 3 bits 0..5 = destination >> 34. */
+@@ -6119,6 +6120,12 @@ tq_copy_check(int fd, struct pipe_screen *pscreen)
+       }
+       printf("tqcopy:        readback changed=%u/%u mismatched=%u first=0x%08x (waited %u us)\n",
+              changed, buf_size / 4, mismatched, px[0], waited_us);
++      if (getenv("PVR_PROBE_TQ_COPY_DUMP16") != NULL) {
++         printf("tqcopy:        dst16:");
++         for (int k = 0; k < 16; k++)
++            printf(" %08x", px[k]);
++         printf("\n");
++      }
+       ok = changed == buf_size / 4 && mismatched == 0;
+    }
+    printf("tqcopy:        %s (native TQ copy job copies the source to the destination)\n",
+@@ -6156,6 +6163,25 @@ main(int argc, char **argv)
+       return 1;
+    }
+ 
++   /* Never touch the vendor driver: opening pvrsrvkm from a normal client NULL-derefs the kernel
++    * (four hard resets on 2026-10-30, one from this probe). Fail loudly instead. */
++   {
++      drmVersionPtr ver = drmGetVersion(fd);
++      const bool ok = ver != NULL && ver->name != NULL &&
++                      strcmp(ver->name, "powervr") == 0;
++
++      if (!ok) {
++         fprintf(stderr, "pvr-probe: refusing to run on '%s' - bind the open 'powervr' driver first"
++                         " (the vendor 'pvrsrvkm' crashes on client open)\n",
++                 ver != NULL && ver->name != NULL ? ver->name : "unknown");
++         if (ver)
++            drmFreeVersion(ver);
++         close(fd);
++         return 1;
++      }
++      drmFreeVersion(ver);
++   }
++
+    struct pipe_screen *screen = pvr_screen_create(fd, NULL, NULL);
+    if (!screen) {
+       fprintf(stderr, "pvr-probe: pvr_screen_create() returned NULL\n");
+diff --git a/src/gallium/drivers/pvr_native/pvr_screen.c b/src/gallium/drivers/pvr_native/pvr_screen.c
+index f7959679..592d5959 100644
+--- a/src/gallium/drivers/pvr_native/pvr_screen.c
++++ b/src/gallium/drivers/pvr_native/pvr_screen.c
+@@ -207,6 +207,25 @@ struct pipe_screen *
+ pvr_screen_create(int fd, const struct pipe_screen_config *config,
+                   struct renderonly *ro)
+ {
++   /* Refuse to bind to the vendor driver: pvrsrvkm NULL-dereferences when a normal client opens
++    * it (four hard resets on 2026-10-30 came from exactly that). The native driver only speaks the
++    * open powervr kernel UAPI. */
++   {
++      drmVersionPtr ver = drmGetVersion(fd);
++      const bool ok = ver != NULL && ver->name != NULL &&
++                      strcmp(ver->name, "powervr") == 0;
++
++      if (!ok) {
++         mesa_loge("pvr: refusing to initialise on '%s' - the native driver needs the open 'powervr'"
++                   " kernel driver, not the vendor 'pvrsrvkm' (which crashes on client open)",
++                   ver != NULL && ver->name != NULL ? ver->name : "unknown");
++         if (ver)
++            drmFreeVersion(ver);
++         return NULL;
++      }
++      drmFreeVersion(ver);
++   }
++
+    struct pvr_screen *screen = rzalloc(NULL, struct pvr_screen);
+    if (!screen)
+       return NULL;
+-- 
+2.47.3
+

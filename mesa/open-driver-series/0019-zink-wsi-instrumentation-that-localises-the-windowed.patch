@@ -1,7 +1,7 @@
-From 3e6b15f389cd9852b77871c918537601600eb45e Mon Sep 17 00:00:00 2001
+From e9237b1b51156a77a34b1d29181427110ebf099a Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Thu, 8 Oct 2026 09:43:18 +0800
-Subject: [PATCH 19/43] zink/wsi: instrumentation that localises the windowed
+Subject: [PATCH 019/294] zink/wsi: instrumentation that localises the windowed
  stall to the compositor release wait
 
 The client blocks 22.11 ms of a 27 ms frame inside AcquireNextImageKHR (max 62.18 ms,
@@ -24,7 +24,7 @@ Keeps ACQ_TRACE (zink kopper) and WSIREL_TRACE (wsi_common_drm) instrumentation.
  2 files changed, 19 insertions(+)
 
 diff --git a/src/gallium/drivers/zink/zink_kopper.c b/src/gallium/drivers/zink/zink_kopper.c
-index 8194fd3..3c91504 100644
+index 8194fd3d..3c915044 100644
 --- a/src/gallium/drivers/zink/zink_kopper.c
 +++ b/src/gallium/drivers/zink/zink_kopper.c
 @@ -630,7 +630,15 @@ kopper_acquire(struct zink_screen *screen, struct zink_resource *res, uint64_t t
@@ -44,7 +44,7 @@ index 8194fd3..3c91504 100644
           if (ret == VK_ERROR_OUT_OF_DATE_KHR) {
              res->obj->new_dt = true;
 diff --git a/src/vulkan/wsi/wsi_common_drm.c b/src/vulkan/wsi/wsi_common_drm.c
-index dbf65b2..0735a1f 100644
+index dbf65b2d..0735a1f5 100644
 --- a/src/vulkan/wsi/wsi_common_drm.c
 +++ b/src/vulkan/wsi/wsi_common_drm.c
 @@ -1096,10 +1096,21 @@ wsi_drm_wait_for_explicit_sync_release(struct wsi_swapchain *chain,
@@ -69,3 +69,6 @@ index dbf65b2..0735a1f 100644
  
     /* Return the first image that materialized. */
     if (ret != 0)
+-- 
+2.47.3
+

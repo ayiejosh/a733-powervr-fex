@@ -1,0 +1,47 @@
+From 1e8c39aaf8e29135c1af46175d3e53e07bc7fec3 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 30 Oct 2026 02:02:55 +0800
+Subject: [PATCH] gallium/pvr: 512 end-of-tile cache entries - mip-chain scenes
+ were recompiling their EOT programs
+
+The end-of-tile program cache held 32 (target set -> compiled USC program) entries. A scene that
+renders many distinct target sets per frame - terrain renders about 27 (mip levels and bloom passes,
+each a new address+format set) - overflowed it and fell to an eviction pattern that missed 83% of the
+time; a miss costs full pco compilation plus a USC and a PDS upload, measured at ~200 us per render,
+i.e. several milliseconds of CPU per frame.
+
+Growing the cache to 512 entries (~50 KB) holds every target set of such a scene: terrain's cache hits
+go from 1464/9415 to 9802/9885 in the steady state, its per-flush EOT cost from ~200 us to ~1 us, and
+its per-frame user CPU from 12.1 ms to 1.9 ms (system 3.2 ms). Terrain itself only moves from 18 to
+19-20 fps because it is GPU-bound, so the full glmark2 score is unchanged (809) - this is a CPU
+overhead fix that removes a per-render compile from multi-target workloads, not a scene win.
+
+Verified: full gltri gate (49 modes, all native glGetError 0x0), rttest PASS, rt8test, MRT/sRGB/
+instancing/extension tests unchanged, 0 MMU faults; terrain measured with --results fps:cpu before
+(12.1 ms user) and after (1.9 ms user) the change.
+---
+ src/gallium/drivers/pvr_native/pvr_draw.c | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_draw.c b/src/gallium/drivers/pvr_native/pvr_draw.c
+index 43555d28..937de365 100644
+--- a/src/gallium/drivers/pvr_native/pvr_draw.c
++++ b/src/gallium/drivers/pvr_native/pvr_draw.c
+@@ -160,7 +160,13 @@ struct pvr_draw_state {
+    float zclear;
+ 
+    /* Caches. */
+-   struct pvr_draw_eot eot[32];
++   /* End-of-tile programs, per target set (addresses and formats). Each entry is a compiled USC
++    * program: a miss costs pco compilation plus a USC and a PDS upload, which was 200 us per render
++    * on the terrain scene. A mip-chain-heavy scene renders dozens of distinct level sizes per frame
++    * (terrain: ~27 target sets, 83% miss rate with 32 entries); 512 entries hold every set of such a
++    * scene for ~50 KB and turns the steady state into cache hits. Entries are never freed: the
++    * programs stay allocated on the PDS heap either way. */
++   struct pvr_draw_eot eot[512];
+    unsigned nr_eot;
+    struct pvr_draw_bg bg[4];
+    struct pvr_draw_load load[8];
+-- 
+2.47.3
+

@@ -1,7 +1,7 @@
-From c42ffc271adc6182ee207f059bc463300f7bd0ea Mon Sep 17 00:00:00 2001
+From 77519d95088b07db63ed119b8f07bb16dab07a3d Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Fri, 16 Oct 2026 20:29:04 +0800
-Subject: [PATCH 148/269] gallium/pvr: record vertex input state, and the
+Subject: [PATCH 148/294] gallium/pvr: record vertex input state, and the
  reference bug that took two rounds to find
 
   context: vertex buffers: referenced on bind, released on unbind and on resource->user

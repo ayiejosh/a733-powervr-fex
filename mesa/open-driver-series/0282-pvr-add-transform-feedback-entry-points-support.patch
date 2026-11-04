@@ -1,0 +1,1685 @@
+From 56de4212f889c59c76d40e58f104655d25e2e6a1 Mon Sep 17 00:00:00 2001
+From: Ashish Chauhan <ashish.chauhan@imgtec.com>
+Date: Mon, 28 Sep 2026 15:05:47 +0100
+Subject: [PATCH 282/294] pvr: add transform feedback entry points support
+
+Signed-off-by: Ashish Chauhan <ashish.chauhan@imgtec.com>
+Acked-by: Frank Binns <frank.binns@imgtec.com>
+Part-of: <https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/44385>
+(cherry picked from commit c374fb7308eb495887337ed65ee4ea5e7cc02929)
+---
+ src/imagination/vulkan/meson.build           |   1 +
+ src/imagination/vulkan/pvr_arch_cmd_buffer.c | 435 +++++++++-
+ src/imagination/vulkan/pvr_arch_xfb.c        | 867 +++++++++++++++++++
+ src/imagination/vulkan/pvr_cmd_buffer.h      |  50 ++
+ src/imagination/vulkan/pvr_common.h          |   2 +-
+ src/imagination/vulkan/pvr_device.h          |   8 +
+ src/imagination/vulkan/pvr_pipeline.h        |   3 +-
+ src/imagination/vulkan/pvr_xfb.h             |  91 ++
+ 8 files changed, 1421 insertions(+), 36 deletions(-)
+ create mode 100644 src/imagination/vulkan/pvr_arch_xfb.c
+ create mode 100644 src/imagination/vulkan/pvr_xfb.h
+
+diff --git a/src/imagination/vulkan/meson.build b/src/imagination/vulkan/meson.build
+index c39baebc..4fe84a87 100644
+--- a/src/imagination/vulkan/meson.build
++++ b/src/imagination/vulkan/meson.build
+@@ -110,6 +110,7 @@ common_per_arch_files += files(
+   'pvr_arch_sampler.c',
+   'pvr_arch_spm.c',
+   'pvr_arch_tex_state.c',
++  'pvr_arch_xfb.c',
+ )
+ 
+ if with_imagination_srv
+diff --git a/src/imagination/vulkan/pvr_arch_cmd_buffer.c b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
+index 0e4bf293..b60448a3 100644
+--- a/src/imagination/vulkan/pvr_arch_cmd_buffer.c
++++ b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
+@@ -62,7 +62,11 @@
+ #include "pvr_tex_state.h"
+ #include "pvr_types.h"
+ #include "pvr_usc.h"
++#include "pvr_utrace.h"
++#include "pvr_xfb.h"
+ #include "pvr_winsys.h"
++#include "pdsc/pdsc_isa_pack.h"
++#include "pdsc/pdsc_precomp_programs.h"
+ #include "util/bitscan.h"
+ #include "util/bitset.h"
+ #include "util/compiler.h"
+@@ -7614,7 +7618,12 @@ pvr_emit_dirty_pds_state(const struct pvr_cmd_buffer *const cmd_buffer,
+ 
+    pvr_csb_emit (csb, VDMCTRL_PDS_STATE1, state1) {
+       state1.pds_data_addr = PVR_DEV_ADDR(pds_vertex_descriptor_data_offset);
+-      state1.sd_type = ROGUE_VDMCTRL_SD_TYPE_NONE;
++      if (state->xfb_state.is_active) {
++         state1.sd_type = ROGUE_VDMCTRL_SD_TYPE_PDS;
++         state1.sd_next_type = ROGUE_VDMCTRL_SD_TYPE_PDS;
++      } else {
++         state1.sd_type = ROGUE_VDMCTRL_SD_TYPE_NONE;
++      }
+    }
+ 
+    pvr_csb_emit (csb, VDMCTRL_PDS_STATE2, state2) {
+@@ -8312,6 +8321,77 @@ pvr_setup_triangle_merging_flag(struct pvr_cmd_buffer *const cmd_buffer,
+    }
+ }
+ 
++static bool
++pvr_has_active_fragment_stage(const struct pvr_cmd_buffer *const cmd_buffer)
++{
++   const struct pvr_graphics_pipeline *const pipeline =
++      cmd_buffer->state.gfx_pipeline;
++
++   /* TODO: Return false when rasterizer discard enabled; regresses CTS
++    * tests. Callers assume "has fragment shader" not "will rasterise".
++    */
++
++   return pipeline->shader_state.fragment.shader_bo != NULL;
++}
++
++static void pvr_setup_stream_out(struct pvr_cmd_buffer *const cmd_buffer,
++                                 uint32_t temp_size,
++                                 const struct pvr_pds_upload *pds_program)
++{
++   struct pvr_cmd_buffer_state *const state = &cmd_buffer->state;
++   struct ROGUE_TA_STATE_HEADER *const header = &state->emit_header;
++   struct pvr_ppp_state *const ppp_state = &state->ppp_state;
++   const struct pvr_xfb_shader_state *xfb_shader_state =
++      &cmd_buffer->state.gfx_pipeline->shader_state.xfb_shader_state;
++   uint32_t stream0, stream1, stream2;
++
++   pvr_csb_pack (&stream0, TA_STATE_STREAM_OUT0, stream_out) {
++      if (xfb_shader_state->varying_count > 0)
++         stream_out.stream0_mem_output = true;
++      if (pvr_has_active_fragment_stage(cmd_buffer))
++         stream_out.stream0_ta_output = true;
++   }
++
++   pvr_csb_pack (&stream1, TA_STATE_STREAM_OUT1, stream_out) {
++      const uint32_t pds_data_size = PVR_DW_TO_BYTES(pds_program->data_size);
++      stream_out.pds_data_size =
++         DIV_ROUND_UP(pds_data_size,
++                      ROGUE_TA_STATE_STREAM_OUT1_PDS_DATA_SIZE_UNIT_SIZE);
++
++      stream_out.pds_temp_size =
++         DIV_ROUND_UP(PVR_DW_TO_BYTES(temp_size),
++                      ROGUE_TA_STATE_STREAM_OUT1_PDS_TEMP_SIZE_UNIT_SIZE);
++   }
++
++   pvr_csb_pack (&stream2, TA_STATE_STREAM_OUT2, stream_out) {
++      stream_out.pds_data_addr = PVR_DEV_ADDR(pds_program->data_offset);
++   }
++
++   if (stream0 != ppp_state->stream_out.so0 ||
++       stream1 != ppp_state->stream_out.so1 ||
++       stream2 != ppp_state->stream_out.so2) {
++      ppp_state->stream_out.so0 = stream0;
++      ppp_state->stream_out.so1 = stream1;
++      ppp_state->stream_out.so2 = stream2;
++      header->pres_stream_out_program = true;
++      header->pres_stream_out_size = true;
++   }
++}
++
++void PVR_PER_ARCH(set_xfb_main_program_ppp_state)(
++   struct pvr_cmd_buffer *cmd_buffer)
++{
++   struct pvr_program_info *streamout_program =
++      &cmd_buffer->state.xfb_state.pds_streamout_program;
++   struct pvr_pds_upload *pds_program = &streamout_program->pds_program;
++   const uint32_t temp_size = streamout_program->temp_size;
++
++   if (!cmd_buffer->state.xfb_state.is_active)
++      return;
++
++   pvr_setup_stream_out(cmd_buffer, temp_size, pds_program);
++}
++
+ static VkResult
+ setup_pds_fragment_program(struct pvr_cmd_buffer *const cmd_buffer,
+                            struct pvr_pds_upload *pds_fragment_program)
+@@ -8916,10 +8996,22 @@ static VkResult pvr_emit_ppp_state(struct pvr_cmd_buffer *const cmd_buffer,
+     * inheriting a non-zero value set elsewhere.
+     */
+    if (header->pres_stream_out_size) {
+-      pvr_csb_write_value(buffer_ptr, TA_STATE_STREAM_OUT0, 0);
++      pvr_csb_write_value(buffer_ptr,
++                          TA_STATE_STREAM_OUT0,
++                          ppp_state->stream_out.so0);
+       EMIT_MASK_SET(pres_stream_out_size, false);
+    }
+ 
++   if (header->pres_stream_out_program) {
++      pvr_csb_write_value(buffer_ptr,
++                          TA_STATE_STREAM_OUT1,
++                          ppp_state->stream_out.so1);
++      pvr_csb_write_value(buffer_ptr,
++                          TA_STATE_STREAM_OUT2,
++                          ppp_state->stream_out.so2);
++      EMIT_MASK_SET(pres_stream_out_program, false);
++   }
++
+    assert(EMIT_MASK_IS_CLEAR);
+ 
+ #undef EMIT_MASK_GET
+@@ -9001,6 +9093,76 @@ static VkResult pvr_emit_ppp_state(struct pvr_cmd_buffer *const cmd_buffer,
+    return VK_SUCCESS;
+ }
+ 
++VkResult PVR_PER_ARCH(emit_xfb_sync_state)(
++   struct pvr_cmd_buffer *const cmd_buffer,
++   const struct pvr_program_info *pds_program_info)
++{
++   struct pvr_cmd_buffer_state *const state = &cmd_buffer->state;
++   struct ROGUE_TA_STATE_HEADER header = state->emit_header;
++   struct pvr_ppp_state *const ppp_state = &state->ppp_state;
++   struct pvr_sub_cmd_gfx *sub_cmd;
++   bool do_end_dummy_sub_cmd = false;
++   uint32_t temp_size = pds_program_info->temp_size;
++   VkResult result;
++
++   if (!state->current_sub_cmd ||
++       state->current_sub_cmd->type != PVR_SUB_CMD_TYPE_GRAPHICS) {
++      result = pvr_arch_cmd_buffer_start_sub_cmd(cmd_buffer,
++                                                 PVR_SUB_CMD_TYPE_GRAPHICS);
++      if (result != VK_SUCCESS)
++         return result;
++      do_end_dummy_sub_cmd = true;
++   }
++
++   sub_cmd = &state->current_sub_cmd->gfx;
++
++   memset(&state->emit_header, 0, sizeof(state->emit_header));
++   state->emit_header.pres_stream_out_program = true;
++   state->emit_header.pres_stream_out_size = true;
++
++   pvr_csb_pack (&ppp_state->stream_out.so0, TA_STATE_STREAM_OUT0, stream_out) {
++      stream_out.stream0_mem_output = false;
++      stream_out.stream0_ta_output = false;
++   }
++   pvr_csb_pack (&ppp_state->stream_out.so1, TA_STATE_STREAM_OUT1, stream_out) {
++      stream_out.sync = true;
++      const uint32_t pds_data_size =
++         PVR_DW_TO_BYTES(pds_program_info->pds_program.data_size);
++      stream_out.pds_data_size =
++         DIV_ROUND_UP(pds_data_size,
++                      ROGUE_TA_STATE_STREAM_OUT1_PDS_DATA_SIZE_UNIT_SIZE);
++
++      stream_out.pds_temp_size =
++         DIV_ROUND_UP(PVR_DW_TO_BYTES(temp_size),
++                      ROGUE_TA_STATE_STREAM_OUT1_PDS_TEMP_SIZE_UNIT_SIZE);
++   }
++   pvr_csb_pack (&ppp_state->stream_out.so2, TA_STATE_STREAM_OUT2, stream_out) {
++      stream_out.pds_data_addr =
++         PVR_DEV_ADDR(pds_program_info->pds_program.data_offset);
++   }
++
++   result = pvr_emit_ppp_state(cmd_buffer, sub_cmd);
++   if (result != VK_SUCCESS)
++      return result;
++
++   state->emit_header = header;
++   state->emit_header.pres_stream_out_program = false;
++   state->emit_header.pres_stream_out_size = false;
++
++   ppp_state->stream_out.so0 = 0;
++   ppp_state->stream_out.so1 = 0;
++   ppp_state->stream_out.so2 = 0;
++
++   if (do_end_dummy_sub_cmd) {
++      sub_cmd->empty_cmd = false;
++      result = pvr_arch_cmd_buffer_end_sub_cmd(cmd_buffer);
++      if (result != VK_SUCCESS)
++         return result;
++   }
++
++   return VK_SUCCESS;
++}
++
+ static inline bool pvr_ppp_dynamic_state_isp_faces_and_control_dirty(
+    const BITSET_WORD *const dynamic_dirty)
+ {
+@@ -9044,8 +9206,9 @@ pvr_ppp_state_update_required(const struct pvr_cmd_buffer *cmd_buffer)
+           header->pres_wclamp || header->pres_outselects ||
+           header->pres_varying_word0 || header->pres_varying_word1 ||
+           header->pres_varying_word2 || header->pres_stream_out_program ||
+-          state->dirty.fragment_descriptors || state->dirty.vis_test ||
+-          state->dirty.gfx_pipeline_binding || state->dirty.isp_userpass ||
++          header->pres_stream_out_size || state->dirty.fragment_descriptors ||
++          state->dirty.vis_test || state->dirty.gfx_pipeline_binding ||
++          state->dirty.isp_userpass ||
+           state->push_consts[PVR_STAGE_ALLOCATION_FRAGMENT].dirty ||
+           pvr_ppp_dynamic_state_isp_faces_and_control_dirty(dynamic_dirty) ||
+           BITSET_TEST(dynamic_dirty, MESA_VK_DYNAMIC_RS_DEPTH_BIAS_FACTORS) ||
+@@ -9143,6 +9306,8 @@ pvr_emit_dirty_ppp_state(struct pvr_cmd_buffer *const cmd_buffer,
+       break;
+    }
+ 
++   pvr_arch_set_xfb_main_program_ppp_state(cmd_buffer);
++
+    result = pvr_emit_ppp_state(cmd_buffer, sub_cmd);
+    if (result != VK_SUCCESS)
+       return result;
+@@ -9293,8 +9458,14 @@ static void pvr_emit_dirty_vdm_state(struct pvr_cmd_buffer *const cmd_buffer,
+        * Vulkan doesn't support stream output and the vertex position is
+        * always emitted to the UVB.
+        */
+-      state0.uvs_scratch_size_select =
+-         ROGUE_VDMCTRL_UVS_SCRATCH_SIZE_SELECT_FIVE;
++      if (state->xfb_state.is_active &&
++          !state->gfx_pipeline->shader_state.fragment.shader_bo) {
++         state0.uvs_scratch_size_select =
++            ROGUE_VDMCTRL_UVS_SCRATCH_SIZE_SELECT_ONE;
++      } else {
++         state0.uvs_scratch_size_select =
++            ROGUE_VDMCTRL_UVS_SCRATCH_SIZE_SELECT_FIVE;
++      }
+ 
+       header = state0;
+    }
+@@ -10059,6 +10230,216 @@ void PVR_PER_ARCH(CmdDrawIndirect)(VkCommandBuffer commandBuffer,
+                            stride);
+ }
+ 
++static VkResult
++pvr_cmd_buffer_insert_barrier_event(struct pvr_cmd_buffer *cmd_buffer,
++                                    uint32_t src_stage_mask,
++                                    uint32_t dst_stage_mask)
++{
++   VkResult result;
++
++   result =
++      pvr_arch_cmd_buffer_start_sub_cmd(cmd_buffer, PVR_SUB_CMD_TYPE_EVENT);
++   if (result != VK_SUCCESS)
++      return result;
++
++   cmd_buffer->state.current_sub_cmd->event = (struct pvr_sub_cmd_event){
++      .type = PVR_EVENT_TYPE_BARRIER,
++      .barrier = {
++         .wait_for_stage_mask = src_stage_mask,
++         .wait_at_stage_mask = dst_stage_mask,
++      },
++   };
++
++   return pvr_arch_cmd_buffer_end_sub_cmd(cmd_buffer);
++}
++
++static VkResult
++pvr_update_indirect_draw_byte_count_ext(struct pvr_cmd_buffer *cmd_buffer,
++                                        uint32_t instance_count,
++                                        uint32_t first_instance,
++                                        VkBuffer _counter_buffer,
++                                        VkDeviceSize counter_buffer_offset,
++                                        uint32_t counter_offset,
++                                        uint32_t vertex_stride)
++{
++   VK_FROM_HANDLE(pvr_buffer, counter_buffer, _counter_buffer);
++   const struct pvr_graphics_pipeline *pipeline =
++      cmd_buffer->state.gfx_pipeline;
++   const struct pvr_xfb_shader_state *xfb_shader_state =
++      &pipeline->shader_state.xfb_shader_state;
++   struct pvr_program_info *draw_program_info =
++      &cmd_buffer->state.xfb_state.pds_draw_program;
++   const struct pvr_device_info *dev_info =
++      &cmd_buffer->device->pdevice->dev_info;
++   const uint32_t cache_line_size = pvr_get_slc_cache_line_size(dev_info);
++   struct pvr_cmd_buffer_state *const state = &cmd_buffer->state;
++   struct pvr_ppp_state *const ppp_state = &state->ppp_state;
++   uint32_t stream0, stream1, stream2;
++   pdsc_program **draw_program;
++   VkResult result;
++
++   struct pvr_pds_xfb_draw_program_input input = {
++      .first_instance = first_instance,
++      .instance_count = instance_count,
++      .counter_offset = counter_offset,
++      .vertex_stride = vertex_stride,
++      .data = {
++         .counter_buffer_addr =
++            PVR_DEV_ADDR_OFFSET(counter_buffer->dev_addr,
++                                counter_buffer_offset),
++         .output_count_buffer_addr =
++            xfb_shader_state->indirect_byte_count->dev_addr,
++      },
++   };
++
++   draw_program = &cmd_buffer->device->pdsc_precomp_programs.xfb_vertex_count;
++   *draw_program = pdsc_precomp_xfb_vertex_count_variant(NULL, 0);
++   pdsc_finalize_program(*draw_program);
++
++   draw_program_info->temp_size = pdsc_program_temps_used(*draw_program);
++
++   struct pdsc_ld64_src0 counter_buffer_ld_src0 = {
++      .slcmode = PDSC_SLC_MODE_LD_CACHED,
++      .ccpri = 0,
++      .ccslc = PDSC_CCSLC_LD_NORMAL,
++      .ccmcu = PDSC_CCMCU_LD_NORMAL,
++      .dest = pdsc_load_ref(*draw_program,
++                            PVR_XFB_VERTEX_COUNT_REF_ID_COUNTER_BUFFER_LD_DEST),
++      .cmode = PDSC_CMODE_LD_CACHED,
++      .count8 = 1, /* the 64-bit byte counter */
++      .srcadd = input.data.counter_buffer_addr.addr,
++   };
++
++   struct pdsc_st32_src0 output_count_buffer_st_src0 = {
++      .cmode = PDSC_CMODE_ST_WRITE_THROUGH,
++      .slcmode = PDSC_SLC_MODE_ST_WRITE_THROUGH,
++      .ccpri = 0,
++      .ccslc = PDSC_CCSLC_LD_NORMAL,
++      .ccmcu = PDSC_CCMCU_LD_NORMAL,
++      .count4 = sizeof(VkDrawIndirectCommand) / sizeof(uint32_t),
++      .src = pdsc_load_ref(
++         *draw_program,
++         PVR_XFB_VERTEX_COUNT_REF_ID_OUTPUT_COUNT_BUFFER_ST_SRC0),
++      .dstadd = input.data.output_count_buffer_addr.addr,
++   };
++
++   pdsc_patch patches[] = {
++      { .patch_id = PVR_XFB_VERTEX_COUNT_PATCH_ID_NEGATIVE_COUNTER_OFFSET,
++        .value = input.counter_offset },
++      /* Reciprocal for magic-number multiply division in the pdsc program.
++       * GPU computes: vertex_count = hi32(byte_count * recip).
++       */
++      { .patch_id = PVR_XFB_VERTEX_COUNT_PATCH_ID_VERTEX_STRIDE_RECIP,
++        .value = input.vertex_stride ? (uint32_t)((((uint64_t)1 << 32) +
++                                                   input.vertex_stride - 1) /
++                                                  input.vertex_stride)
++                                     : 0 },
++      { .patch_id = PVR_XFB_VERTEX_COUNT_PATCH_ID_INSTANCE_COUNT,
++        .value = input.instance_count },
++      { .patch_id = PVR_XFB_VERTEX_COUNT_PATCH_ID_FIRST_INSTANCE,
++        .value = input.first_instance },
++      { .patch_id = PVR_XFB_VERTEX_COUNT_PATCH_ID_COUNTER_BUFFER_LD_SRC0,
++        .value = pdsc_ld64_src0_pack(*draw_program, &counter_buffer_ld_src0) },
++      { .patch_id = PVR_XFB_VERTEX_COUNT_PATCH_ID_OUTPUT_COUNT_BUFFER_ST_SRC0,
++        .value =
++           pdsc_st32_src0_pack(*draw_program, &output_count_buffer_st_src0) },
++   };
++
++   assert(ARRAY_SIZE(patches) < pdsc_program_data_size(*draw_program));
++   pdsc_patch_program(*draw_program, ARRAY_SIZE(patches), patches, NULL);
++
++   result = pvr_arch_cmd_buffer_upload_pds(
++      cmd_buffer,
++      pdsc_program_data(*draw_program),
++      pdsc_program_data_size(*draw_program) / sizeof(uint32_t),
++      ROGUE_TA_STATE_STREAM_OUT1_PDS_DATA_SIZE_UNIT_SIZE,
++      pdsc_program_code(*draw_program),
++      pdsc_program_code_size(*draw_program) / sizeof(uint32_t),
++      ROGUE_TA_STATE_STREAM_OUT1_PDS_DATA_SIZE_UNIT_SIZE,
++      cache_line_size,
++      &draw_program_info->pds_program);
++   if (result != VK_SUCCESS)
++      return result;
++
++   /* Emit sync state */
++   stream0 = ppp_state->stream_out.so0;
++   stream1 = ppp_state->stream_out.so1;
++   stream2 = ppp_state->stream_out.so2;
++
++   result = pvr_arch_emit_xfb_sync_state(cmd_buffer, draw_program_info);
++   if (result != VK_SUCCESS)
++      return result;
++
++   ppp_state->stream_out.so0 = stream0;
++   ppp_state->stream_out.so1 = stream1;
++   ppp_state->stream_out.so2 = stream2;
++
++   return VK_SUCCESS;
++}
++
++void PVR_PER_ARCH(CmdDrawIndirectByteCountEXT)(VkCommandBuffer commandBuffer,
++                                               uint32_t drawCount,
++                                               uint32_t firstInstance,
++                                               VkBuffer counterBuffer,
++                                               VkDeviceSize counterBufferOffset,
++                                               uint32_t counterOffset,
++                                               uint32_t vertexStride)
++{
++   const struct pvr_cmd_buffer_draw_state draw_state = {
++      .draw_indirect = true,
++   };
++
++   VK_FROM_HANDLE(pvr_cmd_buffer, cmd_buffer, commandBuffer);
++   struct pvr_cmd_buffer_state *state = &cmd_buffer->state;
++   struct vk_dynamic_graphics_state *const dynamic_state =
++      &cmd_buffer->vk.dynamic_graphics_state;
++   const struct pvr_graphics_pipeline *pipeline =
++      cmd_buffer->state.gfx_pipeline;
++   const struct pvr_xfb_shader_state *xfb_shader_state =
++      &pipeline->shader_state.xfb_shader_state;
++   struct pvr_buffer arg_buffer = {
++      .dev_addr = xfb_shader_state->indirect_byte_count->dev_addr
++   };
++   VkResult result;
++
++   PVR_CHECK_COMMAND_BUFFER_BUILDING_STATE(cmd_buffer);
++
++   result = pvr_update_indirect_draw_byte_count_ext(cmd_buffer,
++                                                    drawCount,
++                                                    firstInstance,
++                                                    counterBuffer,
++                                                    counterBufferOffset,
++                                                    counterOffset,
++                                                    vertexStride);
++   if (result != VK_SUCCESS)
++      return;
++
++   pvr_update_draw_state(state, &draw_state);
++
++   result = pvr_cmd_buffer_insert_barrier_event(cmd_buffer,
++                                                PVR_PIPELINE_STAGE_GEOM_BIT,
++                                                PVR_PIPELINE_STAGE_GEOM_BIT);
++   if (result != VK_SUCCESS)
++      return;
++
++   result = pvr_validate_draw_state(cmd_buffer);
++   if (result != VK_SUCCESS)
++      return;
++
++   /* Write the VDM control stream for the primitive. */
++   pvr_emit_vdm_index_list(cmd_buffer,
++                           &state->current_sub_cmd->gfx,
++                           dynamic_state->ia.primitive_topology,
++                           0U,
++                           0U,
++                           0U,
++                           0U,
++                           &arg_buffer,
++                           0U,
++                           1U,
++                           0U);
++}
++
+ void PVR_PER_ARCH(CmdEndRenderPass2)(VkCommandBuffer commandBuffer,
+                                      const VkSubpassEndInfo *pSubpassEndInfo)
+ {
+@@ -10761,7 +11142,7 @@ static bool pvr_is_stencil_store_load_needed(
+    return false;
+ }
+ 
+-static VkResult
++VkResult
+ pvr_cmd_buffer_insert_mid_frag_barrier_event(struct pvr_cmd_buffer *cmd_buffer,
+                                              uint32_t src_stage_mask,
+                                              uint32_t dst_stage_mask)
+@@ -10773,10 +11154,12 @@ pvr_cmd_buffer_insert_mid_frag_barrier_event(struct pvr_cmd_buffer *cmd_buffer,
+ 
+    cmd_buffer->state.current_sub_cmd->gfx.empty_cmd = false;
+ 
+-   /* Submit graphics job to store stencil. */
+    cmd_buffer->state.current_sub_cmd->gfx.barrier_store = true;
+ 
+-   pvr_arch_cmd_buffer_end_sub_cmd(cmd_buffer);
++   result = pvr_arch_cmd_buffer_end_sub_cmd(cmd_buffer);
++   if (result != VK_SUCCESS)
++      return result;
++
+    result =
+       pvr_arch_cmd_buffer_start_sub_cmd(cmd_buffer, PVR_SUB_CMD_TYPE_EVENT);
+    if (result != VK_SUCCESS)
+@@ -10789,8 +11172,15 @@ pvr_cmd_buffer_insert_mid_frag_barrier_event(struct pvr_cmd_buffer *cmd_buffer,
+          .wait_at_stage_mask = dst_stage_mask,
+       },
+    };
+-   pvr_arch_cmd_buffer_end_sub_cmd(cmd_buffer);
+-   pvr_arch_cmd_buffer_start_sub_cmd(cmd_buffer, PVR_SUB_CMD_TYPE_GRAPHICS);
++
++   result = pvr_arch_cmd_buffer_end_sub_cmd(cmd_buffer);
++   if (result != VK_SUCCESS)
++      return result;
++
++   result =
++      pvr_arch_cmd_buffer_start_sub_cmd(cmd_buffer, PVR_SUB_CMD_TYPE_GRAPHICS);
++   if (result != VK_SUCCESS)
++      return result;
+ 
+    cmd_buffer->state.current_sub_cmd->gfx.dr_info = prev_sub_cmd->gfx.dr_info;
+    prev_sub_cmd->gfx.dr_info = NULL;
+@@ -10809,29 +11199,6 @@ pvr_cmd_buffer_insert_mid_frag_barrier_event(struct pvr_cmd_buffer *cmd_buffer,
+    return VK_SUCCESS;
+ }
+ 
+-static VkResult
+-pvr_cmd_buffer_insert_barrier_event(struct pvr_cmd_buffer *cmd_buffer,
+-                                    uint32_t src_stage_mask,
+-                                    uint32_t dst_stage_mask)
+-{
+-   VkResult result;
+-
+-   result =
+-      pvr_arch_cmd_buffer_start_sub_cmd(cmd_buffer, PVR_SUB_CMD_TYPE_EVENT);
+-   if (result != VK_SUCCESS)
+-      return result;
+-
+-   cmd_buffer->state.current_sub_cmd->event = (struct pvr_sub_cmd_event){
+-      .type = PVR_EVENT_TYPE_BARRIER,
+-      .barrier = {
+-         .wait_for_stage_mask = src_stage_mask,
+-         .wait_at_stage_mask = dst_stage_mask,
+-      },
+-   };
+-
+-   return pvr_arch_cmd_buffer_end_sub_cmd(cmd_buffer);
+-}
+-
+ /* This is just enough to handle vkCmdPipelineBarrier().
+  * TODO: Complete?
+  */
+diff --git a/src/imagination/vulkan/pvr_arch_xfb.c b/src/imagination/vulkan/pvr_arch_xfb.c
+new file mode 100644
+index 00000000..407bc3bd
+--- /dev/null
++++ b/src/imagination/vulkan/pvr_arch_xfb.c
+@@ -0,0 +1,867 @@
++/*
++ * Copyright © 2026 Imagination Technologies Ltd.
++ *
++ * SPDX-License-Identifier: MIT
++ */
++
++#include <stdbool.h>
++#include <stdint.h>
++#include <string.h>
++#include <vulkan/vulkan.h>
++
++#include "hwdef/rogue_hw_defs.h"
++#include "hwdef/rogue_hw_utils.h"
++
++#include "pdsc/pdsc_isa_pack.h"
++#include "pdsc/pdsc_precomp_programs.h"
++#include "pdsc/programs/pdsc_xfb_init.h"
++#include "pdsc/programs/pdsc_xfb_main.h"
++
++#include "pvr_buffer.h"
++#include "pvr_cmd_buffer.h"
++#include "pvr_device.h"
++#include "pvr_entrypoints.h"
++#include "pvr_limits.h"
++#include "pvr_macros.h"
++#include "pvr_physical_device.h"
++#include "pvr_pipeline.h"
++#include "pvr_types.h"
++#include "pvr_xfb.h"
++
++#include "util/u_math.h"
++
++#include "vk_alloc.h"
++#include "vk_command_buffer.h"
++
++static uint32_t
++pvr_get_output_primitive_vertex_count(VkPrimitiveTopology topology)
++{
++   switch (topology) {
++   case VK_PRIMITIVE_TOPOLOGY_POINT_LIST:
++      return 1;
++
++   case VK_PRIMITIVE_TOPOLOGY_LINE_LIST:
++   case VK_PRIMITIVE_TOPOLOGY_LINE_STRIP:
++   case VK_PRIMITIVE_TOPOLOGY_LINE_LIST_WITH_ADJACENCY:
++   case VK_PRIMITIVE_TOPOLOGY_LINE_STRIP_WITH_ADJACENCY:
++      return 2;
++
++   case VK_PRIMITIVE_TOPOLOGY_PATCH_LIST:
++   case VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST:
++   case VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP:
++   case VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN:
++   case VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST_WITH_ADJACENCY:
++   case VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP_WITH_ADJACENCY:
++      return 3;
++
++   default:
++      UNREACHABLE("Undefined primitive topology");
++   }
++}
++
++static void
++pvr_destroy_xfb_program_input(const VkAllocationCallbacks *allocator,
++                              struct pvr_xfb_program_input *config)
++{
++   vk_free(allocator, config->data.varying_info_arr);
++   config->data.varying_info_arr = NULL;
++
++   vk_free(allocator, config->data.buffer_info);
++   config->data.buffer_info = NULL;
++}
++
++static VkResult pvr_create_xfb_streamout_program_config(
++   struct pvr_cmd_buffer *cmd_buffer,
++   struct pvr_xfb_program_input *input_config)
++{
++   struct pvr_cmd_buffer_xfb_state *recording_state =
++      &cmd_buffer->state.xfb_state;
++   const struct pvr_graphics_pipeline *pipeline =
++      cmd_buffer->state.gfx_pipeline;
++   const struct pvr_xfb_shader_state *xfb_shader_state =
++      &pipeline->shader_state.xfb_shader_state;
++   const VkAllocationCallbacks *const allocator = &cmd_buffer->device->vk.alloc;
++   struct pvr_xfb_binding *xfb_bindings;
++   struct vk_dynamic_graphics_state *const dynamic_state =
++      &cmd_buffer->vk.dynamic_graphics_state;
++   const VkPrimitiveTopology topology = dynamic_state->ia.primitive_topology;
++
++   input_config->primitive_type =
++      pvr_get_output_primitive_vertex_count(topology);
++   input_config->varying_count = xfb_shader_state->varying_count;
++
++   input_config->data.buffer_info = vk_alloc(
++      allocator,
++      sizeof(*input_config->data.buffer_info) * xfb_shader_state->varying_count,
++      8,
++      VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
++   if (!input_config->data.buffer_info)
++      goto err_out_of_memory;
++
++   input_config->data.varying_info_arr =
++      vk_alloc(allocator,
++               sizeof(*input_config->data.varying_info_arr) *
++                  xfb_shader_state->varying_count,
++               8,
++               VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
++   if (!input_config->data.varying_info_arr)
++      goto err_out_of_memory;
++
++   struct pvr_xfb_varying *varyings = xfb_shader_state->varyings;
++   uint32_t varying_count = xfb_shader_state->varying_count;
++
++   if (varying_count) {
++      for (uint32_t i = 0; i < varying_count; i++) {
++         uint32_t vbuff_index = varyings[i].xfb_buffer;
++
++         /* Varying info */
++         input_config->data.varying_info_arr[i].varying_index =
++            varyings[i].register_start;
++         input_config->data.varying_info_arr[i].dma_count =
++            varyings[i].register_count;
++         input_config->data.varying_info_arr[i].output_offset =
++            varyings[i].xfb_offset;
++         input_config->data.varying_info_arr[i].varying_stride =
++            varyings[i].xfb_stride;
++
++         /* Buffer info */
++         xfb_bindings = &recording_state->bindings[vbuff_index];
++         input_config->data.buffer_info[i].buffer_address =
++            xfb_bindings->buffer_addr;
++         input_config->data.buffer_info[i].buffer_limit =
++            xfb_bindings->buffer_limit;
++      }
++   }
++
++   return VK_SUCCESS;
++
++err_out_of_memory:
++   pvr_destroy_xfb_program_input(allocator, input_config);
++
++   return vk_error(&cmd_buffer->device->vk, VK_ERROR_OUT_OF_HOST_MEMORY);
++}
++
++static VkResult
++pvr_setup_init_config(struct pvr_cmd_buffer *cmd_buffer,
++                      struct pvr_pds_xfb_init_program_input *init_input,
++                      struct pvr_xfb_program_input *input_config)
++{
++   struct pvr_cmd_buffer_xfb_state *xfb_state = &cmd_buffer->state.xfb_state;
++   const VkAllocationCallbacks *const allocator = &cmd_buffer->device->vk.alloc;
++   bool has_valid_counter_buffer = false;
++
++   init_input->device = cmd_buffer->device;
++
++   if (xfb_state->counter_buffer_count) {
++      init_input->counter_buffer_count = xfb_state->counter_buffer_count;
++      init_input->data.counter_buffers_addr =
++         vk_alloc(allocator,
++                  sizeof(*init_input->data.counter_buffers_addr) *
++                     init_input->counter_buffer_count,
++                  8U,
++                  VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
++
++      if (!init_input->data.counter_buffers_addr)
++         return vk_error(&cmd_buffer->device->vk, VK_ERROR_OUT_OF_HOST_MEMORY);
++
++      for (uint32_t i = 0; i < init_input->counter_buffer_count; i++) {
++         uint64_t addr = xfb_state->bindings[i].counter_buffer_addr.addr;
++
++         init_input->data.counter_buffers_addr[i].addr = addr;
++         has_valid_counter_buffer |= !!addr;
++      }
++
++      init_input->load_from_counter_buffers = has_valid_counter_buffer;
++      if (!has_valid_counter_buffer)
++         init_input->counter_buffer_count = 0;
++   } else {
++      init_input->load_from_counter_buffers = false;
++      init_input->counter_buffer_count = 0;
++      init_input->data.counter_buffers_addr = NULL;
++   }
++
++   assert(input_config->data.buffer_info);
++   assert(input_config->data.varying_info_arr);
++
++   init_input->data.buffer_info = input_config->data.buffer_info;
++   init_input->data.varying_info_arr = input_config->data.varying_info_arr;
++
++   init_input->data.counter_buffer_offsets_addr =
++      &cmd_buffer->state.gfx_pipeline->shader_state.xfb_shader_state
++          .counter_buffer_offsets->dev_addr;
++   init_input->primitive_type = input_config->primitive_type;
++
++   return VK_SUCCESS;
++}
++
++static VkResult
++pvr_setup_end_program_config(struct pvr_cmd_buffer *cmd_buffer,
++                             struct pvr_pds_xfb_end_program_input *input)
++{
++   struct pvr_cmd_buffer_xfb_state *xfb_state = &cmd_buffer->state.xfb_state;
++   const VkAllocationCallbacks *const allocator = &cmd_buffer->device->vk.alloc;
++   bool has_valid_counter_buffer = false;
++
++   const struct pvr_graphics_pipeline *pipeline =
++      cmd_buffer->state.gfx_pipeline;
++   const struct pvr_xfb_shader_state *xfb_shader_state =
++      &pipeline->shader_state.xfb_shader_state;
++   struct vk_dynamic_graphics_state *const dynamic_state =
++      &cmd_buffer->vk.dynamic_graphics_state;
++   const uint32_t prim_vert_count = pvr_get_output_primitive_vertex_count(
++      dynamic_state->ia.primitive_topology);
++
++   if (xfb_state->counter_buffer_count) {
++      input->counter_buffer_count = xfb_state->counter_buffer_count;
++      assert(input->counter_buffer_count <= PVR_XFB_MAX_BUFFERS);
++
++      input->data.counter_buffers_addr =
++         vk_alloc(allocator,
++                  sizeof(*input->data.counter_buffers_addr) *
++                     input->counter_buffer_count,
++                  8U,
++                  VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
++      if (!input->data.counter_buffers_addr)
++         return vk_error(&cmd_buffer->device->vk, VK_ERROR_OUT_OF_HOST_MEMORY);
++
++      for (uint32_t i = 0; i < input->counter_buffer_count; i++) {
++         pvr_dev_addr_t *counter_buffers_addr =
++            &input->data.counter_buffers_addr[i];
++
++         if (!xfb_state->bindings[i].last_counter_buffer_addr.addr) {
++            counter_buffers_addr->addr = 0;
++         } else {
++            counter_buffers_addr->addr =
++               xfb_state->bindings[i].last_counter_buffer_addr.addr;
++            has_valid_counter_buffer = true;
++
++            input->buffer_strides[i] =
++               xfb_shader_state->buffer_strides[i] * prim_vert_count;
++         }
++      }
++
++      input->has_store_counter_buffers = has_valid_counter_buffer;
++      if (!has_valid_counter_buffer)
++         input->counter_buffer_count = 0;
++   } else {
++      input->has_store_counter_buffers = false;
++      input->counter_buffer_count = 0;
++      input->data.counter_buffers_addr = NULL;
++   }
++
++   input->data.counter_buffer_offsets_addr =
++      &xfb_shader_state->counter_buffer_offsets->dev_addr;
++
++   return VK_SUCCESS;
++}
++
++static VkResult pvr_xfb_end(struct pvr_cmd_buffer *cmd_buffer)
++{
++   struct pvr_cmd_buffer_state *const state = &cmd_buffer->state;
++   struct pvr_pds_xfb_end_program_input end_input = { 0 };
++   struct pvr_program_info *end_program_info;
++   struct pvr_pds_upload *end_pds_program;
++   pdsc_program **end_program;
++   VkResult result;
++
++   const struct pvr_device_info *dev_info =
++      &cmd_buffer->device->pdevice->dev_info;
++   const uint32_t cache_line_size = pvr_get_slc_cache_line_size(dev_info);
++
++   end_program_info = &cmd_buffer->state.xfb_state.pds_end_program;
++   end_pds_program = &end_program_info->pds_program;
++
++   result = pvr_setup_end_program_config(cmd_buffer, &end_input);
++   if (result != VK_SUCCESS)
++      return result;
++
++   end_program = &cmd_buffer->device->pdsc_precomp_programs.xfb_end;
++   *end_program = pdsc_precomp_xfb_end_variant(NULL, 0);
++   pdsc_finalize_program(*end_program);
++
++   end_program_info->temp_size = pdsc_program_temps_used(*end_program);
++
++   pdsc_ref counter_buffer_ld_dest =
++      pdsc_load_ref(*end_program, PVR_XFB_END_REF_ID_COUNTER_BUFFER_LD_DEST);
++   struct pdsc_ld64_src0 counter_buffers = {
++      .slcmode = PDSC_SLC_MODE_LD_CACHED,
++      .ccpri = 0,
++      .ccslc = PDSC_CCSLC_LD_NORMAL,
++      .ccmcu = PDSC_CCMCU_LD_NORMAL,
++
++      .dest = counter_buffer_ld_dest,
++
++      .cmode = PDSC_CMODE_LD_CACHED,
++      .count8 = end_input.counter_buffer_count,
++      .srcadd = end_input.has_store_counter_buffers
++                   ? end_input.data.counter_buffer_offsets_addr[0].addr
++                   : 0,
++   };
++
++   struct pdsc_st32_src0 st_src0 = {
++      .cmode = PDSC_CMODE_ST_WRITE_THROUGH,
++      .slcmode = PDSC_SLC_MODE_ST_WRITE_THROUGH,
++
++      .ccpri = 0,
++      .ccslc = PDSC_CCSLC_LD_NORMAL,
++      .ccmcu = PDSC_CCMCU_LD_NORMAL,
++
++      .count4 = end_input.counter_buffer_count,
++
++      .src = pdsc_load_ref(*end_program,
++                           PVR_XFB_END_REF_ID_COUNTER_BUFFER_ST_SRC0),
++      .dstadd = end_input.has_store_counter_buffers
++                   ? end_input.data.counter_buffers_addr[0].addr
++                   : 0,
++   };
++
++   pdsc_patch patches_end[] = {
++      { .patch_id = PVR_XFB_END_PATCH_ID_COUNTER_BUFFER_COUNT,
++        .value = end_input.counter_buffer_count },
++      { .patch_id = PVR_XFB_END_PATCH_ID_COUNTER_BUFFER_STRIDE_0,
++        .value = end_input.buffer_strides[0] },
++      { .patch_id = PVR_XFB_END_PATCH_ID_COUNTER_BUFFER_STRIDE_1,
++        .value = end_input.buffer_strides[1] },
++      { .patch_id = PVR_XFB_END_PATCH_ID_COUNTER_BUFFER_STRIDE_2,
++        .value = end_input.buffer_strides[2] },
++      { .patch_id = PVR_XFB_END_PATCH_ID_COUNTER_BUFFER_STRIDE_3,
++        .value = end_input.buffer_strides[3] },
++      { .patch_id = PVR_XFB_END_PATCH_ID_COUNTER_BUFFER_LD_SRC0,
++        .value = end_input.has_store_counter_buffers
++                    ? pdsc_ld64_src0_pack(*end_program, &counter_buffers)
++                    : 0 },
++
++      { .patch_id = PVR_XFB_END_PATCH_ID_COUNTER_BUFFER_ST_SRC0,
++        .value = end_input.has_store_counter_buffers
++                    ? pdsc_st32_src0_pack(*end_program, &st_src0)
++                    : 0 },
++   };
++
++   assert((ARRAY_SIZE(patches_end) < pdsc_program_data_size(*end_program)));
++
++   pdsc_patch_program(*end_program, ARRAY_SIZE(patches_end), patches_end, NULL);
++
++   result = pvr_arch_cmd_buffer_upload_pds(
++      cmd_buffer,
++      pdsc_program_data(*end_program),
++      pdsc_program_data_size(*end_program) / sizeof(uint32_t),
++      ROGUE_TA_STATE_STREAM_OUT1_PDS_DATA_SIZE_UNIT_SIZE,
++      pdsc_program_code(*end_program),
++      pdsc_program_code_size(*end_program) / sizeof(uint32_t),
++      ROGUE_TA_STATE_STREAM_OUT1_PDS_DATA_SIZE_UNIT_SIZE,
++      cache_line_size,
++      end_pds_program);
++   if (result != VK_SUCCESS) {
++      pvr_cmd_buffer_set_error_unwarned(cmd_buffer, result);
++      goto out;
++   }
++
++   result = pvr_arch_emit_xfb_sync_state(cmd_buffer, end_program_info);
++   if (result != VK_SUCCESS)
++      goto out;
++
++   if (state->current_sub_cmd &&
++       state->current_sub_cmd->type == PVR_SUB_CMD_TYPE_GRAPHICS) {
++      pvr_cmd_buffer_insert_mid_frag_barrier_event(cmd_buffer,
++                                                   PVR_PIPELINE_STAGE_GEOM_BIT,
++                                                   PVR_PIPELINE_STAGE_GEOM_BIT);
++   }
++
++out:
++   vk_free(&cmd_buffer->device->vk.alloc, end_input.data.counter_buffers_addr);
++   end_input.data.counter_buffers_addr = NULL;
++   return result;
++}
++
++static VkResult pvr_pds_xfb_ptemp_buffer_init(
++   struct pvr_pds_xfb_init_program_input *input,
++   const struct pvr_xfb_shader_state *xfb_shader_state,
++   const pdsc_program *p)
++{
++   struct pvr_device *const device = input->device;
++   VkResult result;
++
++   const uint32_t buffer_group_count = xfb_shader_state->buffer_group_count;
++   const uint32_t ptemp_count =
++      PVR_XFB_MAX_BUFFERS * PVR_XFB_PTEMP_ENTRIES_PER_VARYING;
++
++   uint16_t primitive_type = input->primitive_type;
++
++   uint64_t *ptemp_values = vk_zalloc(&device->vk.alloc,
++                                      sizeof(*ptemp_values) * ptemp_count,
++                                      16,
++                                      VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
++   if (!ptemp_values)
++      return VK_ERROR_OUT_OF_HOST_MEMORY;
++
++   /* Process each buffer group */
++   uint32_t var_i = 0;
++   for (uint32_t g = 0; g < buffer_group_count; g++) {
++      uint32_t group_start = var_i;
++      var_i += xfb_shader_state->group_varying_count[g];
++
++      /* Get ptemp indices for this group (fixed stride-3 layout) */
++      uint32_t src0_pt = g * PVR_XFB_PTEMP_ENTRIES_PER_VARYING;
++      uint32_t src1_pt = g * PVR_XFB_PTEMP_ENTRIES_PER_VARYING + 1;
++      uint32_t src3_pt = g * PVR_XFB_PTEMP_ENTRIES_PER_VARYING + 2;
++
++      const uint32_t src0_ptemp64_idx_u32 = src0_pt * 2;
++      const uint32_t src1_ptemp64_idx_u32 = src1_pt * 2;
++      const uint16_t src0_ptemp64_idx = (uint16_t)src0_ptemp64_idx_u32;
++      const uint16_t src1_ptemp64_idx = (uint16_t)src1_ptemp64_idx_u32;
++
++      /* SRC0: address register — shared across all varyings in group.*/
++      struct pdsc_stm_src0 src0 = {
++         .ptemp_prim_needed_written = pdsc_ref_ptemp64(src1_ptemp64_idx),
++         .ptemp_address = pdsc_ref_ptemp64(src0_ptemp64_idx),
++         .address = input->data.buffer_info[group_start].buffer_address.addr,
++      };
++      ptemp_values[src0_pt] = pdsc_stm_src0_pack(p, &src0);
++
++      /* SRC1: primwritten/primneeded — initialized to zero */
++      ptemp_values[src1_pt] = 0ULL;
++
++      /* SRC3 */
++      uint32_t vo_size =
++         (input->data.varying_info_arr[group_start].varying_stride) /
++         sizeof(uint32_t);
++      struct pdsc_stm_src3 src3 = {
++         .primtype = (enum pdsc_primtype)primitive_type,
++         .vosize = vo_size,
++         .eop = false,
++         .limit = input->data.buffer_info[group_start].buffer_limit.addr,
++      };
++      ptemp_values[src3_pt] = pdsc_stm_src3_pack(p, &src3);
++   }
++
++   for (uint32_t g = 0;
++        g < ARRAY_SIZE(input->data.ptemp_memory_buffer_addr_array);
++        g++) {
++      result =
++         pvr_gpu_upload(device,
++                        device->heaps.general_heap,
++                        &ptemp_values[g * PVR_XFB_PTEMP_ENTRIES_PER_VARYING],
++                        sizeof(uint64_t) * PVR_XFB_PTEMP_ENTRIES_PER_VARYING,
++                        16, /* 128-bit alignment */
++                        &input->data.ptemp_memory_buffer_addr_array[g]);
++      if (result != VK_SUCCESS)
++         break;
++   }
++
++   vk_free(&device->vk.alloc, ptemp_values);
++   return result;
++}
++
++static VkResult pvr_setup_xfb_event_program(struct pvr_cmd_buffer *cmd_buffer)
++{
++   struct pvr_device *device = cmd_buffer->device;
++   struct pvr_xfb_program_input xfb_config = { 0 };
++   struct pvr_pds_xfb_init_program_input init_input = { 0 };
++   struct pvr_program_info *init_pds_upload =
++      &cmd_buffer->state.xfb_state.pds_init_program;
++   struct pvr_program_info *program_pds_upload =
++      &cmd_buffer->state.xfb_state.pds_streamout_program;
++   program_pds_upload->pds_program = (struct pvr_pds_upload){ 0 };
++   init_pds_upload->pds_program = (struct pvr_pds_upload){ 0 };
++   pdsc_program *xfb_main_prog = NULL;
++   pdsc_program **p;
++
++   const struct pvr_device_info *dev_info =
++      &cmd_buffer->device->pdevice->dev_info;
++   const uint32_t cache_line_size = pvr_get_slc_cache_line_size(dev_info);
++   VkResult result;
++
++   result = pvr_create_xfb_streamout_program_config(cmd_buffer, &xfb_config);
++   if (result != VK_SUCCESS)
++      goto out;
++
++   const struct pvr_graphics_pipeline *pipeline =
++      cmd_buffer->state.gfx_pipeline;
++   const struct pvr_xfb_shader_state *xfb_shader_state =
++      &pipeline->shader_state.xfb_shader_state;
++
++   /* Build stream out program */
++   uint32_t group_varying_counts[PVR_XFB_MAX_BUFFERS] = { 0 };
++
++   assert(xfb_shader_state->buffer_group_count <=
++          ARRAY_SIZE(xfb_shader_state->group_varying_count));
++
++   for (uint32_t g = 0; g < xfb_shader_state->buffer_group_count; g++)
++      group_varying_counts[g] = xfb_shader_state->group_varying_count[g];
++
++   xfb_main_prog =
++      pdsc_xfb_main_runtime_gen(NULL,
++                                0,
++                                xfb_shader_state->buffer_group_count,
++                                group_varying_counts);
++
++   program_pds_upload->temp_size = pdsc_program_temps_used(xfb_main_prog);
++
++   /* Build SRC2 values for patching */
++   assert(xfb_config.varying_count <= PVR_XFB_MAX_TOTAL_VARYINGS);
++   struct pdsc_stm_src2 stm_src2[PVR_XFB_MAX_TOTAL_VARYINGS];
++   for (uint32_t i = 0; i < xfb_config.varying_count; i++) {
++      const struct pvr_pds_xfb_varying_info *varying_info =
++         &xfb_config.data.varying_info_arr[i];
++
++      stm_src2[i] = (struct pdsc_stm_src2){
++         .vioff = varying_info->varying_index,
++         .dmasize = varying_info->dma_count,
++         .vooff = varying_info->output_offset / sizeof(uint32_t),
++      };
++   }
++
++   pdsc_patch_xfb_main(xfb_main_prog, NULL, xfb_config.varying_count, stm_src2);
++
++   result = pvr_arch_cmd_buffer_upload_pds(
++      cmd_buffer,
++      pdsc_program_data(xfb_main_prog),
++      pdsc_program_data_size(xfb_main_prog) / sizeof(uint32_t),
++      ROGUE_TA_STATE_STREAM_OUT1_PDS_DATA_SIZE_UNIT_SIZE,
++      pdsc_program_code(xfb_main_prog),
++      pdsc_program_code_size(xfb_main_prog) / sizeof(uint32_t),
++      ROGUE_TA_STATE_STREAM_OUT1_PDS_DATA_SIZE_UNIT_SIZE,
++      cache_line_size,
++      &program_pds_upload->pds_program);
++   if (result != VK_SUCCESS) {
++      pvr_cmd_buffer_set_error_unwarned(cmd_buffer, result);
++      goto out;
++   }
++
++   result = pvr_setup_init_config(cmd_buffer, &init_input, &xfb_config);
++   if (result != VK_SUCCESS)
++      goto out;
++
++   p = &device->pdsc_precomp_programs.xfb_init;
++   *p = pdsc_precomp_xfb_init_variant(NULL, 0);
++   pdsc_finalize_program(*p);
++   result = pvr_pds_xfb_ptemp_buffer_init(&init_input, xfb_shader_state, *p);
++   if (result != VK_SUCCESS)
++      goto out;
++
++   for (uint32_t g = 0;
++        g < ARRAY_SIZE(init_input.data.ptemp_memory_buffer_addr_array);
++        g++) {
++      if (init_input.data.ptemp_memory_buffer_addr_array[g])
++         list_add(&init_input.data.ptemp_memory_buffer_addr_array[g]->link,
++                  &cmd_buffer->bo_list);
++   }
++
++   init_pds_upload->temp_size = pdsc_program_temps_used(*p);
++
++   uint32_t data_size = pdsc_program_data_size(*p) / sizeof(uint32_t);
++   uint32_t code_size = pdsc_program_code_size(*p) / sizeof(uint32_t);
++
++   pvr_dev_addr_t counter_buffer_addr = { 0 };
++   uint32_t num_dwords = 0;
++
++   if (init_input.load_from_counter_buffers &&
++       init_input.counter_buffer_count > 0) {
++      counter_buffer_addr = init_input.data.counter_buffers_addr[0].addr != 0
++                               ? init_input.data.counter_buffers_addr[0]
++                               : PVR_DEV_ADDR_INVALID;
++      uint32_t misalignment = counter_buffer_addr.addr & 0b1111;
++      num_dwords = misalignment / 4;
++      counter_buffer_addr.addr &= ~0b1111;
++   }
++
++   pdsc_ref ptemp_ld_dest[PVR_XFB_MAX_BUFFERS] = {
++      pdsc_load_ref(*p, PVR_XFB_INIT_REF_ID_PTEMPS_LD_DEST_0),
++      pdsc_load_ref(*p, PVR_XFB_INIT_REF_ID_PTEMPS_LD_DEST_1),
++      pdsc_load_ref(*p, PVR_XFB_INIT_REF_ID_PTEMPS_LD_DEST_2),
++      pdsc_load_ref(*p, PVR_XFB_INIT_REF_ID_PTEMPS_LD_DEST_3),
++   };
++
++   struct pdsc_ld64_src0 ptemp_buffers[PVR_XFB_MAX_BUFFERS];
++   const uint32_t init_group_count = xfb_shader_state->buffer_group_count;
++   for (uint32_t g = 0; g < ARRAY_SIZE(ptemp_buffers); g++) {
++      ptemp_buffers[g] = (struct pdsc_ld64_src0){
++         .slcmode = PDSC_SLC_MODE_LD_CACHED,
++         .ccpri = 0,
++         .ccslc = PDSC_CCSLC_LD_NORMAL,
++         .ccmcu = PDSC_CCMCU_LD_NORMAL,
++         .dest = ptemp_ld_dest[g],
++         .cmode = PDSC_CMODE_LD_CACHED,
++         .count8 = PVR_XFB_PTEMP_ENTRIES_PER_VARYING,
++         .srcadd =
++            init_input.data.ptemp_memory_buffer_addr_array[g]->dev_addr.addr,
++      };
++   }
++
++   pdsc_ref counter_buffer_ld_dest =
++      pdsc_load_ref(*p, PVR_XFB_INIT_REF_ID_COUNTER_BUFFER_LD_DEST);
++   struct pdsc_ld64_src0 counter_buffers = {
++      .slcmode = PDSC_SLC_MODE_LD_CACHED,
++      .ccpri = 0,
++      .ccslc = PDSC_CCSLC_LD_NORMAL,
++      .ccmcu = PDSC_CCMCU_LD_NORMAL,
++
++      .dest = counter_buffer_ld_dest,
++
++      .cmode = PDSC_CMODE_LD_CACHED,
++      .count8 = DIV_ROUND_UP(init_input.counter_buffer_count + num_dwords, 2),
++      .srcadd = counter_buffer_addr.addr,
++   };
++
++   struct pdsc_st32_src0 st_src0 = {
++      .cmode = PDSC_CMODE_ST_WRITE_THROUGH,
++      .slcmode = PDSC_SLC_MODE_ST_WRITE_THROUGH,
++
++      .ccpri = 0,
++      .ccslc = PDSC_CCSLC_LD_NORMAL,
++      .ccmcu = PDSC_CCMCU_LD_NORMAL,
++      .count4 = MAX2(cmd_buffer->state.xfb_state.counter_buffer_count, 1),
++
++      .src = pdsc_load_ref(*p, PVR_XFB_INIT_REF_ID_COUNTER_BUFFER_ST_SRC0),
++      .dstadd = init_input.data.counter_buffer_offsets_addr->addr,
++   };
++
++   pdsc_patch patches[] = {
++      { .patch_id = PVR_XFB_INIT_PATCH_ID_PTEMP_LD_COUNT,
++        .value = init_group_count },
++
++      { .patch_id = PVR_XFB_INIT_PATCH_ID_PTEMP_LD_SRC0_0,
++        .value = (0 < init_group_count
++                     ? pdsc_ld64_src0_pack(*p, &ptemp_buffers[0])
++                     : 0) },
++
++      { .patch_id = PVR_XFB_INIT_PATCH_ID_PTEMP_LD_SRC0_1,
++        .value = (1 < init_group_count
++                     ? pdsc_ld64_src0_pack(*p, &ptemp_buffers[1])
++                     : 0) },
++
++      { .patch_id = PVR_XFB_INIT_PATCH_ID_PTEMP_LD_SRC0_2,
++        .value = (2 < init_group_count
++                     ? pdsc_ld64_src0_pack(*p, &ptemp_buffers[2])
++                     : 0) },
++
++      { .patch_id = PVR_XFB_INIT_PATCH_ID_PTEMP_LD_SRC0_3,
++        .value = (3 < init_group_count
++                     ? pdsc_ld64_src0_pack(*p, &ptemp_buffers[3])
++                     : 0) },
++
++      { .patch_id = PVR_XFB_INIT_PATCH_ID_COUNTER_BUFFER_LD_SRC0,
++        .value = init_input.load_from_counter_buffers
++                    ? pdsc_ld64_src0_pack(*p, &counter_buffers)
++                    : 0 },
++
++      { .patch_id = PVR_XFB_INIT_PATCH_ID_COUNTER_BUFFER_ST_SRC0,
++        .value = pdsc_st32_src0_pack(*p, &st_src0) },
++
++      { .patch_id = PVR_XFB_INIT_PATCH_ID_COUNTER_BUFFER_DWORD_SELECT,
++        .value = num_dwords },
++
++      { .patch_id = PVR_XFB_INIT_PATCH_ID_COUNTER_BUFFER_COUNT,
++        .value = init_input.counter_buffer_count },
++   };
++
++   assert((ARRAY_SIZE(patches) < pdsc_program_data_size(*p)));
++   pdsc_patch_program(*p, ARRAY_SIZE(patches), patches, NULL);
++
++   result = pvr_arch_cmd_buffer_upload_pds(
++      cmd_buffer,
++      pdsc_program_data(*p),
++      data_size,
++      ROGUE_TA_STATE_STREAM_OUT1_PDS_DATA_SIZE_UNIT_SIZE,
++      pdsc_program_code(*p),
++      code_size,
++      ROGUE_TA_STATE_STREAM_OUT1_PDS_DATA_SIZE_UNIT_SIZE,
++      cache_line_size,
++      &init_pds_upload->pds_program);
++
++out:
++   ralloc_free(xfb_main_prog);
++   vk_free(&cmd_buffer->device->vk.alloc, init_input.data.counter_buffers_addr);
++   vk_free(&cmd_buffer->device->vk.alloc, init_input.data.varying_info_arr);
++   vk_free(&cmd_buffer->device->vk.alloc, init_input.data.buffer_info);
++
++   init_input.data.counter_buffers_addr = NULL;
++   init_input.data.varying_info_arr = NULL;
++   init_input.data.buffer_info = NULL;
++   return result;
++}
++
++/* The sequence of generating PDS programs -> Main, init, and sync */
++static VkResult pvr_xfb_start(struct pvr_cmd_buffer *cmd_buffer)
++{
++   struct pvr_cmd_buffer_xfb_state *xfb_state = &cmd_buffer->state.xfb_state;
++   struct pvr_program_info *init_program_info = &xfb_state->pds_init_program;
++   VkResult result;
++
++   /* Generate PDS programs */
++   result = pvr_setup_xfb_event_program(cmd_buffer);
++   if (result != VK_SUCCESS) {
++      pvr_cmd_buffer_set_error_unwarned(cmd_buffer, result);
++      return result;
++   }
++
++   /* Emit the sync state */
++   result = pvr_arch_emit_xfb_sync_state(cmd_buffer, init_program_info);
++   if (result != VK_SUCCESS)
++      return result;
++
++   /* Set XFB main program PPP state */
++   pvr_arch_set_xfb_main_program_ppp_state(cmd_buffer);
++
++   return VK_SUCCESS;
++}
++
++void PVR_PER_ARCH(CmdBindTransformFeedbackBuffersEXT)(
++   VkCommandBuffer commandBuffer,
++   uint32_t firstBinding,
++   uint32_t bindingCount,
++   const VkBuffer *pBuffers,
++   const VkDeviceSize *pOffsets,
++   const VkDeviceSize *pSizes)
++{
++   VK_FROM_HANDLE(pvr_cmd_buffer, cmd_buffer, commandBuffer);
++   struct pvr_cmd_buffer_xfb_state *xfb_state = &cmd_buffer->state.xfb_state;
++
++   PVR_CHECK_COMMAND_BUFFER_BUILDING_STATE(cmd_buffer);
++
++   for (uint32_t i = 0; i < ARRAY_SIZE(xfb_state->bindings); i++) {
++      struct pvr_xfb_binding *binding = &xfb_state->bindings[i];
++
++      if (i < firstBinding || i >= firstBinding + bindingCount) {
++         binding->buffer_addr = PVR_DEV_ADDR_INVALID;
++         binding->buffer_limit = PVR_DEV_ADDR_INVALID;
++         binding->buffer_size = 0;
++         continue;
++      }
++
++      unsigned j = i - firstBinding;
++      VK_FROM_HANDLE(pvr_buffer, buffer, pBuffers[j]);
++
++      binding->buffer_addr = PVR_DEV_ADDR_OFFSET(buffer->dev_addr, pOffsets[j]);
++
++      if (!pSizes || pSizes[j] == VK_WHOLE_SIZE) {
++         binding->buffer_limit =
++            PVR_DEV_ADDR_OFFSET(buffer->dev_addr, buffer->vk.size);
++         binding->buffer_size = buffer->vk.size;
++      } else {
++         binding->buffer_limit =
++            PVR_DEV_ADDR_OFFSET(binding->buffer_addr, pSizes[j]);
++         binding->buffer_size = pSizes[j];
++      }
++   }
++}
++
++void PVR_PER_ARCH(CmdBeginTransformFeedbackEXT)(
++   VkCommandBuffer commandBuffer,
++   uint32_t firstCounterBuffer,
++   uint32_t counterBufferCount,
++   const VkBuffer *pCounterBuffers,
++   const VkDeviceSize *pCounterBufferOffsets)
++{
++   VK_FROM_HANDLE(pvr_cmd_buffer, cmd_buffer, commandBuffer);
++   struct pvr_cmd_buffer_state *state = &cmd_buffer->state;
++   struct pvr_cmd_buffer_xfb_state *xfb_state = &state->xfb_state;
++
++   PVR_CHECK_COMMAND_BUFFER_BUILDING_STATE(cmd_buffer);
++
++   xfb_state->counter_buffer_count = counterBufferCount;
++
++   for (uint32_t i = 0; i < ARRAY_SIZE(xfb_state->bindings); i++) {
++      struct pvr_xfb_binding *binding = &xfb_state->bindings[i];
++
++      if (i < firstCounterBuffer ||
++          i >= firstCounterBuffer + counterBufferCount) {
++         binding->counter_buffer_addr = PVR_DEV_ADDR_INVALID;
++         continue;
++      }
++
++      unsigned j = i - firstCounterBuffer;
++
++      if (pCounterBuffers[j] != VK_NULL_HANDLE) {
++         VK_FROM_HANDLE(pvr_buffer, buffer, pCounterBuffers[j]);
++         uint64_t offset = pCounterBufferOffsets ? pCounterBufferOffsets[j] : 0;
++
++         binding->counter_buffer_addr =
++            PVR_DEV_ADDR_OFFSET(buffer->dev_addr, offset);
++      } else {
++         binding->counter_buffer_addr = PVR_DEV_ADDR_INVALID;
++      }
++   }
++
++   if (state->gfx_pipeline->shader_state.xfb_shader_state.varying_count) {
++      xfb_state->is_active = true;
++      pvr_xfb_start(cmd_buffer);
++   }
++}
++
++void PVR_PER_ARCH(CmdEndTransformFeedbackEXT)(
++   VkCommandBuffer commandBuffer,
++   uint32_t firstCounterBuffer,
++   uint32_t counterBufferCount,
++   const VkBuffer *pCounterBuffers,
++   const VkDeviceSize *pCounterBufferOffsets)
++{
++   VK_FROM_HANDLE(pvr_cmd_buffer, cmd_buffer, commandBuffer);
++   struct pvr_cmd_buffer_state *state = &cmd_buffer->state;
++   struct pvr_cmd_buffer_xfb_state *xfb_state = &state->xfb_state;
++   struct pvr_sub_cmd *prev_sub_cmd = NULL;
++   VkResult result;
++
++   PVR_CHECK_COMMAND_BUFFER_BUILDING_STATE(cmd_buffer);
++
++   xfb_state->counter_buffer_count = counterBufferCount;
++
++   for (uint32_t i = 0; i < ARRAY_SIZE(xfb_state->bindings); i++) {
++      struct pvr_xfb_binding *binding = &xfb_state->bindings[i];
++
++      if (i < firstCounterBuffer ||
++          i >= firstCounterBuffer + counterBufferCount) {
++         binding->last_counter_buffer_addr = PVR_DEV_ADDR_INVALID;
++         continue;
++      }
++
++      unsigned j = i - firstCounterBuffer;
++
++      if (pCounterBuffers[j] != VK_NULL_HANDLE) {
++         VK_FROM_HANDLE(pvr_buffer, buffer, pCounterBuffers[j]);
++         uint64_t offset = pCounterBufferOffsets ? pCounterBufferOffsets[j] : 0;
++
++         binding->last_counter_buffer_addr =
++            PVR_DEV_ADDR_OFFSET(buffer->dev_addr, offset);
++      } else {
++         binding->last_counter_buffer_addr = PVR_DEV_ADDR_INVALID;
++      }
++   }
++
++   xfb_state->is_active = false;
++
++   if (cmd_buffer->state.current_sub_cmd) {
++      if (cmd_buffer->state.current_sub_cmd->type ==
++          PVR_SUB_CMD_TYPE_GRAPHICS) {
++         /* Kick render. */
++         cmd_buffer->state.current_sub_cmd->gfx.barrier_store = true;
++      }
++
++      prev_sub_cmd = cmd_buffer->state.current_sub_cmd;
++
++      result = pvr_arch_cmd_buffer_end_sub_cmd(cmd_buffer);
++      if (result != VK_SUCCESS)
++         return;
++   }
++
++   if (prev_sub_cmd) {
++      result =
++         pvr_arch_cmd_buffer_start_sub_cmd(cmd_buffer, prev_sub_cmd->type);
++      assert(result == VK_SUCCESS);
++
++      if (prev_sub_cmd->type == PVR_SUB_CMD_TYPE_GRAPHICS) {
++         cmd_buffer->state.current_sub_cmd->gfx.dr_info =
++            prev_sub_cmd->gfx.dr_info;
++         prev_sub_cmd->gfx.dr_info = NULL;
++
++         /* Use existing render setup, but load color attachments from HW
++          * BGOBJ.
++          */
++         cmd_buffer->state.current_sub_cmd->gfx.barrier_load = true;
++         cmd_buffer->state.current_sub_cmd->gfx.barrier_store = false;
++      }
++   }
++
++   if (state->gfx_pipeline->shader_state.xfb_shader_state.varying_count)
++      pvr_xfb_end(cmd_buffer);
++}
+diff --git a/src/imagination/vulkan/pvr_cmd_buffer.h b/src/imagination/vulkan/pvr_cmd_buffer.h
+index 9bbdcb48..bfe976cc 100644
+--- a/src/imagination/vulkan/pvr_cmd_buffer.h
++++ b/src/imagination/vulkan/pvr_cmd_buffer.h
+@@ -391,6 +391,12 @@ struct pvr_ppp_state {
+    uint32_t varying_word[2];
+ 
+    uint32_t ppp_control;
++
++   struct {
++      uint32_t so0;
++      uint32_t so1;
++      uint32_t so2;
++   } stream_out;
+ };
+ 
+ /* Represents a control stream related command that is deferred for execution in
+@@ -444,6 +450,32 @@ struct pvr_pending_clear {
+    VkRect2D area;
+    /* A draw recorded since may read the image. */
+    bool read;
++struct pvr_xfb_binding {
++   pvr_dev_addr_t buffer_addr;
++   pvr_dev_addr_t buffer_limit;
++   pvr_dev_addr_t counter_buffer_addr;
++   pvr_dev_addr_t last_counter_buffer_addr;
++   VkDeviceSize buffer_size;
++};
++
++struct pvr_program_info {
++   uint32_t temp_size;
++   struct pvr_pds_upload pds_program;
++};
++
++struct pvr_cmd_buffer_xfb_state {
++   /* Whether transform feedback is currently active for the cmd_buffer. */
++   bool is_active;
++
++   struct pvr_xfb_binding bindings[PVR_XFB_MAX_BUFFERS];
++
++   uint32_t counter_buffer_count;
++
++   /* XFB programs */
++   struct pvr_program_info pds_streamout_program;
++   struct pvr_program_info pds_init_program;
++   struct pvr_program_info pds_end_program;
++   struct pvr_program_info pds_draw_program;
+ };
+ 
+ struct pvr_cmd_buffer_state {
+@@ -528,6 +560,7 @@ struct pvr_cmd_buffer_state {
+    } pds_shader;
+ 
+    const struct pvr_query_pool *query_pool;
++   struct pvr_cmd_buffer_xfb_state xfb_state;
+    bool vis_test_enabled;
+    uint32_t vis_reg;
+ 
+@@ -623,6 +656,11 @@ static inline bool pvr_sub_cmd_gfx_requires_split_submit(
+    return sub_cmd->job.run_frag && sub_cmd->rstate->layers > 1;
+ }
+ 
++VkResult
++pvr_cmd_buffer_insert_mid_frag_barrier_event(struct pvr_cmd_buffer *cmd_buffer,
++                                             uint32_t src_stage_mask,
++                                             uint32_t dst_stage_mask);
++
+ #define PVR_CHECK_COMMAND_BUFFER_BUILDING_STATE(cmd_buffer)                  \
+    do {                                                                      \
+       struct pvr_cmd_buffer *const _cmd_buffer = (cmd_buffer);               \
+@@ -800,6 +838,18 @@ struct pvr_renderpass_hwsetup_render *PVR_PER_ARCH(pass_info_get_hw_render)(
+ #   define pvr_arch_pass_info_get_hw_render \
+       PVR_PER_ARCH(pass_info_get_hw_render)
+ 
++void PVR_PER_ARCH(set_xfb_main_program_ppp_state)(
++   struct pvr_cmd_buffer *cmd_buffer);
++
++#   define pvr_arch_set_xfb_main_program_ppp_state \
++      PVR_PER_ARCH(set_xfb_main_program_ppp_state)
++
++VkResult PVR_PER_ARCH(emit_xfb_sync_state)(
++   struct pvr_cmd_buffer *const cmd_buffer,
++   const struct pvr_program_info *pds_program_info);
++
++#   define pvr_arch_emit_xfb_sync_state PVR_PER_ARCH(emit_xfb_sync_state)
++
+ #endif /* PVR_PER_ARCH */
+ 
+ #endif /* PVR_CMD_BUFFER_H */
+diff --git a/src/imagination/vulkan/pvr_common.h b/src/imagination/vulkan/pvr_common.h
+index 419323f8..0b4f16bf 100644
+--- a/src/imagination/vulkan/pvr_common.h
++++ b/src/imagination/vulkan/pvr_common.h
+@@ -135,7 +135,7 @@ enum pvr_pipeline_stage_bits {
+    (PVR_PIPELINE_STAGE_ALL_GRAPHICS_BITS | PVR_PIPELINE_STAGE_COMPUTE_BIT | \
+     PVR_PIPELINE_STAGE_TRANSFER_BIT)
+ 
+-#define PVR_NUM_SYNC_PIPELINE_STAGES 4U
++#define PVR_NUM_SYNC_PIPELINE_STAGES 5U
+ 
+ /* Warning: Do not define an invalid stage as 0 since other code relies on 0
+  * being the first shader stage. This allows for stages to be split or added
+diff --git a/src/imagination/vulkan/pvr_device.h b/src/imagination/vulkan/pvr_device.h
+index ea47bba1..d5f2de62 100644
+--- a/src/imagination/vulkan/pvr_device.h
++++ b/src/imagination/vulkan/pvr_device.h
+@@ -33,6 +33,7 @@
+ #include "pvr_winsys.h"
+ 
+ typedef struct _pco_ctx pco_ctx;
++typedef struct _pdsc_program pdsc_program;
+ 
+ struct pvr_border_color_table;
+ struct pvr_device_static_clear_state;
+@@ -186,6 +187,13 @@ struct pvr_device {
+ 
+    struct pvr_border_color_table *border_color_table;
+ 
++   struct {
++      pdsc_program *xfb_init;
++      pdsc_program *xfb_main;
++      pdsc_program *xfb_end;
++      pdsc_program *xfb_vertex_count;
++   } pdsc_precomp_programs;
++
+    simple_mtx_t rs_mtx;
+    struct list_head render_states;
+ 
+diff --git a/src/imagination/vulkan/pvr_pipeline.h b/src/imagination/vulkan/pvr_pipeline.h
+index fc4508f8..859bb99c 100644
+--- a/src/imagination/vulkan/pvr_pipeline.h
++++ b/src/imagination/vulkan/pvr_pipeline.h
+@@ -227,7 +227,8 @@ pvr_stage_mask(VkPipelineStageFlags2 stage_mask)
+                      VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT |
+                      VK_PIPELINE_STAGE_2_TESSELLATION_CONTROL_SHADER_BIT |
+                      VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT |
+-                     VK_PIPELINE_STAGE_2_GEOMETRY_SHADER_BIT)) {
++                     VK_PIPELINE_STAGE_2_GEOMETRY_SHADER_BIT |
++                     VK_PIPELINE_STAGE_2_TRANSFORM_FEEDBACK_BIT_EXT)) {
+       stages |= PVR_PIPELINE_STAGE_GEOM_BIT;
+    }
+ 
+diff --git a/src/imagination/vulkan/pvr_xfb.h b/src/imagination/vulkan/pvr_xfb.h
+new file mode 100644
+index 00000000..64812f7e
+--- /dev/null
++++ b/src/imagination/vulkan/pvr_xfb.h
+@@ -0,0 +1,91 @@
++/*
++ * Copyright © 2026 Imagination Technologies Ltd.
++ *
++ * SPDX-License-Identifier: MIT
++ */
++
++#ifndef PVR_XFB_H
++#define PVR_XFB_H
++
++#include <stdbool.h>
++#include <stdint.h>
++
++#include "pvr_limits.h"
++#include "pvr_types.h"
++
++struct pvr_device;
++struct pvr_physical_device;
++struct pvr_cmd_buffer;
++struct pvr_suballoc_bo;
++
++struct pvr_pds_xfb_buffer_info {
++   pvr_dev_addr_t buffer_address;
++   pvr_dev_addr_t buffer_limit;
++};
++
++struct pvr_pds_xfb_varying_info {
++   uint32_t varying_index;
++   uint32_t varying_stride;
++   uint32_t dma_count;
++   uint32_t output_offset;
++};
++
++struct pvr_xfb_program_input {
++   uint16_t primitive_type;
++   uint32_t varying_count;
++
++   struct {
++      struct pvr_pds_xfb_varying_info *varying_info_arr;
++      struct pvr_pds_xfb_buffer_info *buffer_info;
++   } data;
++};
++
++struct pvr_pds_xfb_init_program_input {
++   bool load_from_counter_buffers;
++
++   struct pvr_device *device;
++
++   uint16_t primitive_type;
++
++   uint32_t counter_buffer_count;
++
++   struct {
++      pvr_dev_addr_t *counter_buffer_offsets_addr;
++
++      struct pvr_pds_xfb_varying_info *varying_info_arr;
++      struct pvr_pds_xfb_buffer_info *buffer_info;
++
++      pvr_dev_addr_t *counter_buffers_addr;
++
++      struct pvr_suballoc_bo
++         *ptemp_memory_buffer_addr_array[PVR_XFB_MAX_BUFFERS];
++   } data;
++};
++
++struct pvr_pds_xfb_end_program_input {
++   bool has_store_counter_buffers;
++   uint32_t buffer_strides[PVR_XFB_MAX_BUFFERS];
++   uint32_t counter_buffer_count;
++
++   struct {
++      pvr_dev_addr_t *counter_buffers_addr;
++      pvr_dev_addr_t *counter_buffer_offsets_addr;
++   } data;
++};
++
++struct pvr_pds_xfb_draw_program_input {
++   uint32_t first_instance;
++   uint32_t instance_count;
++   uint32_t vertex_stride;
++
++   uint32_t counter_offset;
++   struct {
++      pvr_dev_addr_t counter_buffer_addr;
++      pvr_dev_addr_t output_count_buffer_addr;
++   } data;
++};
++
++#ifdef PVR_PER_ARCH
++
++#endif /* PVR_PER_ARCH */
++#endif /* PVR_XFB_H */
+-- 
+2.47.3
+

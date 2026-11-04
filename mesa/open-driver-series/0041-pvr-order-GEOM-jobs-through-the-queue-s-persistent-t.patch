@@ -1,7 +1,7 @@
-From 61001c46939bcc2eb60571177cf597f2997521b5 Mon Sep 17 00:00:00 2001
+From b2ff990ae56a2a50cf525986e117b5f0628fd55d Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Fri, 9 Oct 2026 08:03:47 +0800
-Subject: [PATCH 41/43] pvr: order GEOM jobs through the queue's persistent
+Subject: [PATCH 041/294] pvr: order GEOM jobs through the queue's persistent
  timeline syncobj
 
 Step 2 of the sync-timeline plan (SYNC-TIMELINE-ATTEMPT-2026-10-08.md): convert ONE job
@@ -30,7 +30,7 @@ path and are converted next, one at a time with the gate run after each.
  1 file changed, 20 insertions(+), 1 deletion(-)
 
 diff --git a/src/imagination/vulkan/pvr_arch_queue.c b/src/imagination/vulkan/pvr_arch_queue.c
-index 2664cfa..deca71b 100644
+index 2664cfa7..deca71b8 100644
 --- a/src/imagination/vulkan/pvr_arch_queue.c
 +++ b/src/imagination/vulkan/pvr_arch_queue.c
 @@ -332,7 +332,9 @@ pvr_process_graphics_cmd_for_view(struct pvr_device *device,
@@ -68,3 +68,6 @@ index 2664cfa..deca71b 100644
        result = vk_sync_create(&device->vk,
                                &device->pdevice->ws->syncobj_type,
                                0U,
+-- 
+2.47.3
+

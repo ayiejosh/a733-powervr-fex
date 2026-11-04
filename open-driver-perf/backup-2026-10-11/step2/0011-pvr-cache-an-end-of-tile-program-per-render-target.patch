@@ -1,0 +1,222 @@
+From ddb1769c14b19de030fa4caa7d382affa75cebc3 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sun, 11 Oct 2026 11:29:39 +0800
+Subject: [PATCH 11/11] pvr: cache an end of tile program per render target
+
+The end of tile program cache held one entry, keyed by the PBE state
+words, which contain the render target address. A frame that renders to
+several targets missed on every render pass and recompiled the program.
+Keep 32 entries with round-robin replacement.
+
+With the load op cache fix, glmark2 (zink, off-screen): desktop blur
++42%, desktop shadow +26%, shadow +17%, effect2d +13%; the GL driver
+thread uses about 5.7x less CPU in desktop blur.
+---
+ src/imagination/vulkan/pvr_arch_cmd_buffer.c | 77 ++++++++++++--------
+ src/imagination/vulkan/pvr_arch_device.c     | 11 +--
+ src/imagination/vulkan/pvr_device.h          | 34 +++++----
+ 3 files changed, 72 insertions(+), 50 deletions(-)
+
+diff --git a/src/imagination/vulkan/pvr_arch_cmd_buffer.c b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
+index 43d613e..29e096f 100644
+--- a/src/imagination/vulkan/pvr_arch_cmd_buffer.c
++++ b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
+@@ -585,35 +585,39 @@ static VkResult pvr_sub_cmd_gfx_per_job_fragment_programs_create_and_upload(
+     * PCO, and its only inputs are the emit count, the PBE state words and the
+     * tile-buffer addresses - all stable across frames, since tile buffers are
+     * device-lifetime. Recompiling it on every render pass was pure overhead
+-    * (measured: frames+4 calls for N frames), so the binary is cached on the
++    * (measured: frames+4 calls for N frames), so the binaries are cached on the
+     * device and re-uploaded, which is a memcpy into the command buffer.
+     */
+    {
+       struct pvr_device *const dev = cmd_buffer->device;
+       const uint32_t state_word_count =
+          emit_count * ROGUE_NUM_PBESTATE_STATE_WORDS;
+-      const void *eot_binary;
+-      unsigned eot_binary_size;
++      struct pvr_eot_cache_entry *entry = NULL;
+ 
+       simple_mtx_lock(&dev->eot_cache.mtx);
+ 
+-      const bool cache_hit =
+-         dev->eot_cache.valid && dev->eot_cache.emit_count == emit_count &&
+-         dev->eot_cache.msaa_samples == props.msaa_samples &&
+-         dev->eot_cache.num_output_regs == props.num_output_regs &&
+-         memcmp(dev->eot_cache.tile_buffer_addrs, props.tile_buffer_addrs,
+-                emit_count * sizeof(uint64_t)) == 0 &&
+-         memcmp(dev->eot_cache.state_words, pbe_cs_words,
+-                state_word_count * sizeof(uint32_t)) == 0;
++      for (unsigned i = 0; i < PVR_EOT_CACHE_MAX; i++) {
++         struct pvr_eot_cache_entry *const e = &dev->eot_cache.entries[i];
++         if (e->valid && e->emit_count == emit_count &&
++             e->msaa_samples == props.msaa_samples &&
++             e->num_output_regs == props.num_output_regs &&
++             !memcmp(e->tile_buffer_addrs,
++                     props.tile_buffer_addrs,
++                     emit_count * sizeof(uint64_t)) &&
++             !memcmp(e->state_words,
++                     pbe_cs_words,
++                     state_word_count * sizeof(uint32_t))) {
++            entry = e;
++            break;
++         }
++      }
+ 
+-      if (!cache_hit) {
++      if (!entry) {
+          pco_shader *const eot = pvr_usc_eot(dev->pdevice->pco_ctx, &props,
+                                              &dev->pdevice->dev_info);
+          const unsigned size = pco_shader_binary_size(eot);
+-         const uint32_t temps = pco_shader_data(eot)->common.temps;
+          void *const binary = vk_alloc(&dev->vk.alloc, size, 8,
+                                        VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+-
+          if (!binary) {
+             ralloc_free(eot);
+             simple_mtx_unlock(&dev->eot_cache.mtx);
+@@ -621,30 +625,41 @@ static VkResult pvr_sub_cmd_gfx_per_job_fragment_programs_create_and_upload(
+          }
+ 
+          memcpy(binary, pco_shader_binary_data(eot), size);
+-         ralloc_free(eot);
+ 
+-         vk_free(&dev->vk.alloc, dev->eot_cache.binary);
+-         dev->eot_cache.binary = binary;
+-         dev->eot_cache.binary_size = size;
+-         dev->eot_cache.temps = temps;
+-         dev->eot_cache.emit_count = emit_count;
+-         dev->eot_cache.msaa_samples = props.msaa_samples;
+-         dev->eot_cache.num_output_regs = props.num_output_regs;
+-         memcpy(dev->eot_cache.tile_buffer_addrs, props.tile_buffer_addrs,
++         /* ponytail: round-robin replacement; an LRU only matters past
++          * PVR_EOT_CACHE_MAX render targets per frame.
++          */
++         entry = &dev->eot_cache.entries[dev->eot_cache.next];
++         dev->eot_cache.next = (dev->eot_cache.next + 1) % PVR_EOT_CACHE_MAX;
++
++         vk_free(&dev->vk.alloc, entry->binary);
++         entry->binary = binary;
++         entry->binary_size = size;
++         entry->temps = pco_shader_data(eot)->common.temps;
++         entry->emit_count = emit_count;
++         entry->msaa_samples = props.msaa_samples;
++         entry->num_output_regs = props.num_output_regs;
++         memcpy(entry->tile_buffer_addrs,
++                props.tile_buffer_addrs,
+                 emit_count * sizeof(uint64_t));
+-         memcpy(dev->eot_cache.state_words, pbe_cs_words,
++         memcpy(entry->state_words,
++                pbe_cs_words,
+                 state_word_count * sizeof(uint32_t));
+-         dev->eot_cache.valid = true;
++         entry->valid = true;
++         ralloc_free(eot);
+       }
+ 
+-      eot_binary = dev->eot_cache.binary;
+-      eot_binary_size = dev->eot_cache.binary_size;
+-      usc_temp_count = dev->eot_cache.temps;
++      usc_temp_count = entry->temps;
+ 
++      /* The upload copies the binary, so it can happen under the lock that
++       * keeps the entry from being replaced.
++       */
++      result = pvr_cmd_buffer_upload_usc(cmd_buffer,
++                                         entry->binary,
++                                         entry->binary_size,
++                                         4,
++                                         &usc_eot_program);
+       simple_mtx_unlock(&dev->eot_cache.mtx);
+-
+-      result = pvr_cmd_buffer_upload_usc(cmd_buffer, eot_binary,
+-                                         eot_binary_size, 4, &usc_eot_program);
+    }
+ 
+    if (result != VK_SUCCESS)
+diff --git a/src/imagination/vulkan/pvr_arch_device.c b/src/imagination/vulkan/pvr_arch_device.c
+index dc72086..4d0002d 100644
+--- a/src/imagination/vulkan/pvr_arch_device.c
++++ b/src/imagination/vulkan/pvr_arch_device.c
+@@ -652,16 +652,17 @@ pvr_device_init_view_index_init_programs(struct pvr_device *device)
+ static void pvr_device_init_eot_cache(struct pvr_device *device)
+ {
+    simple_mtx_init(&device->eot_cache.mtx, mtx_plain);
+-   device->eot_cache.valid = false;
+-   device->eot_cache.binary = NULL;
+-   device->eot_cache.binary_size = 0;
++   device->eot_cache.next = 0;
++   memset(device->eot_cache.entries, 0, sizeof(device->eot_cache.entries));
+ }
+ 
+ static void pvr_device_finish_eot_cache(struct pvr_device *device)
+ {
+    simple_mtx_destroy(&device->eot_cache.mtx);
+-   vk_free(&device->vk.alloc, device->eot_cache.binary);
+-   device->eot_cache.binary = NULL;
++   for (unsigned i = 0; i < PVR_EOT_CACHE_MAX; i++) {
++      vk_free(&device->vk.alloc, device->eot_cache.entries[i].binary);
++      device->eot_cache.entries[i].binary = NULL;
++   }
+ }
+ 
+ static void pvr_device_init_tile_buffer_state(struct pvr_device *device)
+diff --git a/src/imagination/vulkan/pvr_device.h b/src/imagination/vulkan/pvr_device.h
+index 28d9f56..ea47bba 100644
+--- a/src/imagination/vulkan/pvr_device.h
++++ b/src/imagination/vulkan/pvr_device.h
+@@ -51,6 +51,8 @@ struct pvr_compute_query_shader {
+    struct pvr_pds_upload pds_sec_code;
+ };
+ 
++#define PVR_EOT_CACHE_MAX 32U
++
+ struct pvr_device {
+    struct vk_device vk;
+    struct pvr_instance *instance;
+@@ -145,24 +147,28 @@ struct pvr_device {
+     * PCO from scratch, and pvr_sub_cmd_gfx_per_job_fragment_programs_create_and_upload()
+     * called it once per render pass (measured: frames+4 calls for N frames).
+     * Its only inputs are the emit count, the PBE state words and the tile-buffer
+-    * addresses, and tile buffers are device-lifetime, so the compiled binary is
+-    * cached here. The per-pass upload is still done: the PDS data segment is
++    * addresses, and tile buffers are device-lifetime, so the compiled binaries
++    * are cached here. The PBE state words hold the render target addresses, so
++    * an application that renders to several targets per frame needs one entry
++    * per target. The per-pass upload is still done: the PDS data segment is
+     * generated from wherever the program landed in the command buffer.
+     */
+    struct {
+       simple_mtx_t mtx;
+-      bool valid;
+-
+-      unsigned emit_count;
+-      unsigned msaa_samples;
+-      unsigned num_output_regs;
+-      uint64_t tile_buffer_addrs[PVR_MAX_COLOR_ATTACHMENTS];
+-      uint32_t state_words[PVR_MAX_COLOR_ATTACHMENTS *
+-                           ROGUE_NUM_PBESTATE_STATE_WORDS];
+-
+-      void *binary;
+-      unsigned binary_size;
+-      uint32_t temps;
++      /* Entry replaced on the next miss once all entries are in use. */
++      unsigned next;
++      struct pvr_eot_cache_entry {
++         bool valid;
++         unsigned emit_count;
++         unsigned msaa_samples;
++         unsigned num_output_regs;
++         uint64_t tile_buffer_addrs[PVR_MAX_COLOR_ATTACHMENTS];
++         uint32_t state_words[PVR_MAX_COLOR_ATTACHMENTS *
++                              ROGUE_NUM_PBESTATE_STATE_WORDS];
++         void *binary;
++         unsigned binary_size;
++         uint32_t temps;
++      } entries[PVR_EOT_CACHE_MAX];
+    } eot_cache;
+ 
+    struct pvr_spm_scratch_buffer_store spm_scratch_buffer_store;
+-- 
+2.47.3
+

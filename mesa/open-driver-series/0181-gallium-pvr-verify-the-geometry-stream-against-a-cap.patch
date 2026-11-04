@@ -1,7 +1,7 @@
-From ddd7df38920497bb380cb621b094956fce101ac3 Mon Sep 17 00:00:00 2001
+From 90e6041961cd29c67bd1b19755266b58d89bfc1c Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Fri, 23 Oct 2026 13:37:46 +0800
-Subject: [PATCH 181/269] gallium/pvr: verify the geometry stream against a
+Subject: [PATCH 181/294] gallium/pvr: verify the geometry stream against a
  captured reference
 
 Captured the geometry static stream from the working Vulkan driver (PVR_CSB_DUMP, open driver bound):

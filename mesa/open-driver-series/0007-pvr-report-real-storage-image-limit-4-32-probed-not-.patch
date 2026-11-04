@@ -1,8 +1,8 @@
-From 69ccd2ad1ab79d9056bb156db6bf67b13080c142 Mon Sep 17 00:00:00 2001
+From b8bd467f877c5a0f8470811b3c2771b2c9d80795 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Thu, 8 Oct 2026 03:08:07 +0800
-Subject: [PATCH 07/43] pvr: report real storage-image limit (4 -> 32), probed
- not assumed
+Subject: [PATCH 007/294] pvr: report real storage-image limit (4 -> 32),
+ probed not assumed
 
 maxPerStageDescriptorStorageImages was 4 - exactly the Vulkan minimum and with no backing
 constant anywhere in the driver - and maxDescriptorSetStorageImages was derived as 3*4. An
@@ -27,7 +27,7 @@ No regressions: bda, vk13, pctest, vk16, wgsize, samplers all PASS; glmark2 --va
  1 file changed, 5 insertions(+), 2 deletions(-)
 
 diff --git a/src/imagination/vulkan/pvr_physical_device.c b/src/imagination/vulkan/pvr_physical_device.c
-index ca92d6c..57c2fd8 100644
+index ca92d6ca..57c2fd82 100644
 --- a/src/imagination/vulkan/pvr_physical_device.c
 +++ b/src/imagination/vulkan/pvr_physical_device.c
 @@ -760,7 +760,10 @@ static bool pvr_physical_device_get_properties(
@@ -51,3 +51,6 @@ index ca92d6c..57c2fd8 100644
        .maxDescriptorSetInputAttachments = 4U,
  
        /* Vertex Shader Limits */
+-- 
+2.47.3
+

@@ -1,7 +1,7 @@
-From 6271e265b33c415d6c97581100bea69e8df95f48 Mon Sep 17 00:00:00 2001
+From bc7be75335a021c7f4c3045ed18248ed6a7d3523 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sat, 10 Oct 2026 01:45:41 +0800
-Subject: [PATCH 51/98] pco: fuse a OP (b << n) into one bitwise group
+Subject: [PATCH 051/294] pco: fuse a OP (b << n) into one bitwise group
 
 Bitwise phase 0 can shift left (shift1 lsl, by s1) before the phase 1
 logical op, as the bitfield-insert mapping already does. Add a
@@ -23,7 +23,7 @@ vkedge/vkrender checks unchanged.
  3 files changed, 57 insertions(+), 1 deletion(-)
 
 diff --git a/src/imagination/pco/pco_map.py b/src/imagination/pco/pco_map.py
-index cca59f8..358198b 100644
+index cca59f85..358198b0 100644
 --- a/src/imagination/pco/pco_map.py
 +++ b/src/imagination/pco/pco_map.py
 @@ -3610,6 +3610,32 @@ group_map(O_LOGICAL,
@@ -60,7 +60,7 @@ index cca59f8..358198b 100644
     hdr=(I_IGRP_HDR_BITWISE, [
        ('opcnt', ['p0', 'p2']),
 diff --git a/src/imagination/pco/pco_ops.py b/src/imagination/pco/pco_ops.py
-index ca868c7..de53bdf 100644
+index ca868c79..de53bdf9 100644
 --- a/src/imagination/pco/pco_ops.py
 +++ b/src/imagination/pco/pco_ops.py
 @@ -448,6 +448,7 @@ O_FTB = hw_op('ftb', OM_ALU, 1, 1)
@@ -72,7 +72,7 @@ index ca868c7..de53bdf 100644
  
  O_COPYSIGN = hw_op('copysign', OM_ALU, 1, 2)
 diff --git a/src/imagination/pco/pco_trans_nir.c b/src/imagination/pco/pco_trans_nir.c
-index 8509e8f..3cecfda 100644
+index 8509e8f4..3cecfdab 100644
 --- a/src/imagination/pco/pco_trans_nir.c
 +++ b/src/imagination/pco/pco_trans_nir.c
 @@ -4100,7 +4100,36 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)

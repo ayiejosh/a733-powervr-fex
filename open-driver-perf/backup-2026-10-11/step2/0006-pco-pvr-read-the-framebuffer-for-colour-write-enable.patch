@@ -1,0 +1,313 @@
+From aad4287c8713114626edacbfd8d9bffedf167f22 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sun, 11 Oct 2026 09:54:04 +0800
+Subject: [PATCH 06/11] pco, pvr: read the framebuffer for colour write enable
+ only when disabled
+
+zink makes colour write enable dynamic in every pipeline. The fragment
+shader then read the old pixel for every output, selected it with a
+bcsel, and the pipeline was translucent, so hidden surface removal was
+off for all GL draws.
+
+Lower colour write enable after packing instead: a disabled output stores
+the packed value already in the framebuffer, loaded in a small if that is
+uniform across the draw and gets predicated. The shader records the
+fs_meta bits it checks, and the driver makes a draw translucent only when
+one of them is clear. Framebuffer reads outside of this emulation still
+make the pipeline translucent.
+
+Alpha-to-one is lowered only when the pipeline can enable it. Changes to
+colour write enable and logic op enable now re-emit the ISP state, and
+changes to the multisample state re-upload fs_meta.
+
+glmark2 (zink, off-screen) vs before: function +9%, conditionals +10%,
+effect2d +11%, jellyfish +9%. CTS unchanged: color_write_enable,
+logic_op, extended_dynamic_state, multisample subsets, and the pco,
+dynamic rendering, TFBC and robustness lists.
+---
+ src/imagination/pco/pco_data.h               |   8 +-
+ src/imagination/pco/pco_nir.c                |   6 +-
+ src/imagination/pco/pco_nir_pvfio.c          | 104 ++++++++++---------
+ src/imagination/vulkan/pvr_arch_cmd_buffer.c |  30 +++++-
+ src/imagination/vulkan/pvr_arch_pipeline.c   |   5 +-
+ 5 files changed, 97 insertions(+), 56 deletions(-)
+
+diff --git a/src/imagination/pco/pco_data.h b/src/imagination/pco/pco_data.h
+index 31e0b14..241d4a3 100644
+--- a/src/imagination/pco/pco_data.h
++++ b/src/imagination/pco/pco_data.h
+@@ -139,11 +139,17 @@ typedef struct _pco_fs_data {
+       bool sample_locations;
+       bool alpha_to_coverage;
+       bool olchk_skip;
++      /** Fetches from the framebuffer outside of colour write enable. */
++      bool fbfetch_static;
+    } uses;
+-
+    struct {
+       bool color_write_enable;
++      bool alpha_to_one;
+    } meta_present;
++   /* fs_meta colour write enable bits of the outputs the shader writes. It
++    * reads the framebuffer for them only when one of these bits is clear.
++    */
++   uint32_t cwe_meta_mask;
+ } pco_fs_data;
+ 
+ /** PCO compute shader-specific data. */
+diff --git a/src/imagination/pco/pco_nir.c b/src/imagination/pco/pco_nir.c
+index b554e7a..141afb7 100644
+--- a/src/imagination/pco/pco_nir.c
++++ b/src/imagination/pco/pco_nir.c
+@@ -294,7 +294,11 @@ static void gather_fs_data(nir_shader *nir, pco_data *data)
+    }
+ 
+    data->fs.uses.fbfetch = nir->info.fs.uses_fbfetch_output;
+-   data->fs.uses.fbfetch |= data->fs.meta_present.color_write_enable;
++   /* The colour write enable emulation only reads the framebuffer when fs_meta
++    * disables a written output; the driver makes those draws translucent.
++    */
++   if (data->fs.cwe_meta_mask)
++      data->fs.uses.fbfetch = data->fs.uses.fbfetch_static;
+    data->fs.uses.fbfetch |= data->fs.masked_outputs;
+ 
+    data->fs.uses.sample_shading |= nir->info.fs.uses_sample_shading;
+diff --git a/src/imagination/pco/pco_nir_pvfio.c b/src/imagination/pco/pco_nir_pvfio.c
+index 90dff3e..ebeac8f 100644
+--- a/src/imagination/pco/pco_nir_pvfio.c
++++ b/src/imagination/pco/pco_nir_pvfio.c
+@@ -613,6 +613,23 @@ static bool lower_isp_fb(nir_builder *b, struct pfo_state *state)
+    return true;
+ }
+ 
++static nir_def *load_prev_output(nir_builder *b, nir_intrinsic_instr *store)
++{
++   nir_def *input = store->src[0].ssa;
++   struct nir_io_semantics io_semantics = nir_intrinsic_io_semantics(store);
++   io_semantics.fb_fetch_output = true;
++
++   return nir_load_output(b,
++                          input->num_components,
++                          input->bit_size,
++                          store->src[1].ssa,
++                          .base = nir_intrinsic_base(store),
++                          .range = nir_intrinsic_range(store),
++                          .component = nir_intrinsic_component(store),
++                          .dest_type = nir_intrinsic_src_type(store),
++                          .io_semantics = io_semantics);
++}
++
+ static void cond_disable_frag_store(nir_builder *b,
+                                     nir_intrinsic_instr *store,
+                                     nir_def *cond)
+@@ -620,27 +637,9 @@ static void cond_disable_frag_store(nir_builder *b,
+    b->cursor = nir_before_instr(&store->instr);
+ 
+    nir_src *input_src = &store->src[0];
+-   nir_def *input = input_src->ssa;
+-   nir_def *offset = store->src[1].ssa;
+-
+-   struct nir_io_semantics io_semantics = nir_intrinsic_io_semantics(store);
+-   io_semantics.fb_fetch_output = true;
+-
+-   nir_def *prev_input =
+-      nir_load_output(b,
+-                      input->num_components,
+-                      input->bit_size,
+-                      offset,
+-                      .base = nir_intrinsic_base(store),
+-                      .range = nir_intrinsic_range(store),
+-                      .component = nir_intrinsic_component(store),
+-                      .dest_type = nir_intrinsic_src_type(store),
+-                      .io_semantics = io_semantics);
+-
+    nir_src_rewrite(input_src,
+-                   nir_bcsel(b, cond, prev_input, input));
++                   nir_bcsel(b, cond, load_prev_output(b, store), input_src->ssa));
+ }
+-
+ /* When early fragment testing is enabled, rather than using ISP feedback to
+  * suppress pixel writes, use the accumulated discard conditions (via
+  * is_helper_invocation) to disable the writes by selecting between the previous
+@@ -795,33 +794,38 @@ static bool lower_alpha_to_one(nir_builder *b,
+    return true;
+ }
+ 
+-static bool lower_color_write_enable(nir_builder *b,
+-                                     nir_intrinsic_instr *intr,
+-                                     UNUSED void *cb_data)
++/* Colour write enable is read from fs_meta. A disabled output stores the
++ * packed value already in the framebuffer, which is loaded only when the
++ * output is disabled: the branch is uniform across the draw and small enough
++ * to be predicated, and the driver makes only those draws translucent.
++ */
++static bool lower_color_write_enable(nir_shader *shader,
++                                     struct pfo_state *state)
+ {
+-   if (intr->intrinsic != nir_intrinsic_store_output)
++   if (!state->fs->meta_present.color_write_enable || !state->stores.size)
+       return false;
+ 
+-   gl_frag_result location = nir_intrinsic_io_semantics(intr).location;
+-   if (!(location >= FRAG_RESULT_DATA0 && location < FRAG_RESULT_MAX))
+-      return false;
++   nir_function_impl *impl = nir_shader_get_entrypoint(shader);
++   nir_builder b = nir_builder_create(impl);
+ 
+-   struct nir_io_semantics io_semantics = nir_intrinsic_io_semantics(intr);
+-   unsigned color_write_index = io_semantics.location - FRAG_RESULT_DATA0;
++   util_dynarray_foreach (&state->stores, nir_intrinsic_instr *, store) {
++      gl_frag_result location = nir_intrinsic_io_semantics(*store).location;
++      uint32_t cwe_bit = BITFIELD_BIT(PVR_FS_META_COLOR_WRITE_ENABLE_OFFSET +
++                                      location - FRAG_RESULT_DATA0);
++      state->fs->cwe_meta_mask |= cwe_bit;
+ 
+-   b->cursor = nir_before_instr(&intr->instr);
++      b.cursor = nir_before_instr(&(*store)->instr);
++      nir_def *value = (*store)->src[0].ssa;
++      nir_def *fs_meta = nir_load_fs_meta_pco(&b);
+ 
+-   nir_def *color_write_disabled = nir_ieq_imm(
+-      b,
+-      nir_ubitfield_extract_imm(b,
+-                                nir_load_fs_meta_pco(b),
+-                                PVR_FS_META_COLOR_WRITE_ENABLE_OFFSET +
+-                                   color_write_index,
+-                                1u),
+-      0);
++      nir_push_if(&b, nir_ieq_imm(&b, nir_iand_imm(&b, fs_meta, cwe_bit), 0));
++      nir_def *prev = load_prev_output(&b, *store);
++      nir_pop_if(&b, NULL);
+ 
+-   cond_disable_frag_store(b, intr, color_write_disabled);
+-   return true;
++      nir_src_rewrite(&(*store)->src[0], nir_if_phi(&b, prev, value));
++   }
++
++   return nir_progress(true, impl, nir_metadata_none);
+ }
+ 
+ /**
+@@ -851,20 +855,12 @@ bool pco_nir_pfo(nir_shader *shader, pco_fs_data *fs)
+    /* TODO: instead of doing multiple passes, probably better to just cache all
+     * the stores
+     */
+-   if (!shader->info.internal) {
++   if (!shader->info.internal && fs->meta_present.alpha_to_one) {
+       progress |= nir_shader_intrinsics_pass(shader,
+                                              lower_alpha_to_one,
+                                              nir_metadata_control_flow,
+                                              &state);
+    }
+-
+-   if (fs->meta_present.color_write_enable) {
+-      progress |= nir_shader_intrinsics_pass(shader,
+-                                             lower_color_write_enable,
+-                                             nir_metadata_control_flow,
+-                                             NULL);
+-   }
+-
+    progress |= nir_shader_intrinsics_pass(shader,
+                                           lower_pfo,
+                                           nir_metadata_control_flow,
+@@ -876,9 +872,17 @@ bool pco_nir_pfo(nir_shader *shader, pco_fs_data *fs)
+    if (!shader->info.internal)
+       progress |= lower_isp_fb(&b, &state);
+ 
+-   if (shader->info.fs.early_fragment_tests)
+-      progress |= handle_early_frag(shader, &state);
++   util_dynarray_foreach (&state.loads, nir_intrinsic_instr *, load) {
++      if (nir_intrinsic_io_semantics(*load).fb_fetch_output)
++         fs->uses.fbfetch_static = true;
++   }
++
++   progress |= lower_color_write_enable(shader, &state);
+ 
++   if (shader->info.fs.early_fragment_tests && handle_early_frag(shader, &state)) {
++      fs->uses.fbfetch_static = true;
++      progress = true;
++   }
+    progress |= sink_outputs(shader, &state);
+ 
+    if (!shader->info.internal)
+diff --git a/src/imagination/vulkan/pvr_arch_cmd_buffer.c b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
+index d431f4f..43d613e 100644
+--- a/src/imagination/vulkan/pvr_arch_cmd_buffer.c
++++ b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
+@@ -7068,6 +7068,19 @@ pvr_needs_fs_passthrough(const struct vk_dynamic_graphics_state *dynamic_state)
+    return partial_sample_mask;
+ }
+ 
++/* The colour write enable emulation reads the framebuffer when a colour
++ * output the fragment shader writes is disabled.
++ */
++static bool
++pvr_fs_cwe_reads_fb(const struct vk_dynamic_graphics_state *dynamic_state,
++                    const pco_fs_data *fs_data)
++{
++   uint32_t enables = (uint32_t)dynamic_state->cb.color_write_enables
++                      << PVR_FS_META_COLOR_WRITE_ENABLE_OFFSET;
++
++   return (enables & fs_data->cwe_meta_mask) != fs_data->cwe_meta_mask;
++}
++
+ static void
+ pvr_setup_isp_faces_and_control(struct pvr_cmd_buffer *const cmd_buffer,
+                                 struct ROGUE_TA_STATE_ISPA *const ispa_out)
+@@ -7174,7 +7187,9 @@ pvr_setup_isp_faces_and_control(struct pvr_cmd_buffer *const cmd_buffer,
+ 
+       ispa.passtype = fragment_shader_state->pass_type;
+ 
+-      if (dynamic_state->cb.logic_op_enable &&
++      if ((dynamic_state->cb.logic_op_enable ||
++           pvr_fs_cwe_reads_fb(dynamic_state,
++                               &cmd_buffer->state.gfx_pipeline->fs_data.fs)) &&
+           fragment_shader_state->pass_type == ROGUE_TA_PASSTYPE_OPAQUE)
+          ispa.passtype = ROGUE_TA_PASSTYPE_TRANSLUCENT;
+ 
+@@ -8340,7 +8355,9 @@ static inline bool pvr_ppp_dynamic_state_isp_faces_and_control_dirty(
+                       MESA_VK_DYNAMIC_RS_RASTERIZER_DISCARD_ENABLE) ||
+           BITSET_TEST(dynamic_dirty,
+                       MESA_VK_DYNAMIC_MS_RASTERIZATION_SAMPLES) ||
+-          BITSET_TEST(dynamic_dirty, MESA_VK_DYNAMIC_MS_SAMPLE_MASK);
++          BITSET_TEST(dynamic_dirty, MESA_VK_DYNAMIC_MS_SAMPLE_MASK) ||
++          BITSET_TEST(dynamic_dirty, MESA_VK_DYNAMIC_CB_LOGIC_OP_ENABLE) ||
++          BITSET_TEST(dynamic_dirty, MESA_VK_DYNAMIC_CB_COLOR_WRITE_ENABLES);
+ }
+ 
+ static inline bool
+@@ -8800,7 +8817,14 @@ static VkResult pvr_validate_draw_state(struct pvr_cmd_buffer *cmd_buffer)
+    if (BITSET_TEST(dynamic_state->dirty, MESA_VK_DYNAMIC_CB_BLEND_CONSTANTS) ||
+        BITSET_TEST(dynamic_state->dirty, MESA_VK_DYNAMIC_RS_FRONT_FACE) ||
+        BITSET_TEST(dynamic_state->dirty,
+-                   MESA_VK_DYNAMIC_CB_COLOR_WRITE_ENABLES)) {
++                   MESA_VK_DYNAMIC_CB_COLOR_WRITE_ENABLES) ||
++       BITSET_TEST(dynamic_state->dirty,
++                   MESA_VK_DYNAMIC_MS_ALPHA_TO_ONE_ENABLE) ||
++       BITSET_TEST(dynamic_state->dirty,
++                   MESA_VK_DYNAMIC_MS_ALPHA_TO_COVERAGE_ENABLE) ||
++       BITSET_TEST(dynamic_state->dirty, MESA_VK_DYNAMIC_MS_SAMPLE_MASK) ||
++       BITSET_TEST(dynamic_state->dirty,
++                   MESA_VK_DYNAMIC_MS_RASTERIZATION_SAMPLES)) {
+       state->dirty.fragment_descriptors = true;
+    }
+ 
+diff --git a/src/imagination/vulkan/pvr_arch_pipeline.c b/src/imagination/vulkan/pvr_arch_pipeline.c
+index 613988f..3de794b 100644
+--- a/src/imagination/vulkan/pvr_arch_pipeline.c
++++ b/src/imagination/vulkan/pvr_arch_pipeline.c
+@@ -2853,7 +2853,10 @@ pvr_preprocess_shader_data(pco_data *data,
+                            BITFIELD_MASK(MESA_VK_MAX_COLOR_ATTACHMENTS))) {
+          data->fs.meta_present.color_write_enable = true;
+       }
+-
++      if (BITSET_TEST(state->dynamic, MESA_VK_DYNAMIC_MS_ALPHA_TO_ONE_ENABLE) ||
++          (state->ms && state->ms->alpha_to_one_enable)) {
++         data->fs.meta_present.alpha_to_one = true;
++      }
+       if (state->ms)
+          nir->info.fs.uses_sample_shading |= state->ms->sample_shading_enable;
+ 
+-- 
+2.47.3
+

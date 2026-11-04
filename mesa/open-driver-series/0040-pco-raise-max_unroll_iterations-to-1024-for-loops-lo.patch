@@ -1,7 +1,7 @@
-From 167a943e36ef77f37a52355ec06d34e724640e90 Mon Sep 17 00:00:00 2001
+From aea29d2058118e83df0533b05e241ff6b165557b Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Fri, 9 Oct 2026 00:48:40 +0800
-Subject: [PATCH 40/43] pco: raise max_unroll_iterations to 1024 for loops
+Subject: [PATCH 040/294] pco: raise max_unroll_iterations to 1024 for loops
  longer than 256 iterations
 
 5a1be21 raised the unroll threshold to 256 and removed the cliff above 64 for 128-iteration
@@ -40,7 +40,7 @@ Correctness green: vkrender 2048, bda, vk13, pctest, vk16.
  1 file changed, 1 insertion(+), 1 deletion(-)
 
 diff --git a/src/imagination/pco/pco_nir.c b/src/imagination/pco/pco_nir.c
-index 4a345d1..9b177fd 100644
+index 4a345d16..9b177fdc 100644
 --- a/src/imagination/pco/pco_nir.c
 +++ b/src/imagination/pco/pco_nir.c
 @@ -82,7 +82,7 @@ static const nir_shader_compiler_options nir_options = {
@@ -52,3 +52,6 @@ index 4a345d1..9b177fd 100644
     .max_samples = 4,
  
     .io_options = nir_io_vectorizer_ignores_types,
+-- 
+2.47.3
+

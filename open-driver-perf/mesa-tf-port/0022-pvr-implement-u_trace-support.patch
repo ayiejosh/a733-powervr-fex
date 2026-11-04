@@ -1,0 +1,571 @@
+From a1988840bafb2dbc3379cd9d65e0035f23890e63 Mon Sep 17 00:00:00 2001
+From: Mohammadzafar Ziya <mohammadzafar.ziya@imgtec.com>
+Date: Wed, 18 Feb 2026 11:46:57 +0530
+Subject: [PATCH 291/294] pvr: implement u_trace support
+
+Incorporating Markers as a backend for data sources
+
+Implement a gpuvis backend that emits u_trace events to the
+Linux ftrace subsystem by writing markers to
+/sys/kernel/tracing/trace_marker when built with -Dgpuvis=true.
+
+Trace events can be captured via trace_marker and consumed
+in real time through /sys/kernel/tracing/trace_pipe.
+
+Signed-off-by: Mohammadzafar Ziya <mohammadzafar.ziya@imgtec.com>
+Reviewed-by: Luigi Santivetti <luigi.santivetti@imgtec.com>
+Tested-by: Gyeyoung Baek <gye976@gmail.com>
+Part-of: <https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/43853>
+(cherry picked from commit c6a1ecc1c987f7fd3d8de244f10f1129baf12f7b)
+---
+ src/imagination/ds/meson.build               | 39 ++++++++
+ src/imagination/ds/pvr_driver_ds.cc          | 69 ++++++++++++++
+ src/imagination/ds/pvr_driver_ds.h           | 46 ++++++++++
+ src/imagination/ds/pvr_tracepoints.py        | 96 ++++++++++++++++++++
+ src/imagination/meson.build                  |  1 +
+ src/imagination/vulkan/meson.build           |  3 +
+ src/imagination/vulkan/pvr_arch_cmd_buffer.c |  6 ++
+ src/imagination/vulkan/pvr_arch_device.c     |  4 +
+ src/imagination/vulkan/pvr_cmd_buffer.h      |  5 +
+ src/imagination/vulkan/pvr_device.h          |  3 +
+ src/imagination/vulkan/pvr_utrace.c          | 72 +++++++++++++++
+ src/imagination/vulkan/pvr_utrace.h          | 40 ++++++++
+ 12 files changed, 384 insertions(+)
+ create mode 100644 src/imagination/ds/meson.build
+ create mode 100644 src/imagination/ds/pvr_driver_ds.cc
+ create mode 100644 src/imagination/ds/pvr_driver_ds.h
+ create mode 100644 src/imagination/ds/pvr_tracepoints.py
+ create mode 100644 src/imagination/vulkan/pvr_utrace.c
+ create mode 100644 src/imagination/vulkan/pvr_utrace.h
+
+diff --git a/src/imagination/ds/meson.build b/src/imagination/ds/meson.build
+new file mode 100644
+index 00000000..39b74068
+--- /dev/null
++++ b/src/imagination/ds/meson.build
+@@ -0,0 +1,39 @@
++# Copyright © 2026 Imagination Technologies Ltd.
++# SPDX-License-Identifier: MIT
++
++pvr_tracepoint_files = custom_target(
++  'pvr_tracepoints.[ch]',
++  input : 'pvr_tracepoints.py',
++  output : ['pvr_tracepoints.h',
++            'pvr_tracepoints.c'],
++  command : [
++    prog_python, '@INPUT@',
++    '-p', join_paths(dir_source_root, 'src/util/perf/'),
++    '--utrace-hdr', '@OUTPUT0@',
++    '--utrace-src', '@OUTPUT1@',
++  ],
++  depend_files : u_trace_py,
++)
++
++libpvr_driver_ds_deps = [
++  idep_mesautil,
++]
++
++idep_pvr_driver_ds_headers = declare_dependency(
++  sources : pvr_tracepoint_files[0],
++  include_directories : [inc_include, inc_imagination],
++)
++
++libpvr_driver_ds = static_library(
++  'pvr-driver-ds',
++  sources : ['pvr_driver_ds.cc', pvr_tracepoint_files],
++  include_directories : [inc_src, inc_include, inc_imagination],
++  dependencies : [libpvr_driver_ds_deps],
++  gnu_symbol_visibility : 'hidden',
++)
++
++idep_pvr_driver_ds = declare_dependency(
++  link_with : libpvr_driver_ds,
++  include_directories : [inc_include, inc_imagination],
++  dependencies : idep_pvr_driver_ds_headers,
++)
+diff --git a/src/imagination/ds/pvr_driver_ds.cc b/src/imagination/ds/pvr_driver_ds.cc
+new file mode 100644
+index 00000000..1f54c540
+--- /dev/null
++++ b/src/imagination/ds/pvr_driver_ds.cc
+@@ -0,0 +1,69 @@
++/*
++ * Copyright © 2026 Imagination Technologies Ltd.
++ *
++ * SPDX-License-Identifier: MIT
++ */
++
++#include "pvr_driver_ds.h"
++
++#include <stdarg.h>
++#include <stdio.h>
++
++#include "pvr_tracepoints.h"
++#include "util/u_debug.h"
++
++#ifdef HAVE_GPUVIS
++/*
++ * GPU Tracing via ftrace markers
++ * The gpuvis backend is a ftrace marker writer that writes trace events
++ * to trace_marker on Linux.
++ *
++ * This driver supports emitting trace events to the Linux ftrace subsystem
++ * when compiled with -Dgpuvis=true. The "gpuvis backend" writes trace markers
++ * to /sys/kernel/tracing/trace_marker, which can be captured and visualized.
++ * The /sys/kernel/tracing/trace_pipe can be used to read the u_trace events in
++ * real-time.
++ */
++#   include "util/perf/u_gpuvis.h"
++#endif
++
++static void pvr_driver_ds_init_once(void)
++{
++#ifdef HAVE_GPUVIS
++   util_gpuvis_init();
++#endif
++}
++
++static once_flag pvr_driver_ds_once_flag = ONCE_FLAG_INIT;
++
++void pvr_driver_ds_init(void)
++{
++   call_once(&pvr_driver_ds_once_flag, pvr_driver_ds_init_once);
++
++   pvr_gpu_tracepoint_config_variable();
++}
++
++void pvr_ds_device_fini(struct pvr_ds_device *device)
++{
++   u_trace_context_fini(&device->trace_context);
++}
++
++/* FINISHME: CS markers are not emitted here (see tp_markers in
++ * src/util/perf/u_trace.py); this is CPU tracing only for now.
++ */
++
++static void pvr_ds_begin_marker(const char *fmt, va_list ap)
++{
++#ifdef HAVE_GPUVIS
++   char buf[256];
++   vsnprintf(buf, sizeof(buf), fmt, ap);
++   util_gpuvis_begin(buf);
++#endif
++}
++
++static void pvr_ds_end_marker(void)
++{
++#ifdef HAVE_GPUVIS
++   util_gpuvis_end();
++#endif
++}
+diff --git a/src/imagination/ds/pvr_driver_ds.h b/src/imagination/ds/pvr_driver_ds.h
+new file mode 100644
+index 00000000..e8fce372
+--- /dev/null
++++ b/src/imagination/ds/pvr_driver_ds.h
+@@ -0,0 +1,46 @@
++/*
++ * Copyright © 2026 Imagination Technologies Ltd.
++ *
++ * SPDX-License-Identifier: MIT
++ */
++
++#ifndef PVR_DRIVER_DS_H
++#define PVR_DRIVER_DS_H
++
++#include "util/macros.h"
++#include "util/perf/u_trace.h"
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++enum pvr_ds_tracepoint_flags {
++   /**
++    * Whether the tracepoint's timestamp must be recorded with an
++    * end-of-pipe timestamp.
++    */
++   PVR_DS_TRACEPOINT_FLAG_END_OF_PIPE = BITFIELD_BIT(0),
++   /**
++    * Whether this tracepoint's timestamp is recorded on the compute pipeline.
++    */
++   PVR_DS_TRACEPOINT_FLAG_END_CS = BITFIELD_BIT(1),
++   /**
++    * Whether this tracepoint doesn't generate a timestamp but instead repeats
++    * the last one.
++    */
++   PVR_DS_TRACEPOINT_FLAG_REPEAT_LAST = BITFIELD_BIT(2),
++};
++
++void pvr_driver_ds_init(void);
++
++struct pvr_ds_device {
++   struct u_trace_context trace_context;
++};
++
++void pvr_ds_device_fini(struct pvr_ds_device *device);
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif /* PVR_DRIVER_DS_H */
+diff --git a/src/imagination/ds/pvr_tracepoints.py b/src/imagination/ds/pvr_tracepoints.py
+new file mode 100644
+index 00000000..9ba2ae63
+--- /dev/null
++++ b/src/imagination/ds/pvr_tracepoints.py
+@@ -0,0 +1,96 @@
++# Copyright © 2026 Imagination Technologies Ltd.
++# SPDX-License-Identifier: MIT
++import argparse
++import sys
++
++# List of the default tracepoints enabled. By default most tracepoints are
++# enabled, set tp_default_enabled=False to disable them by default.
++#
++pvr_default_tps = []
++
++#
++# Tracepoint definitions:
++#
++def define_tracepoints(args):
++    from u_trace import Header, HeaderScope
++    from u_trace import ForwardDecl
++    from u_trace import Tracepoint
++    from u_trace import TracepointArg as Arg
++    from u_trace import TracepointArgStruct as ArgStruct
++
++    Header('inttypes.h', scope=HeaderScope.SOURCE)
++    Header('pvr_driver_ds.h', scope=HeaderScope.SOURCE)
++    Header('vulkan/vulkan_core.h', scope=HeaderScope.SOURCE)
++    Header('ds/pvr_driver_ds.h', scope=HeaderScope.HEADER)
++
++    def begin_end_tp(name, tp_args=[], tp_struct=None, tp_print=None,
++                     tp_default_enabled=True, end_pipelined=True,
++                     compute=False, repeat_last=False,
++                     need_cs_param=False,
++                     toggle_name=None):
++        global pvr_default_tps
++        if toggle_name is None:
++            toggle_name = name
++        if tp_default_enabled and toggle_name not in pvr_default_tps:
++            pvr_default_tps.append(toggle_name)
++
++        Tracepoint('pvr_begin_{0}'.format(name),
++                   toggle_name=toggle_name,
++                   args=tp_args,
++                   tp_markers='pvr_ds_begin_{0}'.format(name),
++                   need_cs_param=need_cs_param)
++
++        tp_flags = []
++        if end_pipelined:
++            if compute:
++                tp_flags.append('PVR_DS_TRACEPOINT_FLAG_END_CS')
++            elif repeat_last:
++                tp_flags.append('PVR_DS_TRACEPOINT_FLAG_REPEAT_LAST')
++            else:
++                tp_flags.append('PVR_DS_TRACEPOINT_FLAG_END_OF_PIPE')
++
++        Tracepoint('pvr_end_{0}'.format(name),
++                   toggle_name=toggle_name,
++                   tp_struct=tp_struct,
++                   tp_markers='pvr_ds_end_{0}'.format(name),
++                   tp_print=tp_print,
++                   tp_flags=tp_flags,
++                   need_cs_param=need_cs_param)
++
++    # obj_id is (uintptr_t)&cmd_buffer->vk.base — the vk_object_base address,
++    obj_id_arg = Arg(type='uintptr_t', var='obj_id', c_format='0x%" PRIxPTR "')
++
++    # Compute workload events are traced
++    begin_end_tp('compute',
++                 tp_args=[obj_id_arg],
++                 need_cs_param=True,
++                 compute=True)
++
++
++def generate_code(args):
++    from u_trace import utrace_generate
++    from u_trace import TRACEPOINTS
++
++    # Disable print/print_json generation for all PVR tracepoints.
++    for tp in TRACEPOINTS.values():
++        tp.can_generate_print = lambda: False
++
++    utrace_generate(cpath=args.utrace_src, hpath=args.utrace_hdr,
++                    ctx_param='struct pvr_cmd_buffer *cmd_buffer',
++                    trace_toggle_name='pvr_gpu_tracepoint',
++                    trace_toggle_defaults=pvr_default_tps)
++
++
++def main():
++    parser = argparse.ArgumentParser()
++    parser.add_argument('-p', '--import-path', required=True)
++    parser.add_argument('--utrace-src', required=True)
++    parser.add_argument('--utrace-hdr', required=True)
++    args = parser.parse_args()
++    sys.path.insert(0, args.import_path)
++    define_tracepoints(args)
++    generate_code(args)
++
++
++if __name__ == '__main__':
++    main()
+diff --git a/src/imagination/meson.build b/src/imagination/meson.build
+index 68228e35..49e4dc22 100644
+--- a/src/imagination/meson.build
++++ b/src/imagination/meson.build
+@@ -15,6 +15,7 @@ if with_imagination_vk or with_gallium_pvr or with_tools.contains('imagination')
+   subdir('common')
+   subdir('csbgen')
+   subdir('pco')
++  subdir('ds')
+   subdir('pdsc')
+ endif
+ 
+diff --git a/src/imagination/vulkan/meson.build b/src/imagination/vulkan/meson.build
+index 4fe84a87..2c5cf4cb 100644
+--- a/src/imagination/vulkan/meson.build
++++ b/src/imagination/vulkan/meson.build
+@@ -56,6 +56,7 @@ pvr_files = files(
+   'pvr_spm.c',
+   'pvr_usc.c',
+   'pvr_wsi.c',
++  'pvr_utrace.c',
+ )
+ 
+ pvr_includes = [
+@@ -70,6 +71,7 @@ pvr_deps = [
+   idep_mesautil,
+   idep_pco_uscgen_programs,
+   idep_pdsc_precomp_programs,
++  idep_pvr_driver_ds,
+   idep_vulkan_runtime,
+   idep_vulkan_util,
+   idep_vulkan_wsi,
+@@ -163,6 +165,7 @@ foreach arch : ['rogue']
+       idep_nir_headers,
+       idep_pco_uscgen_programs_headers,
+       idep_pdsc_precomp_programs_headers,
++      idep_pvr_driver_ds_headers,
+       idep_vulkan_runtime_headers,
+       idep_vulkan_util_headers,
+       idep_vulkan_wsi_headers,
+diff --git a/src/imagination/vulkan/pvr_arch_cmd_buffer.c b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
+index 90e62cb4..bddc09f0 100644
+--- a/src/imagination/vulkan/pvr_arch_cmd_buffer.c
++++ b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
+@@ -264,6 +264,9 @@ static void pvr_cmd_buffer_destroy(struct vk_command_buffer *vk_cmd_buffer)
+    struct pvr_cmd_buffer *cmd_buffer =
+       container_of(vk_cmd_buffer, struct pvr_cmd_buffer, vk);
+ 
++   /* Cleanup command buffer tracing */
++   pvr_cmd_buffer_utrace_fini(cmd_buffer);
++
+    pvr_cmd_buffer_free_resources(cmd_buffer);
+    vk_command_buffer_finish(&cmd_buffer->vk);
+    vk_free(&cmd_buffer->vk.pool->alloc, cmd_buffer);
+@@ -298,6 +301,9 @@ static VkResult pvr_cmd_buffer_create(struct pvr_device *device,
+ 
+    cmd_buffer->device = device;
+ 
++   /* Initialize tracing for this command buffer */
++   pvr_cmd_buffer_utrace_init(cmd_buffer);
++
+    cmd_buffer->depth_bias_array = UTIL_DYNARRAY_INIT;
+    cmd_buffer->scissor_array = UTIL_DYNARRAY_INIT;
+    cmd_buffer->deferred_csb_commands = UTIL_DYNARRAY_INIT;
+diff --git a/src/imagination/vulkan/pvr_arch_device.c b/src/imagination/vulkan/pvr_arch_device.c
+index 3282b462..8b3e0f89 100644
+--- a/src/imagination/vulkan/pvr_arch_device.c
++++ b/src/imagination/vulkan/pvr_arch_device.c
+@@ -33,6 +33,7 @@
+ #include "pvr_robustness.h"
+ #include "pvr_rt_dataset.h"
+ #include "pvr_tex_state.h"
++#include "pvr_utrace.h"
+ #include "util/os_misc.h"
+ 
+ #define PVR_GLOBAL_FREE_LIST_INITIAL_SIZE (2U * 1024U * 1024U)
+@@ -1058,6 +1059,9 @@ void PVR_PER_ARCH(destroy_device)(struct pvr_device *device,
+    if (!device)
+       return;
+ 
++   /* Cleanup GPU tracing infrastructure */
++   pvr_device_utrace_finish(device);
++
+    simple_mtx_lock(&device->rs_mtx);
+    list_for_each_entry_safe (struct pvr_render_state,
+                              rstate,
+diff --git a/src/imagination/vulkan/pvr_cmd_buffer.h b/src/imagination/vulkan/pvr_cmd_buffer.h
+index c338aaef..60fd0460 100644
+--- a/src/imagination/vulkan/pvr_cmd_buffer.h
++++ b/src/imagination/vulkan/pvr_cmd_buffer.h
+@@ -22,6 +22,8 @@
+ #include "pvr_hw_pass.h"
+ #include "pvr_types.h"
+ 
++#include "util/perf/u_trace.h"
++
+ struct pvr_pds_upload;
+ struct pvr_private_compute_pipeline;
+ struct pvr_query_info;
+@@ -640,6 +642,9 @@ struct pvr_cmd_buffer {
+    struct list_head bo_list;
+ 
+    struct list_head sub_cmds;
++
++   /* U-trace integration */
++   struct u_trace trace;
+ };
+ 
+ VK_DEFINE_HANDLE_CASTS(pvr_cmd_buffer,
+diff --git a/src/imagination/vulkan/pvr_device.h b/src/imagination/vulkan/pvr_device.h
+index 8cdd4d3d..2a3784e0 100644
+--- a/src/imagination/vulkan/pvr_device.h
++++ b/src/imagination/vulkan/pvr_device.h
+@@ -24,6 +24,7 @@
+ 
+ #include "util/mesa-blake3.h"
+ 
++#include "ds/pvr_driver_ds.h"
+ #include "pvr_bo.h"
+ #include "pvr_common.h"
+ #include "pvr_macros.h"
+@@ -222,6 +223,8 @@ struct pvr_device {
+    /* Likewise for the SPM end of tile programs. */
+    simple_mtx_t spm_eot_cache_mtx;
+    struct pvr_spm_eot_cache *spm_eot_cache;
++   /* Data Source for GPU tracing */
++   struct pvr_ds_device ds;
+ };
+ 
+ struct pvr_device_memory {
+diff --git a/src/imagination/vulkan/pvr_utrace.c b/src/imagination/vulkan/pvr_utrace.c
+new file mode 100644
+index 00000000..cf988845
+--- /dev/null
++++ b/src/imagination/vulkan/pvr_utrace.c
+@@ -0,0 +1,72 @@
++/*
++ * Copyright © 2026 Imagination Technologies Ltd.
++ *
++ * SPDX-License-Identifier: MIT
++ */
++
++#define PVR_BUILD_ARCH_ROGUE
++#include "pvr_utrace.h"
++#include "pvr_device.h"
++#include "pvr_cmd_buffer.h"
++
++#include "ds/pvr_driver_ds.h"
++#include "ds/pvr_tracepoints.h"
++
++#include <stdint.h>
++
++/* Initialize u_trace support for device */
++void pvr_device_utrace_init(struct pvr_device *device)
++{
++   if (!device)
++      return;
++
++   if (!device->ws)
++      return;
++
++   /* Initialize driver services */
++   pvr_driver_ds_init();
++
++   memset(&device->ds, 0, sizeof(device->ds));
++
++   /* Initialize u_trace context */
++   u_trace_context_init(&device->ds.trace_context,
++                        &device->ds,
++                        0, /* timestamp slot size (unused) */
++                        0, /* max indirect data size (unused) */
++                        NULL, /* create_buffer - not needed for markers-only */
++                        NULL, /* destroy_buffer - not needed for markers-only */
++                        NULL, /* record_ts - not needed for markers-only */
++                        NULL, /* read_ts - not needed for markers-only */
++                        NULL, /* capture_data - not needed for markers-only */
++                        NULL, /* get_data - not needed for markers-only */
++                        NULL); /* delete_submit - not needed for markers-only */
++
++   /* PVR currently supports marker tracing only. */
++   device->ds.trace_context.enabled_traces &= U_TRACE_TYPE_MARKERS;
++}
++
++void pvr_device_utrace_finish(struct pvr_device *device)
++{
++   /* Cleanup device */
++   pvr_ds_device_fini(&device->ds);
++}
++
++/* Initialize trace for command buffer */
++void pvr_cmd_buffer_utrace_init(struct pvr_cmd_buffer *cmd_buffer)
++{
++   if (!cmd_buffer)
++      return;
++
++   struct pvr_device *device = cmd_buffer->device;
++
++   if (!device)
++      return;
++
++   u_trace_init(&cmd_buffer->trace, &device->ds.trace_context);
++}
++
++/* Cleanup trace for command buffer */
++void pvr_cmd_buffer_utrace_fini(struct pvr_cmd_buffer *cmd_buffer)
++{
++   u_trace_fini(&cmd_buffer->trace);
++}
+diff --git a/src/imagination/vulkan/pvr_utrace.h b/src/imagination/vulkan/pvr_utrace.h
+new file mode 100644
+index 00000000..fc477a51
+--- /dev/null
++++ b/src/imagination/vulkan/pvr_utrace.h
+@@ -0,0 +1,40 @@
++/*
++ * Copyright © 2026 Imagination Technologies Ltd.
++ *
++ * SPDX-License-Identifier: MIT
++ */
++
++#ifndef PVR_UTRACE_H
++#define PVR_UTRACE_H
++
++#include <stdint.h>
++
++#include "util/perf/u_trace.h"
++#include "ds/pvr_driver_ds.h"
++#include "ds/pvr_tracepoints.h"
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++struct pvr_device;
++struct pvr_queue;
++struct pvr_cmd_buffer;
++
++/* Initialize u_trace support for device */
++void pvr_device_utrace_init(struct pvr_device *device);
++
++/* Cleanup u_trace support */
++void pvr_device_utrace_finish(struct pvr_device *device);
++
++/* Initialize command buffer trace */
++void pvr_cmd_buffer_utrace_init(struct pvr_cmd_buffer *cmd_buffer);
++
++/* Cleanup command buffer trace */
++void pvr_cmd_buffer_utrace_fini(struct pvr_cmd_buffer *cmd_buffer);
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif /* PVR_UTRACE_H */
+-- 
+2.47.3
+

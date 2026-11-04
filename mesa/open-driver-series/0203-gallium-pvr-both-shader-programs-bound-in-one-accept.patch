@@ -1,7 +1,7 @@
-From 9c8c5790c92000dc14c9fd166423cfade85e63c1 Mon Sep 17 00:00:00 2001
+From 366199a85001eae5e19104d795a7b117396f3d0b Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sat, 24 Oct 2026 05:23:28 +0800
-Subject: [PATCH 203/269] gallium/pvr: both shader programs bound in one
+Subject: [PATCH 203/294] gallium/pvr: both shader programs bound in one
  accepted control stream
 
 The control stream now sets up BOTH stages the way the hardware expects - the vertex program with a VDM

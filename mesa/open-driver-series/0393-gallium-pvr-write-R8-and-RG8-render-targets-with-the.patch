@@ -1,0 +1,63 @@
+From 3642bd842755047e72a5a3b5fa84a62aad9393ff Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Tue, 3 Nov 2026 09:37:05 +0800
+Subject: [PATCH 393/393] gallium/pvr: write R8 and RG8 render targets with
+ their own pack modes
+
+The pixel-event state used PACKMODE_U8U8U8U8 for every 8-bit format,
+whatever its channel count, so the PBE wrote R8 and RG8 targets at 4
+bytes per pixel. Their contents came out scrambled (a gradient drawn into
+a 64x64 R8 target read back 4048 of 4096 pixels wrong; a uniform clear
+hides it), and the writes ran past the end of the surface: where they
+reached unmapped GPU address space the GPU faulted and the firmware reset
+the context (a 64x64 R8 or RG8 target, 4 KiB and 8 KiB, faulted; 8x8 and
+32x32 targets, whose overrun stays inside their page, did not). Use U8 /
+U8U8 / U8U8U8U8 by channel count, as the Vulkan driver's format table
+does, and S8 / S8S8 / S8S8S8S8 for signed formats.
+---
+ src/gallium/drivers/pvr_native/pvr_csb.c  | 10 +++++++---
+ src/gallium/drivers/pvr_native/pvr_draw.c |  6 +++---
+ 2 files changed, 10 insertions(+), 6 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_csb.c b/src/gallium/drivers/pvr_native/pvr_csb.c
+index 09a2ddbd..55f2dc16 100644
+--- a/src/gallium/drivers/pvr_native/pvr_csb.c
++++ b/src/gallium/drivers/pvr_native/pvr_csb.c
+@@ -1034,9 +1034,13 @@ pvr_csb_pbe_state_words(uint64_t addr, enum pipe_format format, uint32_t mrt_ind
+                                           : ROGUE_PBESTATE_PACKMODE_F16F16F16F16)
+                         : ROGUE_PBESTATE_PACKMODE_F32F32F32F32;
+    } else if (desc->channel[chan].size == 8) {
+-      sw1.packmode = desc->channel[chan].type == UTIL_FORMAT_TYPE_SIGNED
+-                        ? ROGUE_PBESTATE_PACKMODE_S8S8S8S8
+-                        : ROGUE_PBESTATE_PACKMODE_U8U8U8U8;
++      /* One byte per channel the format has (the reference's U8 / U8U8 / U8U8U8U8 for R8 / RG8 /
++       * RGBA8): U8U8U8U8 on a one- or two-channel target wrote 4 bytes per pixel, past its end. */
++      const bool sgn = desc->channel[chan].type == UTIL_FORMAT_TYPE_SIGNED;
++      sw1.packmode = nr_chan == 1   ? (sgn ? ROGUE_PBESTATE_PACKMODE_S8 : ROGUE_PBESTATE_PACKMODE_U8)
++                     : nr_chan == 2 ? (sgn ? ROGUE_PBESTATE_PACKMODE_S8S8 : ROGUE_PBESTATE_PACKMODE_U8U8)
++                                    : (sgn ? ROGUE_PBESTATE_PACKMODE_S8S8S8S8
++                                           : ROGUE_PBESTATE_PACKMODE_U8U8U8U8);
+    } else {
+       sw1.packmode = desc->channel[chan].type == UTIL_FORMAT_TYPE_SIGNED
+                         ? ROGUE_PBESTATE_PACKMODE_S16S16S16S16
+diff --git a/src/gallium/drivers/pvr_native/pvr_draw.c b/src/gallium/drivers/pvr_native/pvr_draw.c
+index dbdc4d37..fe7d6772 100644
+--- a/src/gallium/drivers/pvr_native/pvr_draw.c
++++ b/src/gallium/drivers/pvr_native/pvr_draw.c
+@@ -1325,10 +1325,10 @@ draw_pack_color(enum pipe_format format, const union pipe_color_union *c)
+ static bool
+ draw_format_ok(enum pipe_format f)
+ {
+-   /* Every 8-bit colour target the PBE can write with the generic U8x4 packmode: the 8888 set
+-    * plus the single/double-channel formats, which ES2 needs as render targets only so that
++   /* Every 8-bit colour target the PBE writes with its own byte-per-channel pack mode: the 8888
++    * set plus the single/double-channel formats, which ES2 needs as render targets so that
+     * EXT_texture_rg is advertised (Mesa gates it on R8/RG8 being renderable, table
+-    * st_extension_format_mapping); rendering them works the same through the twiddled path. */
++    * st_extension_format_mapping). */
+    return f == PIPE_FORMAT_R8G8B8A8_UNORM || f == PIPE_FORMAT_B8G8R8A8_UNORM ||
+           f == PIPE_FORMAT_R8G8B8X8_UNORM || f == PIPE_FORMAT_B8G8R8X8_UNORM ||
+           f == PIPE_FORMAT_R8_UNORM || f == PIPE_FORMAT_R8G8_UNORM ||
+-- 
+2.47.3
+

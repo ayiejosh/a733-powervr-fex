@@ -1,0 +1,16 @@
+#version 450
+layout(local_size_x = 64) in;
+layout(std430, binding = 0) readonly buffer I { uvec4 i[]; };
+layout(std430, binding = 1) writeonly buffer O { uint o[]; };
+void main() {
+   uint id = gl_GlobalInvocationID.x; uvec4 v = i[id];
+   uint carried = 0u, acc = 0u, after = 0u;
+   for (uint j = 0u; j < (v.w & 7u) + 1u; j++) {
+      for (uint k = 0u; k < (v.x & 3u) + 1u; k++) {
+         carried = carried * 3u + v.y + k;     /* first written inside the inner loop */
+      }
+      after = carried ^ (v.z + j);             /* placed after the inner loop */
+      acc += after + carried;
+   }
+   o[id * 16u + 0u] = carried; o[id * 16u + 1u] = acc; o[id * 16u + 2u] = after;
+}

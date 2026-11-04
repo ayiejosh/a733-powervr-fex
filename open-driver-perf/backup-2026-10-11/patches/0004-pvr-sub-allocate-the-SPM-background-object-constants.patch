@@ -1,0 +1,104 @@
+From 2dca74589ce8b529f946a8230a3ba54dfabd9011 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sun, 11 Oct 2026 04:11:20 +0800
+Subject: [PATCH 04/10] pvr: sub-allocate the SPM background object constants
+
+pvr_spm_init_bgobj_state() allocated a buffer object for a few hundred
+bytes of constants per render. With dynamic rendering that is one
+CREATE_BO, mmap and VM_MAP while recording and one VM_UNMAP and GEM_CLOSE
+at command buffer reset per frame, about 180 us of CPU time per glmark2
+frame. Take them from the general sub-allocator instead.
+
+glmark2-es2 through zink, off-screen 800x600, FPS of two runs each,
+before -> after: build 394/396 -> 442/452, texture 596/597 -> 724/723,
+phong 214/217 -> 232/225, the others unchanged.
+
+CTS: as for the previous commits, identical to before.
+---
+ src/imagination/vulkan/pvr_arch_spm.c | 21 ++++++++++-----------
+ src/imagination/vulkan/pvr_spm.c      |  2 +-
+ src/imagination/vulkan/pvr_spm.h      |  2 +-
+ 3 files changed, 12 insertions(+), 13 deletions(-)
+
+diff --git a/src/imagination/vulkan/pvr_arch_spm.c b/src/imagination/vulkan/pvr_arch_spm.c
+index 5d1bcd9..5c2883c 100644
+--- a/src/imagination/vulkan/pvr_arch_spm.c
++++ b/src/imagination/vulkan/pvr_arch_spm.c
+@@ -694,7 +694,7 @@ pvr_spm_setup_texture_state_words(struct pvr_device *device,
+ static VkResult pvr_pds_bgnd_program_create_and_upload(
+    struct pvr_device *device,
+    uint32_t texture_program_data_size_in_dwords,
+-   const struct pvr_bo *consts_buffer,
++   const struct pvr_suballoc_bo *consts_buffer,
+    uint32_t const_shared_regs,
+    struct pvr_pds_upload *pds_upload_out)
+ {
+@@ -707,7 +707,7 @@ static VkResult pvr_pds_bgnd_program_create_and_upload(
+    pvr_csb_pack (&texture_program.texture_dma_address[0],
+                  PDSINST_DOUT_FIELDS_DOUTD_SRC0,
+                  doutd_src0) {
+-      doutd_src0.sbase = consts_buffer->vma->dev_addr;
++      doutd_src0.sbase = consts_buffer->dev_addr;
+    }
+ 
+    pvr_csb_pack (&texture_program.texture_dma_control[0],
+@@ -795,16 +795,15 @@ VkResult pvr_arch_spm_init_bgobj_state(
+ 
+    consts_buffer_size = PVR_DW_TO_BYTES(pvr_uscgen_spm_load_data_size(&props));
+ 
+-   result = pvr_bo_alloc(device,
+-                         device->heaps.general_heap,
+-                         consts_buffer_size,
+-                         sizeof(uint32_t),
+-                         PVR_BO_ALLOC_FLAG_CPU_MAPPED,
+-                         &spm_bgobj_state->consts_buffer);
++   /* Sub-allocated: dynamic rendering sets this up for every render. */
++   result = pvr_bo_suballoc(&device->suballoc_general,
++                            consts_buffer_size,
++                            sizeof(uint32_t),
++                            false,
++                            &spm_bgobj_state->consts_buffer);
+    if (result != VK_SUCCESS)
+       return result;
+-
+-   mem_ptr = spm_bgobj_state->consts_buffer->bo->map;
++   mem_ptr = pvr_bo_suballoc_get_map_addr(spm_bgobj_state->consts_buffer);
+ 
+    for (unsigned u = 0; u < hw_render->tile_buffers_count; ++u) {
+       unsigned tile_buffer_addr_location = pvr_uscgen_spm_buffer_data(u, true);
+@@ -919,7 +918,7 @@ VkResult pvr_arch_spm_init_bgobj_state(
+    return VK_SUCCESS;
+ 
+ err_free_consts_buffer:
+-   pvr_bo_free(device, spm_bgobj_state->consts_buffer);
++   pvr_bo_suballoc_free(spm_bgobj_state->consts_buffer);
+ 
+    return result;
+ }
+diff --git a/src/imagination/vulkan/pvr_spm.c b/src/imagination/vulkan/pvr_spm.c
+index 5e66a69..9bc8e4d 100644
+--- a/src/imagination/vulkan/pvr_spm.c
++++ b/src/imagination/vulkan/pvr_spm.c
+@@ -221,5 +221,5 @@ void pvr_spm_finish_bgobj_state(struct pvr_device *device,
+                                 struct pvr_spm_bgobj_state *spm_bgobj_state)
+ {
+    pvr_bo_suballoc_free(spm_bgobj_state->pds_texture_data_upload);
+-   pvr_bo_free(device, spm_bgobj_state->consts_buffer);
++   pvr_bo_suballoc_free(spm_bgobj_state->consts_buffer);
+ }
+diff --git a/src/imagination/vulkan/pvr_spm.h b/src/imagination/vulkan/pvr_spm.h
+index d9fccdb..5af66fb 100644
+--- a/src/imagination/vulkan/pvr_spm.h
++++ b/src/imagination/vulkan/pvr_spm.h
+@@ -75,7 +75,7 @@ struct pvr_spm_eot_state {
+ };
+ 
+ struct pvr_spm_bgobj_state {
+-   struct pvr_bo *consts_buffer;
++   struct pvr_suballoc_bo *consts_buffer;
+ 
+    /* TODO: Make this struct pvr_pds_upload? */
+    struct pvr_suballoc_bo *pds_texture_data_upload;
+-- 
+2.47.3
+

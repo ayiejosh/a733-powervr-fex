@@ -1,7 +1,7 @@
-From 507fefc4c81c7d5811751fee0281a5bb5757a8eb Mon Sep 17 00:00:00 2001
+From fdd2d7f5f74ada932ca67592df08e00cafd7518d Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Tue, 27 Oct 2026 04:01:23 +0800
-Subject: [PATCH 268/269] gallium/pvr: add a probe hook for the UAPI context
+Subject: [PATCH 268/294] gallium/pvr: add a probe hook for the UAPI context
  priority (PVR_PROBE_CTX_PRIORITY); test result: HIGH (-512/LOW and 512/HIGH)
  does not change the native TA kick outcome, which still times out - priority
  is not the DM2 stall's cause

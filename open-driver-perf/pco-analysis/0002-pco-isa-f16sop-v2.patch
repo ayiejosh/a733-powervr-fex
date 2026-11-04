@@ -1,0 +1,524 @@
+--- a/src/imagination/pco/pco_isa.py
++++ b/src/imagination/pco/pco_isa.py
+@@ -947,10 +947,9 @@
+    ('arctanc', 0b1111),
+ ])
+ 
+-# F16SOP op selector (SOPEXPR form, instruction byte 4). Derived from the
+-# vendor captures in /home/radxa/open-perf/vendor-usc/f16sop-layout.md:
+-# 0x00 = add, 0x12 = min, 0x1b = max. Sub is add with the negate modifier set
+-# (byte 8 bits 0 and 2), not a separate selector.
++# F16SOP op selector (SOPEXPR form, instruction byte 4), derived from the vendor
++# captures (vendor-usc/f16sop-layout.md): 0x00 = add, 0x12 = min, 0x1b = max.
++# Sub is add with the negate modifier set, not a separate selector.
+ F_SOP_SEL = field_enum_type(
+ name='sop_sel', num_bits=8,
+ elems=[
+@@ -960,29 +959,19 @@
+ ])
+ 
+ # F16SOP power-of-two literal code (literal-operand form, instruction byte 15):
+-# 0x40 + k = 2^k for k >= 0, 0x4a - k = 2^k for k < 0, 'other' means the
+-# constant is not a power of two and is materialised by the constant pool.
++# 0x40 + k = 2^k for k >= 0, 0x4a - k = 2^k for k < 0, 'other' = not a power of
++# two (materialised through the constant pool; the pool encoding is TODO).
+ F_SOP_LIT = field_enum_type(
+ name='sop_lit', num_bits=8,
+ elems=[
+-   ('pow2_0', 0x40),
+-   ('pow2_1', 0x41),
+-   ('pow2_2', 0x42),
+-   ('pow2_3', 0x43),
+-   ('pow2_4', 0x44),
+-   ('pow2_5', 0x45),
+-   ('pow2_6', 0x46),
+-   ('pow2_7', 0x47),
+-   ('pow2_8', 0x48),
+-   ('pow2_9', 0x49),
+-   ('pow2_10', 0x4a),
+-   ('pow2_m1', 0x4b),
+-   ('pow2_m2', 0x4c),
+-   ('pow2_m3', 0x4d),
+-   ('pow2_m4', 0x4e),
++   ('pow2_0', 0x40), ('pow2_1', 0x41), ('pow2_2', 0x42), ('pow2_3', 0x43),
++   ('pow2_4', 0x44), ('pow2_5', 0x45), ('pow2_6', 0x46), ('pow2_7', 0x47),
++   ('pow2_8', 0x48), ('pow2_9', 0x49), ('pow2_10', 0x4a),
++   ('pow2_m1', 0x4b), ('pow2_m2', 0x4c), ('pow2_m3', 0x4d), ('pow2_m4', 0x4e),
+    ('pow2_m5', 0x4f),
+-   ('other', 0x62),
+ ])
++# Note: non-power-of-two literals (0x62 in vendor code) are NOT emitted by pco;
++# they stay fp32 in the constant bank (fallback path), so no 'other' element.
+ 
+ F_RED_PART = field_enum_type(
+ name='red_part', num_bits=1,
+@@ -1235,9 +1224,9 @@
+    ('tst_elem', (1, '3:2')),
+    ('rsvd1_tst', (1, '1')),
+ 
+-   # F16SOP payload continuation bytes (see the f16sop_* bit structs
+-   # below). b8/b9 are further split into the SOPEXPR negate/abs bits.
+-   # The argument/register bytes are parametric TODO fields.
++   # F16SOP payload bytes. One F16SOP instruction handles one packed
++   # half register pair (2 lanes); a vec4 mediump op is two instructions.
++   # Register/operand layout per vendor-usc/f16sop-layout.md round 4.
+    ('f16sop_b1', (1, '7:0')),
+    ('f16sop_b2', (2, '7:0')),
+    ('f16sop_b3', (3, '7:0')),
+@@ -1262,8 +1251,8 @@
+    ('f16sop_b22', (22, '7:0')),
+    ('f16sop_b23', (23, '7:0')),
+ 
+-   # F16SOP SOPEXPR modifiers: a-b sets byte 8 bits 0 and 2, abs sets
+-   # byte 9 bits 1 and 3 (the two bits move together, one per packed half).
++   # SOPEXPR modifiers: a-b sets byte 8 bits 0 and 2, abs sets byte 9
++   # bits 1 and 3 (one bit per packed lane, both set together in captures).
+    ('f16sop_neg_lo', (8, '0')),
+    ('f16sop_b8_b1', (8, '1')),
+    ('f16sop_neg_hi', (8, '2')),
+@@ -1274,17 +1263,79 @@
+    ('f16sop_abs_hi', (9, '3')),
+    ('f16sop_b9_b2', (9, '2')),
+    ('f16sop_b9_hi', (9, '7:4')),
++
+    # Literal-operand form byte 8: bit 5 is set for every captured literal,
+-   # bits 0-3 are the negate modifier (a - C -> 0x20 | 0x0f).
++   # bits 0-3 are the negate modifier (a - C sets 0x20 | 0x0f).
+    ('f16sop_lit_neg', (8, '3:0')),
+    ('f16sop_lit_b8_4', (8, '4')),
+    ('f16sop_lit_b8_20', (8, '5')),
+    ('f16sop_lit_b8_hi', (8, '7:6')),
++
++   # Operand register bytes are 0x80 | register index (round 222: no bank
++   # bit; bit 7 = source present, low 7 bits = reg 0..127). The lane-pair
++   # step is +2, i.e. bit 1 of the register number.)
++   ('f16sop_s0_b7', (11, '7')),
++   ('f16sop_s0_reg', (11, '6:0')),
++   ('f16sop_s1p_b7', (14, '7')),
++   ('f16sop_s1p_reg', (14, '6:0')),
++   ('f16sop_s2_b7', (16, '7')),
++   ('f16sop_s2_reg', (16, '6:0')),
+    ('tst_op_3', (1, '0')),
+ ],
+ fields=[
+    ('main_op', (F_MAIN_OP, ['main_op'])),
+    ('ext0', (F_BOOL, ['ext0'])),
++   # F16SOP payload fields. f16sop_bN stay raw only where no role is
++   # derived yet; the operand bytes have real src/dst fields.
++   ('f16sop_op', (F_SOP_SEL, ['f16sop_b4'])),
++   ('f16sop_lit_code', (F_SOP_LIT, ['f16sop_b15'])),
++   ('f16sop_neg_lo', (F_BOOL, ['f16sop_neg_lo'])),
++   ('f16sop_neg_hi', (F_BOOL, ['f16sop_neg_hi'])),
++   ('f16sop_abs_lo', (F_BOOL, ['f16sop_abs_lo'])),
++   ('f16sop_abs_hi', (F_BOOL, ['f16sop_abs_hi'])),
++   ('f16sop_b8_b1', (F_UINT1, ['f16sop_b8_b1'], 0)),
++   ('f16sop_b8_b3', (F_UINT1, ['f16sop_b8_b3'], 0)),
++   ('f16sop_b8_hi', (F_UINT4, ['f16sop_b8_hi'], 0)),
++   ('f16sop_b9_b0', (F_UINT1, ['f16sop_b9_b0'], 0)),
++   ('f16sop_b9_b2', (F_UINT1, ['f16sop_b9_b2'], 0)),
++   ('f16sop_b9_hi', (F_UINT4, ['f16sop_b9_hi'], 0)),
++   ('f16sop_lit_neg', (F_UINT4, ['f16sop_lit_neg'])),
++   ('f16sop_lit_b8_4', (F_UINT1, ['f16sop_lit_b8_4'], 0)),
++   ('f16sop_lit_b8_20', (F_UINT1, ['f16sop_lit_b8_20'], 1)),
++   ('f16sop_lit_b8_hi', (F_UINT2, ['f16sop_lit_b8_hi'], 0)),
++   ('f16sop_s0_b7', (F_UINT1, ['f16sop_s0_b7'], 1)),
++   ('f16sop_s0_reg', (F_UINT7, ['f16sop_s0_reg'])),
++   ('f16sop_s1p_b7', (F_UINT1, ['f16sop_s1p_b7'])),
++   ('f16sop_s1p_reg', (F_UINT7, ['f16sop_s1p_reg'])),
++   ('f16sop_s2_b7', (F_UINT1, ['f16sop_s2_b7'], 1)),
++   ('f16sop_s2_reg', (F_UINT7, ['f16sop_s2_reg'])),
++   ('f16sop_src2_desc', (F_UINT8, ['f16sop_b17'])),
++   ('f16sop_src2_flag', (F_UINT8, ['f16sop_b18'])),
++   ('f16sop_dst', (F_UINT8, ['f16sop_b19'])),
++   ('f16sop_dst_mad', (F_UINT8, ['f16sop_b21'])),
++   ('f16sop_b1', (F_UINT8, ['f16sop_b1'])),
++   ('f16sop_b2', (F_UINT8, ['f16sop_b2'])),
++   ('f16sop_b3', (F_UINT8, ['f16sop_b3'])),
++   ('f16sop_b4', (F_UINT8, ['f16sop_b4'])),
++   ('f16sop_b5', (F_UINT8, ['f16sop_b5'])),
++   ('f16sop_b6', (F_UINT8, ['f16sop_b6'])),
++   ('f16sop_b7', (F_UINT8, ['f16sop_b7'])),
++   ('f16sop_b8', (F_UINT8, ['f16sop_b8'])),
++   ('f16sop_b9', (F_UINT8, ['f16sop_b9'])),
++   ('f16sop_b10', (F_UINT8, ['f16sop_b10'])),
++   ('f16sop_b11', (F_UINT8, ['f16sop_b11'])),
++   ('f16sop_b12', (F_UINT8, ['f16sop_b12'])),
++   ('f16sop_b13', (F_UINT8, ['f16sop_b13'])),
++   ('f16sop_b14', (F_UINT8, ['f16sop_b14'])),
++   ('f16sop_b15', (F_UINT8, ['f16sop_b15'])),
++   ('f16sop_b16', (F_UINT8, ['f16sop_b16'])),
++   ('f16sop_b17', (F_UINT8, ['f16sop_b17'])),
++   ('f16sop_b18', (F_UINT8, ['f16sop_b18'])),
++   ('f16sop_b19', (F_UINT8, ['f16sop_b19'])),
++   ('f16sop_b20', (F_UINT8, ['f16sop_b20'])),
++   ('f16sop_b21', (F_UINT8, ['f16sop_b21'])),
++   ('f16sop_b22', (F_UINT8, ['f16sop_b22'])),
++   ('f16sop_b23', (F_UINT8, ['f16sop_b23'])),
+ 
+    # fadd/fadd.lp/fmul/fmul.lp
+    ('sat_fam', (F_BOOL, ['sat_fam'])),
+@@ -1384,48 +1435,6 @@
+    ('tst_elem', (F_UINT2, ['tst_elem'])),
+    ('rsvd1_tst', (F_UINT1, ['rsvd1_tst'], 0)),
+    ('tst_op_4bit', (F_TST_OP, ['tst_op_3', 'tst_op_2_0'])),
+-   # F16SOP payload bytes. f16sop_bN are raw continuation bytes: the
+-   # argument/register encoding inside them is not derived yet, so they
+-   # stay settable TODO fields (vendor-usc/f16sop-layout.md).
+-   ('f16sop_op', (F_SOP_SEL, ['f16sop_b4'])),
+-   ('f16sop_lit_code', (F_SOP_LIT, ['f16sop_b15'])),
+-   ('f16sop_neg_lo', (F_BOOL, ['f16sop_neg_lo'])),
+-   ('f16sop_neg_hi', (F_BOOL, ['f16sop_neg_hi'])),
+-   ('f16sop_abs_lo', (F_BOOL, ['f16sop_abs_lo'])),
+-   ('f16sop_abs_hi', (F_BOOL, ['f16sop_abs_hi'])),
+-   ('f16sop_b8_b1', (F_UINT1, ['f16sop_b8_b1'], 0)),
+-   ('f16sop_b8_b3', (F_UINT1, ['f16sop_b8_b3'], 0)),
+-   ('f16sop_b8_hi', (F_UINT4, ['f16sop_b8_hi'], 0)),
+-   ('f16sop_b9_b0', (F_UINT1, ['f16sop_b9_b0'], 0)),
+-   ('f16sop_b9_b2', (F_UINT1, ['f16sop_b9_b2'], 0)),
+-   ('f16sop_b9_hi', (F_UINT4, ['f16sop_b9_hi'], 0)),
+-   ('f16sop_lit_neg', (F_UINT4, ['f16sop_lit_neg'])),
+-   ('f16sop_lit_b8_4', (F_UINT1, ['f16sop_lit_b8_4'], 0)),
+-   ('f16sop_lit_b8_20', (F_UINT1, ['f16sop_lit_b8_20'], 1)),
+-   ('f16sop_lit_b8_hi', (F_UINT2, ['f16sop_lit_b8_hi'], 0)),
+-   ('f16sop_b1', (F_UINT8, ['f16sop_b1'])),
+-   ('f16sop_b2', (F_UINT8, ['f16sop_b2'])),
+-   ('f16sop_b3', (F_UINT8, ['f16sop_b3'])),
+-   ('f16sop_b4', (F_UINT8, ['f16sop_b4'])),
+-   ('f16sop_b5', (F_UINT8, ['f16sop_b5'])),
+-   ('f16sop_b6', (F_UINT8, ['f16sop_b6'])),
+-   ('f16sop_b7', (F_UINT8, ['f16sop_b7'])),
+-   ('f16sop_b8', (F_UINT8, ['f16sop_b8'])),
+-   ('f16sop_b9', (F_UINT8, ['f16sop_b9'])),
+-   ('f16sop_b10', (F_UINT8, ['f16sop_b10'])),
+-   ('f16sop_b11', (F_UINT8, ['f16sop_b11'])),
+-   ('f16sop_b12', (F_UINT8, ['f16sop_b12'])),
+-   ('f16sop_b13', (F_UINT8, ['f16sop_b13'])),
+-   ('f16sop_b14', (F_UINT8, ['f16sop_b14'])),
+-   ('f16sop_b15', (F_UINT8, ['f16sop_b15'])),
+-   ('f16sop_b16', (F_UINT8, ['f16sop_b16'])),
+-   ('f16sop_b17', (F_UINT8, ['f16sop_b17'])),
+-   ('f16sop_b18', (F_UINT8, ['f16sop_b18'])),
+-   ('f16sop_b19', (F_UINT8, ['f16sop_b19'])),
+-   ('f16sop_b20', (F_UINT8, ['f16sop_b20'])),
+-   ('f16sop_b21', (F_UINT8, ['f16sop_b21'])),
+-   ('f16sop_b22', (F_UINT8, ['f16sop_b22'])),
+-   ('f16sop_b23', (F_UINT8, ['f16sop_b23'])),
+ ])
+ 
+ I_FADD = bit_struct(
+@@ -1505,20 +1514,27 @@
+    ('s0abs', 's0abs_sngl'),
+ ])
+ 
+-# F16SOP: packed half-precision SOP instruction (vendor mediump math).
+-# This is a multi-byte main-ALU instruction: main_op = sngl, ext0 = 1,
+-# sngl_op = f16sop, with its operands embedded in continuation bytes
+-# instead of the hardware source streams. Layout derived from the vendor
+-# captures in /home/radxa/open-perf/vendor-usc/f16sop-layout.md.
++# F16SOP: packed half-precision SOP. One instruction processes one packed
++# half register pair (2 lanes); a vec4 mediump expression is two
++# instructions (lanes xy then lanes zw). Multi-byte main-ALU instruction:
++# main_op = sngl, ext0 = 1, sngl_op = f16sop, operands embedded in
++# continuation bytes instead of the hardware source streams.
+ #
+-# Forms: SOPEXPR 94 99 99 (add/sub/min/max), multiply 94 33 22,
+-# multiply with a temp source 94 88 22, SOPMAD 94 93 92, and a literal-
+-# operand form (SOPEXPR prefix, log2 constant code in byte 15).
++# Layout: /home/radxa/open-perf/vendor-usc/f16sop-layout.md round 4.
++# Forms: SOPEXPR 94 99 99 (add/sub/min/max, 20 B), multiply 94 33 22 (20 B),
++# SOPMAD 94 92 93 (22 B: extra source at bytes 17-18, dest at byte 21),
++# multiply with a temp source 94 88 22 (22 B), and the literal-operand
++# form (24 B, log2 constant code in byte 15).
+ #
+-# ponytail: one bit struct per captured form; the argument/register bytes
+-# (11-21) are raw TODO fields until the field widths are pinned. When they
+-# land, the f16sop_bN fields become the real register/swizzle fields and
+-# nothing else in the ISA tables has to change.
++# Operand bytes: register bytes are 0x80 | reg (bit 7 = source present,
++# low 7 bits = register index 0..127; no bank bit). byte 11 source 0,
++# byte 13 source-1 lane flag, byte 14 source-1 register, byte 16 third
++# operand register byte, dest byte 19 (ADD/MUL) or 21 (MAD). The lane-pair
++# step is +2 in the register bytes.
++#
++# ponytail: the third operand byte (16), the source-1 descriptor bytes and
++# byte 20 are kept as raw fields until their bits are separated; they are
++# the only TODO part of the operand encoding.
+ 
+ I_F16SOP_EXPR = bit_struct(
+ name='f16sop_expr',
+@@ -1528,12 +1544,11 @@
+    ('ext0', 'ext0', 1),
+    ('sngl_op', 'sngl_op', 'f16sop'),
+ 
++   ('op', 'f16sop_op'),
++
+    ('form_hi', 'f16sop_b1', 0x99),
+    ('form_lo', 'f16sop_b2', 0x99),
+    ('unk3', 'f16sop_b3', 0xaf),
+-
+-   ('op', 'f16sop_op'),
+-
+    ('unk5', 'f16sop_b5', 0xc0),
+    ('unk6', 'f16sop_b6', 0x32),
+    ('unk7', 'f16sop_b7', 0x24),
+@@ -1543,24 +1558,25 @@
+    ('neg_hi', 'f16sop_neg_hi'),
+    'f16sop_b8_b3',
+    'f16sop_b8_hi',
+-
+    ('abs_lo', 'f16sop_abs_lo'),
+    'f16sop_b9_b0',
+    ('abs_hi', 'f16sop_abs_hi'),
+    'f16sop_b9_b2',
+    'f16sop_b9_hi',
+-
+    ('unk10', 'f16sop_b10', 0x0e),
+ 
+-   ('arg11', 'f16sop_b11'),
+-   ('arg12', 'f16sop_b12'),
+-   ('arg13', 'f16sop_b13'),
+-   ('arg14', 'f16sop_b14'),
+-   ('arg15', 'f16sop_b15'),
+-   ('arg16', 'f16sop_b16'),
+-   ('arg17', 'f16sop_b17'),
+-   ('arg18', 'f16sop_b18'),
+-   ('arg19', 'f16sop_b19'),
++   'f16sop_s0_b7',
++   ('src0_reg', 'f16sop_s0_reg'),
++   ('src1_desc', 'f16sop_b12'),
++   ('src1_flag', 'f16sop_b13'),
++   ('src1_present', 'f16sop_s1p_b7'),
++   ('src1_reg', 'f16sop_s1p_reg'),
++   ('unk15', 'f16sop_b15', 0x88),
++   'f16sop_s2_b7',
++   ('src2_reg', 'f16sop_s2_reg'),
++   ('unk17', 'f16sop_b17', 0x08),
++   ('unk18', 'f16sop_b18', 0x00),
++   ('dst', 'f16sop_dst'),
+ ])
+ 
+ 
+@@ -1582,80 +1598,90 @@
+    ('unk8', 'f16sop_b8', 0x00),
+    ('unk9', 'f16sop_b9', 0x00),
+    ('unk10', 'f16sop_b10', 0xfc),
+-
+-   ('arg11', 'f16sop_b11'),
+-   ('arg12', 'f16sop_b12'),
+-   ('arg13', 'f16sop_b13'),
+-   ('arg14', 'f16sop_b14'),
+-   ('arg15', 'f16sop_b15'),
+-   ('arg16', 'f16sop_b16'),
+-   ('arg17', 'f16sop_b17'),
+-   ('arg18', 'f16sop_b18'),
+-   ('arg19', 'f16sop_b19'),
++   'f16sop_s0_b7',
++   ('src0_reg', 'f16sop_s0_reg'),
++   ('src1_desc', 'f16sop_b12'),
++   ('src1_flag', 'f16sop_b13'),
++   ('src1_present', 'f16sop_s1p_b7'),
++   ('src1_reg', 'f16sop_s1p_reg'),
++   ('unk15', 'f16sop_b15', 0x88),
++   'f16sop_s2_b7',
++   ('src2_reg', 'f16sop_s2_reg'),
++   ('unk17', 'f16sop_b17', 0x08),
++   ('unk18', 'f16sop_b18', 0x00),
++   ('dst', 'f16sop_dst'),
+ ])
+ 
+ 
+-I_F16SOP_MUL_TEMP = bit_struct(
+-name='f16sop_mul_temp',
++I_F16SOP_MAD = bit_struct(
++name='f16sop_mad',
+ bit_set=I_MAIN,
+ field_mappings=[
+    ('main_op', 'main_op', 'sngl'),
+    ('ext0', 'ext0', 1),
+    ('sngl_op', 'sngl_op', 'f16sop'),
+ 
+-   ('form_hi', 'f16sop_b1', 0x88),
+-   ('form_lo', 'f16sop_b2', 0x22),
+-   ('unk3', 'f16sop_b3', 0xa0),
++   ('form_hi', 'f16sop_b1', 0x92),
++   ('form_lo', 'f16sop_b2', 0x93),
++   ('unk3', 'f16sop_b3', 0xaa),
+    ('unk4', 'f16sop_b4', 0x00),
+    ('unk5', 'f16sop_b5', 0xc0),
+-   ('unk6', 'f16sop_b6', 0x27),
+-   ('unk7', 'f16sop_b7', 0x34),
++   ('unk6', 'f16sop_b6', 0x87),
++   ('unk7', 'f16sop_b7', 0x24),
+    ('unk8', 'f16sop_b8', 0x00),
+    ('unk9', 'f16sop_b9', 0x00),
+-   ('unk10', 'f16sop_b10', 0xcc),
++   ('unk10', 'f16sop_b10', 0x4c),
+ 
+-   ('arg11', 'f16sop_b11'),
+-   ('arg12', 'f16sop_b12'),
+-   ('arg13', 'f16sop_b13'),
+-   ('arg14', 'f16sop_b14'),
+-   ('arg15', 'f16sop_b15'),
+-   ('arg16', 'f16sop_b16'),
+-   ('arg17', 'f16sop_b17'),
+-   ('arg18', 'f16sop_b18'),
+-   ('arg19', 'f16sop_b19'),
+-   ('arg20', 'f16sop_b20'),
+-   ('arg21', 'f16sop_b21'),
++   'f16sop_s0_b7',
++   ('src0_reg', 'f16sop_s0_reg'),
++   ('src1_desc', 'f16sop_b12'),
++   ('src1_flag', 'f16sop_b13'),
++   ('src1_present', 'f16sop_s1p_b7'),
++   ('src1_reg', 'f16sop_s1p_reg'),
++   ('unk15', 'f16sop_b15', 0x88),
++   'f16sop_s2_b7',
++   ('src2_reg', 'f16sop_s2_reg'),
++   ('src2_desc', 'f16sop_src2_desc'),
++   ('src2_flag', 'f16sop_src2_flag'),
++   ('unk19', 'f16sop_b19', 0x24),
++   ('unk20', 'f16sop_b20', 0x08),
++   ('dst', 'f16sop_dst_mad'),
+ ])
+ 
+ 
+-I_F16SOP_MAD = bit_struct(
+-name='f16sop_mad',
++I_F16SOP_MUL_TEMP = bit_struct(
++name='f16sop_mul_temp',
+ bit_set=I_MAIN,
+ field_mappings=[
+    ('main_op', 'main_op', 'sngl'),
+    ('ext0', 'ext0', 1),
+    ('sngl_op', 'sngl_op', 'f16sop'),
+ 
+-   ('form_hi', 'f16sop_b1', 0x93),
+-   ('form_lo', 'f16sop_b2', 0x92),
+-   ('unk3', 'f16sop_b3', 0xaa),
++   ('form_hi', 'f16sop_b1', 0x88),
++   ('form_lo', 'f16sop_b2', 0x22),
++   ('unk3', 'f16sop_b3', 0xa0),
+    ('unk4', 'f16sop_b4', 0x00),
+    ('unk5', 'f16sop_b5', 0xc0),
+-   ('unk6', 'f16sop_b6', 0x32),
+-   ('unk7', 'f16sop_b7', 0x24),
++   ('unk6', 'f16sop_b6', 0x27),
++   ('unk7', 'f16sop_b7', 0x34),
+    ('unk8', 'f16sop_b8', 0x00),
+    ('unk9', 'f16sop_b9', 0x00),
+-   ('unk10', 'f16sop_b10', 0x5e),
++   ('unk10', 'f16sop_b10', 0xcc),
+ 
+-   ('arg11', 'f16sop_b11'),
+-   ('arg12', 'f16sop_b12'),
+-   ('arg13', 'f16sop_b13'),
+-   ('arg14', 'f16sop_b14'),
+-   ('arg15', 'f16sop_b15'),
+-   ('arg16', 'f16sop_b16'),
+-   ('arg17', 'f16sop_b17'),
+-   ('arg18', 'f16sop_b18'),
+-   ('arg19', 'f16sop_b19'),
++   'f16sop_s0_b7',
++   ('src0_reg', 'f16sop_s0_reg'),
++   ('src1_desc', 'f16sop_b12'),
++   ('src1_flag', 'f16sop_b13'),
++   ('src1_present', 'f16sop_s1p_b7'),
++   ('src1_reg', 'f16sop_s1p_reg'),
++   ('unk15', 'f16sop_b15', 0x88),
++   'f16sop_s2_b7',
++   ('src2_reg', 'f16sop_s2_reg'),
++   ('src2_desc', 'f16sop_src2_desc'),
++   ('src2_flag', 'f16sop_src2_flag'),
++   ('unk19', 'f16sop_b19', 0x24),
++   ('unk20', 'f16sop_b20', 0x08),
++   ('dst', 'f16sop_dst_mad'),
+ ])
+ 
+ 
+@@ -1674,27 +1700,25 @@
+    ('unk5', 'f16sop_b5', 0xc0),
+    ('unk6', 'f16sop_b6', 0x22),
+    ('unk7', 'f16sop_b7', 0x22),
+-
+    ('neg', 'f16sop_lit_neg'),
+    'f16sop_lit_b8_4',
+    'f16sop_lit_b8_20',
+    'f16sop_lit_b8_hi',
+    ('unk9', 'f16sop_b9', 0x00),
+    ('unk10', 'f16sop_b10', 0x00),
+-
+-   ('arg11', 'f16sop_b11'),
+-   ('arg12', 'f16sop_b12'),
+-   ('arg13', 'f16sop_b13'),
+-   ('arg14', 'f16sop_b14'),
++   ('src0_desc', 'f16sop_b11'),
++   ('src0_bank', 'f16sop_b12'),
++   ('src0_idx', 'f16sop_b13'),
++   ('src1_desc', 'f16sop_b14'),
+    ('lit_code', 'f16sop_lit_code'),
+    ('lit_marker', 'f16sop_b16'),
+-   ('arg17', 'f16sop_b17'),
+-   ('arg18', 'f16sop_b18'),
+-   ('arg19', 'f16sop_b19'),
+-   ('arg20', 'f16sop_b20'),
+-   ('arg21', 'f16sop_b21'),
+-   ('arg22', 'f16sop_b22'),
+-   ('arg23', 'f16sop_b23'),
++   ('src1_bank', 'f16sop_b17'),
++   ('src1_idx', 'f16sop_b18'),
++   ('src2_desc', 'f16sop_b19'),
++   ('src2_bank', 'f16sop_b20'),
++   ('src2_idx', 'f16sop_b21'),
++   ('dst', 'f16sop_b22'),
++   ('unk23', 'f16sop_b23'),
+ ])
+ 
+ # GCMP
+--- a/src/imagination/pco/pco_ops.py
++++ b/src/imagination/pco/pco_ops.py
+@@ -388,10 +388,10 @@
+ O_IMADD32 = hw_op('imadd32', OM_ALU + [OM_S], 1, 4, [], [[RM_ABS, RM_NEG], [RM_ABS, RM_NEG], [RM_ABS, RM_NEG]])
+ O_UNPCK = hw_op('unpck', OM_ALU + [OM_PCK_FMT, OM_ROUNDZERO, OM_SCALE], 1, 1, [], [[RM_ELEM]])
+ 
+-# F16SOP: packed half-precision SOP. The operands live inside the instruction
+-# payload (see the f16sop_* bit structs in pco_isa.py), so the source/dest
+-# references are placeholders until the argument layout is derived; three
+-# sources cover the MAD form (a, b and the addend).
++# F16SOP: packed half-precision SOP, one instruction per half register pair.
++# Operands live inside the instruction payload (see the f16sop_* bit structs);
++# the src/dest references are placeholders until trans_alu_f16 lands, three
++# sources cover the MAD form (a, b, c).
+ O_F16SOP = hw_op('f16sop', OM_ALU + [OM_SOP_OP], 1, 3, [],
+                  [[RM_ABS, RM_NEG], [RM_ABS, RM_NEG], [RM_ABS, RM_NEG]])
+ 
+--- a/src/imagination/pco/pco_map.py
++++ b/src/imagination/pco/pco_map.py
+@@ -1115,9 +1115,10 @@
+    ]
+ )
+ 
+-# F16SOP op selector + SOPEXPR modifiers. Only the SOPEXPR form is wired here;
+-# the multiply / MAD / literal bit structs become reachable when pco_op gets
+-# the form modifiers and the argument encoding (TODO) is derived.
++# F16SOP op selector + SOPEXPR modifiers. Only the SOPEXPR form is wired here:
++# the operand fields other than the source-0/source-1 registers and the dest
++# are TODO until trans_alu_f16 classifies the forms; the multiply/MAD/literal
++# bit structs become reachable at the same time.
+ enum_map(OM_SOP_OP.t, F_SOP_SEL, [
+    ('add', 'add'),
+    ('min', 'min'),
+@@ -1132,7 +1133,13 @@
+          ('neg_hi', (RM_NEG, SRC(0))),
+          ('abs_lo', (RM_ABS, SRC(0))),
+          ('abs_hi', (RM_ABS, SRC(0))),
+-         ('arg11', 0), ('arg12', 0), ('arg13', 0), ('arg14', 0), ('arg15', 0), ('arg16', 0), ('arg17', 0), ('arg18', 0), ('arg19', 0)
++         ('src0_reg', ('pco_ref_get_reg_index', SRC(0))),
++         ('src1_desc', 0),
++         ('src1_flag', 0),
++         ('src1_present', ('pco_ref_is_reg', SRC(1))),
++         ('src1_reg', ('pco_ref_get_reg_index', SRC(1))),
++         ('src2_reg', ('pco_ref_get_reg_index', SRC(2))),
++         ('dst', ('pco_ref_get_reg_index', DEST(0))),
+       ])
+    ],
+    op_ref_maps=[('0', ['w0'], ['s0', 's1', 's2'])]

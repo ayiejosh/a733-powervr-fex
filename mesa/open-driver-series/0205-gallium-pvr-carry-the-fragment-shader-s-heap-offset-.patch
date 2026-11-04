@@ -1,7 +1,7 @@
-From a17dd4eb3a9b8b1e52e369889cdcafdee815bd2c Mon Sep 17 00:00:00 2001
+From 4ce0524281cad95fdec285c27410a46bf51e82b3 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sat, 24 Oct 2026 05:47:13 +0800
-Subject: [PATCH 205/269] gallium/pvr: carry the fragment shader's heap offset
+Subject: [PATCH 205/294] gallium/pvr: carry the fragment shader's heap offset
  from the shader check to the draw test
 
 The fragment launcher was pointing at USC offset 0 because the code that uploads shaders (the shader

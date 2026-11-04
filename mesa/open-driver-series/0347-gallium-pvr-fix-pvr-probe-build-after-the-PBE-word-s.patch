@@ -1,0 +1,31 @@
+From 9d63e2d53a902c61b69b8e703df7f5fb5de61e2c Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 30 Oct 2026 10:47:10 +0800
+Subject: [PATCH] gallium/pvr: fix pvr-probe build after the PBE word signature
+ grew an emptytile argument
+
+pvr_csb_pbe_state_words() gained the emptytile parameter when the background/EOT split landed; the
+probe's end-of-tile check was never updated, so pvr-probe stopped compiling. Pass false (a render
+target, not an empty tile) - the probe then builds and its TQ-fill replay still passes on hardware
+(stream 176 B, readback changed=4096/4096, first=0xdeadbeef), which re-validates the transfer-job
+submission path the transfer port will build on.
+---
+ src/gallium/drivers/pvr_native/pvr_probe.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index b366deaa..a22ad19f 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -1823,7 +1823,7 @@ probe_place_eot_program(struct pvr_screen *scr, uint64_t rtaddr)
+    uint32_t staging[64] = { 0 };
+    uint32_t usc_offset;
+ 
+-   pvr_csb_pbe_state_words(rtaddr, PIPE_FORMAT_R8G8B8A8_UNORM, 0, 0, state_words);
++   pvr_csb_pbe_state_words(rtaddr, PIPE_FORMAT_R8G8B8A8_UNORM, 0, 0, false, state_words);
+ 
+    if (!pvr_shader_eot_create(scr->pco_ctx, &eot, 1, state_words)) {
+       printf("hwrt:          could not compile the end-of-tile program\n");
+-- 
+2.47.3
+

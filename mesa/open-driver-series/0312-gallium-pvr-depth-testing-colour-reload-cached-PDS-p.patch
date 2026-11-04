@@ -1,0 +1,879 @@
+From 16196a0f5e3304370a3363255f2883b07fb01dc9 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 03:04:51 +0800
+Subject: [PATCH 312/314] gallium/pvr: depth testing, colour reload, cached PDS
+ programs
+
+- Depth: the render's depth buffer goes through the ZLS (ISP_ZLSCTL,
+  ZLOAD_BASE, background depth, zls_stride, DEPTHBUFFER job flag), loaded
+  unless cleared in the render and always stored; depth buffers are
+  padded to whole 32x32 ISP tiles. The TA ISP state takes the depth test
+  and write from the depth/stencil state, and triangle merging is off only
+  where the reference turns it off. A full depth clear with a GPU colour
+  clear is the background depth instead of a CPU fill.
+- A render without a colour clear reloads the target: a load background
+  object (texelFetch of the target at its pixel, the target's texture
+  descriptor DMAed by a descriptor program), as the reference's load op.
+  Before, its previous contents became black.
+- Generated vertex-fetch and descriptor PDS programs are cached by the
+  bytes their code depends on; draws patch only the data segment.
+
+gltri GLTRI_ZTEST (near triangle, then a larger one behind it after a
+mid-frame flush) matches zink at both sample points.
+---
+ src/gallium/drivers/pvr_native/pvr_context.c  |   5 +
+ src/gallium/drivers/pvr_native/pvr_csb.c      |  48 ++
+ src/gallium/drivers/pvr_native/pvr_csb.h      |   9 +
+ src/gallium/drivers/pvr_native/pvr_draw.c     | 490 +++++++++++++-----
+ src/gallium/drivers/pvr_native/pvr_draw.h     |   3 +
+ src/gallium/drivers/pvr_native/pvr_probe.c    |   4 +-
+ src/gallium/drivers/pvr_native/pvr_resource.c |   6 +
+ src/gallium/drivers/pvr_native/pvr_vm.c       |   7 +-
+ src/gallium/drivers/pvr_native/pvr_vm.h       |   2 +-
+ 9 files changed, 439 insertions(+), 135 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_context.c b/src/gallium/drivers/pvr_native/pvr_context.c
+index 21f354be..83afc334 100644
+--- a/src/gallium/drivers/pvr_native/pvr_context.c
++++ b/src/gallium/drivers/pvr_native/pvr_context.c
+@@ -612,6 +612,11 @@ pvr_clear(struct pipe_context *pctx, unsigned buffers, uint32_t color_clear_mask
+          flags &= ~PIPE_CLEAR_STENCIL;
+       }
+ 
++      /* A full depth clear with a GPU colour clear is the render's background depth. */
++      if ((flags & PIPE_CLEAR_DEPTH) && gpu_cleared &&
++          !util_format_has_stencil(util_format_description(ctx->fb.zsbuf.format)) &&
++          pvr_draw_note_zclear(ctx, depth))
++         flags &= ~PIPE_CLEAR_DEPTH;
+       if (flags != 0) {
+          util_clear_depth_stencil(pctx, &ctx->fb.zsbuf, flags, depth, stencil, dstx,
+                                   dsty, width, height);
+diff --git a/src/gallium/drivers/pvr_native/pvr_csb.c b/src/gallium/drivers/pvr_native/pvr_csb.c
+index 74345710..44577e96 100644
+--- a/src/gallium/drivers/pvr_native/pvr_csb.c
++++ b/src/gallium/drivers/pvr_native/pvr_csb.c
+@@ -1546,6 +1546,54 @@ pvr_frag_static_stream_fill_bgnd(void *stream, uint32_t stream_size,
+    memcpy((uint8_t *)stream + pr_bgnd_off, pr_bgnd, ROGUE_NUM_CR_PDS_BGRND_WORDS * 8);
+ }
+ 
++bool
++pvr_frag_static_stream_set_zls(void *stream, uint32_t stream_len,
++                               const struct pvr_device_info *dev_info, uint32_t zls_format,
++                               uint64_t zbase, uint32_t width, uint32_t height, bool load,
++                               bool store, uint32_t bgdepth, uint32_t zls_stride)
++{
++   const uint32_t pbe_dwords = PVR_MAX_COLOR_ATTACHMENTS * ROGUE_NUM_PBESTATE_REG_WORDS * 2;
++   const uint32_t ctrl_off = (PVR_FRAG_PRE_PBE_DWORDS + pbe_dwords +
++                              PVR_CMD_DW(CR_TPU_BORDER_COLOUR_TABLE_PDM) +
++                              2 * ROGUE_NUM_CR_PDS_BGRND_WORDS * 2 +
++                              ROGUE_KMD_STREAM_USC_CLEAR_REGISTER_COUNT *
++                                 PVR_CMD_DW(CR_USC_CLEAR_REGISTER)) * 4;
++   /* Header, scissor, dbias and occlusion bases come first (the kernel's frag stream order). */
++   const uint32_t zlsctl_off = (PVR_CMD_DW(KMD_STREAM_HDR) + PVR_CMD_DW(CR_ISP_SCISSOR_BASE) +
++                                PVR_CMD_DW(CR_ISP_DBIAS_BASE) + PVR_CMD_DW(CR_ISP_OCLQRY_BASE)) * 4;
++   const uint32_t zload_off = zlsctl_off + PVR_CMD_DW(CR_ISP_ZLSCTL) * 4;
++   /* zls_stride, sls_stride and execute_count close the stream (the capture's last 12 bytes). */
++   const uint32_t zls_stride_off = stream_len - 12;
++   uint32_t *dw = stream;
++   uint32_t tiles_x, tiles_y;
++
++   if (stream_len < ctrl_off + 8 || zls_stride_off <= ctrl_off)
++      return false;
++   /* rogue_get_isp_num_tiles_xy() for one sample (its header clashes with this csbgen). */
++   tiles_x = DIV_ROUND_UP(ALIGN_POT(width, 32), PVR_GET_FEATURE_VALUE(dev_info, tile_size_x, 16));
++   tiles_y = DIV_ROUND_UP(ALIGN_POT(height, 32), PVR_GET_FEATURE_VALUE(dev_info, tile_size_y, 16));
++   if (PVR_HAS_FEATURE(dev_info, simple_internal_parameter_format)) {
++      tiles_x = ALIGN_POT(tiles_x, 2);
++      tiles_y = ALIGN_POT(tiles_y, 2);
++   }
++   const struct ROGUE_CR_ISP_ZLSCTL ctl = {
++      .zlsextent_x_z = tiles_x - 1,
++      .zlsextent_y_z = tiles_y - 1,
++      .zloadformat = zls_format,
++      .zstoreformat = zls_format,
++      .zloaden = load,
++      .zstoreen = store,
++      .forcezload = load,
++      .forcezstore = store,
++   };
++   const struct ROGUE_CR_ISP_ZLOAD_BASE base = { .addr = zbase };
++   ROGUE_CR_ISP_ZLSCTL_pack(&dw[zlsctl_off / 4], &ctl);
++   ROGUE_CR_ISP_ZLOAD_BASE_pack(&dw[zload_off / 4], &base);
++   dw[ctrl_off / 4 + 1] = bgdepth;
++   dw[zls_stride_off / 4] = zls_stride;
++   return true;
++}
++
+ void
+ pvr_frag_static_stream_set_isp(void *stream, uint32_t stream_size,
+                                uint32_t usc_pixel_output_ctrl, uint32_t isp_ctl,
+diff --git a/src/gallium/drivers/pvr_native/pvr_csb.h b/src/gallium/drivers/pvr_native/pvr_csb.h
+index ac17d86d..84a26b95 100644
+--- a/src/gallium/drivers/pvr_native/pvr_csb.h
++++ b/src/gallium/drivers/pvr_native/pvr_csb.h
+@@ -511,6 +511,15 @@ struct pvr_pds_sizes {
+    uint32_t usc_shared_count;
+ };
+ 
++/* Depth load/store for a fragment stream built by pvr_frag_static_stream(): ISP_ZLSCTL and
++ * ISP_ZLOAD_BASE, the background depth and zls_stride, as the reference's job setup writes them.
++ * zls_format is a ROGUE_CR_ZLS_FORMAT_TYPE; the buffer is untwiddled, width x height padded to
++ * whole ISP tiles. Returns false for a stream of an unexpected size. */
++bool pvr_frag_static_stream_set_zls(void *stream, uint32_t stream_len,
++                                    const struct pvr_device_info *dev_info, uint32_t zls_format,
++                                    uint64_t zbase, uint32_t width, uint32_t height, bool load,
++                                    bool store, uint32_t bgdepth, uint32_t zls_stride);
++
+ bool pvr_csb_emit_ta_pds_sizeinfo(struct pvr_csb *csb, const struct pvr_pds_sizes *sizes,
+                                   bool tri_merge_disable, uint32_t batchnum);
+ 
+diff --git a/src/gallium/drivers/pvr_native/pvr_draw.c b/src/gallium/drivers/pvr_native/pvr_draw.c
+index 8d15d175..a25a928e 100644
+--- a/src/gallium/drivers/pvr_native/pvr_draw.c
++++ b/src/gallium/drivers/pvr_native/pvr_draw.c
+@@ -25,6 +25,7 @@
+ #include "pds/pvr_pds.h"
+ #include "pipe/p_state.h"
+ #include "util/format/u_format.h"
++#include "util/format/format_utils.h"
+ #include "util/log.h"
+ #include "util/macros.h"
+ #include "util/u_math.h"
+@@ -41,11 +42,32 @@ struct pvr_draw_arena {
+    uint32_t used;
+ };
+ 
++/* A generated PDS program kept for reuse: its code is uploaded once into the persistent code
++ * arena, and each draw patches a fresh data segment from the saved const map. Keyed by the bytes
++ * the generator's output depends on. */
++#define PVR_DRAW_PDS_CACHE 32
++#define PVR_DRAW_PDS_KEY 200
++struct pvr_draw_pds_prog {
++   uint32_t key_size;
++   uint8_t key[PVR_DRAW_PDS_KEY];
++   uint32_t code_off;
++   uint32_t data_dwords;
++   uint32_t temps;
++   uint32_t entries_size;
++   void *entries;
++};
++
+ struct pvr_draw_bg {
+    uint32_t color;
+    uint64_t pds_offset;
+ };
+ 
++/* The background object that reloads a target's previous contents, per target format. */
++struct pvr_draw_load {
++   enum pipe_format format;
++   struct pvr_shader *fs;
++};
++
+ #define PVR_DRAW_HWRT_CACHE 4
+ 
+ struct pvr_draw_state {
+@@ -81,6 +103,9 @@ struct pvr_draw_state {
+    struct pvr_bo bct_bo;
+    uint64_t bct_addr;
+ 
++   struct pvr_draw_arena pdscode;
++   struct pvr_draw_pds_prog progs[PVR_DRAW_PDS_CACHE];
++   unsigned nprogs;
+    /* The open render, and its sequence number (resources it uses carry it). */
+    bool open;
+    uint32_t seq;
+@@ -90,11 +115,17 @@ struct pvr_draw_state {
+ 
+    bool clear_valid;
+    uint32_t clear_color;
++   /* The render's depth buffer (NULL: none) and its recorded clear. */
++   struct pipe_resource *zs;
++   bool zclear_valid;
++   float zclear;
+ 
+    /* Caches. */
+    uint64_t eot_rt_addr;
+    uint64_t eot_pds_offset;
+    struct pvr_draw_bg bg[4];
++   struct pvr_draw_load load[4];
++   unsigned nr_load;
+    unsigned nr_bg;
+ };
+ 
+@@ -162,6 +193,10 @@ draw_init(struct pvr_context *ctx, struct pvr_draw_state *d)
+                                    &d->pds.bo);
+    if (d->pds.addr == 0 || !pvr_bo_map(scr->fd, &d->pds.bo))
+       return false;
++   d->pdscode.addr = pvr_vm_heap_alloc(&scr->vm, DRM_PVR_HEAP_PDS_CODE_DATA, ARENA_PDS_SIZE, 4096,
++                                       &d->pdscode.bo);
++   if (d->pdscode.addr == 0 || !pvr_bo_map(scr->fd, &d->pdscode.bo))
++      return false;
+    d->failed = false;
+    d->ready = true;
+    return true;
+@@ -396,6 +431,153 @@ draw_coeff_program(struct pvr_screen *scr, struct pvr_shader *fs, const struct p
+    return fs->coeff_offset != 0;
+ }
+ 
++/* Values a PDS data segment is patched with. */
++struct pvr_draw_pds_vals {
++   const uint64_t *vb_addr;
++   const uint32_t *vb_stride;
++   uint32_t usc_offset;
++   uint64_t buffer_addr; /* PVR_BUFFER_TYPE_PUSH_CONSTS */
++};
++
++/* Fill a data segment from a generator's const map. Offsets are in dwords. */
++static bool
++draw_pds_patch(const void *entries, uint32_t size, uint32_t *data,
++               const struct pvr_draw_pds_vals *v)
++{
++   const uint8_t *entry = entries;
++   const uint8_t *end = entry + size;
++   while (entry + sizeof(struct pvr_const_map_entry) <= end) {
++      const struct pvr_const_map_entry *hdr = (const void *)entry;
++      switch (hdr->type) {
++      case PVR_PDS_CONST_MAP_ENTRY_TYPE_DOUTU_ADDRESS: {
++         const struct pvr_const_map_entry_doutu_address *e = (const void *)entry;
++         uint64_t x = 0;
++         pvr_set_usc_execution_address64(&x, v->usc_offset);
++         x |= e->doutu_control;
++         memcpy(&data[e->const_offset], &x, 8);
++         entry += sizeof(*e);
++         break;
++      }
++      case PVR_PDS_CONST_MAP_ENTRY_TYPE_VERTEX_ATTRIBUTE_ADDRESS: {
++         const struct pvr_const_map_entry_vertex_attribute_address *e = (const void *)entry;
++         const uint64_t x = v->vb_addr[e->binding_index] + e->offset;
++         memcpy(&data[e->const_offset], &x, 8);
++         entry += sizeof(*e);
++         break;
++      }
++      case PVR_PDS_CONST_MAP_ENTRY_TYPE_VERTEX_ATTRIBUTE_STRIDE: {
++         const struct pvr_const_map_entry_vertex_attribute_stride *e = (const void *)entry;
++         data[e->const_offset] = v->vb_stride[e->binding_index];
++         entry += sizeof(*e);
++         break;
++      }
++      case PVR_PDS_CONST_MAP_ENTRY_TYPE_SPECIAL_BUFFER: {
++         const struct pvr_const_map_entry_special_buffer *e = (const void *)entry;
++         if (e->buffer_type != PVR_BUFFER_TYPE_PUSH_CONSTS)
++            return false;
++         memcpy(&data[e->const_offset], &v->buffer_addr, 8);
++         entry += sizeof(*e);
++         break;
++      }
++      case PVR_PDS_CONST_MAP_ENTRY_TYPE_LITERAL32: {
++         const struct pvr_const_map_entry_literal32 *e = (const void *)entry;
++         data[e->const_offset] = e->literal_value;
++         entry += sizeof(*e);
++         break;
++      }
++      case PVR_PDS_CONST_MAP_ENTRY_TYPE_LITERAL64: {
++         const struct pvr_const_map_entry_literal64 *e = (const void *)entry;
++         memcpy(&data[e->const_offset], &e->literal_value, 8);
++         entry += sizeof(*e);
++         break;
++      }
++      default:
++         mesa_loge("pvr: draw: no patch rule for PDS const-map entry type %u", hdr->type);
++         return false;
++      }
++   }
++   return true;
++}
++
++/* Generator callback: fills info (sizes, const map) and, with code != NULL, the code. */
++typedef void (*pvr_draw_pds_gen)(const void *input, uint32_t *code, struct pvr_pds_info *info,
++                                 const struct pvr_device_info *dev_info);
++
++/* A PDS program for this key: from the cache, or generated (and cached when the code arena has
++ * room), then its data segment patched into the transient PDS arena. Offsets out are PDS-heap
++ * offsets. */
++static bool
++draw_pds_program(struct pvr_context *ctx, struct pvr_draw_state *d, const void *key,
++                 uint32_t key_size, pvr_draw_pds_gen gen, const void *input,
++                 const struct pvr_draw_pds_vals *vals, uint32_t *code_off, uint32_t *data_off,
++                 uint32_t *data_dwords, uint32_t *temps)
++{
++   struct pvr_screen *scr = draw_screen(ctx);
++   const uint64_t pds_base = scr->vm.heaps[DRM_PVR_HEAP_PDS_CODE_DATA].base;
++   struct pvr_draw_pds_prog *p = NULL, tmp = { 0 };
++   uint64_t addr = 0;
++
++   for (unsigned i = 0; i < d->nprogs; i++) {
++      if (d->progs[i].key_size == key_size && !memcmp(d->progs[i].key, key, key_size)) {
++         p = &d->progs[i];
++         break;
++      }
++   }
++   if (p == NULL) {
++      struct pvr_pds_info info = { .entries_size_in_bytes = 2048 };
++      info.entries = calloc(1, info.entries_size_in_bytes);
++      if (info.entries == NULL)
++         return false;
++      gen(input, NULL, &info, &scr->dev_info);
++      const bool cacheable = key_size <= PVR_DRAW_PDS_KEY && d->nprogs < PVR_DRAW_PDS_CACHE &&
++                             d->pdscode.used + info.code_size_in_dwords * 4 + 64 <= ARENA_PDS_SIZE;
++      uint32_t *code = arena_alloc(cacheable ? &d->pdscode : &d->pds,
++                                   MAX2(info.code_size_in_dwords, 1) * 4, 64, &addr);
++      if (code == NULL) {
++         free(info.entries);
++         return false;
++      }
++      gen(input, code, &info, &scr->dev_info);
++      p = cacheable ? &d->progs[d->nprogs++] : &tmp;
++      p->key_size = MIN2(key_size, PVR_DRAW_PDS_KEY);
++      memcpy(p->key, key, p->key_size);
++      p->code_off = addr - pds_base;
++      p->data_dwords = info.data_size_in_dwords;
++      p->temps = info.temps_required;
++      p->entries_size = MIN2(info.entries_written_size_in_bytes, info.entries_size_in_bytes);
++      p->entries = info.entries;
++   }
++   uint32_t *data = arena_alloc(&d->pds, MAX2(p->data_dwords, 1) * 4, 64, &addr);
++   bool ok = data != NULL;
++   if (ok) {
++      memset(data, 0, p->data_dwords * 4);
++      ok = draw_pds_patch(p->entries, p->entries_size, data, vals);
++   }
++   *code_off = p->code_off;
++   *data_off = addr - pds_base;
++   *data_dwords = p->data_dwords;
++   *temps = p->temps;
++   if (p == &tmp)
++      free(tmp.entries);
++   return ok;
++}
++
++static void
++draw_gen_vertex(const void *input, uint32_t *code, struct pvr_pds_info *info,
++                const struct pvr_device_info *dev_info)
++{
++   pvr_pds_generate_vertex_primary_program((struct pvr_pds_vertex_primary_program_input *)input,
++                                           code, info, false, dev_info);
++}
++
++static void
++draw_gen_descriptor(const void *input, uint32_t *code, struct pvr_pds_info *info,
++                    UNUSED const struct pvr_device_info *dev_info)
++{
++   pvr_pds_generate_descriptor_upload_program((struct pvr_pds_descriptor_program_input *)input,
++                                              code, info);
++}
++
+ bool
+ pvr_draw_texture_format_supported(enum pipe_format format)
+ {
+@@ -459,12 +641,9 @@ draw_uniform_program(struct pvr_context *ctx, struct pvr_draw_state *d,
+ {
+    struct pvr_screen *scr = draw_screen(ctx);
+    const struct pipe_constant_buffer *cb = &ctx->cb0[stage];
+-   const uint64_t pds_base = scr->vm.heaps[DRM_PVR_HEAP_PDS_CODE_DATA].base;
+    struct pvr_pds_descriptor_program_input din = { 0 };
+-   struct pvr_pds_info info = { 0 };
+-   uint64_t uaddr, code_addr = 0, data_addr = 0;
++   uint64_t uaddr;
+    const uint8_t *src = NULL;
+-   bool ok = true;
+ 
+    *data_dwords = 0;
+    *temps = 0;
+@@ -505,58 +684,10 @@ draw_uniform_program(struct pvr_context *ctx, struct pvr_draw_state *d,
+       .size_in_dwords = sh->shared_dma_dwords,
+       .destination = sh->shared_dma_start,
+    };
+-   info.entries_size_in_bytes = 1024;
+-   info.entries = calloc(1, info.entries_size_in_bytes);
+-   if (info.entries == NULL)
+-      return false;
+-   pvr_pds_generate_descriptor_upload_program(&din, NULL, &info);
+-   uint32_t *code = arena_alloc(&d->pds, MAX2(info.code_size_in_dwords, 1) * 4, 64, &code_addr);
+-   uint32_t *data = arena_alloc(&d->pds, MAX2(info.data_size_in_dwords, 1) * 4, 64, &data_addr);
+-   if (code == NULL || data == NULL) {
+-      free(info.entries);
+-      return false;
+-   }
+-   pvr_pds_generate_descriptor_upload_program(&din, code, &info);
+-   memset(data, 0, info.data_size_in_dwords * 4);
+-   const uint8_t *entry = (const uint8_t *)info.entries;
+-   const uint8_t *end = entry + MIN2(info.entries_written_size_in_bytes, info.entries_size_in_bytes);
+-   while (ok && entry + sizeof(struct pvr_const_map_entry) <= end) {
+-      const struct pvr_const_map_entry *hdr = (const void *)entry;
+-      switch (hdr->type) {
+-      case PVR_PDS_CONST_MAP_ENTRY_TYPE_SPECIAL_BUFFER: {
+-         const struct pvr_const_map_entry_special_buffer *e = (const void *)entry;
+-         if (e->buffer_type != PVR_BUFFER_TYPE_PUSH_CONSTS) {
+-            ok = false;
+-            break;
+-         }
+-         memcpy(&data[e->const_offset], &uaddr, 8);
+-         entry += sizeof(*e);
+-         break;
+-      }
+-      case PVR_PDS_CONST_MAP_ENTRY_TYPE_LITERAL32: {
+-         const struct pvr_const_map_entry_literal32 *e = (const void *)entry;
+-         data[e->const_offset] = e->literal_value;
+-         entry += sizeof(*e);
+-         break;
+-      }
+-      case PVR_PDS_CONST_MAP_ENTRY_TYPE_LITERAL64: {
+-         const struct pvr_const_map_entry_literal64 *e = (const void *)entry;
+-         memcpy(&data[e->const_offset], &e->literal_value, 8);
+-         entry += sizeof(*e);
+-         break;
+-      }
+-      default:
+-         mesa_loge("pvr: draw: no uniform-program patch rule for const-map entry type %u",
+-                   hdr->type);
+-         ok = false;
+-      }
+-   }
+-   *code_off = code_addr - pds_base;
+-   *data_off = data_addr - pds_base;
+-   *data_dwords = info.data_size_in_dwords;
+-   *temps = info.temps_required;
+-   free(info.entries);
+-   return ok;
++   const uint32_t key[2] = { sh->shared_dma_dwords, sh->shared_dma_start };
++   const struct pvr_draw_pds_vals vals = { .buffer_addr = uaddr };
++   return draw_pds_program(ctx, d, key, sizeof(key), draw_gen_descriptor, &din, &vals, code_off,
++                           data_off, data_dwords, temps);
+ }
+ 
+ /* The background object for a clear colour: a constant-colour fragment program. */
+@@ -584,6 +715,101 @@ draw_bg_program(struct pvr_context *ctx, struct pvr_draw_state *d, uint32_t colo
+    return bg->pds_offset;
+ }
+ 
++/* The load background object: a fragment shader that fetches the target's own texel at its pixel
++ * (texture unit 0 = the target, set 0 binding 0) and writes it back, with the PDS program that
++ * DMAs that texture's descriptor into shared registers, as the reference's load op. Fills the
++ * PDS_BGRND words; false if the target cannot be read as a texture. */
++static bool
++draw_load_program(struct pvr_context *ctx, struct pvr_draw_state *d, uint64_t bgnd[3])
++{
++   struct pvr_screen *scr = draw_screen(ctx);
++   const struct pvr_resource *rt = pvr_resource(d->rt);
++   const enum pipe_format format = d->rt->format;
++   struct pvr_shader *fs = NULL;
++   struct pvr_format_layout layout;
++
++   if (!pvr_format_layout_from_pipe(format, &layout))
++      return false;
++   for (unsigned i = 0; i < d->nr_load; i++) {
++      if (d->load[i].format == format)
++         fs = d->load[i].fs;
++   }
++   if (fs == NULL) {
++      nir_builder b =
++         nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, pco_nir_options(), "pvr_load");
++      nir_variable *out = nir_variable_create(b.shader, nir_var_shader_out, glsl_vec4_type(),
++                                              "color");
++      out->data.location = FRAG_RESULT_DATA0;
++      nir_def *xy = nir_f2i32(&b, nir_trim_vector(&b, nir_load_frag_coord(&b), 2));
++      nir_tex_instr *tex = nir_tex_instr_create(b.shader, 2);
++      tex->op = nir_texop_txf;
++      tex->sampler_dim = GLSL_SAMPLER_DIM_2D;
++      tex->dest_type = nir_type_float32;
++      tex->coord_components = 2;
++      tex->texture_index = 0;
++      tex->sampler_index = 0;
++      tex->src[0] = nir_tex_src_for_ssa(nir_tex_src_coord, xy);
++      tex->src[1] = nir_tex_src_for_ssa(nir_tex_src_lod, nir_imm_int(&b, 0));
++      nir_def_init(&tex->instr, &tex->def, 4, 32);
++      nir_builder_instr_insert(&b, &tex->instr);
++      nir_store_var(&b, out, &tex->def, 0xf);
++      BITSET_SET(b.shader->info.textures_used, 0);
++      BITSET_SET(b.shader->info.textures_used_by_txf, 0);
++      fs = pvr_shader_create_fs(b.shader, scr->pco_ctx, format);
++      if (fs == NULL || !draw_upload_fs(scr, fs) || fs->tex_mask != 1)
++         return false;
++      /* shortcut: four cached formats, round robin; the evicted shader stays allocated. */
++      const unsigned slot = d->nr_load < ARRAY_SIZE(d->load) ? d->nr_load++ : (format & 3);
++      d->load[slot] = (struct pvr_draw_load){ .format = format, .fs = fs };
++   }
++
++   /* The shared block: the target as a texture, read with NEAREST. */
++   uint64_t uaddr;
++   uint32_t *u = arena_alloc(&d->gen, fs->shared_dma_dwords * 4, 16, &uaddr);
++   if (u == NULL)
++      return false;
++   memset(u, 0, fs->shared_dma_dwords * 4);
++   uint32_t *binding = u + (fs->tex_dst[0] - fs->shared_dma_start);
++   struct pvr_tex_desc tex = {
++      .components = layout.components,
++      .width = d->rt->width0,
++      .height = d->rt->height0,
++      .stride = rt->stride / util_format_get_blocksize(format),
++      .addr = rt->dev_addr,
++   };
++   memcpy(tex.swizzle, layout.swizzle, sizeof(tex.swizzle));
++   const struct pvr_sampler_desc smp = {
++      .wrap_s = PIPE_TEX_WRAP_CLAMP_TO_EDGE,
++      .wrap_t = PIPE_TEX_WRAP_CLAMP_TO_EDGE,
++      .wrap_r = PIPE_TEX_WRAP_CLAMP_TO_EDGE,
++      .min_filter = PIPE_TEX_FILTER_NEAREST,
++      .mag_filter = PIPE_TEX_FILTER_NEAREST,
++   };
++   struct pvr_csb csb;
++   pvr_csb_init(&csb, binding, ROGUE_NUM_TEXSTATE_DWORDS * 4, 0);
++   if (!pvr_csb_emit_tex_desc(&csb, &tex) || csb.overflowed)
++      return false;
++   pvr_csb_init(&csb, binding + 2 * ROGUE_NUM_TEXSTATE_DWORDS, ROGUE_NUM_TEXSTATE_DWORDS * 4, 0);
++   if (!pvr_csb_emit_sampler_desc(&csb, &smp) || csb.overflowed)
++      return false;
++
++   struct pvr_pds_descriptor_program_input din = { .buffer_count = 1 };
++   din.buffers[0] = (struct pvr_pds_buffer){
++      .type = PVR_BUFFER_TYPE_PUSH_CONSTS,
++      .size_in_dwords = fs->shared_dma_dwords,
++      .destination = fs->shared_dma_start,
++   };
++   const uint32_t key[2] = { fs->shared_dma_dwords, fs->shared_dma_start };
++   const struct pvr_draw_pds_vals vals = { .buffer_addr = uaddr };
++   uint32_t code_off, data_off, data_dwords, temps;
++   if (!draw_pds_program(ctx, d, key, sizeof(key), draw_gen_descriptor, &din, &vals, &code_off,
++                         &data_off, &data_dwords, &temps))
++      return false;
++   pvr_csb_pds_bgnd_words(fs->pds_offset, code_off, data_off, temps, fs->shareds, data_dwords,
++                          bgnd);
++   return true;
++}
++
+ /* The end-of-tile program for a target address: PBE state words baked into a USC program, kicked by
+  * a PDS pixel-event data segment. */
+ static uint64_t
+@@ -696,71 +922,36 @@ draw_vertex_program(struct pvr_context *ctx, struct pvr_draw_state *d, struct pv
+    input.dma_count = vs->nr_inputs;
+    pvr_pds_setup_doutu(&input.usc_task_control, 0, vs->temps,
+                        PVR_ROGUE_PDSINST_DOUT_FIELDS_DOUTU_SAMPLE_RATE_INSTANCE, false);
+-   info.entries_size_in_bytes = 4096;
+-   info.entries = calloc(1, info.entries_size_in_bytes);
+-   if (info.entries == NULL)
+-      return false;
+-   pvr_pds_generate_vertex_primary_program(&input, NULL, &info, false, &scr->dev_info);
+-   code = arena_alloc(&d->pds, info.code_size_in_dwords * 4, 64, &code_addr);
+-   data = arena_alloc(&d->pds, MAX2(info.data_size_in_dwords, 1) * 4, 64, &data_addr);
+-   if (code == NULL || data == NULL) {
+-      free(info.entries);
++   /* The code depends on the DMA list and the shader's temp count (in the DOUTU control word). */
++   struct {
++      uint32_t temps, count;
++      struct pvr_pds_vertex_dma dmas[16];
++   } key = { .temps = vs->temps, .count = vs->nr_inputs };
++   memcpy(key.dmas, dmas, vs->nr_inputs * sizeof(dmas[0]));
++   const struct pvr_draw_pds_vals vals = {
++      .vb_addr = vb_addr, .vb_stride = vb_stride, .usc_offset = vs->usc_offset,
++   };
++   uint32_t c, dd;
++   if (!draw_pds_program(ctx, d, &key, offsetof(__typeof__(key), dmas) +
++                                          vs->nr_inputs * sizeof(dmas[0]),
++                         draw_gen_vertex, &input, &vals, &c, &dd, data_dwords, temps))
+       return false;
+-   }
+-   pvr_pds_generate_vertex_primary_program(&input, code, &info, false, &scr->dev_info);
+-   memset(data, 0, info.data_size_in_dwords * 4);
++   *code_off = c;
++   *data_off = dd;
++   return true;
++}
+ 
+-   /* Patch the data segment from the const map. Offsets are in dwords. */
+-   const uint8_t *entry = (const uint8_t *)info.entries;
+-   const uint8_t *end = entry + MIN2(info.entries_written_size_in_bytes, info.entries_size_in_bytes);
+-   while (ok && entry + sizeof(struct pvr_const_map_entry) <= end) {
+-      const struct pvr_const_map_entry *hdr = (const void *)entry;
+-      switch (hdr->type) {
+-      case PVR_PDS_CONST_MAP_ENTRY_TYPE_DOUTU_ADDRESS: {
+-         const struct pvr_const_map_entry_doutu_address *e = (const void *)entry;
+-         uint64_t v = 0;
+-         pvr_set_usc_execution_address64(&v, vs->usc_offset);
+-         v |= e->doutu_control;
+-         memcpy(&data[e->const_offset], &v, 8);
+-         entry += sizeof(*e);
+-         break;
+-      }
+-      case PVR_PDS_CONST_MAP_ENTRY_TYPE_VERTEX_ATTRIBUTE_ADDRESS: {
+-         const struct pvr_const_map_entry_vertex_attribute_address *e = (const void *)entry;
+-         const uint64_t v = vb_addr[e->binding_index] + e->offset;
+-         memcpy(&data[e->const_offset], &v, 8);
+-         entry += sizeof(*e);
+-         break;
+-      }
+-      case PVR_PDS_CONST_MAP_ENTRY_TYPE_VERTEX_ATTRIBUTE_STRIDE: {
+-         const struct pvr_const_map_entry_vertex_attribute_stride *e = (const void *)entry;
+-         data[e->const_offset] = vb_stride[e->binding_index];
+-         entry += sizeof(*e);
+-         break;
+-      }
+-      case PVR_PDS_CONST_MAP_ENTRY_TYPE_LITERAL32: {
+-         const struct pvr_const_map_entry_literal32 *e = (const void *)entry;
+-         data[e->const_offset] = e->literal_value;
+-         entry += sizeof(*e);
+-         break;
+-      }
+-      case PVR_PDS_CONST_MAP_ENTRY_TYPE_LITERAL64: {
+-         const struct pvr_const_map_entry_literal64 *e = (const void *)entry;
+-         memcpy(&data[e->const_offset], &e->literal_value, 8);
+-         entry += sizeof(*e);
+-         break;
+-      }
+-      default:
+-         mesa_loge("pvr: draw: no patch rule for PDS const-map entry type %u", hdr->type);
+-         ok = false;
+-      }
++/* The ZLS format type for a depth format, or -1 if the draw path does not depth-test it. */
++static int
++draw_zls_format(enum pipe_format f)
++{
++   switch (f) {
++   case PIPE_FORMAT_Z16_UNORM: return ROGUE_CR_ZLS_FORMAT_TYPE_16BITINT;
++   case PIPE_FORMAT_Z24X8_UNORM:
++   case PIPE_FORMAT_Z24_UNORM_S8_UINT: return ROGUE_CR_ZLS_FORMAT_TYPE_24BITINT;
++   case PIPE_FORMAT_Z32_FLOAT: return ROGUE_CR_ZLS_FORMAT_TYPE_F32Z;
++   default: return -1;
+    }
+-   *code_off = code_addr - pds_base;
+-   *data_off = data_addr - pds_base;
+-   *temps = info.temps_required;
+-   *data_dwords = info.data_size_in_dwords;
+-   free(info.entries);
+-   return ok;
+ }
+ 
+ static bool
+@@ -775,6 +966,11 @@ draw_open(struct pvr_context *ctx, struct pvr_draw_state *d, struct pipe_resourc
+    pipe_resource_reference(&d->rt, rt);
+    d->seq++;
+    pvr_resource(rt)->render_seq = d->seq;
++   struct pipe_resource *zs = ctx->fb.zsbuf.texture;
++   pipe_resource_reference(&d->zs, zs && draw_zls_format(zs->format) >= 0 ? zs : NULL);
++   if (d->zs)
++      pvr_resource(d->zs)->render_seq = d->seq;
++   d->zclear_valid = false;
+    d->rt_w = w;
+    d->rt_h = h;
+    d->ndraws = 0;
+@@ -824,7 +1020,8 @@ pvr_draw_3d(struct pvr_context *ctx, const struct pipe_draw_info *info,
+    if (vs->usc_offset == 0 && (vs->usc_offset = draw_upload_usc(scr, vs->binary, vs->binary_size)) == 0)
+       return false;
+ 
+-   if (d->open && (d->rt != rt || d->rt_w != ctx->fb.width || d->rt_h != ctx->fb.height))
++   if (d->open && (d->rt != rt || d->rt_w != ctx->fb.width || d->rt_h != ctx->fb.height ||
++                   d->zs != ctx->fb.zsbuf.texture))
+       pvr_draw_flush(ctx);
+    if (!d->open && !draw_open(ctx, d, rt, ctx->fb.width, ctx->fb.height))
+       return false;
+@@ -859,11 +1056,14 @@ pvr_draw_3d(struct pvr_context *ctx, const struct pipe_draw_info *info,
+       .ppp_ctrl = true, .stream_out_size = true,
+    };
+    const struct pvr_ta_ispctl ispctl = { .bpres = true };
++   /* Depth test and write from the depth/stencil state; the PIPE_FUNC_* order is the TA's. */
++   const struct pipe_depth_stencil_alpha_state *dsa = ctx->dsa;
++   const bool depth = d->zs != NULL && dsa != NULL && dsa->depth_enabled;
+    const struct ROGUE_TA_STATE_ISPA ispa = {
+       .objtype = ROGUE_TA_OBJTYPE_TRIANGLE,
+       .passtype = ROGUE_TA_PASSTYPE_OPAQUE,
+-      .dwritedisable = true,
+-      .dcmpmode = ROGUE_TA_CMPMODE_ALWAYS,
++      .dwritedisable = !depth || !dsa->depth_writemask,
++      .dcmpmode = depth ? (enum ROGUE_TA_CMPMODE)dsa->depth_func : ROGUE_TA_CMPMODE_ALWAYS,
+       .pointlinewidth = 15,
+    };
+    const struct ROGUE_TA_STATE_ISPB ispb = {
+@@ -918,7 +1118,10 @@ pvr_draw_3d(struct pvr_context *ctx, const struct pipe_draw_info *info,
+        !pvr_csb_emit_ta_isp_dbsc(&block, &dbsc) ||
+        !pvr_csb_emit_ta_pds_base(&block, PVR_PDS_BASE_SHADER, fsv->pds_offset) ||
+        !pvr_csb_emit_ta_pds_base(&block, PVR_PDS_BASE_TEXUNICODE, fu_dwords ? fu_code : 0) ||
+-       !pvr_csb_emit_ta_pds_sizeinfo(&block, &pds_sizes, true, 0) ||
++       /* Triangle merging off where the reference turns it off: no depth test and no write. */
++       !pvr_csb_emit_ta_pds_sizeinfo(&block, &pds_sizes,
++                                     ispa.dwritedisable && ispa.dcmpmode == ROGUE_TA_CMPMODE_ALWAYS,
++                                     0) ||
+        (coeff && !pvr_csb_emit_ta_pds_base(&block, PVR_PDS_BASE_VARYING, fsv->coeff_offset)) ||
+        !pvr_csb_emit_ta_pds_base(&block, PVR_PDS_BASE_UNIFORMDATA, fu_dwords ? fu_data : 0) ||
+        !pvr_csb_emit_ta_region_clip(&block, &clip) || !pvr_csb_emit_ta_viewport(&block, &vp) ||
+@@ -1004,6 +1207,19 @@ pvr_draw_note_clear(struct pvr_context *ctx, const union pipe_color_union *color
+    return true;
+ }
+ 
++/* Records a depth clear for the open render (one a colour clear just opened). */
++bool
++pvr_draw_note_zclear(struct pvr_context *ctx, float depth)
++{
++   struct pvr_draw_state *d = ctx->draw;
++   if (d == NULL || !d->open || d->ndraws != 0 || d->zs == NULL ||
++       d->zs != ctx->fb.zsbuf.texture)
++      return false;
++   d->zclear_valid = true;
++   d->zclear = depth;
++   return true;
++}
++
+ bool
+ pvr_draw_resource_busy(struct pvr_context *ctx, const struct pvr_resource *res)
+ {
+@@ -1024,7 +1240,7 @@ pvr_draw_flush(struct pvr_context *ctx)
+ 
+    struct pvr_resource *rt = pvr_resource(d->rt);
+    const enum pipe_format fmt = d->rt->format;
+-   uint64_t term_addr, sc_addr;
++   uint64_t term_addr = 0, sc_addr = 0;
+    uint32_t *term = arena_alloc(&d->gen, 64, 64, &term_addr);
+    uint32_t *sc = arena_alloc(&d->gen, 16, 16, &sc_addr);
+    if (term == NULL || sc == NULL)
+@@ -1051,9 +1267,6 @@ pvr_draw_flush(struct pvr_context *ctx)
+    sc[1] = d->rt_h;
+ 
+    const uint64_t eot = draw_eot_program(ctx, d, rt->dev_addr, fmt);
+-   if (!d->clear_valid && !getenv("PVR_NATIVE_QUIET"))
+-      mesa_logw("pvr: draw: render without a clear; the background is not loaded yet, so the "
+-                "target's previous content is replaced");
+    const uint64_t bg = draw_bg_program(ctx, d, d->clear_valid ? d->clear_color : 0);
+    uint64_t pbe_words[3] = { 0 };
+    if (eot == 0 || bg == 0 ||
+@@ -1070,20 +1283,39 @@ pvr_draw_flush(struct pvr_context *ctx)
+    if (glen == 0 || flen == 0)
+       goto done;
+    uint64_t bgnd[3], pr_bgnd[3];
+-   pvr_csb_pds_bgnd_words((uint32_t)bg, (uint32_t)bg, (uint32_t)bg, 0, 0, 0, bgnd);
+-   pvr_csb_pds_bgnd_words((uint32_t)bg, (uint32_t)bg, (uint32_t)bg, 0, 0, 0, pr_bgnd);
++   /* Without a clear, the background reloads what the target held. */
++   if (d->clear_valid || !draw_load_program(ctx, d, bgnd))
++      pvr_csb_pds_bgnd_words((uint32_t)bg, (uint32_t)bg, (uint32_t)bg, 0, 0, 0, bgnd);
++   memcpy(pr_bgnd, bgnd, sizeof(bgnd));
+    pvr_frag_static_stream_fill_bgnd(fstream, sizeof(fstream), d->bct_addr, bgnd, pr_bgnd);
+    /* shortcut: ISP scalars from the verified 512x512 single-colour draw (review item A14). */
+    pvr_frag_static_stream_set_isp(fstream, sizeof(fstream), 0x00007ff8u, 0x80035000u, 0x00000201u);
++   uint32_t frag_flags = 0;
++   if (d->zs != NULL) {
++      const struct pvr_resource *zr = pvr_resource(d->zs);
++      const int zf = draw_zls_format(d->zs->format);
++      const float zc = d->zclear_valid ? d->zclear : 1.0f;
++      const uint32_t bgdepth = zf == ROGUE_CR_ZLS_FORMAT_TYPE_16BITINT ? _mesa_float_to_unorm(zc, 16)
++                             : zf == ROGUE_CR_ZLS_FORMAT_TYPE_24BITINT ? _mesa_float_to_unorm(zc, 24)
++                                                                       : fui(zc);
++      /* Load unless cleared this render; always store, for later renders and readers. */
++      if (!pvr_frag_static_stream_set_zls(fstream, flen, &scr->dev_info, zf, zr->dev_addr,
++                                          d->zs->width0, d->zs->height0, !d->zclear_valid, true,
++                                          bgdepth, (uint32_t)zr->dev_size))
++         goto done;
++      frag_flags |= DRM_PVR_SUBMIT_JOB_FRAG_CMD_DEPTHBUFFER;
++   }
+    ((uint32_t *)fstream)[2] = (uint32_t)sc_addr; /* isp_scissor_base after the 2-dword header */
+    ((uint32_t *)fstream)[3] = (uint32_t)(sc_addr >> 32);
+ 
+-   if (!pvr_job_submit_render(&scr->vm, d->gctx.handle, gstream, glen, fstream, flen, d->cur_hwrt->dset, d->cur_hwrt->rt_data_idx))
++   if (!pvr_job_submit_render(&scr->vm, d->gctx.handle, gstream, glen, fstream, flen, d->cur_hwrt->dset, d->cur_hwrt->rt_data_idx, frag_flags))
+       mesa_loge("pvr: draw: the render did not complete (%u draws)", d->ndraws);
+    d->cur_hwrt->rt_data_idx ^= 1;
+ 
+ done:
+    d->clear_valid = false;
++   d->zclear_valid = false;
++   pipe_resource_reference(&d->zs, NULL);
+    d->ndraws = 0;
+    pipe_resource_reference(&d->rt, NULL);
+ }
+diff --git a/src/gallium/drivers/pvr_native/pvr_draw.h b/src/gallium/drivers/pvr_native/pvr_draw.h
+index da091726..0452a7ed 100644
+--- a/src/gallium/drivers/pvr_native/pvr_draw.h
++++ b/src/gallium/drivers/pvr_native/pvr_draw.h
+@@ -25,6 +25,9 @@ void pvr_draw_flush(struct pvr_context *ctx);
+ bool pvr_draw_note_clear(struct pvr_context *ctx, const union pipe_color_union *color);
+ void pvr_draw_destroy(struct pvr_context *ctx);
+ 
++/* Records a full depth clear for the render a colour clear just opened; false if not possible. */
++bool pvr_draw_note_zclear(struct pvr_context *ctx, float depth);
++
+ /* Whether the open render uses this resource, so a CPU access has to submit it first. */
+ struct pvr_resource;
+ bool pvr_draw_resource_busy(struct pvr_context *ctx, const struct pvr_resource *res);
+diff --git a/src/gallium/drivers/pvr_native/pvr_probe.c b/src/gallium/drivers/pvr_native/pvr_probe.c
+index 31d3aad7..c7389625 100644
+--- a/src/gallium/drivers/pvr_native/pvr_probe.c
++++ b/src/gallium/drivers/pvr_native/pvr_probe.c
+@@ -922,7 +922,7 @@ real_job_done:
+                pvr_csb_emit_stream_terminate(&tcsb);
+                done = dlen > 0 && dfrag_len > 0 &&
+                       pvr_job_submit_render(vm, gpu_ctx.handle, dfw_buf, dlen, dfrag,
+-                                            dfrag_len, dset_handle, 0);
++                                            dfrag_len, dset_handle, 0, 0);
+                printf("hwrt:          empty-control-stream render %s\n",
+                       done ? "COMPLETED" : "DID NOT complete in 2 s - the firmware is stalling "
+                                           "submissions, not the draw state");
+@@ -1425,7 +1425,7 @@ real_job_done:
+                   printf("hwrt:          geometry-only (draw stream) %s\n",
+                          gdone ? "COMPLETED" : "did not complete in 2 s");
+                } else if (pvr_job_submit_render(vm, gpu_ctx.handle, gstream, glen, fstream, f2,
+-                                         dset_handle, 0)) {
++                                         dset_handle, 0, 0)) {
+                   uint32_t changed = 0;
+                   unsigned waited_us = 0;
+ 
+diff --git a/src/gallium/drivers/pvr_native/pvr_resource.c b/src/gallium/drivers/pvr_native/pvr_resource.c
+index addfb88a..4b928015 100644
+--- a/src/gallium/drivers/pvr_native/pvr_resource.c
++++ b/src/gallium/drivers/pvr_native/pvr_resource.c
+@@ -33,6 +33,12 @@ pvr_resource_layout(const struct pipe_resource *templ, uint32_t *stride,
+ 
+    case PIPE_TEXTURE_2D:
+    case PIPE_TEXTURE_RECT: /* renderbuffers, when the state tracker picks RECT */
++      if (util_format_is_depth_or_stencil(templ->format)) {
++         /* The ZLS loads and stores whole 32x32 ISP tiles. */
++         *stride = util_format_get_stride(templ->format, ALIGN_POT(templ->width0, 32));
++         *size = (uint64_t)*stride * ALIGN_POT(templ->height0, 32);
++         return true;
++      }
+       *stride = util_format_get_stride(templ->format, templ->width0);
+       *size = (uint64_t)*stride * templ->height0;
+       return true;
+diff --git a/src/gallium/drivers/pvr_native/pvr_vm.c b/src/gallium/drivers/pvr_native/pvr_vm.c
+index 66b6a3be..6cc31123 100644
+--- a/src/gallium/drivers/pvr_native/pvr_vm.c
++++ b/src/gallium/drivers/pvr_native/pvr_vm.c
+@@ -678,7 +678,7 @@ bool
+ pvr_job_submit_render(struct pvr_vm *vm, uint32_t context_handle,
+                       const void *geom_stream, uint32_t geom_len,
+                       const void *frag_stream, uint32_t frag_len,
+-                      uint32_t hwrt_set_handle, uint32_t hwrt_data_index)
++                      uint32_t hwrt_set_handle, uint32_t hwrt_data_index, uint32_t frag_flags)
+ {
+    /* Geometry and fragment jobs are different job types, so the kernel does not order them against
+     * each other; the reference chains them with syncobjs and submits THREE jobs: geometry, a
+@@ -747,7 +747,8 @@ pvr_job_submit_render(struct pvr_vm *vm, uint32_t context_handle,
+       .context_handle = context_handle,
+       .cmd_stream = (uint64_t)(uintptr_t)frag_stream,
+       .cmd_stream_len = frag_len,
+-      .flags = DRM_PVR_SUBMIT_JOB_FRAG_CMD_PARTIAL_RENDER | DRM_PVR_SUBMIT_JOB_FRAG_CMD_DISABLE_PIXELMERGE,
++      .flags = DRM_PVR_SUBMIT_JOB_FRAG_CMD_PARTIAL_RENDER |
++               DRM_PVR_SUBMIT_JOB_FRAG_CMD_DISABLE_PIXELMERGE | frag_flags,
+       .sync_ops = { .stride = sizeof(pr_ops[0]), .count = ARRAY_SIZE(pr_ops),
+                     .array = (__u64)(uintptr_t)pr_ops },
+       .hwrt = { .set_handle = hwrt_set_handle,
+@@ -761,7 +762,7 @@ pvr_job_submit_render(struct pvr_vm *vm, uint32_t context_handle,
+       .cmd_stream = (uint64_t)(uintptr_t)frag_stream,
+       .cmd_stream_len = frag_len,
+       /* As the reference, which always disables it ("enable pixel merging when it is safe"). */
+-      .flags = DRM_PVR_SUBMIT_JOB_FRAG_CMD_DISABLE_PIXELMERGE,
++      .flags = DRM_PVR_SUBMIT_JOB_FRAG_CMD_DISABLE_PIXELMERGE | frag_flags,
+       .sync_ops = { .stride = sizeof(frag_ops[0]), .count = ARRAY_SIZE(frag_ops),
+                     .array = (__u64)(uintptr_t)frag_ops },
+       .hwrt = { .set_handle = hwrt_set_handle,
+diff --git a/src/gallium/drivers/pvr_native/pvr_vm.h b/src/gallium/drivers/pvr_native/pvr_vm.h
+index f1cd8a29..4ddd4aac 100644
+--- a/src/gallium/drivers/pvr_native/pvr_vm.h
++++ b/src/gallium/drivers/pvr_native/pvr_vm.h
+@@ -175,7 +175,7 @@ bool pvr_job_submit_frag_sync(struct pvr_vm *vm, uint32_t context_handle,
+ bool pvr_job_submit_render(struct pvr_vm *vm, uint32_t context_handle,
+                             const void *geom_stream, uint32_t geom_len,
+                             const void *frag_stream, uint32_t frag_len,
+-                            uint32_t hwrt_set_handle, uint32_t hwrt_data_index);
++                            uint32_t hwrt_set_handle, uint32_t hwrt_data_index, uint32_t frag_flags);
+ bool pvr_job_submit(struct pvr_vm *vm, uint32_t context_handle, uint32_t job_type,
+                     const void *cmd_stream, uint32_t cmd_stream_len,
+                     uint32_t hwrt_set_handle, uint32_t hwrt_data_index);
+-- 
+2.47.3
+

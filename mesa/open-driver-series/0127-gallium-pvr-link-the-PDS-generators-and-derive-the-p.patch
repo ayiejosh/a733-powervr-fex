@@ -1,7 +1,7 @@
-From 4d4b44e3a625c6ed3140abd6176f77a9bffd2f09 Mon Sep 17 00:00:00 2001
+From bf32b4206d602b6eadb6335fd459e78a4485ff0c Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Fri, 16 Oct 2026 16:03:45 +0800
-Subject: [PATCH 127/269] gallium/pvr: link the PDS generators, and derive the
+Subject: [PATCH 127/294] gallium/pvr: link the PDS generators, and derive the
  per-heap static offsets
 
 The static context state needs the firmware's VDM sync and pixel-event programs, which

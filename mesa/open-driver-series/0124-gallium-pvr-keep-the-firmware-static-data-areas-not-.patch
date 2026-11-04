@@ -1,7 +1,7 @@
-From 8ed8b5b1931e57b4428312c0d9620b3aa6deecae Mon Sep 17 00:00:00 2001
+From ba9dbd3376f9377c87406e1d5a5860136e7d908c Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Fri, 16 Oct 2026 15:31:17 +0800
-Subject: [PATCH 124/269] gallium/pvr: keep the firmware static-data areas, not
+Subject: [PATCH 124/294] gallium/pvr: keep the firmware static-data areas, not
  just their total
 
 The VM setup summed the kernel's static-data areas to work out the carveout and then

@@ -1,7 +1,7 @@
-From e903693765c24443e0f78498736c7f1a4892b8b4 Mon Sep 17 00:00:00 2001
+From 4207436bc819f8210eebbdefd1d7828903c84da0 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sun, 11 Oct 2026 06:01:30 +0800
-Subject: [PATCH 82/98] pco, pvr: copy uniform buffer ranges into shared
+Subject: [PATCH 082/294] pco, pvr: copy uniform buffer ranges into shared
  registers
 
 Every uniform buffer load was a memory load in each shader invocation,
@@ -43,7 +43,7 @@ dynamic_rendering sample (6745), TFBC list (9170), synchronization
  7 files changed, 227 insertions(+), 1 deletion(-)
 
 diff --git a/src/imagination/pco/pco_data.h b/src/imagination/pco/pco_data.h
-index e37d9d5..8b9d43a 100644
+index e37d9d56..8b9d43af 100644
 --- a/src/imagination/pco/pco_data.h
 +++ b/src/imagination/pco/pco_data.h
 @@ -192,6 +192,12 @@ typedef struct _pco_binding_data {
@@ -92,7 +92,7 @@ index e37d9d5..8b9d43a 100644
  
     struct {
 diff --git a/src/imagination/pco/pco_nir.c b/src/imagination/pco/pco_nir.c
-index 4201d4d..f12cbf9 100644
+index 4201d4dc..f12cbf93 100644
 --- a/src/imagination/pco/pco_nir.c
 +++ b/src/imagination/pco/pco_nir.c
 @@ -1320,6 +1320,108 @@ remat_load_const(nir_builder *b, nir_instr *instr, UNUSED void *cb_data)
@@ -215,7 +215,7 @@ index 4201d4d..f12cbf9 100644
  
     /* Temporary: lower phi undefs to zero because at this stage we don't want to
 diff --git a/src/imagination/pco/pco_trans_nir.c b/src/imagination/pco/pco_trans_nir.c
-index 98b441b..c770bb8 100644
+index 98b441b2..c770bb82 100644
 --- a/src/imagination/pco/pco_trans_nir.c
 +++ b/src/imagination/pco/pco_trans_nir.c
 @@ -1360,6 +1360,30 @@ static pco_instr *trans_load_buffer(trans_ctx *tctx,
@@ -250,7 +250,7 @@ index 98b441b..c770bb8 100644
     pco_ref_hwreg_addr_comps(sh_index, PCO_REG_CLASS_SHARED, base_addr);
  
 diff --git a/src/imagination/vulkan/pds/pvr_pds.h b/src/imagination/vulkan/pds/pvr_pds.h
-index fe133bc..2f883fb 100644
+index fe133bce..2f883fbd 100644
 --- a/src/imagination/vulkan/pds/pvr_pds.h
 +++ b/src/imagination/vulkan/pds/pvr_pds.h
 @@ -928,6 +928,7 @@ struct pvr_pds_descriptor_set {
@@ -262,7 +262,7 @@ index fe133bc..2f883fb 100644
  
  struct pvr_pds_buffer {
 diff --git a/src/imagination/vulkan/pds/pvr_pipeline_pds.c b/src/imagination/vulkan/pds/pvr_pipeline_pds.c
-index 0b58cba..3027d89 100644
+index 0b58cbab..3027d895 100644
 --- a/src/imagination/vulkan/pds/pvr_pipeline_pds.c
 +++ b/src/imagination/vulkan/pds/pvr_pipeline_pds.c
 @@ -1617,7 +1617,8 @@ void pvr_pds_generate_descriptor_upload_program(
@@ -286,7 +286,7 @@ index 0b58cba..3027d89 100644
           default:
              break;
 diff --git a/src/imagination/vulkan/pvr_arch_cmd_buffer.c b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
-index 805889c..0cb207e 100644
+index 805889c9..0cb207e9 100644
 --- a/src/imagination/vulkan/pvr_arch_cmd_buffer.c
 +++ b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
 @@ -5735,6 +5735,43 @@ pvr_setup_vertex_buffers(struct pvr_cmd_buffer *cmd_buffer,
@@ -354,7 +354,7 @@ index 805889c..0cb207e 100644
              unsigned desc_set = special_buff_entry->data;
              const struct pvr_descriptor_set *descriptor_set;
 diff --git a/src/imagination/vulkan/pvr_arch_pipeline.c b/src/imagination/vulkan/pvr_arch_pipeline.c
-index 9164bc6..283cb27 100644
+index 9164bc63..283cb272 100644
 --- a/src/imagination/vulkan/pvr_arch_pipeline.c
 +++ b/src/imagination/vulkan/pvr_arch_pipeline.c
 @@ -584,6 +584,15 @@ static VkResult pvr_pds_descriptor_program_create_and_upload(

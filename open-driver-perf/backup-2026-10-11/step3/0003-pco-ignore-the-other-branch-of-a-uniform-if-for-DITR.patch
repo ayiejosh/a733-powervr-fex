@@ -1,0 +1,87 @@
+From be232b13c0abc8db493c81883687f35074453f6e Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Tue, 13 Oct 2026 23:12:13 +0800
+Subject: [PATCH 3/3] pco: ignore the other branch of a uniform if for DITR
+ pre-fences
+
+ditr_needs_pre_fence walks the instruction list backwards looking for
+uses of the iterator destination registers. In a versioned shader the
+walk crosses from the unchecked copy (else) into the checked copy (then),
+which never runs on the same path, and finds registers in common, so the
+unchecked copy got a pre-fence of three groups it does not need.
+
+Skip instructions in the then body when the DITR is in the else body of
+the same uniform if. The skip comes before the fence check, as a fence
+in the other body does not cover this path, and is limited to ifs that
+are neither predicated nor inside a loop.
+
+jellyfish and bump lose three groups on the executed path.
+---
+ src/imagination/pco/pco_legalize.c | 44 ++++++++++++++++++++++++++++++
+ 1 file changed, 44 insertions(+)
+
+diff --git a/src/imagination/pco/pco_legalize.c b/src/imagination/pco/pco_legalize.c
+index f18aab8..f4a9422 100644
+--- a/src/imagination/pco/pco_legalize.c
++++ b/src/imagination/pco/pco_legalize.c
+@@ -882,6 +882,46 @@ static bool try_legalize_large_hwreg_offsets(pco_instr *instr,
+    return true;
+ }
+ 
++/**
++ * \brief Check whether two instructions are in the then and the else body of
++ * the same uniform if, so that they never run on the same path.
++ *
++ * \param[in] a First instruction.
++ * \param[in] b Second instruction.
++ * \return True if the instructions are mutually exclusive.
++ */
++static bool instrs_exclusive(pco_instr *a, pco_instr *b)
++{
++   for (pco_cf_node *na = &a->parent_block->cf_node; na->parent;
++        na = na->parent) {
++      if (na->parent->type != PCO_CF_NODE_TYPE_IF ||
++          na->flag != PCO_CF_NODE_FLAG_IF_THEN) {
++         continue;
++      }
++
++      /* Divergent ifs issue both bodies back to back. */
++      pco_if *pif = pco_cf_node_as_if(na->parent);
++      if (!pif->uniform || pif->pred_exec)
++         continue;
++
++      for (pco_cf_node *nb = &b->parent_block->cf_node; nb->parent;
++           nb = nb->parent) {
++         if (nb->parent != na->parent || nb->flag != PCO_CF_NODE_FLAG_IF_ELSE)
++            continue;
++
++         /* In a loop the bodies can run in successive iterations. */
++         for (pco_cf_node *up = na->parent->parent; up; up = up->parent) {
++            if (up->type == PCO_CF_NODE_TYPE_LOOP)
++               return false;
++         }
++
++         return true;
++      }
++   }
++
++   return false;
++}
++
+ /**
+  * \brief Check whether a DITR/DITRP instruction requires a pre-fence.
+  *
+@@ -897,6 +937,10 @@ static bool ditr_needs_pre_fence(pco_instr *instr)
+    pco_ref ditr_dest = instr->dest[0];
+ 
+    pco_foreach_instr_in_func_from_rev (prev, instr) {
++      /* Instructions on the other path of an if do not run before this one. */
++      if (instrs_exclusive(prev, instr))
++         continue;
++
+       if (prev->op == PCO_OP_FENCE)
+          break;
+ 
+-- 
+2.47.3
+

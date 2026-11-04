@@ -1,8 +1,8 @@
-From d49fe8e4205e2effa82a0feebf40a9799d47d04e Mon Sep 17 00:00:00 2001
+From 3182f303afc1bb97f51eb48435983814999a47e8 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sat, 10 Oct 2026 00:19:18 +0800
-Subject: [PATCH 45/98] pco: resolve pixel-rate vs sample-rate at compile time
- when known
+Subject: [PATCH 045/294] pco: resolve pixel-rate vs sample-rate at compile
+ time when known
 
 Every non-internal fragment shader read the sample-shading bit from the
 fragment meta shared register at runtime, per pixel, to pick between the
@@ -22,7 +22,7 @@ BXM-4-64 (A733), median of 3, on top of the previous commit: vkrender 2048
  1 file changed, 24 insertions(+), 8 deletions(-)
 
 diff --git a/src/imagination/pco/pco_trans_nir.c b/src/imagination/pco/pco_trans_nir.c
-index fcedd27..6ca9203 100644
+index fcedd276..6ca92030 100644
 --- a/src/imagination/pco/pco_trans_nir.c
 +++ b/src/imagination/pco/pco_trans_nir.c
 @@ -466,6 +466,16 @@ static pco_ref fs_is_single_sampled(trans_ctx *tctx)

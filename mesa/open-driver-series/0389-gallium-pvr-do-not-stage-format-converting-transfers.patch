@@ -1,0 +1,140 @@
+From 198afbd4b792db8dc37ecff52b1c8fba1b05f577 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Mon, 2 Nov 2026 23:03:19 +0800
+Subject: [PATCH 389/393] gallium/pvr: do not stage format-converting transfers
+ through blits
+
+The default texture_transfer_modes makes the state tracker stage a
+ReadPixels or TexSubImage that changes format through pipe->blit, but
+pvr_blit skips every blit that converts, flips or scales. A glReadPixels
+from a GL_RGB (R8G8B8X8) target therefore returned the never-written
+staging texture: 0 0 0 0. Select the state tracker's CPU map + util_format
+path instead; the map goes through pvr_transfer_map, which applies deferred
+clears and decodes twiddled/compressed levels. Blits that convert or scale
+(CopyTexSubImage with a format change, BlitFramebuffer) still reach
+pvr_blit's skip.
+
+Every ReadPixels now maps the read buffer itself (st already did so for
+reads that need no conversion), so a CPU map must be ordered after every
+render that writes the resource. Three gaps showed. Colour attachments 1-3
+of an MRT render were never marked as used by it: attachment 1 of a 4x4
+MRT framebuffer read back right after the draw, through another
+framebuffer or in place with glReadBufferNV, returned 0 0 0 0, and a
+glTexSubImage into it right after the draw was not ordered with the
+render's store. A render that only clears defers its clear onto the
+resource when it is flushed, which happened after the map had applied the
+deferred clears: a clear read back with no flush in between returned the
+old contents. And a blit render into attachment 0 (a map's encode) while
+an MRT framebuffer is bound was built as that framebuffer's MRT render and
+overwrote attachment 1. Mark every attachment the render writes when it is
+flushed, have a CPU map flush an open render that writes the resource
+before it applies the deferred clears, and give blit and materialize
+renders no MRT end-of-tile writes.
+
+A framebuffer with a hole in its draw buffers (a GL_NONE between two
+attachments) made the flush dereference the missing attachment. Draw it
+as attachment 0 only and clear it on the CPU, with one rule for the
+draw-time shader variant, the EOT and the GPU clear; a framebuffer whose
+draw buffer 0 is GL_NONE is still not drawn.
+---
+ src/gallium/drivers/pvr_native/pvr_draw.c   | 31 +++++++++++++++++----
+ src/gallium/drivers/pvr_native/pvr_screen.c |  4 +++
+ 2 files changed, 29 insertions(+), 6 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_draw.c b/src/gallium/drivers/pvr_native/pvr_draw.c
+index b9cecf1b..dbdc4d37 100644
+--- a/src/gallium/drivers/pvr_native/pvr_draw.c
++++ b/src/gallium/drivers/pvr_native/pvr_draw.c
+@@ -1576,6 +1576,19 @@ draw_fb_level(struct pvr_context *ctx)
+ {
+    return ctx->fb.nr_cbufs && ctx->fb.cbufs[0].texture ? ctx->fb.cbufs[0].level : 0;
+ }
++/* The colour attachments a framebuffer render writes; the draw-time shader variant, the EOT and the
++ * GPU clear all use it. shortcut: a hole in the list (a GL_NONE draw buffer between two others) is
++ * drawn as attachment 0 only and cleared on the CPU, and a framebuffer whose draw buffer 0 is
++ * GL_NONE is not drawn at all; handle holes in the EOT layout when an app needs it. */
++static unsigned
++draw_fb_nr_attach(const struct pvr_context *ctx)
++{
++   const unsigned nr = MIN2(ctx->fb.nr_cbufs, PVR_MAX_COLOR_ATTACHMENTS);
++   for (unsigned i = 1; i < nr; i++)
++      if (ctx->fb.cbufs[i].texture == NULL)
++         return 1;
++   return nr;
++}
+ 
+ /* The vertex shader derives each attribute's fetch format from the declared type.  GL lets the
+  * bound vertex element supply fewer components (a vec4 attribute fed three floats gets w = 1) and
+@@ -1715,7 +1728,7 @@ pvr_draw_3d(struct pvr_context *ctx, const struct pipe_draw_info *info,
+    /* The fragment shader variant for this framebuffer's colour format(s) and blend state. MRT v1:
+     * every attachment shares the first one's format (the background program emits one value). */
+    enum pipe_format rt_formats[PVR_MAX_COLOR_ATTACHMENTS] = { rt_format };
+-   unsigned nr_formats = MIN2(ctx->fb.nr_cbufs, PVR_MAX_COLOR_ATTACHMENTS);
++   unsigned nr_formats = draw_fb_nr_attach(ctx);
+    for (unsigned i = 0; i < nr_formats; i++)
+       rt_formats[i] = ctx->fb.cbufs[i].format;
+    nir_lower_blend_options blend;
+@@ -2010,7 +2023,7 @@ pvr_draw_note_clear(struct pvr_context *ctx, const union pipe_color_union *color
+ {
+    struct pvr_draw_state *d = ctx->draw;
+    if (ctx->fb.nr_cbufs == 0 || ctx->fb.cbufs[0].texture == NULL ||
+-       !draw_format_ok(ctx->fb.cbufs[0].format))
++       !draw_format_ok(ctx->fb.cbufs[0].format) || draw_fb_nr_attach(ctx) < ctx->fb.nr_cbufs)
+       return false;
+    if (d == NULL) {
+       ctx->draw = d = calloc(1, sizeof(struct pvr_draw_state));
+@@ -2119,6 +2132,9 @@ void
+ pvr_draw_resource_sync(struct pvr_context *ctx, struct pvr_resource *res)
+ {
+    struct pvr_draw_state *d = ctx->draw;
++   /* Flush an open render that writes res first: it marks MRT attachments 1-3 only when flushed, and
++    * a render that only clears defers its clear onto res, which the materialize below realizes. */
++   pvr_draw_flush_writer(ctx, &res->base);
+    if (res->clear_pending || res->zclear_pending)
+       draw_materialize(ctx, &res->base);
+    if (d == NULL || res->render_seq == 0)
+@@ -2287,12 +2303,13 @@ pvr_draw_flush(struct pvr_context *ctx)
+    unsigned nr_attach = 1;
+    uint64_t eot_addrs[PVR_MAX_COLOR_ATTACHMENTS] = { 0 };
+    enum pipe_format eot_formats[PVR_MAX_COLOR_ATTACHMENTS] = { PIPE_FORMAT_NONE };
+-   const unsigned nr_fb = MIN2(ctx->fb.nr_cbufs, PVR_MAX_COLOR_ATTACHMENTS);
++   const unsigned nr_fb = draw_fb_nr_attach(ctx);
+    /* MRT only when this render really is the framebuffer's: materialize/blit renders open the
+-    * driver's own target (d->rt) while the context framebuffer state still names some other set. */
++    * driver's own target (d->rt) while the context framebuffer state still names some other set,
++    * and one into attachment 0 itself (a CPU map's encode, a deferred clear) is not it either. */
+    const bool fb_render =
+-      !zonly && nr_fb > 1 && d->rt == ctx->fb.cbufs[0].texture &&
+-      d->rt_level == ctx->fb.cbufs[0].level;
++      !zonly && nr_fb > 1 && d->load_src == NULL && !d->no_defer &&
++      d->rt == ctx->fb.cbufs[0].texture && d->rt_level == ctx->fb.cbufs[0].level;
+    const uint64_t rt_addr = pvr_resource_level_addr_layer(rt, d->rt_level, d->rt_layer);
+    if (zonly) {
+       eot_addrs[0] = rt_addr;
+@@ -2304,6 +2321,8 @@ pvr_draw_flush(struct pvr_context *ctx)
+          nr_attach = nr_fb;
+          for (unsigned i = 1; i < nr_attach; i++) {
+             struct pvr_resource *ri = pvr_resource(ctx->fb.cbufs[i].texture);
++            /* This render writes attachment i too: a CPU map of it must wait for the render. */
++            draw_use(d, ctx->fb.cbufs[i].texture);
+             eot_addrs[i] = pvr_resource_level_addr(ri, ctx->fb.cbufs[i].level);
+             eot_formats[i] = ctx->fb.cbufs[i].format;
+          }
+diff --git a/src/gallium/drivers/pvr_native/pvr_screen.c b/src/gallium/drivers/pvr_native/pvr_screen.c
+index 4fb11f9c..2fe83545 100644
+--- a/src/gallium/drivers/pvr_native/pvr_screen.c
++++ b/src/gallium/drivers/pvr_native/pvr_screen.c
+@@ -326,6 +326,10 @@ pvr_screen_create(int fd, const struct pipe_screen_config *config,
+        * fragment variant maps data0..3. ES3 needs 4; v1 requires a shared format (see flush). */
+       caps->max_render_targets = 4;
+       caps->generate_mipmap = true; /* GPU box filter renders, pvr_generate_mipmap */
++      /* pvr_blit skips blits that convert, flip or scale, so st must not stage ReadPixels or
++       * TexSubImage conversions through it (RGBX/BGRA readbacks returned the untouched staging
++       * texture, all zeros). 0 selects st's CPU map + util_format fallbacks. */
++      caps->texture_transfer_modes = 0;
+ 
+       /* Separate RGB/alpha blend equations. Not a guess: Mesa's own ES2 requirement
+        * list (version.c compute_version_es2) is exactly three extensions -
+-- 
+2.47.3
+

@@ -1,0 +1,43 @@
+From c23ff53f7378718602d2b3af35f98ecd639d7b7d Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Mon, 2 Nov 2026 23:03:39 +0800
+Subject: [PATCH 390/393] gallium/pvr: keep client-filled textures uncompressed
+
+A texture that the CPU fills before anything renders into it is a client
+texture. TFBC saves DRAM bandwidth when such a texture is sampled, but on
+this GPU sampling these textures compressed measured slower than
+uncompressed (the cost is assumed to be in the texture unit; that was not
+measured). With this condition behind a debug knob on series 0387 (before
+0388 and 0389; two full runs each way), glmark2 bump (height) runs 6.7%
+faster and jellyfish 6.5%, the whole run scores 838/839 -> 842/842, and no
+scene drops by more than 0.31% (2.5 fps at most). Textures first written
+by a GPU render keep TFBC.
+
+At the first CPU write to a compressed texture that nothing has rendered
+into, clear its fbc flag. The data address stays past the header area,
+which is left unused; descriptors and PBE words are built from the flag at
+use, so nothing holds the old state.
+---
+ src/gallium/drivers/pvr_native/pvr_context.c | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_context.c b/src/gallium/drivers/pvr_native/pvr_context.c
+index 54645949..9fa20275 100644
+--- a/src/gallium/drivers/pvr_native/pvr_context.c
++++ b/src/gallium/drivers/pvr_native/pvr_context.c
+@@ -50,6 +50,12 @@ pvr_transfer_map(struct pipe_context *pctx, struct pipe_resource *pres,
+     * through a linear copy of the level: the GPU decodes it into the staging resource (unless the
+     * content is discarded) and, after a write, encodes it back on unmap. Twiddled depth is only
+     * written by the ZLS. */
++   /* A compressed level that nothing has rendered into and that the CPU writes first belongs to a
++    * client texture: keep it uncompressed (sampling such textures compressed measured slower).
++    * Textures first written by a GPU render keep TFBC. The data address stays past the unused
++    * header area, and descriptors and PBE words read the flag at use. */
++   if (res->fbc && res->write_seq == 0 && (usage & PIPE_MAP_WRITE))
++      res->fbc = false;
+    if (res->twiddled) {
+       struct pvr_context *ctx = pvr_context(pctx);
+       /* A cube map is mapped one face at a time: the box's z selects the face. */
+-- 
+2.47.3
+

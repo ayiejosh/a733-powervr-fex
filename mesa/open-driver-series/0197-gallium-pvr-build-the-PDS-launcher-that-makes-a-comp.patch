@@ -1,7 +1,7 @@
-From db76299410401a9d66ab2a620453f04d12c99345 Mon Sep 17 00:00:00 2001
+From fe3e0f449b9e98d373462d64b6df3cb7026f8cd7 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sat, 24 Oct 2026 03:36:29 +0800
-Subject: [PATCH 197/269] gallium/pvr: build the PDS launcher that makes a
+Subject: [PATCH 197/294] gallium/pvr: build the PDS launcher that makes a
  compiled shader run
 
 The USC binary is only half of a runnable program: the hardware reaches it through a PDS launcher

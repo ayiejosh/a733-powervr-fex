@@ -1,0 +1,120 @@
+From e6d53f681b5f1564d254be6004e56ea1b50bf25a Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Tue, 3 Nov 2026 14:19:24 +0800
+Subject: [PATCH 395/398] pco: take the sample mask from coverage when the
+ sample check is skipped
+
+nir_lower_is_helper_invocation turns discard into "the sample mask is
+zero", and gl_SampleMaskIn was always lowered to the fs_meta sample mask
+ANDed with the coverage. The gallium driver provides no fs_meta (it sets
+skip_sample_check: single-sampled, sample 0 in the static mask), so the
+load read whatever shared register 0 held, here the gl_FragCoord y
+transform (+-1.0, whose bit 9 is clear): every fragment of a shader that
+can discard was a helper and was discarded, even one whose discard never
+fires. With skip_sample_check the static mask holds sample 0 of a single
+sample, so the mask is the coverage; use it without reading fs_meta. The
+Vulkan driver sets skip_sample_check only in that case too, so its
+shaders keep the same result.
+---
+ src/imagination/pco/pco_internal.h  |  2 +-
+ src/imagination/pco/pco_nir.c       |  2 +-
+ src/imagination/pco/pco_nir_pvfio.c | 30 ++++++++++++++++++-----------
+ 3 files changed, 21 insertions(+), 13 deletions(-)
+
+diff --git a/src/imagination/pco/pco_internal.h b/src/imagination/pco/pco_internal.h
+index 6e36186a..f9abb522 100644
+--- a/src/imagination/pco/pco_internal.h
++++ b/src/imagination/pco/pco_internal.h
+@@ -1830,7 +1830,7 @@ bool pco_nir_lower_alu(nir_shader *shader, pco_ctx *ctx);
+ bool pco_nir_lower_atomics(nir_shader *shader, pco_data *data);
+ bool pco_nir_lower_barriers(nir_shader *shader, pco_data *data);
+ void pco_nir_lower_clip_cull_vars(nir_shader *shader);
+-bool pco_nir_lower_fs_intrinsics(nir_shader *shader);
++bool pco_nir_lower_fs_intrinsics(nir_shader *shader, const pco_fs_data *fs);
+ bool pco_nir_lower_vs_intrinsics(nir_shader *shader);
+ bool pco_nir_lower_images(nir_shader *shader, pco_data *data, pco_ctx *ctx);
+ bool pco_nir_lower_interpolation(nir_shader *shader, pco_fs_data *fs);
+diff --git a/src/imagination/pco/pco_nir.c b/src/imagination/pco/pco_nir.c
+index 796a5d08..01576acf 100644
+--- a/src/imagination/pco/pco_nir.c
++++ b/src/imagination/pco/pco_nir.c
+@@ -1219,7 +1219,7 @@ void pco_lower_nir(pco_ctx *ctx, nir_shader *nir, pco_data *data)
+          NIR_PASS(_, nir, pco_nir_lower_sample_mask_out, &data->fs);
+       NIR_PASS(_, nir, pco_nir_pfo, &data->fs);
+       NIR_PASS(_, nir, nir_lower_is_helper_invocation);
+-      NIR_PASS(_, nir, pco_nir_lower_fs_intrinsics);
++      NIR_PASS(_, nir, pco_nir_lower_fs_intrinsics, &data->fs);
+    } else if (nir->info.stage == MESA_SHADER_VERTEX) {
+       /* If needed, duplicate the point size for xfb prior to it being clamped.
+        */
+diff --git a/src/imagination/pco/pco_nir_pvfio.c b/src/imagination/pco/pco_nir_pvfio.c
+index 2a8ccc99..2ab74f70 100644
+--- a/src/imagination/pco/pco_nir_pvfio.c
++++ b/src/imagination/pco/pco_nir_pvfio.c
+@@ -1192,21 +1192,29 @@ static bool lower_front_face(nir_builder *b, nir_intrinsic_instr *intr)
+    return true;
+ }
+ 
+-static bool lower_sample_mask_in(nir_builder *b, nir_intrinsic_instr *intr)
++static bool lower_sample_mask_in(nir_builder *b,
++                                 nir_intrinsic_instr *intr,
++                                 const pco_fs_data *fs)
+ {
+-   nir_def *mask =
+-      nir_ubitfield_extract_imm(b,
+-                                nir_load_fs_meta_pco(b),
+-                                PVR_FS_META_SAMPLE_MASK_OFFSET,
+-                                PVR_FS_META_SAMPLE_MASK_LENGTH);
+-   mask = nir_iand(b, mask, nir_load_savmsk_vm_pco(b));
++   nir_def *mask = nir_load_savmsk_vm_pco(b);
++   /* Statically single-sampled with sample 0 in the static mask: the mask
++    * is the coverage, and the driver may provide no fs_meta at all.
++    */
++   if (!fs->skip_sample_check) {
++      mask = nir_iand(b,
++                      nir_ubitfield_extract_imm(b,
++                                                nir_load_fs_meta_pco(b),
++                                                PVR_FS_META_SAMPLE_MASK_OFFSET,
++                                                PVR_FS_META_SAMPLE_MASK_LENGTH),
++                      mask);
++   }
+    nir_def_rewrite_uses(&intr->def, mask);
+    nir_instr_remove(&intr->instr);
+    return true;
+ }
+ 
+ static bool
+-lower_fs_intr(nir_builder *b, nir_intrinsic_instr *intr, UNUSED void *cb_data)
++lower_fs_intr(nir_builder *b, nir_intrinsic_instr *intr, void *cb_data)
+ {
+    b->cursor = nir_before_instr(&intr->instr);
+ 
+@@ -1215,7 +1223,7 @@ lower_fs_intr(nir_builder *b, nir_intrinsic_instr *intr, UNUSED void *cb_data)
+       return lower_front_face(b, intr);
+ 
+    case nir_intrinsic_load_sample_mask_in:
+-      return lower_sample_mask_in(b, intr);
++      return lower_sample_mask_in(b, intr, cb_data);
+ 
+    /* Drop these, already handled by nir_lower_is_helper_invocation. */
+    case nir_intrinsic_demote:
+@@ -1230,14 +1238,14 @@ lower_fs_intr(nir_builder *b, nir_intrinsic_instr *intr, UNUSED void *cb_data)
+    return false;
+ }
+ 
+-bool pco_nir_lower_fs_intrinsics(nir_shader *shader)
++bool pco_nir_lower_fs_intrinsics(nir_shader *shader, const pco_fs_data *fs)
+ {
+    assert(shader->info.stage == MESA_SHADER_FRAGMENT);
+ 
+    return nir_shader_intrinsics_pass(shader,
+                                      lower_fs_intr,
+                                      nir_metadata_control_flow,
+-                                     NULL);
++                                     (void *)fs);
+ }
+ 
+ static bool
+-- 
+2.47.3
+

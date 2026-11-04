@@ -1,0 +1,135 @@
+From c17346143f94a98bdbe6dc5546f02b4a0cf13789 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sat, 10 Oct 2026 01:54:28 +0800
+Subject: [PATCH 54/73] pco: drop moves around push constants, bitfield ops and
+ shifted adds
+
+Three translation-time savings:
+
+- Push constants, inline UBOs and blend constants live in shared
+  registers that shaders never write, so load them with a pseudo mov
+  instead of an mbyp: forward propagation then reads the register
+  directly. Coefficient-backed workgroup memory keeps the mbyp, as it can
+  be stored to.
+- ubitfield_extract/ibitfield_extract/bitfield_insert guard bits == 0
+  with a bcsel (a whole tst/movc group). Skip it when the bit count is a
+  nonzero constant (e.g. x & 0xffff lowered to ubfe(x, 0, 16)).
+- (x << c) + y with a single-use constant shift becomes one
+  imadd32(x, 1 << c, y), like the existing imul + iadd fold. The compute
+  global invocation index is the common case.
+
+cstp 29 -> 26 groups, cstpf 130 -> 126, cstpi 129 -> 126. BXM-4-64,
+interleaved A/B x4: cstpf 125 -> 131, cstp ~315 -> ~334 (noisy),
+cstpi 119 -> 121 M inv/s. All correctness checks unchanged.
+---
+ src/imagination/pco/pco_trans_nir.c | 52 +++++++++++++++++++++++++++++
+ 1 file changed, 52 insertions(+)
+
+diff --git a/src/imagination/pco/pco_trans_nir.c b/src/imagination/pco/pco_trans_nir.c
+index 3cecfda..726e186 100644
+--- a/src/imagination/pco/pco_trans_nir.c
++++ b/src/imagination/pco/pco_trans_nir.c
+@@ -1034,6 +1034,13 @@ static pco_instr *trans_load_common_store(trans_ctx *tctx,
+       assert(offset < range->count);
+ 
+       pco_ref src = pco_ref_hwreg_vec(range->start + offset, reg_class, chans);
++
++      /* Shared registers are read-only in the shader (only coefficient-backed
++       * workgroup memory is written), so let forward propagation fold them.
++       */
++      if (!coeffs)
++         return pco_mov(&tctx->b, dest, src, .rpt = chans);
++
+       return pco_mbyp(&tctx->b, dest, src, .rpt = chans);
+    }
+ 
+@@ -3777,6 +3784,13 @@ trans_conv(trans_ctx *tctx, nir_op op, pco_ref dest, pco_ref src)
+  * \p s of \p alu if \p alu is its only user, so it can be folded into \p alu
+  * (the producer is then left dead and removed by DCE).
+  */
++/* Whether ALU source s is a constant that is not zero. */
++static bool alu_src_is_nonzero_const(const nir_alu_instr *alu, unsigned s)
++{
++   return nir_src_is_const(alu->src[s].src) &&
++          nir_src_comp_as_uint(alu->src[s].src, alu->src[s].swizzle[0]) != 0;
++}
++
+ static nir_alu_instr *
+ single_use_alu_src(const nir_alu_instr *alu, unsigned s, nir_op op)
+ {
+@@ -3934,6 +3948,21 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
+          other = 0;
+       }
+ 
++      /* (x << c) + y likewise, as x * (1 << c) + y. */
++      nir_alu_instr *shl = NULL;
++      if (!mul) {
++         other = 1;
++         shl = single_use_alu_src(alu, 0, nir_op_ishl);
++         if (!shl) {
++            shl = single_use_alu_src(alu, 1, nir_op_ishl);
++            other = 0;
++         }
++         if (shl && (!nir_src_is_const(shl->src[1].src) ||
++                     nir_src_comp_as_uint(shl->src[1].src,
++                                          shl->src[1].swizzle[0]) >= 32))
++            shl = NULL;
++      }
++
+       if (mul) {
+          instr = pco_imadd32(&tctx->b,
+                              dest,
+@@ -3941,6 +3970,17 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
+                              pco_ref_nir_alu_src_t(mul, 1, tctx),
+                              src[other],
+                              pco_ref_null());
++      } else if (shl) {
++         unsigned c = nir_src_comp_as_uint(shl->src[1].src,
++                                           shl->src[1].swizzle[0]);
++         pco_ref scale = pco_ref_new_ssa32(tctx->func);
++         pco_movi32(&tctx->b, scale, pco_ref_imm32(1u << c));
++         instr = pco_imadd32(&tctx->b,
++                             dest,
++                             pco_ref_nir_alu_src_t(shl, 0, tctx),
++                             scale,
++                             src[other],
++                             pco_ref_null());
+       } else {
+          instr = pco_iadd32(&tctx->b, dest, src[0], src[1], pco_ref_null());
+       }
+@@ -4149,6 +4189,10 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
+       break;
+ 
+    case nir_op_ibitfield_extract: {
++      if (alu_src_is_nonzero_const(alu, 2)) {
++         instr = pco_ibfe(&tctx->b, dest, src[0], src[1], src[2]);
++         break;
++      }
+       pco_ref bfe = pco_ref_new_ssa32(tctx->func);
+       pco_ibfe(&tctx->b, bfe, src[0], src[1], src[2]);
+       instr = pco_bcsel(&tctx->b, dest, src[2], bfe, pco_zero);
+@@ -4156,6 +4200,10 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
+    }
+ 
+    case nir_op_ubitfield_extract: {
++      if (alu_src_is_nonzero_const(alu, 2)) {
++         instr = pco_ubfe(&tctx->b, dest, src[0], src[1], src[2]);
++         break;
++      }
+       pco_ref bfe = pco_ref_new_ssa32(tctx->func);
+       pco_ubfe(&tctx->b, bfe, src[0], src[1], src[2]);
+       instr = pco_bcsel(&tctx->b, dest, src[2], bfe, pco_zero);
+@@ -4163,6 +4211,10 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
+    }
+ 
+    case nir_op_bitfield_insert: {
++      if (alu_src_is_nonzero_const(alu, 3)) {
++         instr = pco_bfi(&tctx->b, dest, src[0], src[1], src[2], src[3]);
++         break;
++      }
+       pco_ref bfi = pco_ref_new_ssa32(tctx->func);
+       pco_bfi(&tctx->b, bfi, src[0], src[1], src[2], src[3]);
+       instr = pco_bcsel(&tctx->b, dest, src[3], bfi, src[0]);
+-- 
+2.47.3
+

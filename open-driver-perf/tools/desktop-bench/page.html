@@ -1,0 +1,125 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>dailybench</title>
+<style>
+  html, body { margin: 0; background: #111; overflow: hidden; color: #eee; font: 14px sans-serif; }
+  #c { position: fixed; left: 0; top: 0; width: 100vw; height: 100vh; }
+  .box { position: absolute; width: 60px; height: 60px; border-radius: 8px; opacity: .85;
+         animation: spin 2s linear infinite, drift 3s ease-in-out infinite alternate; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes drift { to { margin-left: 120px; margin-top: 60px; } }
+  video { position: fixed; left: 0; top: 0; width: 100vw; height: 100vh; background: #000; }
+  #status { position: fixed; right: 8px; bottom: 8px; z-index: 9; background: #0008; padding: 4px 8px; }
+</style></head>
+<body>
+<div id="status">dailybench</div>
+<script>
+// One page, three daily-use workloads, each result logged as one JSON line ("DAILYBENCH {...}") to the
+// console, which both browsers are told to copy to stderr/stdout.
+const log = (o) => console.log("DAILYBENCH " + JSON.stringify(o));
+// Each phase start is logged too, so the harness can screenshot every phase for the visual check.
+const status = (s) => { document.getElementById("status").textContent = s; log({ test: "phase", name: s }); };
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+function measure(ms, frame) {
+  return new Promise((resolve) => {
+    const dts = []; let t0 = null, last = null, n = 0;
+    function f(t) {
+      if (t0 === null) { t0 = last = t; }
+      else { dts.push(t - last); last = t; n++; }
+      if (frame) frame(t);
+      if (t - t0 < ms) requestAnimationFrame(f);
+      else {
+        dts.sort((a, b) => a - b);
+        resolve({ fps: +(n * 1000 / (t - t0)).toFixed(1),
+                  p95_ms: +dts[Math.floor(dts.length * 0.95)].toFixed(1),
+                  worst_ms: +dts[dts.length - 1].toFixed(1) });
+      }
+    }
+    requestAnimationFrame(f);
+  });
+}
+async function webgl() {
+  const c = document.createElement("canvas"); c.id = "c"; document.body.appendChild(c);
+  const dpr = window.devicePixelRatio || 1;
+  c.width = Math.round(innerWidth * dpr); c.height = Math.round(innerHeight * dpr);
+  const gl = c.getContext("webgl", { antialias: false });
+  if (!gl) { log({ test: "webgl", error: "no WebGL context" }); c.remove(); return; }
+  const dbg = gl.getExtension("WEBGL_debug_renderer_info");
+  log({ test: "info", ua: navigator.userAgent, canvas: [c.width, c.height], dpr,
+        vendor: dbg ? gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL) : gl.getParameter(gl.VENDOR),
+        renderer: dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER),
+        version: gl.getParameter(gl.VERSION) });
+  const vs = `attribute vec3 p; attribute vec2 uv; uniform vec4 m; uniform float a; varying vec2 v; varying float l;
+    void main(){ float s=sin(a), co=cos(a); vec3 q=vec3(p.x*co-p.z*s, p.y, p.x*s+p.z*co);
+      q=vec3(q.x, q.y*co-q.z*s, q.y*s+q.z*co); v=uv; l=.5+.5*normalize(q).z;
+      gl_Position=vec4(q.xy*m.z+m.xy, q.z*.1+.5, 1.); }`;
+  const fs = `precision mediump float; varying vec2 v; varying float l; uniform sampler2D t;
+    void main(){ gl_FragColor=texture2D(t,v)*l; }`;
+  const sh = (ty, src) => { const s = gl.createShader(ty); gl.shaderSource(s, src); gl.compileShader(s); return s; };
+  const pr = gl.createProgram();
+  gl.attachShader(pr, sh(gl.VERTEX_SHADER, vs)); gl.attachShader(pr, sh(gl.FRAGMENT_SHADER, fs));
+  gl.linkProgram(pr); gl.useProgram(pr);
+  const P = [], U = [];
+  const faces = [[0,0,1],[0,0,-1],[0,1,0],[0,-1,0],[1,0,0],[-1,0,0]];
+  for (const n of faces) {
+    const a = n[0] ? [0,1,0] : [1,0,0], b = [n[1]*a[2]-n[2]*a[1], n[2]*a[0]-n[0]*a[2], n[0]*a[1]-n[1]*a[0]];
+    const corner = (i, j) => [0,1,2].map(k => n[k] + (i*2-1)*a[k] + (j*2-1)*b[k]);
+    for (const [i, j] of [[0,0],[1,0],[1,1],[0,0],[1,1],[0,1]]) { P.push(...corner(i, j)); U.push(i, j); }
+  }
+  const buf = (d, loc, n) => { gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(d), gl.STATIC_DRAW);
+    const l = gl.getAttribLocation(pr, loc); gl.enableVertexAttribArray(l); gl.vertexAttribPointer(l, n, gl.FLOAT, false, 0, 0); };
+  buf(P, "p", 3); buf(U, "uv", 2);
+  const tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, tex);
+  const T = 512, px = new Uint8Array(T * T * 4);
+  for (let y = 0; y < T; y++) for (let x = 0; x < T; x++) {
+    const o = (y * T + x) * 4, k = ((x >> 5) ^ (y >> 5)) & 1;
+    px[o] = k ? 230 : 40; px[o+1] = (x * 255 / T) | 0; px[o+2] = (y * 255 / T) | 0; px[o+3] = 255; }
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, T, T, 0, gl.RGBA, gl.UNSIGNED_BYTE, px);
+  gl.generateMipmap(gl.TEXTURE_2D);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+  gl.enable(gl.DEPTH_TEST);
+  const um = gl.getUniformLocation(pr, "m"), ua = gl.getUniformLocation(pr, "a");
+  const N = 600;
+  status("webgl");
+  const r = await measure(20000, (t) => {
+    gl.viewport(0, 0, c.width, c.height); gl.clearColor(.1, .1, .15, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    for (let i = 0; i < N; i++) {
+      gl.uniform4f(um, ((i % 30) / 15 - 1) + .03, (((i / 30) | 0) / 10 - 1) + .05, .028, 0);
+      gl.uniform1f(ua, t * .001 + i); gl.drawArrays(gl.TRIANGLES, 0, 36);
+    }
+  });
+  log({ test: "webgl", cubes: N, ...r });
+  c.remove();
+}
+async function css() {
+  const host = document.createElement("div"); document.body.appendChild(host);
+  for (let i = 0; i < 300; i++) {
+    const d = document.createElement("div"); d.className = "box";
+    d.style.left = (i % 30) * (innerWidth / 30) + "px"; d.style.top = ((i / 30) | 0) * (innerHeight / 10) + "px";
+    d.style.background = `hsl(${i * 7 % 360},70%,55%)`; d.style.animationDelay = (i % 17) * -0.1 + "s";
+    host.appendChild(d);
+  }
+  status("css");
+  await sleep(500);
+  log({ test: "css", layers: 300, ...(await measure(10000)) });
+  host.remove();
+}
+async function video() {
+  const v = document.createElement("video"); v.muted = true; v.src = "video.mp4"; v.loop = true;
+  document.body.appendChild(v);
+  status("video");
+  try { await v.play(); } catch (e) { log({ test: "video", error: String(e) }); v.remove(); return; }
+  await sleep(20000);
+  const q = v.getVideoPlaybackQuality ? v.getVideoPlaybackQuality() : {};
+  log({ test: "video", w: v.videoWidth, h: v.videoHeight, total: q.totalVideoFrames, dropped: q.droppedVideoFrames,
+        played_s: +v.currentTime.toFixed(1) });
+  v.remove();
+}
+(async () => {
+  await sleep(3000);
+  await webgl(); await css(); await video();
+  status("done"); log({ test: "done" });
+})();
+</script>
+</body></html>

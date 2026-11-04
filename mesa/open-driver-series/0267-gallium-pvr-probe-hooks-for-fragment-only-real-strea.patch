@@ -1,7 +1,7 @@
-From 44d6ba8a2a11af60356b85b2250f5ea85af70fb5 Mon Sep 17 00:00:00 2001
+From c7040652aa84393f7b4cecfadc5d36d48c4bf083 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Tue, 27 Oct 2026 03:20:54 +0800
-Subject: [PATCH 267/269] gallium/pvr: probe hooks for fragment-only real
+Subject: [PATCH 267/294] gallium/pvr: probe hooks for fragment-only real
  stream and explicit fragment job flags
 
 Two env-gated diagnostics used to find out whether the hardware 3D (DM3) path can be reached without the

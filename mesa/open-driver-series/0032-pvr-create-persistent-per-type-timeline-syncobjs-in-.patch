@@ -1,7 +1,7 @@
-From de755dc7c6c8f1c919a00bfecca3d7c06e0c977f Mon Sep 17 00:00:00 2001
+From a2e5064ea2dac3142713a498527910cea11bfd97 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Thu, 8 Oct 2026 13:54:12 +0800
-Subject: [PATCH 32/43] pvr: create persistent per-type timeline syncobjs in
+Subject: [PATCH 032/294] pvr: create persistent per-type timeline syncobjs in
  the queue (step 2a, unused)
 
 First of the four small steps that replace the queue's per-job vk_sync create/destroy with one
@@ -22,7 +22,7 @@ Verified: build clean; bda, vk13, pctest, vk16 PASS; glmark2 --validate 27/0.
  2 files changed, 32 insertions(+)
 
 diff --git a/src/imagination/vulkan/pvr_arch_queue.c b/src/imagination/vulkan/pvr_arch_queue.c
-index ca2f860..2664cfa 100644
+index ca2f8604..2664cfa7 100644
 --- a/src/imagination/vulkan/pvr_arch_queue.c
 +++ b/src/imagination/vulkan/pvr_arch_queue.c
 @@ -150,8 +150,27 @@ static VkResult pvr_queue_init(struct pvr_device *device,
@@ -66,7 +66,7 @@ index ca2f860..2664cfa 100644
        if (queue->next_job_wait_sync[i])
           vk_sync_destroy(&queue->device->vk, queue->next_job_wait_sync[i]);
 diff --git a/src/imagination/vulkan/pvr_queue.h b/src/imagination/vulkan/pvr_queue.h
-index ee6f763..b5194a9 100644
+index ee6f7635..b5194a93 100644
 --- a/src/imagination/vulkan/pvr_queue.h
 +++ b/src/imagination/vulkan/pvr_queue.h
 @@ -38,6 +38,14 @@ struct pvr_queue {
@@ -84,3 +84,6 @@ index ee6f763..b5194a9 100644
  };
  
  VK_DEFINE_HANDLE_CASTS(pvr_queue, vk.base, VkQueue, VK_OBJECT_TYPE_QUEUE)
+-- 
+2.47.3
+

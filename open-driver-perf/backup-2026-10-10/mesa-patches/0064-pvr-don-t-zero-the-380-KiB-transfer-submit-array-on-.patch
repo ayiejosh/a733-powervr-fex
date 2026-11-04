@@ -1,0 +1,46 @@
+From ce9f9bb17f3adc81e2bf800dde40cdebde02019d Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Sat, 10 Oct 2026 11:35:34 +0800
+Subject: [PATCH 64/73] pvr: don't zero the 380 KiB transfer submit array on
+ every transfer
+
+pvr_queue_transfer() zero-initialised struct pvr_transfer_submit, whose
+prep_array of 16 prepares is ~380 KiB, for every transfer command, although
+each prepare it uses is cleared right before it is written. Only prep_count
+needs initialising.
+
+BXM-4-64 (A733), vkrender 512 copy mode: CPU submit 57-81 -> 23-46 us per
+frame (pvr_queue_transfer ~56 -> ~21 us). 9170-case renderpass /
+dynamic_rendering / copy_and_blit selection and buffer copy list match
+d253e35; gate 44/44.
+---
+ src/imagination/vulkan/pvr_arch_job_transfer.c | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/src/imagination/vulkan/pvr_arch_job_transfer.c b/src/imagination/vulkan/pvr_arch_job_transfer.c
+index bfcd9f2..427479a 100644
+--- a/src/imagination/vulkan/pvr_arch_job_transfer.c
++++ b/src/imagination/vulkan/pvr_arch_job_transfer.c
+@@ -5982,7 +5982,10 @@ static VkResult pvr_queue_transfer(struct pvr_transfer_ctx *ctx,
+ {
+    struct pvr_transfer_prep_data *prep_data = NULL;
+    struct pvr_transfer_prep_data *prev_prep_data;
+-   struct pvr_transfer_submit submit = { 0U };
++   /* Not zero-initialised: it is ~380 KiB, and every prep_array entry used is
++    * cleared before it is written.
++    */
++   struct pvr_transfer_submit submit;
+    bool finished = false;
+    uint32_t pass = 0U;
+    VkResult result;
+@@ -6008,6 +6011,7 @@ static VkResult pvr_queue_transfer(struct pvr_transfer_ctx *ctx,
+     */
+ 
+    const bool fbc_clip = pvr_fbc_dst_needs_load(transfer_cmd);
++   submit.prep_count = 0U;
+    while (!finished) {
+       prev_prep_data = prep_data;
+       prep_data = &submit.prep_array[submit.prep_count++];
+-- 
+2.47.3
+

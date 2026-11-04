@@ -1,0 +1,38 @@
+From 14087ce4ee3c741696714f5289de9bfa78bad18a Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Fri, 30 Oct 2026 05:31:07 +0800
+Subject: [PATCH] gallium/pvr: advertise GL_EXT_texture_mirror_clamp_to_edge
+ (TPU FLIP_ONCE_THEN_CLAMP)
+
+The TPU has an address mode named FLIP_ONCE_THEN_CLAMP, which is exactly GL_MIRROR_CLAMP_TO_EDGE
+(mirror once past the edge, then clamp), and the sampler state already maps
+PIPE_TEX_WRAP_MIRROR_CLAMP_TO_EDGE to it. The cap that advertises the GL extension was never set, so
+the state tracker converted to CLAMP_TO_EDGE instead.
+
+Set caps.texture_mirror_clamp_to_edge. The ES2 extension list grows 68 -> 69.
+
+Verified with a new probe (tools/verify/mirror_probe.c): a 4x1 texture sampled at u = -0.4 gives
+(200,0,0,255) - mirrored back into the first half - exactly the zink result; with clamping it would
+have been (64,0,0,255). Full gate green: gltri 49 modes, mip 28, rttest PASS, MRT 2/4, instancing,
+sRGB, border-clamp probe, 0 faults.
+---
+ src/gallium/drivers/pvr_native/pvr_screen.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_screen.c b/src/gallium/drivers/pvr_native/pvr_screen.c
+index 3106ae45..0d009aee 100644
+--- a/src/gallium/drivers/pvr_native/pvr_screen.c
++++ b/src/gallium/drivers/pvr_native/pvr_screen.c
+@@ -293,6 +293,9 @@ pvr_screen_create(int fd, const struct pipe_screen_config *config,
+       if (PVR_HAS_FEATURE(&screen->dev_info, pbe_filterable_f16))
+          caps->texture_half_float_linear = true;
+       caps->vertex_element_instance_divisor = true;
++      /* The TPU has FLIP_ONCE_THEN_CLAMP, which is exactly GL_MIRROR_CLAMP_TO_EDGE (mirror once past
++       * the edge, then clamp). Sampler state already maps PIPE_TEX_WRAP_MIRROR_CLAMP_TO_EDGE to it. */
++      caps->texture_mirror_clamp_to_edge = true;
+       /* Multiple render targets: the PBE writes one emit per attachment (EOT program) and the
+        * fragment variant maps data0..3. ES3 needs 4; v1 requires a shared format (see flush). */
+       caps->max_render_targets = 4;
+-- 
+2.47.3
+

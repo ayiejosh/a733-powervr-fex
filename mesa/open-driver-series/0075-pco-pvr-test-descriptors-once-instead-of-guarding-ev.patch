@@ -1,7 +1,7 @@
-From e2189952870517e31e4c8c5913cf0ccb2effc362 Mon Sep 17 00:00:00 2001
+From f36df1ee440d7d6b5e627d8d19d3c0166022bc8e Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sun, 11 Oct 2026 04:11:20 +0800
-Subject: [PATCH 75/98] pco, pvr: test descriptors once instead of guarding
+Subject: [PATCH 075/294] pco, pvr: test descriptors once instead of guarding
  every access
 
 zink enables robustBufferAccess and nullDescriptor for every GL context,
@@ -45,7 +45,7 @@ identical to before.
  5 files changed, 642 insertions(+), 76 deletions(-)
 
 diff --git a/src/imagination/pco/pco_data.h b/src/imagination/pco/pco_data.h
-index 5ba86f1..e37d9d5 100644
+index 5ba86f17..e37d9d56 100644
 --- a/src/imagination/pco/pco_data.h
 +++ b/src/imagination/pco/pco_data.h
 @@ -260,6 +260,10 @@ typedef struct _pco_common_data {
@@ -60,7 +60,7 @@ index 5ba86f1..e37d9d5 100644
     bool multiview;
  } pco_common_data;
 diff --git a/src/imagination/pco/pco_internal.h b/src/imagination/pco/pco_internal.h
-index 4c541c7..428f88a 100644
+index 4c541c73..428f88a4 100644
 --- a/src/imagination/pco/pco_internal.h
 +++ b/src/imagination/pco/pco_internal.h
 @@ -1856,9 +1856,18 @@ typedef enum {
@@ -84,7 +84,7 @@ index 4c541c7..428f88a 100644
  /**
   * \brief Returns the PCO bits for a bit size.
 diff --git a/src/imagination/pco/pco_nir.c b/src/imagination/pco/pco_nir.c
-index 1f3043b..4201d4d 100644
+index 1f3043b0..4201d4dc 100644
 --- a/src/imagination/pco/pco_nir.c
 +++ b/src/imagination/pco/pco_nir.c
 @@ -14,6 +14,7 @@
@@ -178,7 +178,7 @@ index 1f3043b..4201d4d 100644
     NIR_PASS(_, nir, pco_nir_lower_io, data);
  
 diff --git a/src/imagination/pco/pco_nir_lower_null_descriptors.c b/src/imagination/pco/pco_nir_lower_null_descriptors.c
-index 0b0a3d1..dc587d5 100644
+index 0b0a3d1f..dc587d53 100644
 --- a/src/imagination/pco/pco_nir_lower_null_descriptors.c
 +++ b/src/imagination/pco/pco_nir_lower_null_descriptors.c
 @@ -9,6 +9,7 @@
@@ -653,7 +653,7 @@ index 0b0a3d1..dc587d5 100644
 +   return progress;
  }
 diff --git a/src/imagination/vulkan/pvr_arch_pipeline.c b/src/imagination/vulkan/pvr_arch_pipeline.c
-index d92d9e6..f393253 100644
+index d92d9e61..f393253f 100644
 --- a/src/imagination/vulkan/pvr_arch_pipeline.c
 +++ b/src/imagination/vulkan/pvr_arch_pipeline.c
 @@ -1042,33 +1042,61 @@ static VkResult pvr_compute_pipeline_compile(

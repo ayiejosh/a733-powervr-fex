@@ -1,7 +1,7 @@
-From cdf21da20ccc70b8b224f93249ed49789209930a Mon Sep 17 00:00:00 2001
+From 94de0c58eac1f46f4856b8aeb4a2e661dc1c3659 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Thu, 8 Oct 2026 07:58:49 +0800
-Subject: [PATCH 17/43] wsi/x11: stop blocking on xcb_get_geometry_reply per
+Subject: [PATCH 017/294] wsi/x11: stop blocking on xcb_get_geometry_reply per
  call (1230x faster)
 
 x11_surface_get_capabilities() read the window geometry with a blocking
@@ -30,7 +30,7 @@ validate: 0 failures / 27. All probes pass.
  1 file changed, 62 insertions(+), 6 deletions(-)
 
 diff --git a/src/vulkan/wsi/wsi_common_x11.c b/src/vulkan/wsi/wsi_common_x11.c
-index ffad5ce..379c409 100644
+index ffad5cee..379c4090 100644
 --- a/src/vulkan/wsi/wsi_common_x11.c
 +++ b/src/vulkan/wsi/wsi_common_x11.c
 @@ -28,6 +28,7 @@
@@ -129,3 +129,6 @@ index ffad5ce..379c409 100644
  
     if (surface->has_alpha) {
        caps->surfaceCapabilities.supportedCompositeAlpha = VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR |
+-- 
+2.47.3
+

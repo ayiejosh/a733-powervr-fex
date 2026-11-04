@@ -1,0 +1,48 @@
+MESA: warning: ../src/imagination/vulkan/winsys/powervr/pvr_drm.c:352: FINISHME: Core count fetching is unimplemented. Setting 1 for now.
+WARNING: powervr is not a conformant Vulkan implementation, testing use only.
+=======================================================
+    glmark2 2023.01
+=======================================================
+    OpenGL Information
+    GL_VENDOR:      Mesa
+    GL_RENDERER:    zink Vulkan 1.3(PowerVR B-Series BXM-4-64 MC1 (IMAGINATION_OPEN_SOURCE_MESA))
+    GL_VERSION:     OpenGL ES 3.1 Mesa 26.3.0-devel (git-f747e6431b)
+    Surface Config: buf=32 r=8 g=8 b=8 a=8 depth=32 stencil=0 samples=0
+    Surface Size:   800x600 windowed
+=======================================================
+[build] use-vbo=false: FPS: 731 FrameTime: 1.369 ms
+[build] use-vbo=true: FPS: 968 FrameTime: 1.034 ms
+[texture] texture-filter=nearest: FPS: 1121 FrameTime: 0.892 ms
+[texture] texture-filter=linear: FPS: 1104 FrameTime: 0.906 ms
+[texture] texture-filter=mipmap: FPS: 1193 FrameTime: 0.838 ms
+[shading] shading=gouraud: FPS: 771 FrameTime: 1.298 ms
+[shading] shading=blinn-phong-inf: FPS: 667 FrameTime: 1.500 ms
+[shading] shading=phong: FPS: 569 FrameTime: 1.759 ms
+[shading] shading=cel: FPS: 505 FrameTime: 1.982 ms
+[bump] bump-render=high-poly: FPS: 342 FrameTime: 2.929 ms
+[bump] bump-render=normals: FPS: 1111 FrameTime: 0.901 ms
+[bump] bump-render=height: FPS: 856 FrameTime: 1.169 ms
+[effect2d] kernel=0,1,0;1,-4,1;0,1,0;: FPS: 617 FrameTime: 1.622 ms
+[effect2d] kernel=1,1,1,1,1;1,1,1,1,1;1,1,1,1,1;: FPS: 300 FrameTime: 3.336 ms
+[pulsar] light=false:quads=5:texture=false: FPS: 1096 FrameTime: 0.913 ms
+[desktop] blur-radius=5:effect=blur:passes=1:separable=true:windows=4: FPS: 125 FrameTime: 8.051 ms
+[desktop] effect=shadow:windows=4: FPS: 406 FrameTime: 2.467 ms
+[buffer] columns=200:interleave=false:update-dispersion=0.9:update-fraction=0.5:update-method=map: FPS: 339 FrameTime: 2.952 ms
+[buffer] columns=200:interleave=false:update-dispersion=0.9:update-fraction=0.5:update-method=subdata: FPS: 226 FrameTime: 4.436 ms
+[buffer] columns=200:interleave=true:update-dispersion=0.9:update-fraction=0.5:update-method=map: FPS: 406 FrameTime: 2.468 ms
+[ideas] speed=duration: FPS: 645 FrameTime: 1.552 ms
+[jellyfish] <default>: FPS: 334 FrameTime: 2.997 ms
+[terrain] <default>: FPS: 26 FrameTime: 39.223 ms
+[shadow] <default>: FPS: 341 FrameTime: 2.937 ms
+[refract] <default>: FPS: 45 FrameTime: 22.537 ms
+[conditionals] fragment-steps=0:vertex-steps=0: FPS: 1215 FrameTime: 0.823 ms
+[conditionals] fragment-steps=5:vertex-steps=0: FPS: 815 FrameTime: 1.227 ms
+[conditionals] fragment-steps=0:vertex-steps=5: FPS: 1211 FrameTime: 0.826 ms
+[function] fragment-complexity=low:fragment-steps=5: FPS: 977 FrameTime: 1.024 ms
+[function] fragment-complexity=medium:fragment-steps=5: FPS: 628 FrameTime: 1.593 ms
+[loop] fragment-loop=false:fragment-steps=5:vertex-steps=5: FPS: 999 FrameTime: 1.002 ms
+[loop] fragment-steps=5:fragment-uniform=false:vertex-steps=5: FPS: 984 FrameTime: 1.016 ms
+[loop] fragment-steps=5:fragment-uniform=true:vertex-steps=5: FPS: 809 FrameTime: 1.237 ms
+=======================================================
+                                  glmark2 Score: 680 
+=======================================================

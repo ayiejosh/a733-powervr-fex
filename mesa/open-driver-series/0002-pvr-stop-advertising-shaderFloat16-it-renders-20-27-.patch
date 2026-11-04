@@ -1,8 +1,8 @@
-From be4db50a9183060a725c34f85cde793f6f483d8e Mon Sep 17 00:00:00 2001
+From fa96a1d4384d82fab191951348cb2c79dfb7bb6c Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Thu, 8 Oct 2026 01:22:12 +0800
-Subject: [PATCH 02/43] pvr: stop advertising shaderFloat16 - it renders 20/27
- glmark2 scenes wrong
+Subject: [PATCH 002/294] pvr: stop advertising shaderFloat16 - it renders
+ 20/27 glmark2 scenes wrong
 
 The driver advertises VkPhysicalDeviceShaderFloat16Int8Features::shaderFloat16,
 so zink implements GLES mediump as fp16 and Mesa emits 16-bit ops. The driver's
@@ -27,7 +27,7 @@ finally produced per-call numbers for the present investigation.
  2 files changed, 12 insertions(+), 1 deletion(-)
 
 diff --git a/src/gallium/drivers/zink/zink_kopper.c b/src/gallium/drivers/zink/zink_kopper.c
-index 60eb9ef..1866a30 100644
+index 60eb9ef2..1866a30e 100644
 --- a/src/gallium/drivers/zink/zink_kopper.c
 +++ b/src/gallium/drivers/zink/zink_kopper.c
 @@ -29,6 +29,7 @@
@@ -77,7 +77,7 @@ index 60eb9ef..1866a30 100644
     zink_screen_debug_marker_begin(screen, "frame");
     simple_mtx_unlock(screen->queue_lock);
 diff --git a/src/imagination/vulkan/pvr_physical_device.c b/src/imagination/vulkan/pvr_physical_device.c
-index e2579f4..197e461 100644
+index e2579f4a..197e461c 100644
 --- a/src/imagination/vulkan/pvr_physical_device.c
 +++ b/src/imagination/vulkan/pvr_physical_device.c
 @@ -346,7 +346,7 @@ static void pvr_physical_device_get_supported_features(
@@ -89,3 +89,6 @@ index e2579f4..197e461 100644
        .shaderInt8 = true,
        .descriptorIndexing = false,
        .shaderInputAttachmentArrayDynamicIndexing = true,
+-- 
+2.47.3
+

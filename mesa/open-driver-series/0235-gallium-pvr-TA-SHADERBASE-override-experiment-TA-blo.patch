@@ -1,7 +1,7 @@
-From 12fd51c34ba7cd5ed7c02db4e8082b40e773949c Mon Sep 17 00:00:00 2001
+From 1d2ae52de728979e7ea51f7b909eb7893912e843 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sun, 25 Oct 2026 04:41:53 +0800
-Subject: [PATCH 235/269] gallium/pvr: TA SHADERBASE override experiment; TA
+Subject: [PATCH 235/294] gallium/pvr: TA SHADERBASE override experiment; TA
  block values are not the blocker
 
 Round-22 negative: overriding the TA state block's PDS SHADERBASE (PVR_PROBE_TA_SHADER, tried 0 and

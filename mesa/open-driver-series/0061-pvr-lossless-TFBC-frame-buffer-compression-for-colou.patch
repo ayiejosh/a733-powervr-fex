@@ -1,8 +1,8 @@
-From ff0dfe798dfcf9e2602e58b0ac8b075bd57cae80 Mon Sep 17 00:00:00 2001
+From e611ba83dceb25b72c3c857856b4dba0b701a430 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sat, 10 Oct 2026 10:43:20 +0800
-Subject: [PATCH 61/98] pvr: lossless TFBC frame buffer compression for colour
- targets
+Subject: [PATCH 061/294] pvr: lossless TFBC frame buffer compression for
+ colour targets
 
 BXM-4-64 (FBCDC algorithm 50, TFBC v1.0) compresses colour attachments in
 the PBE and decompresses them in the TPU. Enable it for single-sample,
@@ -63,7 +63,7 @@ list match d253e35 with and without compression; gate 44/44.
  16 files changed, 225 insertions(+), 8 deletions(-)
 
 diff --git a/src/imagination/common/pvr_debug.c b/src/imagination/common/pvr_debug.c
-index e910f4b..ada18a9 100644
+index e910f4b2..ada18a91 100644
 --- a/src/imagination/common/pvr_debug.c
 +++ b/src/imagination/common/pvr_debug.c
 @@ -38,6 +38,8 @@ static const struct debug_named_value debug_control[] = {
@@ -76,7 +76,7 @@ index e910f4b..ada18a9 100644
  };
  /* clang-format on */
 diff --git a/src/imagination/common/pvr_debug.h b/src/imagination/common/pvr_debug.h
-index 33d2242..fdcfd4a 100644
+index 33d22424..fdcfd4a7 100644
 --- a/src/imagination/common/pvr_debug.h
 +++ b/src/imagination/common/pvr_debug.h
 @@ -38,6 +38,7 @@ extern uint32_t PVR_DEBUG;
@@ -88,7 +88,7 @@ index 33d2242..fdcfd4a 100644
  void pvr_process_debug_variable(void);
  
 diff --git a/src/imagination/vulkan/pvr_arch_cmd_buffer.c b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
-index 7f25af6..87a4417 100644
+index 7f25af64..87a44170 100644
 --- a/src/imagination/vulkan/pvr_arch_cmd_buffer.c
 +++ b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
 @@ -1204,7 +1204,7 @@ static void pvr_setup_pbe_state(
@@ -190,7 +190,7 @@ index 7f25af6..87a4417 100644
  
     rp_info->pipeline_bind_point =
 diff --git a/src/imagination/vulkan/pvr_arch_image.c b/src/imagination/vulkan/pvr_arch_image.c
-index af39eab..078cce4 100644
+index af39eab8..078cce4f 100644
 --- a/src/imagination/vulkan/pvr_arch_image.c
 +++ b/src/imagination/vulkan/pvr_arch_image.c
 @@ -117,7 +117,7 @@ VkResult PVR_PER_ARCH(CreateImageView)(VkDevice _device,
@@ -203,7 +203,7 @@ index af39eab..078cce4 100644
     info.addr = image->dev_addr;
  
 diff --git a/src/imagination/vulkan/pvr_arch_job_common.c b/src/imagination/vulkan/pvr_arch_job_common.c
-index f420deb..b43f012 100644
+index f420deb6..b43f0120 100644
 --- a/src/imagination/vulkan/pvr_arch_job_common.c
 +++ b/src/imagination/vulkan/pvr_arch_job_common.c
 @@ -173,6 +173,12 @@ void pvr_arch_pbe_pack_state(
@@ -220,7 +220,7 @@ index f420deb..b43f012 100644
  
        /* r, y or depth*/
 diff --git a/src/imagination/vulkan/pvr_arch_job_transfer.c b/src/imagination/vulkan/pvr_arch_job_transfer.c
-index af3e1a4..68cc58d 100644
+index af3e1a45..68cc58da 100644
 --- a/src/imagination/vulkan/pvr_arch_job_transfer.c
 +++ b/src/imagination/vulkan/pvr_arch_job_transfer.c
 @@ -840,6 +840,7 @@ pvr_pbe_setup_codegen_defaults(const struct pvr_device_info *dev_info,
@@ -290,7 +290,7 @@ index af3e1a4..68cc58d 100644
              pvr_3d_clip_blit(ctx, transfer_cmd, prep_data, pass, &finished);
        } else {
 diff --git a/src/imagination/vulkan/pvr_arch_mrt.c b/src/imagination/vulkan/pvr_arch_mrt.c
-index bd59ccd..122acda 100644
+index bd59ccd6..122acda4 100644
 --- a/src/imagination/vulkan/pvr_arch_mrt.c
 +++ b/src/imagination/vulkan/pvr_arch_mrt.c
 @@ -328,6 +328,18 @@ static VkResult pvr_mrt_load_op_init(struct pvr_device *device,
@@ -313,7 +313,7 @@ index bd59ccd..122acda 100644
        case VK_ATTACHMENT_LOAD_OP_CLEAR:
           load_op->clears_loads_state.rt_clear_mask |= BITFIELD_BIT(i);
 diff --git a/src/imagination/vulkan/pvr_arch_pass.c b/src/imagination/vulkan/pvr_arch_pass.c
-index 7dcaa3b..21d9629 100644
+index 7dcaa3bf..21d96290 100644
 --- a/src/imagination/vulkan/pvr_arch_pass.c
 +++ b/src/imagination/vulkan/pvr_arch_pass.c
 @@ -35,6 +35,7 @@
@@ -443,7 +443,7 @@ index 7dcaa3b..21d9629 100644
  }
  
 diff --git a/src/imagination/vulkan/pvr_arch_tex_state.c b/src/imagination/vulkan/pvr_arch_tex_state.c
-index 8233913..02d3718 100644
+index 8233913f..02d37189 100644
 --- a/src/imagination/vulkan/pvr_arch_tex_state.c
 +++ b/src/imagination/vulkan/pvr_arch_tex_state.c
 @@ -312,6 +312,10 @@ VkResult pvr_arch_pack_tex_state(struct pvr_device *device,
@@ -458,7 +458,7 @@ index 8233913..02d3718 100644
     }
  
 diff --git a/src/imagination/vulkan/pvr_cmd_buffer.h b/src/imagination/vulkan/pvr_cmd_buffer.h
-index 0ca8a08..7408599 100644
+index 0ca8a08f..7408599e 100644
 --- a/src/imagination/vulkan/pvr_cmd_buffer.h
 +++ b/src/imagination/vulkan/pvr_cmd_buffer.h
 @@ -61,6 +61,9 @@ struct pvr_transfer_cmd_surface {
@@ -472,7 +472,7 @@ index 0ca8a08..7408599 100644
  
  struct pvr_rect_mapping {
 diff --git a/src/imagination/vulkan/pvr_hw_pass.h b/src/imagination/vulkan/pvr_hw_pass.h
-index 69496eb..6438ee7 100644
+index 69496eb5..6438ee7c 100644
 --- a/src/imagination/vulkan/pvr_hw_pass.h
 +++ b/src/imagination/vulkan/pvr_hw_pass.h
 @@ -197,6 +197,13 @@ struct pvr_renderpass_hwsetup_render {
@@ -490,7 +490,7 @@ index 69496eb..6438ee7 100644
  
  struct pvr_renderpass_hw_map {
 diff --git a/src/imagination/vulkan/pvr_image.c b/src/imagination/vulkan/pvr_image.c
-index 654ba77..f55c70a 100644
+index 654ba776..f55c70a2 100644
 --- a/src/imagination/vulkan/pvr_image.c
 +++ b/src/imagination/vulkan/pvr_image.c
 @@ -30,6 +30,7 @@
@@ -545,7 +545,7 @@ index 654ba77..f55c70a 100644
           while (i--) {
              VK_FROM_HANDLE(pvr_image, image, pBindInfos[i].image);
 diff --git a/src/imagination/vulkan/pvr_image.h b/src/imagination/vulkan/pvr_image.h
-index 45daa7b..353f36a 100644
+index 45daa7b4..353f36a2 100644
 --- a/src/imagination/vulkan/pvr_image.h
 +++ b/src/imagination/vulkan/pvr_image.h
 @@ -61,6 +61,14 @@ struct pvr_image {
@@ -578,7 +578,7 @@ index 45daa7b..353f36a 100644
     struct vk_image_view vk;
  
 diff --git a/src/imagination/vulkan/pvr_job_common.h b/src/imagination/vulkan/pvr_job_common.h
-index 977aa3d..b01b8e9 100644
+index 977aa3d3..b01b8e9c 100644
 --- a/src/imagination/vulkan/pvr_job_common.h
 +++ b/src/imagination/vulkan/pvr_job_common.h
 @@ -88,6 +88,8 @@ struct pvr_pbe_surf_params {
@@ -591,7 +591,7 @@ index 977aa3d..b01b8e9 100644
  
  /**
 diff --git a/src/imagination/vulkan/pvr_tex_state.h b/src/imagination/vulkan/pvr_tex_state.h
-index fe48892..33cb2d3 100644
+index fe48892f..33cb2d3e 100644
 --- a/src/imagination/vulkan/pvr_tex_state.h
 +++ b/src/imagination/vulkan/pvr_tex_state.h
 @@ -46,6 +46,9 @@
@@ -605,7 +605,7 @@ index fe48892..33cb2d3 100644
  struct pvr_texture_state_info {
     VkFormat format;
 diff --git a/src/imagination/vulkan/rogue/pvr_blit.c b/src/imagination/vulkan/rogue/pvr_blit.c
-index 2f465e0..c049076 100644
+index 2f465e07..c0490763 100644
 --- a/src/imagination/vulkan/rogue/pvr_blit.c
 +++ b/src/imagination/vulkan/rogue/pvr_blit.c
 @@ -221,6 +221,7 @@ static void pvr_setup_transfer_surface(struct pvr_device *device,

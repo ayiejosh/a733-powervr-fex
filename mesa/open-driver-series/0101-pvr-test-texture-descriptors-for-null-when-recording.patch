@@ -1,7 +1,7 @@
-From 9ee9b61fb5ad23bc3d979e9cf12249ecdaa34924 Mon Sep 17 00:00:00 2001
+From d8ba866ab4a70a1c217797bf87a56696d27cbf68 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Tue, 13 Oct 2026 18:02:27 +0800
-Subject: [PATCH 101/105] pvr: test texture descriptors for null when recording
+Subject: [PATCH 101/294] pvr: test texture descriptors for null when recording
  draws
 
 The versioned null descriptor checks only took the draw time path for
@@ -31,7 +31,7 @@ shadow +6%, jellyfish +4%, the rest within noise.
  6 files changed, 25 insertions(+), 10 deletions(-)
 
 diff --git a/src/imagination/common/pvr_debug.c b/src/imagination/common/pvr_debug.c
-index 24a9e29..92ba0a4 100644
+index 24a9e298..92ba0a40 100644
 --- a/src/imagination/common/pvr_debug.c
 +++ b/src/imagination/common/pvr_debug.c
 @@ -44,6 +44,8 @@ static const struct debug_named_value debug_control[] = {
@@ -44,7 +44,7 @@ index 24a9e29..92ba0a4 100644
  };
  /* clang-format on */
 diff --git a/src/imagination/common/pvr_debug.h b/src/imagination/common/pvr_debug.h
-index a87f4be..91f21ed 100644
+index a87f4be6..91f21ed9 100644
 --- a/src/imagination/common/pvr_debug.h
 +++ b/src/imagination/common/pvr_debug.h
 @@ -41,6 +41,7 @@ extern uint32_t PVR_DEBUG;
@@ -56,7 +56,7 @@ index a87f4be..91f21ed 100644
  void pvr_process_debug_variable(void);
  
 diff --git a/src/imagination/pco/pco_data.h b/src/imagination/pco/pco_data.h
-index 6b022fa..9e3fc20 100644
+index 6b022fa8..9e3fc203 100644
 --- a/src/imagination/pco/pco_data.h
 +++ b/src/imagination/pco/pco_data.h
 @@ -311,6 +311,10 @@ typedef struct _pco_common_data {
@@ -71,7 +71,7 @@ index 6b022fa..9e3fc20 100644
     bool no_check_versioning;
     /** Whether pco_lower_nir() versioned the descriptor checks. */
 diff --git a/src/imagination/pco/pco_nir_lower_null_descriptors.c b/src/imagination/pco/pco_nir_lower_null_descriptors.c
-index 638f27f..c02ba0f 100644
+index 638f27fd..c02ba0fd 100644
 --- a/src/imagination/pco/pco_nir_lower_null_descriptors.c
 +++ b/src/imagination/pco/pco_nir_lower_null_descriptors.c
 @@ -381,12 +381,17 @@ static bool record_desc_checks(pco_common_data *common,
@@ -98,7 +98,7 @@ index 638f27f..c02ba0f 100644
  
     for (unsigned i = 0; i < num_descs; i++) {
 diff --git a/src/imagination/vulkan/pvr_arch_cmd_buffer.c b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
-index fde135e..b9e6c29 100644
+index fde135e7..b9e6c29e 100644
 --- a/src/imagination/vulkan/pvr_arch_cmd_buffer.c
 +++ b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
 @@ -6396,12 +6396,14 @@ static bool pvr_desc_checks_fail(const struct pvr_descriptor_state *desc_state,
@@ -130,7 +130,7 @@ index fde135e..b9e6c29 100644
  
        if (null)
 diff --git a/src/imagination/vulkan/pvr_arch_pipeline.c b/src/imagination/vulkan/pvr_arch_pipeline.c
-index 7013288..e61e59a 100644
+index 70132882..e61e59ae 100644
 --- a/src/imagination/vulkan/pvr_arch_pipeline.c
 +++ b/src/imagination/vulkan/pvr_arch_pipeline.c
 @@ -2990,6 +2990,7 @@ static void pvr_early_init_shader_data(pco_data *data,

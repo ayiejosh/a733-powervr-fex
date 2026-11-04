@@ -1,0 +1,39 @@
+From 70bdb5a9a71a52cad5063ef5b5a25cd8521a5bf7 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Thu, 29 Oct 2026 23:12:38 +0800
+Subject: [PATCH] gallium/pvr: half-float linear texture filtering
+ (OES_texture_half_float_linear)
+
+Half-float textures were sampled but only with nearest filtering, because the driver never told the
+state tracker the hardware can filter them: this core has has_pbe_filterable_f16 (the device feature
+the reference checks for filterable F16), so caps->texture_half_float_linear is set from it and
+GL_OES_texture_half_float_linear is advertised. 32-bit float filtering is not available and
+GL_OES_texture_float_linear stays unadvertised.
+
+Verified against zink with open-perf/f16lin_test.c: a 4x4 RGBA16F texture with columns 0,0,1,1 sampled
+with GL_LINEAR gives (135,135,135,255) on both drivers (GL_NEAREST gives 255 on both). Full gate
+green: 49 gltri modes (all native glGetError 0x0), 28 mip modes, rttest PASS (bad=0/262144), rt8test
+unchanged, sRGB/MRT/instancing/derivatives/1010102/float textures unchanged, 0 MMU faults.
+---
+ src/gallium/drivers/pvr_native/pvr_screen.c | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_screen.c b/src/gallium/drivers/pvr_native/pvr_screen.c
+index 3153b5f5..cce7aa3b 100644
+--- a/src/gallium/drivers/pvr_native/pvr_screen.c
++++ b/src/gallium/drivers/pvr_native/pvr_screen.c
+@@ -280,6 +280,11 @@ pvr_screen_create(int fd, const struct pipe_screen_config *config,
+       /* pco lowers ddx/ddy for the fragment stage (nir_intrinsic_ddx/ddy in pco_trans_nir), so
+        * GL_OES_standard_derivatives can be advertised. */
+       caps->fragment_shader_derivatives = true;
++      /* Half-float textures are filterable on this core (has_pbe_filterable_f16), so
++       * GL_OES_texture_half_float_linear can be advertised. 32-bit float filtering is not
++       * available and is not claimed. */
++      if (PVR_HAS_FEATURE(&screen->dev_info, pbe_filterable_f16))
++         caps->texture_half_float_linear = true;
+       caps->vertex_element_instance_divisor = true;
+       /* Multiple render targets: the PBE writes one emit per attachment (EOT program) and the
+        * fragment variant maps data0..3. ES3 needs 4; v1 requires a shared format (see flush). */
+-- 
+2.47.3
+

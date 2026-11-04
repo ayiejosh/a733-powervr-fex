@@ -1,0 +1,440 @@
+From 0b41d84cf50e7eea178a1d0c6d56921dd7de42c4 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Thu, 29 Oct 2026 00:28:20 +0800
+Subject: [PATCH 323/324] gallium/pvr: cut the per-render cost of multi-render
+ frames
+
+Measured per render with the firmware trace and a per-flush log: terrain
+generated its mip chains every frame and recreated a HWRT data set for
+each of ~19 level sizes per render; desktop and shadow cleared the window,
+rendered an offscreen pass, then came back to the window, which was a
+full clear render plus a full load render (colour and ZLS depth).
+
+- Small colour-only renders (<= 256x256, no depth) use the data set of
+  their power-of-two size class (32..256); region, terminate and PBE clips
+  keep them to their extent. Depth renders keep the exact size (the ZLS
+  stores whole tiles).
+- The mip generation background reads the source extent from a uniform,
+  so one shader per format serves every level (was one per level size).
+- Four render slots; a data set still takes at most two renders in
+  flight (one per RT data, tracked per data set).
+- A render that only clears is not submitted: the clear is recorded on
+  the target (and depth buffer) and becomes the background of the next
+  render into it. Sampling, CPU maps and blits of such a resource submit
+  it first. Not for shared/scanout buffers.
+
+A/B (alternating libgallium, perf governor, cores 6-7, 2 rounds):
+desktop shadow 301/304 -> 398/397, shadow 184/181 -> 219/216,
+terrain 11/11 -> 18/18, texture and conditionals unchanged.
+gltri: all modes unchanged; new GLTRI_DEFER (clear, clear-only pass on
+another FBO, draw without clear) and a cleared level 0 sampled
+(GLTRI_MIPRT=0) match zink.
+---
+ src/gallium/drivers/pvr_native/pvr_draw.c     | 188 ++++++++++++++----
+ src/gallium/drivers/pvr_native/pvr_draw.h     |   2 +-
+ src/gallium/drivers/pvr_native/pvr_resource.h |   7 +
+ 3 files changed, 160 insertions(+), 37 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_draw.c b/src/gallium/drivers/pvr_native/pvr_draw.c
+index ba7aca2c..295c2573 100644
+--- a/src/gallium/drivers/pvr_native/pvr_draw.c
++++ b/src/gallium/drivers/pvr_native/pvr_draw.c
+@@ -64,10 +64,10 @@ struct pvr_draw_bg {
+ };
+ 
+ /* The background object that reloads a target's previous contents, per target format; or, for a
+- * mip generation render (src_w != 0), that averages 2x2 texels of a src_w x src_h level. */
++ * mip generation render (gen), that averages 2x2 texels of the level above. */
+ struct pvr_draw_load {
+    enum pipe_format format;
+-   uint32_t src_w, src_h;
++   bool gen;
+    struct pvr_shader *fs;
+ };
+ 
+@@ -81,7 +81,7 @@ struct pvr_draw_eot {
+ /* Mip generation renders every level size of a chain (refract: about a dozen per frame), and a
+  * data set created on an eviction costs a wait and a firmware round trip. */
+ #define PVR_DRAW_HWRT_CACHE 16
+-#define PVR_DRAW_SLOTS 2
++#define PVR_DRAW_SLOTS 4
+ 
+ struct pvr_draw_state {
+    bool ready, failed;
+@@ -102,6 +102,9 @@ struct pvr_draw_state {
+       /* Which of the two render-target datas the next render uses: the reference moves to the
+        * other one after every fragment submit. */
+       uint32_t rt_data_idx;
++      /* The render that last used each RT data (0: none): a data set takes at most two renders in
++       * flight, one per RT data, however many slots there are. */
++      uint32_t data_seq[2];
+       uint32_t fl_handle;
+       struct pvr_bo bo[7];
+       uint64_t addr[7];
+@@ -151,7 +154,7 @@ struct pvr_draw_state {
+    struct pvr_draw_eot eot[32];
+    unsigned nr_eot;
+    struct pvr_draw_bg bg[4];
+-   struct pvr_draw_load load[16];
++   struct pvr_draw_load load[8];
+    unsigned nr_load;
+    /* The colour target of a depth-only framebuffer, and the texture an unbound unit reads. */
+    struct pipe_resource *scratch_rt;
+@@ -159,6 +162,8 @@ struct pvr_draw_state {
+     * target; load_gen: a mip generation render, each pixel the 2x2 average of the source. */
+    struct pipe_resource *load_src;
+    unsigned load_src_level;
++   /* Submit a clear-only render instead of deferring it (draw_materialize). */
++   bool no_defer;
+    bool load_gen;
+    struct pipe_resource *black;
+    unsigned nr_bg;
+@@ -892,16 +897,14 @@ draw_load_program(struct pvr_context *ctx, struct pvr_draw_state *d, uint64_t bg
+    const unsigned src_level = d->load_src ? d->load_src_level : d->rt_level;
+    const struct pvr_resource *rt = pvr_resource(src);
+    const enum pipe_format format = d->rt->format;
+-   /* A mip generation render reads the source level's logical extent (clamped there). */
+-   const uint32_t src_w = d->load_gen ? u_minify(src->width0, src_level) : 0;
+-   const uint32_t src_h = d->load_gen ? u_minify(src->height0, src_level) : 0;
++   const bool gen = d->load_gen;
+    struct pvr_shader *fs = NULL;
+    struct pvr_format_layout layout;
+ 
+    if (!pvr_format_layout_from_pipe(format, &layout))
+       return false;
+    for (unsigned i = 0; i < d->nr_load; i++) {
+-      if (d->load[i].format == format && d->load[i].src_w == src_w && d->load[i].src_h == src_h)
++      if (d->load[i].format == format && d->load[i].gen == gen)
+          fs = d->load[i].fs;
+    }
+    if (fs == NULL) {
+@@ -913,12 +916,15 @@ draw_load_program(struct pvr_context *ctx, struct pvr_draw_state *d, uint64_t bg
+       nir_def *xy = nir_f2i32(&b, nir_trim_vector(&b, nir_load_frag_coord(&b), 2));
+       nir_def *color = NULL;
+       /* Load: the texel at the pixel. Generation: the box filter of the 2x2 texels under it, the
+-       * odd last row/column clamped onto the edge. */
+-      for (unsigned i = 0; i < (src_w ? 4u : 1u); i++) {
++       * odd last row/column clamped onto the edge (the source level's last texel, a uniform). */
++      nir_def *last = gen ? nir_load_uniform(&b, 2, 32, nir_imm_int(&b, 0), .base = 0, .range = 1,
++                                             .dest_type = nir_type_int32)
++                          : NULL;
++      for (unsigned i = 0; i < (gen ? 4u : 1u); i++) {
+          nir_def *c = xy;
+-         if (src_w) {
++         if (gen) {
+             c = nir_iadd(&b, nir_ishl_imm(&b, xy, 1), nir_imm_ivec2(&b, i & 1, i >> 1));
+-            c = nir_imin(&b, c, nir_imm_ivec2(&b, (int)src_w - 1, (int)src_h - 1));
++            c = nir_imin(&b, c, last);
+          }
+          nir_tex_instr *tex = nir_tex_instr_create(b.shader, 2);
+          tex->op = nir_texop_txf;
+@@ -933,23 +939,22 @@ draw_load_program(struct pvr_context *ctx, struct pvr_draw_state *d, uint64_t bg
+          nir_builder_instr_insert(&b, &tex->instr);
+          color = color ? nir_fadd(&b, color, &tex->def) : &tex->def;
+       }
+-      if (src_w)
++      if (gen)
+          color = nir_fmul_imm(&b, color, 0.25);
+       nir_store_var(&b, out, color, 0xf);
+       BITSET_SET(b.shader->info.textures_used, 0);
+       BITSET_SET(b.shader->info.textures_used_by_txf, 0);
+       fs = pvr_shader_create_fs(b.shader, scr->pco_ctx, format, NULL);
+-      if (fs == NULL || !draw_upload_fs(scr, fs) || fs->tex_mask != 1) {
+-         mesa_loge("pvr: draw: no load program (%s, gen %ux%u)", util_format_short_name(format),
+-                   src_w, src_h);
++      if (fs == NULL || !draw_upload_fs(scr, fs) || fs->tex_mask != 1 ||
++          (gen && fs->uniform_dwords < 2)) {
++         mesa_loge("pvr: draw: no load program (%s, gen %d)", util_format_short_name(format), gen);
+          return false;
+       }
+-      /* shortcut: sixteen cached variants, round robin; the evicted shader stays allocated. */
++      /* shortcut: eight cached variants, round robin; the evicted shader stays allocated. */
+       const unsigned slot = d->nr_load < ARRAY_SIZE(d->load)
+                                ? d->nr_load++
+-                               : (format + src_w + src_h) % ARRAY_SIZE(d->load);
+-      d->load[slot] = (struct pvr_draw_load){ .format = format, .src_w = src_w, .src_h = src_h,
+-                                              .fs = fs };
++                               : (format * 2 + gen) % ARRAY_SIZE(d->load);
++      d->load[slot] = (struct pvr_draw_load){ .format = format, .gen = gen, .fs = fs };
+    }
+ 
+    /* The shared block: the target as a texture, read with NEAREST. */
+@@ -959,6 +964,11 @@ draw_load_program(struct pvr_context *ctx, struct pvr_draw_state *d, uint64_t bg
+       return false;
+    memset(u, 0, fs->shared_dma_dwords * 4);
+    uint32_t *binding = u + (fs->tex_dst[0] - fs->shared_dma_start);
++   if (gen) {
++      int32_t *last = (int32_t *)(u + (fs->uniform_dst - fs->shared_dma_start));
++      last[0] = (int32_t)u_minify(src->width0, src_level) - 1;
++      last[1] = (int32_t)u_minify(src->height0, src_level) - 1;
++   }
+    struct pvr_tex_desc tex;
+    draw_level_desc(rt, src_level, layout.components, &tex);
+    memcpy(tex.swizzle, layout.swizzle, sizeof(tex.swizzle));
+@@ -1148,10 +1158,30 @@ draw_zls_format(enum pipe_format f)
+ 
+ static bool
+ draw_open(struct pvr_context *ctx, struct pvr_draw_state *d, struct pipe_resource *rt,
+-          unsigned level, uint32_t w, uint32_t h)
++          unsigned level, uint32_t w, uint32_t h, struct pipe_resource *zs)
+ {
+-   if (!draw_hwrt(ctx, d, w, h))
++   if (zs && draw_zls_format(zs->format) < 0)
++      zs = NULL;
++   /* A small colour-only render (mip levels, small targets) uses the data set of its size class:
++    * a power of two from 32 to 256 per side. The region clip, terminate clip and PBE clip keep it
++    * to its own extent; without that a mip chain (terrain: 19 level sizes per frame) evicted and
++    * recreated data sets on every render. With depth the ZLS stores whole tiles of the data set,
++    * so those keep their exact size. */
++   uint32_t dw = w, dh = h;
++   if (zs == NULL && w <= 256 && h <= 256) {
++      dw = MAX2(util_next_power_of_two(w), 32);
++      dh = MAX2(util_next_power_of_two(h), 32);
++   }
++   if (!draw_hwrt(ctx, d, dw, dh))
+       return false;
++   {
++      struct pvr_draw_hwrt *e = d->cur_hwrt;
++      const uint32_t prev = e->data_seq[e->rt_data_idx];
++      for (unsigned i = 0; prev != 0 && i < PVR_DRAW_SLOTS; i++) {
++         if (d->slots[i].sync != 0 && d->slots[i].seq == prev)
++            draw_slot_idle(draw_screen(ctx), &d->slots[i]);
++      }
++   }
+    /* The next slot: its previous render must be done before its memory is rewritten. */
+    {
+       const unsigned next = (d->cur_slot + 1) % PVR_DRAW_SLOTS;
+@@ -1170,11 +1200,22 @@ draw_open(struct pvr_context *ctx, struct pvr_draw_state *d, struct pipe_resourc
+    d->rt_level = level;
+    d->seq++;
+    draw_use(d, rt);
+-   struct pipe_resource *zs = ctx->fb.zsbuf.texture;
+-   pipe_resource_reference(&d->zs, zs && draw_zls_format(zs->format) >= 0 ? zs : NULL);
++   pipe_resource_reference(&d->zs, zs);
+    if (d->zs)
+       draw_use(d, d->zs);
+    d->zclear_valid = false;
++   /* A deferred clear of the target or depth buffer is where this render starts. */
++   struct pvr_resource *rres = pvr_resource(rt);
++   if (rres->clear_pending && level == 0) {
++      d->clear_valid = true;
++      d->clear_color = rres->clear_color;
++   }
++   rres->clear_pending = false;
++   if (d->zs && pvr_resource(d->zs)->zclear_pending) {
++      d->zclear_valid = true;
++      d->zclear = pvr_resource(d->zs)->zclear;
++      pvr_resource(d->zs)->zclear_pending = false;
++   }
+    d->rt_w = w;
+    d->rt_h = h;
+    d->ndraws = 0;
+@@ -1207,6 +1248,38 @@ draw_fb_target(struct pvr_context *ctx)
+    return rt;
+ }
+ 
++/* Submits a deferred clear of a resource that is about to be read other than as a render's
++ * target: a colour clear as a clear-only render into it, a depth clear as one into a scratch
++ * colour target of its size with it as the depth buffer. */
++static void
++draw_materialize(struct pvr_context *ctx, struct pipe_resource *pres)
++{
++   struct pvr_resource *res = pvr_resource(pres);
++   struct pvr_draw_state *d = ctx->draw;
++   if (d == NULL || pres == NULL || (!res->clear_pending && !res->zclear_pending))
++      return;
++   pvr_draw_flush(ctx);
++   struct pipe_resource *rt = pres, *zs = NULL;
++   if (res->zclear_pending) {
++      const struct pipe_resource templ = {
++         .target = PIPE_TEXTURE_2D, .format = PIPE_FORMAT_R8G8B8A8_UNORM,
++         .width0 = pres->width0, .height0 = pres->height0, .depth0 = 1, .array_size = 1,
++         .bind = PIPE_BIND_RENDER_TARGET,
++      };
++      rt = ctx->base.screen->resource_create(ctx->base.screen, &templ);
++      zs = pres;
++   }
++   if (rt != NULL && draw_init(ctx, d) &&
++       draw_open(ctx, d, rt, 0, pres->width0, pres->height0, zs)) {
++      d->no_defer = true;
++      pvr_draw_flush(ctx);
++      d->no_defer = false;
++   }
++   res->clear_pending = res->zclear_pending = false;
++   if (rt != pres)
++      pipe_resource_reference(&rt, NULL);
++}
++
+ /* The mip level of the framebuffer's colour target (0 for the depth-only scratch target). */
+ static unsigned
+ draw_fb_level(struct pvr_context *ctx)
+@@ -1214,6 +1287,17 @@ draw_fb_level(struct pvr_context *ctx)
+    return ctx->fb.nr_cbufs && ctx->fb.cbufs[0].texture ? ctx->fb.cbufs[0].level : 0;
+ }
+ 
++/* The open render is the framebuffer's (target rt): same target, level, size and depth buffer. */
++static bool
++draw_open_is_fb(struct pvr_context *ctx, struct pvr_draw_state *d, struct pipe_resource *rt)
++{
++   struct pipe_resource *zs = ctx->fb.zsbuf.texture;
++   if (zs && draw_zls_format(zs->format) < 0)
++      zs = NULL;
++   return d->open && d->rt == rt && d->rt_level == draw_fb_level(ctx) &&
++          d->rt_w == ctx->fb.width && d->rt_h == ctx->fb.height && d->zs == zs;
++}
++
+ bool
+ pvr_draw_3d(struct pvr_context *ctx, const struct pipe_draw_info *info,
+             const struct pipe_draw_start_count_bias *draws, unsigned num_draws)
+@@ -1297,14 +1381,23 @@ pvr_draw_3d(struct pvr_context *ctx, const struct pipe_draw_info *info,
+    }
+    if (!draw_upload_fs(scr, fsv))
+       return false;
++   /* Textures with a deferred clear get it before this render can read them. */
++   for (unsigned st = 0; st < 2; st++) {
++      for (unsigned u = 0; u < PVR_MAX_TEXTURE_UNITS; u++) {
++         struct pipe_sampler_view *v = ctx->views[st][u];
++         if (v && v->texture && (pvr_resource(v->texture)->clear_pending ||
++                                 pvr_resource(v->texture)->zclear_pending))
++            draw_materialize(ctx, v->texture);
++      }
++   }
+    if (vs->usc_offset == 0 && (vs->usc_offset = draw_upload_usc(scr, vs->binary, vs->binary_size)) == 0)
+       return false;
+ 
+    const unsigned level = draw_fb_level(ctx);
+-   if (d->open && (d->rt != rt || d->rt_level != level || d->rt_w != ctx->fb.width ||
+-                   d->rt_h != ctx->fb.height || d->zs != ctx->fb.zsbuf.texture))
++   if (d->open && !draw_open_is_fb(ctx, d, rt))
+       pvr_draw_flush(ctx);
+-   if (!d->open && !draw_open(ctx, d, rt, level, ctx->fb.width, ctx->fb.height))
++   if (!d->open && !draw_open(ctx, d, rt, level, ctx->fb.width, ctx->fb.height,
++                                    ctx->fb.zsbuf.texture))
+       return false;
+ 
+    /* Vertex fetch program. */
+@@ -1481,12 +1574,12 @@ pvr_draw_note_clear(struct pvr_context *ctx, const union pipe_color_union *color
+       if (d == NULL)
+          return false;
+    }
+-   /* A clear after draws starts a new render. */
+-   if (d->open && d->ndraws)
++   /* A clear after draws (or of another target) starts a new render. */
++   if (d->open && (d->ndraws || !draw_open_is_fb(ctx, d, ctx->fb.cbufs[0].texture)))
+       pvr_draw_flush(ctx);
+    if (!d->open && (!draw_init(ctx, d) ||
+                     !draw_open(ctx, d, ctx->fb.cbufs[0].texture, draw_fb_level(ctx),
+-                               ctx->fb.width, ctx->fb.height)))
++                               ctx->fb.width, ctx->fb.height, ctx->fb.zsbuf.texture)))
+       return false;
+    d->clear_valid = true;
+    d->clear_color = draw_pack_color(ctx->fb.cbufs[0].format, color);
+@@ -1520,11 +1613,11 @@ draw_open_fb(struct pvr_context *ctx)
+    if (rt == NULL || !draw_format_ok(rt->format))
+       return false;
+    const unsigned level = draw_fb_level(ctx);
+-   if (d->open && (d->ndraws != 0 || d->rt != rt || d->rt_level != level ||
+-                   d->zs != ctx->fb.zsbuf.texture))
++   if (d->open && (d->ndraws != 0 || !draw_open_is_fb(ctx, d, rt)))
+       pvr_draw_flush(ctx);
+    return d->open ||
+-          (draw_init(ctx, d) && draw_open(ctx, d, rt, level, ctx->fb.width, ctx->fb.height));
++          (draw_init(ctx, d) && draw_open(ctx, d, rt, level, ctx->fb.width, ctx->fb.height,
++                                    ctx->fb.zsbuf.texture));
+ }
+ 
+ bool
+@@ -1557,9 +1650,10 @@ pvr_draw_blit(struct pvr_context *ctx, struct pipe_resource *dst, unsigned dst_l
+       if (d == NULL)
+          return false;
+    }
+-   if (!draw_init(ctx, d) || !draw_open(ctx, d, dst, dst_level, w, h))
++   draw_materialize(ctx, src);
++   if (!draw_init(ctx, d) || !draw_open(ctx, d, dst, dst_level, w, h, NULL))
+       return false;
+-   pipe_resource_reference(&d->zs, NULL);
++   d->clear_valid = false; /* a deferred clear of dst is overwritten */
+    draw_use(d, src);
+    pipe_resource_reference(&d->load_src, src);
+    d->load_src_level = src_level;
+@@ -1569,9 +1663,11 @@ pvr_draw_blit(struct pvr_context *ctx, struct pipe_resource *dst, unsigned dst_l
+ }
+ 
+ void
+-pvr_draw_resource_sync(struct pvr_context *ctx, const struct pvr_resource *res)
++pvr_draw_resource_sync(struct pvr_context *ctx, struct pvr_resource *res)
+ {
+    struct pvr_draw_state *d = ctx->draw;
++   if (res->clear_pending || res->zclear_pending)
++      draw_materialize(ctx, &res->base);
+    if (d == NULL || res->render_seq == 0)
+       return;
+    if (d->open && res->render_seq == d->seq)
+@@ -1607,6 +1703,25 @@ pvr_draw_flush(struct pvr_context *ctx)
+    /* A recorded clear is a render even without draws: it is the only place the clear happens. */
+    if (d->ndraws == 0 && !d->clear_valid && d->load_src == NULL && !d->zclear_valid)
+       goto done;
++   /* A render that only clears is not submitted: the clear waits on the resources for the next
++    * render into them (or for a reader, draw_materialize). Apps clear the window, render an
++    * offscreen pass, then come back: that was a full clear render plus a full load render.
++    * Not for buffers other processes read. */
++   {
++      const unsigned shared = PIPE_BIND_SHARED | PIPE_BIND_DISPLAY_TARGET | PIPE_BIND_SCANOUT;
++      if (d->ndraws == 0 && d->load_src == NULL && !d->no_defer && d->rt_level == 0 &&
++          !(d->rt->bind & shared)) {
++         if (d->clear_valid) {
++            pvr_resource(d->rt)->clear_pending = true;
++            pvr_resource(d->rt)->clear_color = d->clear_color;
++         }
++         if (d->zclear_valid && d->zs) {
++            pvr_resource(d->zs)->zclear_pending = true;
++            pvr_resource(d->zs)->zclear = d->zclear;
++         }
++         goto done;
++      }
++   }
+ 
+    struct pvr_resource *rt = pvr_resource(d->rt);
+    const enum pipe_format fmt = d->rt->format;
+@@ -1691,6 +1806,7 @@ pvr_draw_flush(struct pvr_context *ctx)
+                               &d->slots[d->cur_slot].sync))
+       mesa_loge("pvr: draw: the render was not submitted (%u draws)", d->ndraws);
+    d->slots[d->cur_slot].seq = d->seq;
++   d->cur_hwrt->data_seq[d->cur_hwrt->rt_data_idx] = d->seq;
+    d->cur_hwrt->rt_data_idx ^= 1;
+ 
+ done:
+diff --git a/src/gallium/drivers/pvr_native/pvr_draw.h b/src/gallium/drivers/pvr_native/pvr_draw.h
+index 74a98cf7..705251f1 100644
+--- a/src/gallium/drivers/pvr_native/pvr_draw.h
++++ b/src/gallium/drivers/pvr_native/pvr_draw.h
+@@ -43,7 +43,7 @@ bool pvr_draw_note_zclear(struct pvr_context *ctx, float depth);
+ /* Before a CPU access: submits the open render if it uses the resource, then waits for the
+  * last render that used it. */
+ struct pvr_resource;
+-void pvr_draw_resource_sync(struct pvr_context *ctx, const struct pvr_resource *res);
++void pvr_draw_resource_sync(struct pvr_context *ctx, struct pvr_resource *res);
+ 
+ /* The syncobj of the latest submitted render (0: none in flight). */
+ uint32_t pvr_draw_last_sync(struct pvr_context *ctx);
+diff --git a/src/gallium/drivers/pvr_native/pvr_resource.h b/src/gallium/drivers/pvr_native/pvr_resource.h
+index 9e366277..f53af579 100644
+--- a/src/gallium/drivers/pvr_native/pvr_resource.h
++++ b/src/gallium/drivers/pvr_native/pvr_resource.h
+@@ -54,6 +54,13 @@ struct pvr_resource {
+     * data_addr. Level 0 is at offset 0 for every resource. */
+    uint32_t level_offset[PIPE_MAX_TEXTURE_LEVELS];
+ 
++   /* A full clear recorded by a render that had nothing else to do: it was not submitted, and the
++    * next render into level 0 (or the depth buffer) starts with it instead of loading. Anything
++    * else that reads the resource submits it first (pvr_draw_materialize). */
++   bool clear_pending, zclear_pending;
++   uint32_t clear_color;
++   float zclear;
++
+    /* The draw path's render sequence number of the last render that used this resource (0:
+     * none). A CPU map waits only for a render that uses the resource. */
+    uint32_t render_seq;
+-- 
+2.47.3
+

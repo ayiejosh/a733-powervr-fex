@@ -1,7 +1,7 @@
-From ad590e1701163a89c3a4747e50d12a7b2e058501 Mon Sep 17 00:00:00 2001
+From aba2f5613f27ed9121a182dfb662ae3cceea4e62 Mon Sep 17 00:00:00 2001
 From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
 Date: Sat, 17 Oct 2026 10:19:58 +0800
-Subject: [PATCH 162/269] gallium/pvr: the PBE size fields are log2 of the
+Subject: [PATCH 162/294] gallium/pvr: the PBE size fields are log2 of the
  pixel dimension
 
   csb: PBE encodings: linestride (stride-1)/2 -> 0/1/2 for strides 2/4/6, memlayout LINEAR, size as

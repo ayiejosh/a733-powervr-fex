@@ -1,0 +1,38 @@
+From 238ca81252a90f03a9f46a2254d4ae5066ff8c95 Mon Sep 17 00:00:00 2001
+From: ayiejosh <132535860+ayiejosh@users.noreply.github.com>
+Date: Tue, 3 Nov 2026 14:35:23 +0800
+Subject: [PATCH 397/398] gallium/pvr: keep the compute fallback off padded
+ rows
+
+The compute fallback rasteriser writes linear rows indexed by the width
+from the start of the target, so on a padded (odd-width, since the PBE
+line-stride padding) target every row after the first was skewed, and a
+twiddled or TFBC-compressed target (a power-of-two width passes the
+stride check) was scrambled, its compression headers overwritten. Refuse
+such targets, as it already refuses anything but RGBA8.
+---
+ src/gallium/drivers/pvr_native/pvr_compute.c | 8 ++++++--
+ 1 file changed, 6 insertions(+), 2 deletions(-)
+
+diff --git a/src/gallium/drivers/pvr_native/pvr_compute.c b/src/gallium/drivers/pvr_native/pvr_compute.c
+index 0c8401dd..bd13af0a 100644
+--- a/src/gallium/drivers/pvr_native/pvr_compute.c
++++ b/src/gallium/drivers/pvr_native/pvr_compute.c
+@@ -468,8 +468,12 @@ pvr_compute_render_triangle(struct pvr_context *ctx, struct pvr_resource *target
+    uint32_t params[14];
+ 
+    if (target->dev_addr == 0 || target->base.target != PIPE_TEXTURE_2D ||
+-       target->base.format != PIPE_FORMAT_R8G8B8A8_UNORM || w == 0 || h == 0) {
+-      mesa_loge("pvr: compute fallback: target must be a non-empty RGBA8 2D texture");
++       target->base.format != PIPE_FORMAT_R8G8B8A8_UNORM || w == 0 || h == 0 ||
++       target->stride != w * 4 || target->twiddled || target->fbc) {
++      /* The rasteriser writes linear rows indexed by the width from the start of the allocation: a
++       * padded (odd-width) row pitch skews them, and a twiddled or compressed layout is not rows. */
++      mesa_loge("pvr: compute fallback: target must be a non-empty linear RGBA8 2D texture with "
++                "unpadded rows");
+       return false;
+    }
+    if (!screen->vm_valid)
+-- 
+2.47.3
+
