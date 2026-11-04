@@ -643,3 +643,13 @@ Known limits: the native driver exposes GLES 2.0 only (GLES 3.x needs the transf
 3D/array/compressed/depth uploads, roadmap item 1); the desktop GL a compositor needs still comes from
 zink; shader register use and many small render passes are the remaining performance gaps to the
 vendor driver.
+
+## Added 2026-11-04: shared buffers report their real size, patch 0400
+
+- **0400:** `textureSize()` of an imported dma-buf returned half its size (`textureQueryLevels()` and
+  the base level were wrong too). Imported buffers are linear "stride" textures, whose image word 1
+  has a different layout; the `pco` usclib read it as a twiddled image, so the level count (1) was
+  taken as base level 1. Firefox's compositor (WebRender on zink) divides texel coordinates by
+  `textureSize()` and drew every WebGL canvas into the bottom-left quarter with smeared edges.
+  Fixed for all stride textures; `open-driver-perf/tools/desktop-bench/dmabuf_probe.c` checks
+  export, import, sampling and `textureSize()` of a shared buffer.
