@@ -63,3 +63,84 @@ symbol failure, and x86 Chrome missing from the FEX rootfs.
 **Final check before merge:** the boot tests (objective 1), the full desktop benchmark at 1280x960 and
 at 1920x1080, the daily-app matrix and `tools/verify/run-all.sh`. Every result is checked by screenshot
 (`vcheck.py`): a wrong picture fails the run, even with good numbers. 0 GPU errors while in use.
+
+## Rules for the agent doing this work
+
+These rules bind any agent working on this PR. If a rule and a task disagree, the rule
+wins: stop and ask.
+
+**Order and scope**
+- Work on one objective at a time, in this order: 5, 4, 3, 2, 1. Do not start the next objective
+  until the current one's "done when" check has passed and the owner has seen the result.
+- Do only what the objective says. No refactors, no new features, no "while I'm here" changes.
+- Objective 1 changes how the board boots. First write the design (which units, files and boot steps
+  change, how the fallback works, how to undo each step) and **wait for the owner's approval**. Then
+  ask again before each change to boot configuration (module load order, blacklists, display
+  manager, bootguard, watchdog).
+
+**Board safety (hard stops)**
+- Board: `ssh radxa@192.168.0.40`. Before any GPU work, read `~/open-perf/.busy`. If it exists, stop:
+  someone else is using the GPU. Write it while you work and remove it after.
+- Before any open-stack desktop or GPU test, arm the wedge guard:
+  `sudo systemd-run --unit=pvr-wedge-guard /bin/bash ~/a733-powervr-fex/open-driver-perf/tools/desktop-bench/wedge-guard.sh`
+  (`daily.sh` does this itself).
+- Never unload or unbind a GPU driver that may be wedged. If you see `Job timeout`, `pvr_cccb`,
+  `Oops`, or processes in D state (`ps -eo stat,comm | awk '$1 ~ /D/'`): stop all GPU work, reboot
+  with sysrq (`echo s`, then `u`, then `b` to `/proc/sysrq-trigger`, 3 s apart), and report. If
+  `sudo` hangs, the board needs a power cycle: tell the owner and do nothing else.
+- The kernel panics on any oops (`panic_on_oops=1`, `panic=10`), so an oops reboots the board and
+  its log is lost. To capture one, set `panic_on_oops` to 0 for that test only, stream
+  `sudo dmesg -w` to another machine over ssh, and set it back to 1 afterwards.
+- Log every change on the board, with its undo command, in `~/open-perf/session.log`. Back up any
+  file before you overwrite it.
+- The board must end every session on a working desktop. Today that is the vendor desktop; after
+  objective 1, it is the open one with the fallback working.
+
+**Use the existing tools (do not write new ones when these fit)**
+- Switch drivers: `open-driver-perf/tools/verify/switch-safe.sh open|vendor` (it also runs
+  `/usr/local/sbin/open-stack-libs.sh on|off`).
+- Desktop benchmark: `open-driver-perf/tools/desktop-bench/daily.sh vendor|open` with
+  `DESKTOP=plasma`, `MODE=1280x960@60` (same pixels as the vendor desktop) and `HOLD=1` (keep the
+  desktop up for your own tests). App and browser tests: `apptest.sh`, `browsertest.sh`, `inenv.sh`.
+- Picture check: `vcheck.py full|screen|video <png>`. Shared-buffer check: `dmabuf_probe.c`.
+  Driver gate: `open-driver-perf/tools/verify/run-all.sh`.
+- Mesa: source `~/mesa/mesa-main`, build dir `build-open`, `ninja -C build-open`. Install into
+  `/opt/mesa-open` only through a staging dir (`DESTDIR=/tmp/mesa-stage ninja -C build-open install`),
+  then replace files by copy-and-rename: running programs use those libraries, and overwriting them
+  in place can crash the desktop. Remove the bundled `libexpat`/`libz` from the staging dir first.
+- Kernel module: `~/kernel-src/powervr`, `make -C /lib/modules/$(uname -r)/build M=$PWD modules`;
+  keep the old `powervr.ko` as a backup before installing.
+
+**Proof, not claims**
+- Never report something as fixed or done without the command you ran and its output. A diff, a
+  build that compiles, or "should work" is not proof.
+- Every benchmark and app result needs its screenshot checked by `vcheck.py`, and a person or you
+  must look at the image. A wrong picture fails the result, even with good numbers.
+- Check that a path, flag or function exists (`ls`, `grep`, `--help`) before you use it. Do not
+  guess names.
+- Quote real numbers from the logs. Never round up a result or leave out a failing run.
+
+**When to stop**
+- The same error twice: stop, report what you tried and the exact error text. Do not try a third
+  time with the same approach.
+- No progress after 3 attempts on one problem: stop and report what you learned.
+- Anything outside these rules or the objective: stop and ask.
+
+**Git and public text**
+- Follow the existing commit message style (`git log`).
+- Never push without the owner's OK. Never force-push.
+- Mesa changes are new numbered patches in `mesa/open-driver-series` (next: 0401). Regenerate
+  `mesa/mesa-main-open-driver-all.patch` with `git diff 9a2b374 HEAD`. Kernel changes are new
+  numbered patches in `kernel/powervr-backport` (next: 0008).
+- Public text (commits, PR, docs) has no machine-local scratch paths and no agent or tool names.
+
+**Shell traps seen on this board**
+- An apostrophe inside a single-quoted `ssh '...'` command breaks it, and the rest runs on your own
+  machine. Put longer edits in a script file, copy it over, and run it.
+- `pkill -f <pattern>` can match your own ssh command and kill your session. Use `pgrep`, then kill
+  by PID, and skip your own PID.
+- The board's ssh shell has `/usr/local/lib` (vendor libraries) in `LD_LIBRARY_PATH`. Run GPU
+  programs in the desktop session's environment (`inenv.sh`), not in a plain ssh shell.
+
+**Report to the owner after each step:** what you changed, the command and its output, whether it
+worked, and how to undo it. Use short, plain sentences.
