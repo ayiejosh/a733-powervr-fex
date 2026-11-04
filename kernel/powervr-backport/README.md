@@ -14,6 +14,12 @@ out-of-tree module against the Radxa `6.6.98-5-aw2511` kernel, which has no `CON
     per-OS config flags (test knob, default unchanged).
   - `0002-pvr_queue-check-paired-and-chained-fragment-commands...patch`: **required.** It fixes a
     fragment CCCB overflow that wedged the GPU under Chromium (see below).
+  - `0003`-`0007`: **required.** Five mainline `drm/imagination` MMU/VM fixes (all `Cc: stable`), in
+    mainline order: `17e2030f3760` (VM lock before mapping), `7b824c293a6b` (map failures
+    propagated), `0a8224058a58` (page-table count from the device address), `789f290b2e81`
+    (preallocation sized by device address), `196d4d10c1b3` (remap references). In `0005` and `0006`
+    one hunk was applied by hand: this tree allocates with `kzalloc()`, mainline with
+    `kzalloc_obj()`. They fix a kernel oops reachable from any GPU client (see below).
 
 ## Build and install
 
@@ -50,3 +56,21 @@ still sent, so those done fences could never signal.
 
 **Verified:** with this patch, 3 runs of the same Chromium 4K WebGL page, glmark2 (zink and native)
 and a 15-minute glmark2 soak gave 0 job timeouts, 0 CCCB warnings and 0 kernel warnings.
+
+## The VM_UNMAP oops (patches 0003-0007)
+
+**Symptom:** Firefox (WebGL with `widget.dmabuf-webgl.enabled=false`) on the open stack oopsed the
+kernel, twice in a row: `Unable to handle kernel NULL pointer dereference at virtual address
+0000000000000008` in `pvr_mmu_op_context_unmap_curr_page()`, called from `pvr_ioctl_vm_unmap()`.
+With `panic_on_oops=1` (this board's default) the board panicked and the watchdog rebooted it; with
+it off, the client hung in `drm_gem_shmem_vm_close` and PID 1 went into D state.
+
+**Cause:** the backport predates mainline's fixes for mappings whose page tables were never fully
+built: a map that failed part-way still returned success, and the page-table preallocation was
+counted from the offset into the buffer instead of the device address, so a mapping that crossed a
+2 MiB (L0 table) boundary could run out of tables. A later unmap of that range followed a NULL L0
+table pointer. Mainline `7b824c293a6b` carries the same oops in its commit message.
+
+**Verified:** the same Firefox run that oopsed twice now completes all its phases, and the held
+desktop sessions that followed (Firefox and Chromium runs, the app tests, the D3D11 tests) had 0
+oopses and 0 GPU errors.
