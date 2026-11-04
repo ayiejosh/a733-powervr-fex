@@ -11,8 +11,11 @@ Vulkan loader ignores `VK_ICD_FILENAMES`, and kwin would load the vendor `libgbm
 - **`open-stack-libs.sh on|off|status`** (`/usr/local/sbin/`). `on` writes
   `/etc/ld.so.conf.d/00-mesa-open.conf` (the open Mesa, then the system library directories; it sorts
   before the vendor entry), copies the open Vulkan ICD to `/etc/vulkan/icd.d/`, sets
-  `PVR_I_WANT_A_BROKEN_VULKAN_DRIVER=1` in `/etc/environment.d/`, and runs `ldconfig`. `off` removes
-  all three. `open-driver-perf/tools/verify/switch-safe.sh` calls `on` after the open driver binds and
+  `PVR_I_WANT_A_BROKEN_VULKAN_DRIVER=1` in `/etc/environment.d/`, renames the vendor Vulkan driver's
+  manifest (`/usr/share/vulkan/icd.d/img_icd.json`) aside, and runs `ldconfig`. `off` undoes all
+  four. The Vulkan loader loads every manifest it finds, and with the open kernel driver bound the
+  vendor `libVK_IMG.so` crashes Vulkan X11 clients (`vkcube --wsi xcb`); a same-named manifest in
+  `/etc` does not mask it, so it has to leave the search path. `open-driver-perf/tools/verify/switch-safe.sh` calls `on` after the open driver binds and
   `off` before the vendor stack comes back.
 - **`mesa-open-boot-check.service`** runs `open-stack-libs.sh off` at boot, before the display
   manager, unless the open driver is bound. The board boots on the vendor driver, so a switch left
@@ -40,3 +43,12 @@ sudo systemctl enable mesa-open-boot-check
 ```
 
 Undo: `sudo systemctl disable mesa-open-boot-check`, remove the two files, `sudo rm -rf /opt/mesa-open`.
+
+## Launchers
+
+`emulation/wrappers/d3drun` and `glrun` and `fex/chrome-fex-gpu.sh` were written for the vendor
+stack. They now follow the bound driver: on the open driver `d3drun` uses the open Vulkan manifest
+and wine's own wined3d, drawing on the GPU through zink (DXVK-Sarek v1.12.0 currently crashes after
+device creation on both stacks with Hangover 11.16, an open item), `glrun` runs
+the program unchanged (the system GL is already zink on the GPU), and the FEX Chrome launcher uses the
+session's X display and auth file (Xwayland under Plasma Wayland has its own).

@@ -10,7 +10,8 @@
 #     matching the fixed-width DOPAD applied at load time. Bug found 2026-06-11.
 # Rendering confirmed stable (7/7 sites, 32+ min uptime).
 export FEX_ROOTFS=/home/radxa/crd-rootfs
-export DISPLAY=:0 XAUTHORITY=/home/radxa/.Xauthority
+# the desktop session's X display (Xwayland under Plasma Wayland has its own auth file); :0 outside one
+export DISPLAY="${DISPLAY:-:0}" XAUTHORITY="${XAUTHORITY:-/home/radxa/.Xauthority}"
 export HOME=/home/radxa/crd-rootfs/home/crd USER=crd XDG_RUNTIME_DIR=/tmp/fexrun
 export DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/1000/bus"
 export LD_LIBRARY_PATH=/usr/local/lib

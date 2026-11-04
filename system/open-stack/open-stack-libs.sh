@@ -11,13 +11,16 @@
 #     '_'), so the vendor libEGL/libGLESv2/libgbm/libvulkan there are not used;
 #   - the open Vulkan driver's ICD goes to /etc/vulkan/icd.d;
 #   - /etc/environment.d/90-mesa-open.conf sets PVR_I_WANT_A_BROKEN_VULKAN_DRIVER=1 for user sessions
-#     (the open Vulkan driver refuses this not-yet-conformant GPU without it).
+#     (the open Vulkan driver refuses this not-yet-conformant GPU without it);
+#   - the vendor Vulkan driver's manifest is renamed aside: the loader loads every manifest it finds,
+#     and libVK_IMG crashes Vulkan X11 (xcb) clients when the open kernel driver is bound.
 set -eu
 P=/opt/mesa-open
 LIB=$P/lib/aarch64-linux-gnu
 CONF=/etc/ld.so.conf.d/00-mesa-open.conf
 ICD=/etc/vulkan/icd.d/powervr_mesa_open_icd.aarch64.json
 ENVD=/etc/environment.d/90-mesa-open.conf
+VICD=/usr/share/vulkan/icd.d/img_icd.json
 case "${1:-status}" in
 on)
    [ -e $LIB/libgbm.so.1 ] && [ -e $P/share/vulkan/icd.d/powervr_mesa_icd.aarch64.json ] ||
@@ -26,14 +29,16 @@ on)
    mkdir -p /etc/vulkan/icd.d
    cp $P/share/vulkan/icd.d/powervr_mesa_icd.aarch64.json $ICD
    printf 'PVR_I_WANT_A_BROKEN_VULKAN_DRIVER=1\n' > $ENVD
+   if [ -e $VICD ]; then mv $VICD $VICD.open-stack-hidden; fi
    ldconfig
    ;;
 off)
    rm -f $CONF $ICD $ENVD
+   if [ -e $VICD.open-stack-hidden ]; then mv $VICD.open-stack-hidden $VICD; fi
    ldconfig
    ;;
 status)
-   for f in $CONF $ICD $ENVD; do
+   for f in $CONF $ICD $ENVD $VICD.open-stack-hidden; do
       if [ -e $f ]; then echo "on  $f"; else echo "off $f"; fi
    done
    ;;

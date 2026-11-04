@@ -1,0 +1,16 @@
+#!/bin/bash
+# Run an OpenGL app GPU-accelerated via zink -> PowerVR Vulkan (bypasses broken native GL blob).
+# Scoped: only this process gets the fake-GS layer, so DXVK/desktop are unaffected.
+# With the open powervr driver bound the system GL already is zink on the open Vulkan driver
+# (system/open-stack), and the vendor-only pieces below do not exist there.
+[ "$(basename "$(readlink /sys/bus/platform/devices/1800000.gpu/driver)")" = powervr ] && exec "$@"
+export LD_LIBRARY_PATH=/lib/aarch64-linux-gnu:/usr/lib/aarch64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+export LIBGL_DRIVERS_PATH=/usr/lib/aarch64-linux-gnu/dri
+export MESA_LOADER_DRIVER_OVERRIDE=zink GALLIUM_DRIVER=zink
+export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/img_icd.json
+export VK_LAYER_PATH=/home/radxa/gpu-experiment
+export VK_INSTANCE_LAYERS=VK_LAYER_PVR_strip
+export PVR_FAKE_GS=1
+export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/1000}
+export DISPLAY=${DISPLAY:-:0} XAUTHORITY=${XAUTHORITY:-/home/radxa/.crd-xauth}
+exec "$@"

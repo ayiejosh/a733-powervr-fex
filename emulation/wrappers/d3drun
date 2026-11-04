@@ -6,7 +6,18 @@
 export WINEPREFIX="${WINEPREFIX:-/home/radxa/.wine-dxvk}" HOME=/home/radxa WINEDEBUG="${WINEDEBUG:--all}" HODLL=wowbox64.dll
 export WINEDLLOVERRIDES="d3d11,dxgi,d3d10core,d3d9=native,builtin;mscoree,mshtml="
 export GALLIUM_DRIVER=llvmpipe MESA_LOADER_DRIVER_OVERRIDE=llvmpipe __GLX_VENDOR_LIBRARY_NAME=mesa
-export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/img_icd.json
+# Vulkan driver of the bound kernel driver: the vendor one on pvrsrvkm; the open Mesa one on the open
+# powervr driver (system/open-stack; its loader manifest is in /etc, and the vendor one is hidden).
+if [ "$(basename "$(readlink /sys/bus/platform/devices/1800000.gpu/driver)")" = powervr ]; then
+   export VK_ICD_FILENAMES=/etc/vulkan/icd.d/powervr_mesa_open_icd.aarch64.json PVR_I_WANT_A_BROKEN_VULKAN_DRIVER=1
+   # D3D goes through wine's own wined3d, which draws with the system GL (zink on the GPU; there is no
+   # llvmpipe in the open Mesa build). zink is GL 3.2 here: D3D feature level 10_1, no compute shaders.
+   # (DXVK-Sarek v1.12.0 currently crashes after vkCreateDevice on both stacks with Hangover 11.16.)
+   export WINEDLLOVERRIDES="d3d11,dxgi,d3d10core,d3d9=builtin;mscoree,mshtml="
+   unset GALLIUM_DRIVER MESA_LOADER_DRIVER_OVERRIDE
+else
+   export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/img_icd.json
+fi
 export DXVK_CONFIG_FILE=/home/radxa/dxvk.conf
 export DISPLAY="${DISPLAY:-:0}" XAUTHORITY="${XAUTHORITY:-/home/radxa/.crd-xauth}"
 # --- measured tuning (2026-09-22, docs/FEX-BOX-TUNING-2026-09-22.md) ---
