@@ -31,28 +31,53 @@ ffmpeg -f lavfi -i testsrc2=size=1920x1080:rate=30 -t 25 -c:v libx264 -pix_fmt y
 Only `DESKTOP=plasma` is shipped here; `daily.sh` still knows the `weston` and bare `kwin` modes used
 while bringing the desktop up, whose launchers set the libraries through the environment.
 
-## Results, 2026-11-04 (runs 1104-0817-vendor, 1104-0842-open)
+## Results, 2026-11-04, same resolution (runs 1104-0817-vendor, 1104-1109-open)
 
-Same board, same 1920x1080 screen at 1.35 scale. Vendor: X11 Plasma, apps on zink over the vendor
-Vulkan driver. Open: Plasma Wayland, PR #12 Mesa, kernel with the CCCB fix.
+Both stacks at 1280x960, scale 1 (the vendor desktop's mode; the open run sets it with `MODE=1280x960@60`).
+Vendor: X11 Plasma, not composited, apps on zink over the vendor Vulkan driver. Open: Plasma Wayland,
+this repo's Mesa (patches up to 0400) and kernel (patches up to 0007). Open Chromium: 3 runs.
 
 | | vendor | open |
 |---|---|---|
-| Desktop compositing | off (kwin_x11, not composited) | OpenGL (kwin_wayland on zink) |
-| Chromium WebGL, 600 cubes | **no WebGL context** | 39.2 fps, p95 33.5 ms, picture ok |
-| Chromium CSS, 300 layers | 15.8 fps | 21.0 fps |
-| Chromium 1080p video, dropped | 2 / 606 | 6 / 605 |
-| Firefox WebGL | 36.7 fps, **picture wrong** (dark slivers, no cubes) | 17.9 fps, **picture wrong** (window not shown; the run before drew at quarter size) |
-| Firefox CSS | 9.4 fps | 8.5 fps |
-| Firefox 1080p video, dropped | 0 / 598 | **299 / 598** |
-| glmark2 score (default GL) | 297 | 546 (zink), 578 (native GLES2), 376 (zink forced) |
-| glmark2 --validate | 26 ok, 1 failed (`[function] fragment-complexity=medium`) | 27 ok, 0 failed (default, native and zink) |
+| Desktop compositing | off | OpenGL (kwin_wayland on zink) |
+| Chromium WebGL, 600 cubes | **no WebGL context** | 43.8-45.6 fps, picture ok |
+| Chromium CSS, 300 layers | 15.8 fps | 14.5-19.5 fps |
+| Chromium 1080p video, dropped | 2 / 606 | 1-3 / 605 |
+| Firefox WebGL | 36.7 fps, **picture wrong** (dark slivers) | 28.9 fps (52.9 in a separate run), picture ok |
+| Firefox CSS | 9.4 fps | 9.1 fps |
+| Firefox 1080p video, dropped | 0 / 598 | 29 / 598 (34 in a separate run) |
+| glmark2 windowed | 297 | 495 (zink), 526 (native GLES2), 342 (zink forced) |
+| glmark2 --validate | 26 ok, 1 failed | 27 ok, 0 failed (zink, native and zink forced) |
 | 15-min soak | ran, session up | ran, session up |
-| GPU errors in the kernel log | 0 | 0 |
-| Idle cost (desktop processes), RAM | 1.4 % of a core, 2345 MB | 1.5 % of a core, 2526 MB |
-| Max temperature | 66.6 C | 68.0 C |
-| visual-fails | 3 | 1 |
+| GPU errors | 0 | 0 while in use (2 firmware context resets when the soak's glmark2 is killed) |
+| Idle cost, RAM | 1.4 % of a core, 2345 MB | 2.0 % of a core, 2447 MB |
+| Max temperature | 66.6 C | 64.9 C |
+| visual-fails | 3 | 0 |
 
-Open is ahead on everything Chromium and glmark2 do, with a correct picture, and the desktop is
-GPU-composited. Firefox is the gap: WebGL draws wrong on both stacks, and on the open stack Firefox
-drops half the video frames.
+At the open stack's own 1920x1080, scale 1.35 (Firefox renders at 2x, 2844x1600): Chromium WebGL
+39 fps; Firefox drops about half the video frames (293-351 / 598) whatever compositor settings it is
+given, so that drop is the extra pixels, not a broken path.
+
+## Daily apps on the open stack (2026-11-04)
+
+Run in a held Plasma Wayland session (`HOLD=1`, `apptest.sh`, `browsertest.sh`), each checked from a
+screenshot and the kernel log.
+
+| App | Through | Result |
+|---|---|---|
+| Konsole, Dolphin, Gwenview | native Wayland (Qt) | ok |
+| Chromium, Firefox (WebGL, CSS, video) | native | ok |
+| `es2gears_wayland`, `vkcube --wsi wayland` | native GLES / Vulkan | ok |
+| `glxgears`, `vkcube --wsi xcb`, `xeyes` | X11 through Xwayland | ok (Vulkan X11 needed the vendor ICD hidden, `system/open-stack`) |
+| `xeyes` (x86-64) | FEX | ok |
+| Notepad | wine (Hangover), `guirun` | ok |
+| D3D11 tests (`gpu-experiment/mind3d`: tri, cube, tex, depth, mrt2, rtt, bctex) | wine + FEX (ARM64EC), wined3d on zink | ok, feature level 10_1 |
+| D3D11 `compute.exe` | same | fails: wined3d needs GL 4.3 for compute; zink is GL 3.2 here |
+
+Not caused by the open stack (same on vendor): DXVK-Sarek v1.12.0 crashes after `vkCreateDevice` with
+Hangover 11.16 (the prefix runs wine's own d3d DLLs); `xeyes` under box64 fails on a `libXt` symbol;
+x86 Google Chrome is no longer in the FEX rootfs.
+
+Fixed on the way: a kernel oops from Firefox (`kernel/powervr-backport` 0003-0007), Firefox WebGL drawn
+in a quarter of the window (`mesa` 0400), Vulkan X11 clients crashing in the vendor ICD, and launchers
+that only knew the vendor stack.

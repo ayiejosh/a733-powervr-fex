@@ -2,7 +2,8 @@
 """vcheck.py MODE IMAGE.png - is a benchmark screenshot visually plausible? Prints one line, exits 1 if not.
   full   : the scene fills the screen (WebGL cubes, CSS boxes): every cell of a 4x4 grid has detail
            across x (catches flat areas and horizontal streaks).
-  screen : something is shown (video, desktop): not black, most cells not one flat colour.
+  screen : something is shown (desktop): not black, most cells not one flat colour.
+  video  : screen, and under 3% near-black pixels (the test clip is colour bars with no black area).
 It does not compare against a reference image, so the screenshots are still looked at by hand.
 Self-test: vcheck.py selftest"""
 import subprocess, sys
@@ -37,7 +38,15 @@ def judge(mode, px):
         bad = [i for i, (m, sd, h) in enumerate(cells) if sd < 6 or h < 1.5]
         return not bad, f"{16 - len(bad)}/16 cells with detail" + (f", flat or streaked cells {bad}" if bad else "")
     busy = sum(1 for (m, sd, h) in cells if sd >= 3)
-    return mean >= 8 and busy >= 10, f"mean {mean:.0f}, {busy}/16 cells with detail"
+    ok, why = mean >= 8 and busy >= 10, f"mean {mean:.0f}, {busy}/16 cells with detail"
+    if mode == "video":
+        # the test clip (colour bars) has no black areas; a black block is a frame not (fully) drawn.
+        # All-black rows are letterbox bars (16:9 video on a 4:3 screen) and are left out.
+        rows = [px[y * W:(y + 1) * W] for y in range(H)]
+        rows = [r for r in rows if max(r) >= 16] or rows
+        black = sum(1 for r in rows for b in r if b < 16) / (len(rows) * W)
+        ok, why = ok and black < .03, why + f", {black:.1%} black"
+    return ok, why
 
 def selftest():
     import random
@@ -53,6 +62,10 @@ def selftest():
     assert not judge("full", streaks)[0]
     assert judge("screen", noise)[0]
     assert not judge("screen", bytes(W * H))[0]
+    blackblock = bytes(0 if (i // W < H // 3 and i % W < W // 3) else noise[i] | 64 for i in range(W * H))
+    assert judge("screen", blackblock)[0] and not judge("video", blackblock)[0]
+    letterbox = bytes(0 if (i // W < H // 8 or i // W >= H - H // 8) else noise[i] | 64 for i in range(W * H))
+    assert judge("video", letterbox)[0]
     print("selftest ok")
 
 if __name__ == "__main__":

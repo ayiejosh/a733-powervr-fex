@@ -81,6 +81,7 @@ restore() {
    for p in $WPIDS; do kill $p 2>/dev/null; done
    if [ $STACK = open ]; then
       teardown_open
+      [ -e $O/kwinoutputconfig.json.before ] && cp $O/kwinoutputconfig.json.before ~/.config/kwinoutputconfig.json
       uenv_restore
       if [ -n "$(dst)" ]; then hb "RESTORE REFUSED: persistent D-state tasks"; dsnap >> $O/heartbeat
          echo "$(date) daily-$STACK: restore REFUSED (D state)" >> $OP/session.log; exit 3; fi
@@ -111,6 +112,7 @@ if [ $STACK = open ]; then
    [ "$(drv)" = powervr ] || { hb "switch to open FAILED: $(tail -2 $O/sw-open.log | tr '\n' ' ')"; exit 1; }
    hb "bound=$(drv) module srcversion loaded $(cat /sys/module/powervr/srcversion) installed $(/sbin/modinfo -F srcversion /lib/modules/$(uname -r)/extra/powervr/powervr.ko)"
    uenv show-environment > $O/user-env-before.txt 2>/dev/null
+   [ -n "${MODE:-}" ] && cp ~/.config/kwinoutputconfig.json $O/kwinoutputconfig.json.before 2>/dev/null
    rm -f /tmp/daily-weston.log /tmp/daily-open.env
    # A failed transient unit stays loaded and makes systemd-run refuse the same unit name.
    sudo systemctl stop daily-plasma 2>/dev/null; sudo systemctl reset-failed daily-plasma 2>/dev/null
@@ -163,7 +165,26 @@ else
 fi
 senv eglinfo -B > $O/eglinfo.txt 2>&1; senv glxinfo -B > $O/glxinfo.txt 2>&1; senv vulkaninfo --summary > $O/vulkaninfo.txt 2>&1
 hb "glx: $(grep -m2 -E 'OpenGL renderer|OpenGL version|OpenGL ES profile version' $O/glxinfo.txt | tr -s ' ' | tr '\n' ';') vk: $(grep -m1 -E 'deviceName' $O/vulkaninfo.txt | tr -s ' ')"
+# MODE=WxH@Hz (open Plasma only): run at that mode and scale 1, e.g. the vendor desktop's 1280x960@60, so
+# both stacks draw the same number of pixels. kwin saves it in kwinoutputconfig.json; restore() puts the
+# file back.
+if [ $STACK = open ] && [ $PL = 1 ] && [ -n "${MODE:-}" ]; then
+   out=$(senv kscreen-doctor -o 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' | awk '/^Output:/ {print $3; exit}')
+   senv kscreen-doctor output.$out.mode.$MODE output.$out.scale.1 > $O/mode.txt 2>&1; sleep 3
+   hb "mode: $out $MODE scale 1 -> $(senv kscreen-doctor -o 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' | grep -oE '[0-9]+x[0-9]+@[0-9.]+\*' | head -1)"
+fi
 shot desktop-idle $DSK
+
+# HOLD=1: keep the desktop up for app tests run from outside (inenv.sh runs a command in the session's
+# environment); `touch /tmp/daily-release` or HOLD_MAX seconds ends the hold, and the normal restore runs.
+if [ "${HOLD:-0}" = 1 ]; then
+   rm -f /tmp/daily-release; echo "$O" > /tmp/daily-hold
+   hb "HOLD: desktop up for app tests (release: touch /tmp/daily-release; max ${HOLD_MAX:-3600}s)"
+   end=$((SECONDS + ${HOLD_MAX:-3600}))
+   while [ ! -e /tmp/daily-release ] && [ $SECONDS -lt $end ]; do sleep 5
+      [ -n "$(shellpid)" ] || { hb "HOLD: desktop GONE"; break; }; done
+   rm -f /tmp/daily-hold /tmp/daily-release; hb "HOLD released, gpu-errors=$(gpuerr)"; exit 0
+fi
 
 # (2) browsers on the test page
 # DIAG=1: the Chromium GPU process's threads (wait channel + kernel stack) and the kernel log, 20 s
@@ -187,7 +208,7 @@ browser() { local name=$1; shift; local log=$O/$name.log
    for i in $(seq 1 100); do sleep 1
       for ph in webgl css video; do
          [ -z "${due[$ph]:-}" ] && grep -qE "phase.{1,6}name.{1,6}$ph" $log && due[$ph]=$((i + 4))
-         [ "${due[$ph]:-}" = $i ] && shot $name-$ph $( [ $ph = video ] && echo screen || echo full )
+         [ "${due[$ph]:-}" = $i ] && shot $name-$ph $( [ $ph = video ] && echo video || echo full )
       done
       [ "${DIAG:-0}" = 1 ] && case "$name:$i" in chromium*:20|chromium*:50) diagdump $name;; esac
       grep -q '"test":"done"' $log && break; done
